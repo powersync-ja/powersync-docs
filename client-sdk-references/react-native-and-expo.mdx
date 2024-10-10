@@ -1,0 +1,461 @@
+---
+title: "React Native & Expo"
+description: "Full SDK reference for using PowerSync in React Native clients"
+sidebarTitle: "Overview"
+---
+
+<CardGroup>
+  <Card title="PowerSync SDK on NPM" icon="npm" href="https://www.npmjs.com/package/@powersync/react-native">
+  The PowerSync React Native SDK is distributed via NPM [[External link].](https://www.npmjs.com/package/@powersync/react-native)
+  </Card>
+  <Card title="API Reference" icon="book" href="https://powersync-ja.github.io/powersync-js/react-native-sdk">
+Full API reference for the PowerSync SDK [[External link].](https://powersync-ja.github.io/powersync-js/react-native-sdk)
+  </Card>
+  <Card title="Example Projects" icon="code" href="/resources/demo-apps-example-projects">
+  Gallery of example projects/demo apps built with React Native and PowerSync.
+  </Card>
+</CardGroup>
+### SDK Features
+
+* Provides real-time streaming of database changes.
+* Offers direct access to the SQLite database, enabling the use of SQL on both client and server sides.
+* Operations are asynchronous by default, ensuring the user interface remains unblocked.
+* Supports concurrent database operations, allowing one write and multiple reads simultaneously.
+* Enables subscription to queries for receiving live updates.
+* Eliminates the need for client-side database migrations as these are managed automatically.
+
+## Installation
+
+See the [SDK's README](https://www.npmjs.com/package/@powersync/react-native) for installation instructions.
+
+<Note>
+**PowerSync is not compatible with Expo Go.**
+
+PowerSync uses a native plugin and is therefore only compatible with Expo Dev Builds.
+</Note>
+
+<Info>
+**Some peer dependencies and polyfills are required.**
+
+**Note**: As of @powersync/react-native@1.9.0, polyfills are bundled in the SDK and are no longer required ([Async Iterator](https://www.npmjs.com/package/@powersync/react-native#babel-plugins-watched-queries) support being the only exception).
+
+By default this SDK connects to a PowerSync instance via WebSocket (from @powersync/react-native@1.11.0) or HTTP stream (before @powersync/react-native@1.11.0). Different polyfill configurations are required for each method.
+
+* See the [Readme](https://www.npmjs.com/package/@powersync/react-native#installation) for the necessary peer dependencies and polyfills.
+* See the [Developer Notes](/client-sdk-references/react-native-and-expo#developer-notes) section below for details about connecting with either method.
+   * Also see this section for additional development requirements on Android and iOS.
+</Info>
+
+## Getting Started
+
+Before implementing the PowerSync SDK in your project, make sure you have completed these steps:
+
+* Signed up for a PowerSync Cloud account ([here](https://accounts.journeyapps.com/portal/get-started?powersync=true)) or [self-host PowerSync](/self-hosting/getting-started).
+* [Configured your backend database](/usage/installation/database-setup) and connected it to your PowerSync instance.
+* [Installed](/client-sdk-references/react-native-and-expo#installation) the PowerSync React Native SDK.
+
+### 1\. Define the Schema
+
+The first step is defining the schema for the local SQLite database.
+
+This schema represents a "view" of the downloaded data. No migrations are required — the schema is applied directly when the PowerSync database is constructed (as we'll show in the next step).
+
+<Info>
+**Generate schema automatically**
+
+In the [dashboard](/usage/tools/powersync-dashboard), the schema can be generated based off your sync rules by right-clicking on an instance and selecting **Generate client-side schema**.
+
+Similar functionality exists in the [CLI](/usage/tools/cli).
+</Info>
+
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/usage/sync-rules). If a value doesn't match, it is cast automatically. For details on how Postgres types are mapped to the types below, see the section on [Types](/usage/sync-rules/types) in the _Sync Rules_ documentation.
+
+**Example**:
+
+```js
+// AppSchema.ts
+import { column, Schema, Table } from '@powersync/react-native';
+
+const lists = new Table({
+  created_at: column.text,
+  name: column.text,
+  owner_id: column.text
+});
+
+const todos = new Table(
+  {
+    list_id: column.text,
+    created_at: column.text,
+    completed_at: column.text,
+    description: column.text,
+    created_by: column.text,
+    completed_by: column.text,
+    completed: column.integer
+  },
+  { indexes: { list: ['list_id'] } }
+);
+
+export const AppSchema = new Schema({
+  todos,
+  lists
+});
+
+// For types
+export type Database = (typeof AppSchema)['types'];
+export type TodoRecord = Database['todos'];
+// OR:
+// export type Todo = RowType<typeof todos>;
+export type ListRecord = Database['lists'];
+```
+
+<Info>
+  **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Info>
+
+### 2\. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database — this is the core managed database.
+
+Its primary functions are to record all changes in the local database, whether online or offline. In addition, it automatically uploads changes to your app backend when connected.
+
+**Example**:
+
+```js
+import { PowerSyncDatabase } from '@powersync/react-native';
+import { Connector } from './Connector';
+import { AppSchema } from './Schema';
+
+/**
+ * Instantiate the local PowerSync database
+ * This uses react-native-quick-sqlite to open a SQLite database file
+ */
+export const db = new PowerSyncDatabase({
+  // The schema you defined in the previous step
+  schema: AppSchema,
+  database: {
+    // Filename for the SQLite database — it's important to only instantiate one instance per file.
+    dbFilename: 'powersync.db'
+    // Optional. Directory where the database file is located.'
+    // dbLocation: 'path/to/directory'
+  }
+});
+```
+
+<Note>
+**SDK versions lower than 1.8.0**
+
+In SDK versions lower than 1.8.0, you will need to use the deprecated [RNQSPowerSyncDatabaseOpenFactory](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/RNQSPowerSyncDatabaseOpenFactory) syntax to instantiate the database.
+</Note>
+
+Once you've instantiated your PowerSync database, you will need to call the [connect()](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/AbstractPowerSyncDatabase#connect) method to activate it.
+
+```js
+export const setupPowerSync = async () => {
+  // Uses the backend connector that will be created in the next section
+  const connector = new Connector();
+  db.connect(connector);
+};
+```
+
+### 3\. Integrate with your Backend
+
+The PowerSync backend connector provides the connection between your application backend and the PowerSync client-slide managed SQLite database.
+
+It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+2. Apply local changes on your backend application server (and from there, to Postgres)
+
+Accordingly, the connector must implement two methods:
+
+1. [PowerSyncBackendConnector.fetchCredentials](https://powersync-ja.github.io/powersync-js/react-native-sdk/interfaces/PowerSyncBackendConnector#fetchcredentials) \- This is called every couple of minutes and is used to obtain credentials for your app backend API. -> See [Authentication Setup](/usage/installation/authentication-setup) for instructions on how the credentials should be generated.
+2. [PowerSyncBackendConnector.uploadData](https://powersync-ja.github.io/powersync-js/react-native-sdk/interfaces/PowerSyncBackendConnector#uploaddata) \- Use this to upload client-side changes to your app backend.
+\-> See [Writing Client Changes](/usage/installation/app-backend-setup/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```js
+// lib/Connector.js
+import { UpdateType } from '@powersync/react-native';
+
+/// Postgres Response codes that we cannot recover from by retrying.
+const FATAL_RESPONSE_CODES = [
+  // Class 22 — Data Exception
+  // Examples include data type mismatch.
+  new RegExp('^22...$'),
+  // Class 23 — Integrity Constraint Violation.
+  // Examples include NOT NULL, FOREIGN KEY and UNIQUE violations.
+  new RegExp('^23...$'),
+  // INSUFFICIENT PRIVILEGE - typically a row-level security violation
+  new RegExp('^42501$')
+];
+
+export class Connector {
+    constructor() {
+        // Setup a connection to your server for uploads
+        this.serverConnectionClient = TODO;
+    }
+
+    async fetchCredentials() {
+    // Implement fetchCredentials to obtain a JWT from your authentication service.
+    // See https://docs.powersync.com/usage/installation/authentication-setup
+    // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
+    // - https://docs.powersync.com/usage/installation/authentication-setup/supabase-auth
+    // - https://docs.powersync.com/usage/installation/authentication-setup/firebase-auth
+        return {
+            endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+            // Use a development token (see Authentication Setup https://docs.powersync.com/usage/installation/authentication-setup/development-tokens) to get up and running quickly
+            token: 'An authentication token'
+        };
+    }
+
+    async uploadData(database) {
+    // Implement uploadData to send local changes to your backend service.
+    // You can omit this method if you only want to sync data from the database to the client
+
+    // See example implementation here:https://docs.powersync.com/client-sdk-references/react-native-and-expo#id-3.-integrate-with-your-backend
+}
+```
+
+## Using PowerSync: CRUD functions
+
+Once the PowerSync instance is configured you can start using the SQLite DB functions.
+
+The most commonly used CRUD functions to interact with your SQLite data are:
+
+* [PowerSyncDatabase.get](/client-sdk-references/react-native-and-expo#fetching-a-single-item) \- get (SELECT) a single row from a table.
+* [PowerSyncDatabase.getAll](/client-sdk-references/react-native-and-expo#querying-items-powersync.getall) \- get (SELECT) a set of rows from a table.
+* [PowerSyncDatabase.watch](/client-sdk-references/react-native-and-expo#watching-queries-powersync.watch) \- execute a read query every time source tables are modified.
+* [PowerSyncDatabase.execute](/client-sdk-references/react-native-and-expo#mutations-powersync.execute) \- execute a write (INSERT/UPDATE/DELETE) query.
+
+### Fetching a Single Item
+
+The [get](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#get) method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use [getOptional](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#getoptional) to return a single optional result (returns `null` if no result is found).
+
+
+```js
+// TodoItemWidget.jsx
+import { Text } from 'react-native';
+
+export const TodoItemWidget = ({id}) => {
+    const [todoItem, setTodoItem] = React.useState([]);
+    const [error, setError] = React.useState([]);
+
+    React.useEffect(() => {
+        // .get returns the first item of the result. Throws an exception if no result is found.
+        PowerSync.get('SELECT * from todos WHERE id = ?', [id])
+          .then(setTodoItem)
+          .catch(ex => setError(ex.message))
+    }, []);
+
+    return <Text>{error || todoItem.description}</Text>
+}
+```
+
+### Querying Items (PowerSync.getAll)
+
+The [getAll](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#getall) method returns a set of rows from a table.
+
+```js
+// ListsWidget.jsx
+import { FlatList, Text} from 'react-native';
+
+export const ListsWidget = () => {
+    const [lists, setLists] = React.useState([]);
+
+    React.useEffect(() => {
+        PowerSync.getAll('SELECT * from lists').then(setLists)
+    }, []);
+
+    return (<FlatList
+        data={lists.map(list => ({key: list.id, ...list}))}
+        renderItem={({item}) => <Text>{item.name}</Text>}
+    />)
+}
+```
+
+### Watching Queries (PowerSync.watch)
+
+The [watch](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#watch) method executes a read query whenever a change to a dependent table is made. It can be used with an `AsyncGenerator`, or with a callback.
+
+```js
+// ListsWidget.jsx
+import { FlatList, Text } from 'react-native';
+
+export const ListsWidget = () => {
+    const [lists, setLists] = React.useState([]);
+
+    React.useEffect(() => {
+        const abortController = new AbortController();
+
+        // Option 1: Use with AsyncGenerator
+        (async () => {
+          for await(const update of PowerSync.watch('SELECT * from lists', [], {signal: abortController.signal})) {
+              setLists(update)
+          }
+        })();
+
+        // Option 2: Use a callback (available since version 1.3.3 of the SDK)
+        PowerSync.watch('SELECT * from lists', [], { onResult: (result) => setLists(result) }, { signal: abortController.signal });
+
+        return () => {
+            abortController.abort();
+        }
+    }, []);
+
+    return (<FlatList
+        data={lists.map(list => ({ key: list.id, ...list }))}
+        renderItem={({ item }) => <Text>{item.name}</Text>}
+    />)
+}
+```
+
+### Mutations (PowerSync.execute)
+
+The [execute](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#execute) method can be used for executing single SQLite write statements.
+
+```js
+
+// ListsWidget.jsx
+import { Alert, Button, FlatList, Text, View } from 'react-native';
+
+export const ListsWidget = () => {
+  // Populate lists with one of methods listed above
+  const [lists, setLists] = React.useState([]);
+
+  return (
+    <View>
+      <FlatList
+        data={lists.map(list => ({key: list.id, ...list}))}
+        renderItem={({item}) => (<View>
+          <Text>{item.name}</Text>
+           <Button
+              title="Delete"
+              onPress={async () => {
+                  try {
+                    await PowerSync.execute(`DELETE FROM lists WHERE id = ?`, [item.id])
+                    // Watched queries should automatically reload after mutation
+                  } catch (ex) {
+                    Alert('Error', ex.message)
+                  }
+                }}
+            />
+        </View>)}
+      />
+      <Button
+        title="Create List"
+        color="#841584"
+        onPress={async () => {
+            try {
+              await PowerSync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
+                'A list name',
+                "[The user's uuid]"
+              ])
+              // Watched queries should automatically reload after mutation
+            } catch (ex) {
+              Alert.alert('Error', ex.message)
+            }
+          }}
+      />
+    </View>
+    )
+}
+```
+## Additional Usage Examples
+
+See [Usage Examples](/client-sdk-references/react-native-and-expo/usage-examples) for further examples of the SDK.
+
+## Developer Notes
+
+### Connecting via WebSockets or HTTP Streams
+
+This SDK connects to a PowerSync instance and streams sync commands via WebSockets (enabled by default since @powersync/react-native@1.11.0) or HTTP streams.
+
+The WebSocket implementation (available since version 1.4.6 of the SDK) uses reactive socket streams using the cross-platform [RSocket](https://github.com/powersync-ja/powersync-js/pull/rsocket.io) library. This allows the client to request commands from the server after processing existing events, alleviating any back-pressure build-up of commands. Sync commands are transmitted as BSON (binary) documents.
+
+#### Benefits of using the WebSocket Method
+
+* BLOB column support will be added on top of the WebSocket implementation (the HTTP streaming method will not support this).
+* If you are using Expo \<v51, then you no longer need to disable the [Flipper debug tools](/client-sdk-references/react-native-and-expo#android-flipper-network-plugin-for-http-streams) (this is required for HTTP streaming to work in debug Android builds).
+* In internal testing, the WebSocket method was slightly faster than the HTTP streaming method on React Native.
+
+#### Selecting Connection Method
+
+The `PowerSyncDatabase` client's `connect` method supports a `connectionMethod` option. This is not required, as the WebSocket method is used by default.
+
+```js
+// For WebSocket
+powerSync.connect(connector)
+
+// For HTTP Stream
+powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP });
+```
+
+### Android: Flipper network plugin for HTTP Streams
+
+If you are connecting to PowerSync using HTTP Streams (which is currently the default), you require additional configuration on Android. React Native does not support streams out of the box, so we use the [polyfills mentioned](/client-sdk-references/react-native-and-expo#installation). There is currently an open [issue](https://github.com/facebook/flipper/issues/2495) where the Flipper network plugin does not allow Stream events to fire. This plugin needs to be [disabled](https://stackoverflow.com/questions/69235694/react-native-cant-connect-to-sse-in-android/69235695#69235695) in order for HTTP streams to work.
+
+**If you are using Java (Expo < 50):**
+
+Uncomment the following from `android/app/src/debug/java/com/<ProjectName>/ReactNativeFlipper.java`
+
+```js
+// NetworkFlipperPlugin networkFlipperPlugin = new NetworkFlipperPlugin();
+// NetworkingModule.setCustomClientBuilder(
+//     new NetworkingModule.CustomClientBuilder() {
+//       @Override
+//       public void apply(OkHttpClient.Builder builder) {
+//         builder.addNetworkInterceptor(new FlipperOkhttpInterceptor(networkFlipperPlugin));
+//       }
+//     });
+// client.addPlugin(networkFlipperPlugin);
+```
+
+Disable the dev client network inspector `android/gradle.properties`
+
+```bash
+# Enable network inspector
+EX_DEV_CLIENT_NETWORK_INSPECTOR=false
+```
+
+**If you are using Kotlin (Expo > 50):**
+
+Comment out the following from `onCreate` in `android/app/src/main/java/com/<ProjectName>/example/MainApplication.kt`
+
+```js
+// if (BuildConfig.DEBUG) {
+//   ReactNativeFlipper.initializeFlipper(this, reactNativeHost.reactInstanceManager)
+// }
+```
+
+### iOS: use\_frameworks and react-native-quick-sqlite
+
+Using `use_frameworks` (for example, because you are using Google Analytics) will silently break the compilation process of [react-native-quick-sqlite](https://github.com/powersync-ja/react-native-quick-sqlite) on iOS and results in the PowerSync SQLite extension not loading correctly. To solve this, add this to your Podfile:
+
+```bash
+pre_install do |installer|
+    installer.pod_targets.each do |pod|
+      next unless pod.name.eql?('react-native-quick-sqlite')
+
+      def pod.build_type
+        Pod::BuildType.static_library
+      end
+    end
+end
+```
+
+### Development on iOS simulator
+
+Testing offline mode on an iOS simulator by disabling the host machine's entire internet connection will cause the device to remain offline even after the internet connection has been restored. This issue seems to affect all network requests in an application.
+
+## ORM Support
+
+See [JavaScript ORM Support](/client-sdk-references/react-native-and-expo/javascript-orm-support) for details.
+
+## Source Code
+
+To access the source code for this SDK, refer to [packages/react-native](https://github.com/powersync-ja/powersync-js/tree/main/packages/react-native) in the [powersync-js](https://github.com/powersync-ja/powersync-js) repo on GitHub.
+
+## Troubleshooting
+
+See [Troubleshooting](/resources/troubleshooting) for pointers to debug common issues.

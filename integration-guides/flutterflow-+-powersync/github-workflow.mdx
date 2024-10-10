@@ -1,0 +1,171 @@
+---
+title: "GitHub Workflow"
+description: "Advanced workflow for users requiring more control."
+---
+
+<Note>
+  This is our old guide and your mileage may vary. It is recommended to use the updated [Custom Actions workflow.](/integration-guides/flutterflow-+-powersync)
+</Note>
+
+<Info>
+  Before you begin, it's important that you (or someone on your team) are comfortable with FlutterFlow's workflow for managing custom code in GitHub as documented [here](https://docs.flutterflow.io/customizing-your-app/manage-custom-code-in-github). Using PowerSync with FlutterFlow currently requires dropping down into Dart code and merging code changes using git.
+</Info>
+
+<Check>
+Skills needed to use this guide:
+
+* FlutterFlow
+* GitHub
+* Dart & Flutter
+* SQL
+</Check>
+
+Used in conjunction with **FlutterFlow**, PowerSync enables developers to build offline-first apps that are robust in poor network conditions and that have highly responsive frontends while relying on Supabase for their backend. This guide provides instructions for how to configure PowerSync for use with your FlutterFlow project that has Supabase integration enabled.
+
+<Check>
+  This guide takes just over 1 hour to complete. The bulk of that time is the initial FlutterFlow tutorial.
+</Check>
+
+<Info>
+  Before you proceed, this guide assumes that you have already signed up for free accounts with both Supabase and PowerSync. If you haven't signed up for a **PowerSync** account yet, [click here](https://accounts.journeyapps.com/portal/get-started?powersync=true) (and if you haven't signed up for Supabase yet, [click here](https://supabase.com/dashboard/sign-up)). This guide also assumes that you already have **Flutter** set up.
+</Info>
+
+## Guide Overview
+
+1. Create your FlutterFlow project, integrated with Supabase
+2. Connect your project to GitHub
+3. Set up the PowerSync Service
+4. Add PowerSync to Your Flutter Project
+5. Lifecycle / Maintenance Considerations
+
+## Create Your FlutterFlow Project
+
+This guide assumes you are starting off by following FlutterFlow's tutorial '[Build a Notes App With FlutterFlow and Supabase](https://docs.flutterflow.io/guides/build-a-notes-app-with-flutterflow-and-supabase)'. Some small changes are required to this tutorial to bring it up to date with the latest Supabase, and to make adding PowerSync simpler:
+
+1. Create your `notes` table using the `UUID` type for your `id` column instead of `int` . It's [simpler to work with UUID](/usage/sync-rules/client-id) based primary key columns in PowerSync.
+2. Disable [Row Level Security (RLS)](https://supabase.com/docs/guides/database/postgres/row-level-security) in [Step 3 - Creating the notes table](https://docs.flutterflow.io/guides/build-a-notes-app-with-flutterflow-and-supabase#3.-creating-the-notes-table). Since the FlutterFlow tutorial was published, RLS is now mandatory for new tables created in Supabase. This is for development purposes only — it's important to use RLS in production.
+3. Enable insert permissions for the Storage object in [Step 4 - Creating a Storage Bucket](https://docs.flutterflow.io/guides/build-a-notes-app-with-flutterflow-and-supabase#4.-creating-a-storage-bucket-in-supabase-for-storing-images). Without this, users won't be able to upload images.
+<Frame>
+  <img src="/images/integration-70.avif"/>
+</Frame>
+This can be found under Dashboard -> Storage -> Policies. This policy is a template provided by Supabase.
+4. In [Step 10 - Displaying Data in the UI](https://docs.flutterflow.io/guides/build-a-notes-app-with-flutterflow-and-supabase#step-10), pass the `id` column as a parameter instead of the entire row
+
+## Connect Your Project to GitHub
+
+1. Follow FlutterFlow's instructions published here: [Manage Custom Code In GitHub](https://docs.flutterflow.io/customizing-your-app/manage-custom-code-in-github#9.-deploy-from-the-main-branch)
+2. It's a good idea to make sure you can launch your app using `flutter run` at this point.
+
+## Set Up the PowerSync Service
+
+1. In your Supabase project's SQL console, run the following:
+
+```bash
+CREATE PUBLICATION powersync FOR TABLE notes;
+```
+
+1. Connect PowerSync to your Supabase environment, as detailed in our [Supabase Guide](/integration-guides/supabase-+-powersync#connect-powersync-to-your-supabase).
+2. Deploy the below Sync Rules:
+
+```bash
+# Sync-rule docs: https://docs.powersync.com/usage/sync-rules
+bucket_definitions:
+  global:
+    data:
+      # Sync all rows
+      - SELECT * FROM notes
+```
+
+## PowerSync Flutter Integration
+
+At a high level, the steps required in your Flutter code are as follows:
+
+1. Install the PowerSync Dart package
+2. Import helper functions
+3. Define your app schema
+4. Smoke test
+5. Define your models
+6. Connect your UI
+
+All of the work in this section will be performed on the `develop` branch that you should have set up at this point.
+
+### Install PowerSync
+
+1. Add the [powersync](https://pub.dev/packages/powersync) Dart package to your `pubspec.yaml` file: `powersync: ^0.4.1`
+   1. It's also useful having a decent Logging framework in your app, so we also recommend adding `logging: ^1.1.1`
+2. Run `flutter pub get` and iteratively resolve any dependency issues, for example updating `flutter_cache_manager: 3.3.0` to `flutter_cache_manager: ^3.3.0`
+   1. See [this commit](https://github.com/powersync-ja/powersync-flutterflow-notes-demo/commit/3e5864b9eb41f11600c3a7d595822d50ec2074a1#diff-8b7e9df87668ffa6a04b32e1769a33434999e54ae081c52e5d943c541d4c0d25) to see exactly which dependencies we had to resolve.
+
+<Info>
+  Note: The FlutterFlow team are always updating their platform, so the exact dependencies that you will need to update may differ.
+</Info>
+
+### Import Helper Functions
+
+1. Create a new file`lib/powersync/powersync.dart` and copy the contents of this file:
+
+[https://github.com/powersync-ja/powersync-flutterflow-notes-demo/blob/powersync/lib/powersync/powersync.dart](https://github.com/powersync-ja/powersync-flutterflow-notes-demo/blob/powersync/lib/powersync/powersync.dart)
+
+1. Replace the default value of `powersyncUrl` on line 12 with the value of your PowerSync Service Instance — you can obtain this by opening your Instance properties and copying the value of "Instance URL":
+<Frame>
+  <img src="/images/integration-71.avif"/>
+</Frame>
+2. Make the following changes in `lib/main.dart` :
+   1. Add the following imports:`import 'package:flutter/foundation.dart';` `import './powersync/powersync.dart';`
+   `import 'package:logging/logging.dart';`
+   2. Add the below snippet and test query immediately before `runApp(MyApp())`:
+
+```js
+  await openDatabase();
+
+  waitForInitialSync();
+
+  try {
+    final test_query = await db.execute('SELECT * from notes');
+    log.info('test_query results = $test_query');
+  } on Exception catch (e) {
+    log.info('error querying notes table: $e');
+  }
+```
+
+### Define App Schema
+
+Import the following file into your project, it should be located in `lib/powersync/models.schema.dart`:
+
+### Smoke Test
+
+At this point, you can launch your app using `flutter run` and you should see some 'notes' rows from your Supabase being printed out on the console! Something like this:
+
+```js
+I/flutter (27958): [powersync-supabase] INFO: 2023-10-23 14:23:59.408889: test_query results = [{id: 4aeaabcd-4143-438d-a49b-903e051ec4bc, id:1: 4aeaabcd-4143-438d-a49b-903e051ec4bc, created_at: 2023-10-23 13:26:34.436Z, title: first note, note: success!, image_link: https://xyz.supabase.co/storage/v1/object/public/notes/users/uploads/1698089188788000.png}, {id: 56e99a0f-3e47-4d12-8fbe-5cb2b45da8ec, id:1: 56e99a0f-3e47-4d12-8fbe-5cb2b45da8ec, created_at: 2023-10-23 13:27:51.015Z, title: second note, note: workes :) , image_link: https://xyz.supabase.co/storage/v1/object/public/notes/users/uploads/1698089268369000.png}]
+```
+
+### Define Your Models
+
+FlutterFlow generates some models in `backend/supabase/database/tables` — we complement these by implementing our own offline-first models with static access methods.
+
+Import the following 'notes' model into your project:
+
+[https://github.com/powersync-ja/powersync-flutterflow-notes-demo/blob/powersync/lib/powersync/models/notes.dart](https://github.com/powersync-ja/powersync-flutterflow-notes-demo/blob/powersync/lib/powersync/models/notes.dart)
+
+### Connect Your UI
+
+Generally speaking, you'll want to replace any Supabase calls in your UI to use the newly implemented methods from the appropriate models defined in the previous step.
+
+In this app, we need to update three pages: `home_list_page`, `note_display_page` and `create_note_page`. It's recommended to do these one at a time.
+
+#### Notes Display Page
+
+Copy the changes from [this commit](https://github.com/powersync-ja/powersync-flutterflow-notes-demo/commit/ca4636e687843b6709aff77d1f630508b1247a9e) into your notes display page.
+
+<Check>
+  This is a big milestone. At this point, force-quit your app, place your test device into airplane mode and relaunch your app. You should see your notes page being populated — all from your local SQLite database
+</Check>
+
+Run your app and verify whether you can launch and see your notes list without connectivity (i.e. in offline mode).
+
+Then repeat the steps for the note display and create note pages ([link to commit](https://github.com/powersync-ja/powersync-flutterflow-notes-demo/commit/86d0c3827679b5b2357a420d49ccca2c543360b7)).
+
+## Additional Resources
+
+For more information, explore [the PowerSync docs](/overview/readme-1) or join us on [our community Discord](https://discord.gg/powersync) where our team is always available to answer questions.

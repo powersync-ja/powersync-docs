@@ -1,0 +1,116 @@
+---
+title: "Handling Attachments"
+description: "Examples of syncing attachments between a client app and Supabase Storage."
+---
+
+## <Icon icon="react"iconType="solid" size="24"/> React Native Example
+
+Our React Native [To-Do List example app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) showcases how to sync attachments (such as photos) using the [@powersync/attachments](https://www.npmjs.com/package/@powersync/attachments) library, the PowerSync Service, and Supabase.
+
+In this example, we are syncing photos, however other media types, such as PDFs, are also supported.
+
+The library and this example implementation can be used as a reference for implementing similar functionality for a Postgres backend without Supabase.
+
+<Info>
+   The below assumes you have completed the steps outlined in the [To-Do List app Readme](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist). This includes installing and running the PowerSync React Native SDK; setting up a Supabase project; setting up a PowerSync instance and connecting it with Supabase.
+</Info>
+
+### Configure Storage in Supabase
+
+In this example app, [Supabase Storage](https://supabase.com/docs/guides/storage) is used to store and serve attachments. To configure this for your app, navigate to the **Storage** section of your Supabase project and create a new bucket:
+
+<Frame>
+  <img src="/images/integration-9.png"/>
+</Frame>
+
+Give the storage bucket a name, such as **media**, and hit _Save:_
+
+<Frame>
+  <img src="/images/integration-10.png"/>
+</Frame>
+
+Next, link this storage bucket to your app by opening up the **AppConfig.ts** file and adding the bucket name as the value to the `supabaseBucket` key:
+
+<Frame>
+  <img src="/images/integration-11.png"/>
+</Frame>
+
+Lastly, configure a policy for this bucket. In this example app, we will allow all user operations on the media bucket.
+
+Create a new policy for the **media** bucket:
+
+<Frame>
+  <img src="/images/integration-12.avif"/>
+</Frame>
+
+<Frame>
+  <img src="/images/integration-13.png"/>
+</Frame>
+
+Give the new policy a name, and allow SELECT, INSERT, UPDATE, and DELETE.
+
+<Frame>
+  <img src="/images/integration-14.webp"/>
+</Frame>
+Proceed to review and save the policy.
+
+This concludes the necessary configuration for handling attachments in the To-Do List example app. When running the app now, a photo can be taken for a to-do list item, and PowerSync will ensure that the photo syncs to Supabase and other devices (if sync rules allow).
+
+<Frame>
+  <img src="/images/integration-15.avif"/>
+</Frame>
+
+<Frame>
+  <img src="/images/integration-16.webp"/>
+</Frame>
+
+Read on to learn more about how this works under the hood.
+
+### Implementation Details
+
+The [@powersync/attachments](https://www.npmjs.com/package/@powersync/attachments) library is used in conjunction with the PowerSync Service to sync photos. Refer to the library's [README](https://www.npmjs.com/package/@powersync/attachments) for an overview of the main components. In summary, they are:
+
+* `AttachmentRecord` to store the metadata of attachments.
+* `AttachmentState` to track the sync state of an `AttachmentRecord`.
+* `AbstractAttachmentQueue` class to manage and sync `AttachmentRecord`s:
+   * Track and sync attachment metadata.
+   * Watch for changes and handle CRUD operations on `AttachmentRecord`s.
+   * Store attachment data on the user's local storage, using file URIs on the device.
+
+The UI of the example app supports taking photos as follows:
+
+* [CameraWidget](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/widgets/CameraWidget.tsx) uses `expo-camera` to allow users to capture a photo.
+* The photo is stored on the user's local storage.
+   * See the [savePhoto()](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/PhotoAttachmentQueue.ts) method.
+* The app includes a basic prompt for the user to grant permission to use the device's camera.
+
+The [app's schema](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/AppSchema.ts) was modified to link a photo to a to-do item:
+
+* A `photo_id` was added as a column to the `todos` table to link a photo to a to-do item.
+* A local-only `attachments` table is instantiated to store the metadata of photos.
+   * See [new AttachmentTable()](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/AppSchema.ts)
+
+The [PhotoAttachmentQueue](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/PhotoAttachmentQueue.ts) class extends the `AbstractAttachmentQueue` abstract class and:
+
+* Uses a PowerSync query to gather the relevant photo IDs (see `attachmentIds()`)
+* Creates `AttachmentRecord`s to store photo metadata. (see `newAttachmentRecord()`)
+* Uses the `savePhoto()` method to save photos into local storage and add them to the sync queue.
+
+#### How Syncing Works
+
+Refer to [this section](https://www.npmjs.com/package/@powersync/attachments#syncing-attachments) in the library's README to learn more about the various sync states and operations.
+
+### Future Improvements
+
+The following improvements can be considered for this implementation.
+
+* An easier way to set up the local-only `attachments` table and related schema.
+* Better tooling/APIs for retrying/resuming uploads or downloads when transitioning from an offline into an online state.
+
+## <Icon icon="flutter"iconType="solid" size="24"/> Flutter Example
+
+Our Flutter [To-Do List example app](https://github.com/powersync-ja/powersync.dart/tree/master/demos/supabase-todolist) showcases how to sync attachments (such as photos) using our [powersync\_attachments\_helper](https://pub.dev/packages/powersync%5Fattachments%5Fhelper) package for Flutter.
+
+## See Also
+
+* [Attachments / Files](/usage/use-case-examples/attachments-files)

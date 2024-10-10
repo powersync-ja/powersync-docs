@@ -1,0 +1,208 @@
+---
+title: "PowerSync Service Setup"
+description: "Configuration details for connecting the PowerSync Service to your database"
+---
+
+After configuring your Postgres database for PowerSync, you'll setup your [PowerSync Service](/architecture/powersync-service).
+
+This entails:
+
+1. Configuring MongoDB (if required)
+2. Defining your PowerSync config
+   1. Defining connections to Postgres and MongoDB
+   2. Defining your [Sync Rules](/usage/sync-rules)
+   3. Defining your auth method
+
+Examples of the above can be found in our demo application [here](https://github.com/powersync-ja/self-host-demo/tree/main/config). Below we go through these in more detail.
+
+## Configure MongoDB
+
+The PowerSync Service uses [MongoDB](https://www.mongodb.com/) under the hood and requires at least one replica set node. A single node is fine for development/staging environments, but a 3-node replicas set is recommended [for production](/self-hosting/lifecycle-maintenance/server-specs).
+
+[MongoDB Atlas](https://www.mongodb.com/products/platform/atlas-database) enables replica sets by default for new clusters.
+
+However, if you're using your own environment you can enable this manually by running:
+
+```bash
+$ mongosh "mongodb+srv://powersync.abcdef.mongodb.net/" --apiVersion 1 --username myuser --eval 'try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'
+```
+
+If you are rolling your own Docker environment, you can include this init script in your docker-compose file to configure a replica set as once-off operation:
+```bash
+  # Initializes the MongoDB replica set. This service will not usually be actively running
+  mongo-rs-init:
+    image: mongo:7.0
+    depends_on:
+      - mongo
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - 'sleep 10 && mongosh --host mongo:27017 --eval ''try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'''
+```
+
+## PowerSync Configuration
+
+The PowerSync Service is configured using key/value pairs in a config file, and supports the following configuration methods:
+
+1. Inject config as an environment variable (which contains the base64 encoding of a config file)
+2. Use a config file mounted on a volume
+3. Specify the config as a command line parameter (again base64 encoded)
+
+Both YAML and JSON config files are supported, and you can see examples of the above configuration methods in our demo app's [docker-compose](https://github.com/powersync-ja/self-host-demo/blob/d61cea4f1e0cc860599e897909f11fb54420c3e6/docker-compose.yaml#L46) file.
+
+A detailed `config.yaml` example with additional comments can be found here:
+<Card
+  title="self-host-demo/config/powersync.yaml at main · powersync-ja/self-host-demoGitHub"
+  icon="github"
+  href="https://github.com/powersync-ja/self-host-demo/blob/main/config/powersync.yaml"
+  horizontal
+/>
+
+The config file schema is also available here:
+<Card
+  title="self-host-demo/schema/schema.json at main · powersync-ja/self-host-demoGitHub"
+  icon="github"
+  href="https://github.com/powersync-ja/self-host-demo/blob/main/schema/schema.json"
+  horizontal
+/>
+
+Below is a skeleton config file that you can copy/paste and edit locally:
+
+```bash
+# config.yaml
+
+# Settings for source database replication
+replication:
+  # Specify database connection details
+  # Note only 1 connection is currently supported
+  # Multiple connection support is on the roadmap
+  connections:
+    - type: postgresql
+      # The PowerSync server container can access the Postgres DB via the DB's service name.
+      # In this case the hostname is pg-db
+
+      # The connection URI or individual parameters can be specified.
+      uri: postgresql://postgres:mypassword@pg-db:5432/postgres
+
+      # SSL settings
+      sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
+      # 'disable' is OK for local/private networks, not for public networks
+
+# Connection settings for sync bucket storage
+storage:
+  type: mongodb
+  uri: mongodb://mongo:27017/powersync_demo
+  # use these if authentication is required
+  # username: myuser
+  # password: mypassword
+
+# The port which the PowerSync API server will listen on
+port: 80
+
+# Specify sync rules
+sync_rules:
+  content: |
+    bucket_definitions:
+      global:
+        data:
+          - SELECT * FROM lists
+          - SELECT * FROM todos
+
+# Settings for client authentication
+client_auth:
+  # Enable this if using Supabase Auth
+  # supabase: true
+
+  # JWKS URIs can be specified here.
+  jwks_uri: http://demo-backend:6060/api/auth/keys
+
+  # JWKS audience
+  audience: ['powersync-dev', 'powersync']
+
+  # Settings for telemetry reporting
+  # See https://docs.powersync.com/self-hosting/telemetry
+  telemetry:
+    # Opt out of reporting anonymized usage metrics to PowerSync telemetry service
+    disable_telemetry_sharing: false
+
+```
+
+Specify the connection to Postgres in the `replication` section. Retrieving your database connection string / individual parameters differs by database hosting provider. See [Database Connection](/self-hosting/appendix/database-connection) for further details.
+
+<Info>
+If you are using hosted Supabase, you will need to enable IPv6 for Docker as per [https://docs.docker.com/config/daemon/ipv6/](https://docs.docker.com/config/daemon/ipv6/)
+
+If your host OS does not support Docker IPv6 e.g. macOS, you will need to run Supabase locally.
+
+This is because Supabase only allows direct database connections over IPv6 — PowerSync cannot connect using the connection pooler.
+</Info>
+
+Specify the connection to MongoDB in the `storage` section.
+
+### Environment Variables
+
+The config file uses custom tags for environment variable substitution.
+
+Using `!env [variable name]` will substitute the value of the environment variable named `[variable name]`.
+
+Only environment variables with names starting with `PS_` can be substituted.
+
+See examples here:
+<Card
+  title="self-host-demo/config/powersync.yaml at main · powersync-ja/self-host-demoGitHub"
+  icon="github"
+  href="https://github.com/powersync-ja/self-host-demo/blob/main/config/powersync.yaml"
+  horizontal
+/>
+
+### Sync Rules
+
+Your project's [sync rules](/self-hosting/installation/powersync-service-setup#sync-rules) can either be specified within your configuration file directly, or in a separate file that is referenced.
+
+```bash
+# config.yaml
+
+# Define sync rules:
+sync_rules:
+  content: |
+    bucket_definitions:
+      global:
+        data:
+          - SELECT * FROM lists
+          - SELECT * FROM todos
+
+# Alternatively, reference a sync rules file
+# sync_rules:
+  # path: sync_rules.yaml
+```
+
+We recommend starting with syncing a single table in a [global bucket](/usage/sync-rules/example-global-data). Choose a table and sync it by adding the following to your sync rules:
+
+```bash
+sync_rules:
+  content: |
+    bucket_definitions:
+      global:
+        data:
+          # Sync all mytable
+          - SELECT * FROM mytable
+```
+
+For more information about sync rules see:
+
+[Sync Rules](/usage/sync-rules)
+
+<Info>
+**Checkpoint**
+
+To verify that your sync rules are functioning correctly, inspect the contents of your sync bucket in MongoDB.
+
+If you are running MongoDB in Docker, run the following:
+
+```bash
+docker exec -it {MongoDB container name} mongosh "mongodb://{MongoDB service host}/{MongoDB database name}" --eval "db.bucket_data.find().pretty()"
+# Example
+docker exec -it self-host-demo-mongo-1 mongosh "mongodb://localhost:27017/powersync_demo" --eval "db.bucket_data.find().pretty()"
+```
+</Info>

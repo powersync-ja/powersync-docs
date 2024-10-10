@@ -1,0 +1,195 @@
+---
+title: "Custom Types, Arrays and JSON"
+description: PowerSync is fully compatible with more advanced Postgres types. Below you can find information on how to use them.
+---
+
+## Custom Types
+
+PowerSync treats custom type columns as text.
+
+### Postgres
+
+Postgres allows developers to create custom data types for columns. Example of creating a custom type:
+
+```js
+create type location_address AS (
+    street text,
+    city text,
+    state text,
+    zip numeric
+);
+```
+
+### Sync Rules
+
+Custom type columns are converted to Text by the PowerSync Service. A column of type `location_address`, as defined above, would be synced to clients as the following string:
+
+`("1000 S Colorado Blvd.",Denver,CO,80211)`
+
+It is not currently possible to extract fields from custom types in sync rules, so the entire column must be synced as text.
+
+### Client SDK
+
+**Schema**
+
+Add your custom type column as a `text()` column in your client-side schema definition:
+
+```bash
+Column.text('location')
+```
+
+**Writing Changes**
+
+Write the entire updated column value using a string:
+
+```js
+await db.execute('UPDATE todos set location = ? WHERE id = ?', [
+
+  '("1234 Update Street",Denver,CO,80212)',
+
+  'faffcf7a-75f9-40b9-8c5d-67097c6b1c3b'
+
+]);
+```
+
+## Arrays
+
+PowerSync treats array columns as JSON text. This means that the SQLite JSON operators can be used on any Array columns.
+
+Additionally, some helper methods such as array membership are available in Sync Rules.
+
+**Note:** Native Postgres arrays, JSON arrays and JSONB arrays are effectively all equivalent in PowerSync.
+
+### Postgres
+
+Array columns are defined in Postgres using the following syntax:
+
+```bash
+ALTER TABLE todos
+
+ADD COLUMN unique_identifiers text[];
+```
+
+### Sync Rules
+
+Array columns are converted to text by the PowerSync Service. A text array as defined above would be synced to clients as the following string:
+
+`["00000000-0000-0000-0000-000000000000", "12345678-1234-1234-1234-123456789012"]`
+
+**Array Membership**
+
+It's possible to sync rows dynamically based on the contents of array columns using the `IN` operator. For example:
+
+```bash
+bucket_definitions:
+  custom_todos:
+    # Separate bucket per todo list
+    parameters: SELECT id AS list_id FROM lists WHERE owner_id = request.user_id()
+    data:
+      - SELECT * FROM todos WHERE bucket.list_id IN unique_identifiers
+```
+
+<Info>
+See these additional details when using the `IN` operator:
+
+[Operators](/usage/sync-rules/operators-and-functions#operators)
+</Info>
+
+### Client SDK
+
+**Schema**
+
+Add your array column as a `text()` column in your client-side schema definition:
+
+```bash
+Column.text('unique_identifiers')
+```
+
+**Writing Changes**
+
+Write the entire updated column value using a string:
+
+```js
+await db.execute('UPDATE todos set unique_identifiers = ? WHERE id = ?', [
+  '["DEADBEEF-DEAD-BEEF-DEAD-BEEFDEADBEEF", "ABCDEFAB-ABCD-ABCD-ABCD-ABCDEFABCDEF"]',
+  '00000000-0000-0000-0000-000000000000'
+]);
+```
+
+<Info>
+  Attention Supabase users: Supabase is able to handle writes with arrays, but you'll have to do the conversion from string to array using `jsonDecode` in the connector's `uploadData` function. The default implementation of the`uploadData` function doesn't handle the more complex ones like arrays automatically
+</Info>
+
+## JSON and JSONB
+
+The PowerSync Service treats JSON and JSONB columns as text and provides many helpers for working with JSON in Sync Rules.
+
+**Note:** Native Postgres arrays, JSON arrays and JSONB arrays are effectively all equivalent in PowerSync.
+
+### Postgres
+
+JSON columns are represented as:
+
+```bash
+ALTER TABLE todos
+ADD COLUMN custom_payload json;
+```
+
+### Sync Rules
+
+PowerSync treats JSON columns as text and provides transformation functions in Sync Rules such as `json_extract()`.
+
+```bash
+bucket_definitions:
+  my_json_todos:
+    # Separate bucket per todo list
+    parameters: SELECT id AS list_id FROM lists WHERE owner_id = request.user_id()
+    data:
+      - SELECT * FROM todos WHERE json_extract(custom_payload, '$.json_list') = bucket.list_id
+```
+
+### Client SDK
+
+**Schema**
+
+Add your JSON column as a `text()` column in your client-side schema definition:
+
+```bash
+Column.text('custom_payload')
+```
+
+**Writing Changes**
+
+The default implementation of `uploadData` in our Supabase Flutter [To-Do List Demo App](https://github.com/powersync-ja/powersync.dart/tree/master/demos/supabase-todolist) doesn't handle more complex types such as JSON objects automatically. Below is some example Dart code for writing JSON updates back to Supabase:
+
+
+```js
+import 'dart:convert';
+
+if (op.op == UpdateType.put) {
+  var data = Map<String, dynamic>.of(op.opData!);
+  ​​if (op.table == 'mytable' && data['myfield'] != null) {
+    data['myfield'] = jsonDecode(data['myfield']);
+  ​​}
+  data['id'] = op.id;
+  await table.upsert(data);
+}
+else if (op.op == UpdateType.patch) {
+//etc
+```
+
+## Bonus: Mashup
+
+What if we had a column defined as an array of custom types, where a field in the custom type was JSON? Consider the below Postgres schema:
+
+```bash
+-- define custom type
+CREATE TYPE extended_location AS (
+    address_label text,
+    json_address json
+);
+
+-- add column
+ALTER TABLE todos
+ADD COLUMN custom_locations extended_location[];
+```

@@ -1,0 +1,40 @@
+---
+title: "PowerSync Service"
+description: "Each PowerSync instance runs a copy of the PowerSync Service. The primary purpose of this service is to stream changes to clients."
+---
+
+This service has the following components:
+
+## Replication
+
+The service continuously replicates data from the source database, then:
+
+1. Pre-processes the data according to the [sync rules](/usage/sync-rules) (both data queries and parameter queries), splitting data into [sync buckets](/usage/sync-rules/organize-data-into-buckets) and transforming the data if required.
+2. Persists each operation into the relevant sync buckets, ready to be streamed to clients.
+
+The recent history of operations to each row is stored, not only the current version. This supports the "append-only" structure of sync buckets, which allows clients to efficiently stream changes while maintaining data integrity. Sync buckets can be compacted to avoid an ever-growing history.
+
+Replication is initially performed by taking a snapshot of all tables defined in the sync rules, then data is incrementally replicated using [logical replication](https://www.postgresql.org/docs/current/logical-replication.html). When sync rules are updated, this process restarts with a new snapshot.
+
+## Authentication
+
+The service authenticates users using [JWTs](/usage/installation/authentication-setup), before allowing access to data.
+
+## Streaming Sync
+
+Once a user is authenticated:
+
+1. The service calculates a list of buckets for the user to sync using [parameter queries](/usage/sync-rules/parameter-queries).
+2. The service streams any operations added to those buckets since the last time the user connected.
+
+The service then continuously monitors for buckets that are added or removed, as well as for new operations within those buckets, and streams those changes.
+
+Only the internal (replicated) storage of the PowerSync Service is used — the source database is not queried directly during streaming.
+
+## Source Code
+
+To access the source code for the PowerSync Service, refer to the [powersync-service](https://github.com/powersync-ja/powersync-service) repo on GitHub.
+
+## See Also
+
+* [PowerSync Overview](/overview/readme-1)

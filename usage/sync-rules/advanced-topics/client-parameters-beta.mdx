@@ -1,0 +1,132 @@
+---
+title: "Client Parameters (Beta)"
+description: "Pass parameters from the client directly for use in Sync Rules."
+---
+
+<Info>
+This feature is currently in a beta release and available for our [Flutter](/client-sdk-references/flutter) and JavaScript SDKs ([React Native](/client-sdk-references/react-native-and-expo) and [Web](/client-sdk-references/js-web)).
+
+Support for passing client parameters from our Kotlin Multiplatform and Swift SDKs will follow soon.
+
+</Info>
+
+<Warning>
+  Use client parameters with caution. Please make sure to read the [Security consideration](/usage/sync-rules/advanced-topics/client-parameters-beta#security-consideration) section below.
+</Warning>
+
+Client parameters are parameters that are passed to the PowerSync Service instance from the client SDK, and can be used in Sync Rules' [parameter queries](/usage/sync-rules/parameter-queries) to further filter data.
+
+PowerSync already supports using **token parameters** in parameter queries. An example of a token parameter is a user ID, and this is commonly used to filter synced data by the user. These parameters are embedded in the JWT [authentication token](/usage/installation/authentication-setup/custom), and therefore can be considered trusted and can be used for access control purposes.
+
+**Client parameters** are specified directly by the client (i.e. not through the JWT authentication token). The advantage of client parameters is that they give client-side control over what data to sync, and can therefore be used to further filter or limit synced data. A common use case is [lazy-loading](/usage/use-case-examples/infinite-scrolling#id-2-control-data-sync-using-client-parameters), where data is split into pages and a client parameter can be used to specify which page(s) to sync to a user, and this can update dynamically as the user paginates (or reaches the end of an infinite-scrolling feed).
+
+### Usage
+
+Client parameters are defined when [instantiating the PowerSync database](/usage/installation/client-side-setup/instantiate-powersync-database), within the options of PowerSync's `connect()` method:
+
+```js
+const connector = new DemoConnector();
+const powerSync = db;
+
+function connectPowerSync() {
+  powerSync.connect(connector, {
+    params: { "current_page": <page> }  // Specify client parameters here
+  });
+}
+```
+
+The parameter is then available in [Sync Rules](/usage/sync-rules) under `request.parameters` (alongside the already supported `request.user_id`).
+
+In this example, only 'posts' from the user's current page are synced:
+
+```yaml
+# sync-rules.yaml
+
+bucket_definitions:
+  shared_posts:
+    parameters: SELECT (request.parameters() ->> 'current_page') as page_number
+    data:
+      - SELECT * FROM posts WHERE page_number = bucket.page_number
+```
+
+### Security consideration
+
+An important consideration with client parameters is that a client can pass any value, and sync data accordingly. Hence, client parameters should always be treated with care, and should not be used for access control purposes. Where permissions are required, use token parameters (`request.jwt()`) instead, or use token parameters in combination with client parameters.
+
+The following examples show **secure** vs. **insecure** ways of using client and token parameters:
+
+#### Secure (using a token parameter only):
+
+```yaml
+# sync-rules.yaml
+
+bucket_definitions:
+  selected_projects:
+    # Sync projects based on org_id from the JWT
+    # Since these parameters are embedded in the JWT (authentication token)
+    # they can be considered trusted
+    parameters: SELECT id as project_id FROM projects WHERE org_id IN request.jwt() ->> 'app_metadata.org_id'
+    data:
+      - ...
+```
+
+#### Insecure (using a client parameter only):
+
+```yaml
+# sync-rules.yaml
+
+bucket_definitions:
+  selected_projects:
+    # Do NOT do this: Sync projects based on a client parameter
+    # request.parameters() are specified by the client directly
+    # Because the client can send any value for these parameters
+    # it's not a good place to do authorization
+    parameters: SELECT id as project_id FROM projects WHERE id in request.parameters() ->> 'selected_projects'
+    data:
+      - ...
+```
+
+#### Secure (using a token parameter combined with a client parameter):
+
+```yaml
+# sync-rules.yaml
+
+bucket_definitions:
+  selected_projects:
+    # Sync projects based on org_id from the JWT, and additionally sync archived projects
+    # only when specifically requested by the client
+    # The JWT is a Supabase specific example with a
+    # custom field set in app_metadata
+    parameters: SELECT id as project_id FROM projects WHERE org_id IN request.jwt() ->> 'app_metadata.org_id' AND archived = true AND request.parameters() ->> 'include_archived'
+    data:
+      - ...
+```
+
+### Warning on potentially dangerous queries
+
+Based on the above security consideration, the [PowerSync Dashboard](/usage/tools/powersync-dashboard) will warn developers when client parameters are being used in sync rules in an insecure way (i.e. where the query does not also include a parameter from `request.jwt()`).
+
+The below sync rules will display the warning:
+
+> Potentially dangerous query based on parameters set by the client. The client can send any value for these parameters so it's not a good place to do authorization.
+
+```yaml
+# sync-rules.yaml
+bucket_definitions:
+  selected_projects:
+    parameters: SELECT request.parameters() ->> 'project_id' as project_id
+    data:
+      - ...
+```
+
+This warning can be disabled by specifying `accept_potentially_dangerous_queries: true` in the bucket definition:
+
+```yaml
+# sync-rules.yaml
+bucket_definitions:
+  selected_projects:
+    accept_potentially_dangerous_queries: true
+    parameters: SELECT request.parameters() ->> 'project_id' as project_id
+    data:
+      - ...
+```

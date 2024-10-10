@@ -1,0 +1,50 @@
+---
+title: "Infinite Scrolling"
+description: "Infinite scrolling is a software design technique that loads content continuously as the user scrolls down the page/screen."
+---
+
+
+
+There are a few ways to accomplish infinite scrolling with PowerSync, either by querying data from the local SQLite database, or by [lazy-loading](https://en.wikipedia.org/wiki/Lazy%5Floading) or lazy-syncing data from your backend.
+
+Here is an overview of the different options with pros and cons:
+
+### 1) Pre-sync all data and query the local database
+
+PowerSync currently [performs well](/resources/performance-and-limits) with syncing up to 100,000 rows per client, with plans to scale to over 1,000,000 rows per client soon.
+
+This means that in many cases, you can sync a sufficient amount of data to let a user keep scrolling a list or feed that basically feels "infinite" to them.
+
+| Pros                                                                                                                                                                                                  | Cons                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| It works offline and is low-latency (data loads quickly from the local database). We don't need to load data from the backend via the network when the user reaches the bottom of the page/feed/list. | There will be cases where this approach won't work because the total volume of data might become too large for the local database, for example:There's a wide range of tables that the user needs to be able to infinite scrollYour app allows the user to apply filters to the displayed data, which results in fewer pages displayed from a large dataset, and therefore limited scrolling. |
+
+### 2) Control data sync using client parameters
+
+PowerSync supports the use of [client parameters](/usage/sync-rules/advanced-topics/client-parameters-beta) which are specified directly by the client (i.e. not only through the [authentication token](/usage/installation/authentication-setup/custom)). The app can dynamically change these parameters on the client-side and they can be accessed in sync rules on the server-side. The developer can use these parameters to limit/control which data is synced, but since they are not trusted (because they are not passed via the JWT authentication token) they should not be used for access control. You should still filter data by e.g. user ID for access control purposes (using [token parameters](/usage/sync-rules/parameter-queries) from the JWT).
+
+Usage example: To lazy-load/lazy-sync data for infinite scrolling, you could split your data into 'pages' and use a client parameter to specify which pages to sync to a user.
+
+| Pros                                                                                                            | Cons                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Does not require updating flags in your backend database. Enables client-side control over what data is synced. | We can only sync additional data when the user is online.There will be latency while the user waits for the additional data to sync. |
+
+### 3) Sync limited data and then load more data from an API
+
+In this scenario we can sync a smaller number of rows to the user initially. And then if the user reaches the end of the page/feed/list, we make an online API call to load additional data from the backend to display to the user.
+
+| Pros                                                                                           | Cons                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| This requires syncing less data to each user, which will result in a faster initial sync time. | We can only load additional data when the user is online.There will be some latency to load the additional data (similar to a cloud-first app making API calls)In your app code, records loaded from the API will have to be treated differently from the records loaded from the local SQLite database. |
+
+### 4) Client-side triggers a server-side function to flag data to sync
+
+You could add a flag to certain records in your backend database which are used by your [Sync Rules](/usage/sync-rules) to determine which records to sync to specific users. Then your app could make an API call which triggers a function that updates the flags on certain records, causing more records to be synced to the user.
+
+| Pros                                                                                           | Cons                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| This requires syncing less data to each user, which will result in a faster initial sync time. | We can only perform the trigger and sync additional data when the user is online.There will be higher latency: Both for the API call to update the flags, and for syncing the additional dataWe do not necessarily recommend going this route: There's higher latency and it's not a particularly elegant architecture. |
+
+## Questions, Comments, Suggestions?
+
+[Let us know on Discord](https://discord.gg/powersync).

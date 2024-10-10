@@ -1,0 +1,70 @@
+---
+title: "PowerSync Protocol"
+description: "This contains a broad overview of the sync protocol used between PowerSync clients and a [PowerSync Service](/architecture/powersync-service) instance."
+---
+
+For details, see the implementation in the various client SDKs.
+
+## Design
+
+The PowerSync protocol is designed to efficiently sync changes to clients, while maintaining [consistency](/architecture/consistency) and integrity of data.
+
+The same process is used to download the initial set of data, bulk download changes after being offline for a while, and incrementally stream changes while connected.
+
+## Concepts
+
+### Buckets
+
+All synced data is grouped into [buckets](/usage/sync-rules/organize-data-into-buckets). A bucket represents a collection of synced rows, synced to any number of users.
+
+[Buckets](/usage/sync-rules/organize-data-into-buckets) is a core concept that allows PowerSync to efficiently scale to thousands of concurrent users, incrementally syncing changes to hundreds of thousands of rows to each.
+
+Each bucket keeps an ordered list of changes to rows within the bucket — generally as "PUT" or "REMOVE" operations.
+
+* PUT is the equivalent of "INSERT OR REPLACE"
+* REMOVE is slightly different from "DELETE": a row is only deleted from the client if it has been removed from _all_ buckets synced to the client.
+
+### Checkpoints
+
+A checkpoint is a sequential id that represents a single point-in-time for consistency purposes. This is further explained in [Consistency](/architecture/consistency).
+
+### Checksums
+
+For any checkpoint, the client and server can compute a per-bucket checksum. This is essentially the sum of checksums of individual operations within the bucket, which each individual checksum being a hash of the operation data.
+
+The checksum helps to ensure that the client has all the correct data. If the bucket data changes on the server, for example because of a manual edit to the underlying bucket storage, the checksums will stop matching, and the client will re-download the entire bucket.
+
+Note: Checksums are not a cryptographically secure method to verify data integrity. Rather, it is designed to detect simple data mismatches, whether due to bugs, manual data modification, or other corruption issues.
+
+### Compacting
+
+To avoid indefinite growth in size of buckets, the history of a bucket can be compacted. Stale updates are replaced with marker entries, which can be merged together, while keeping the same checksums.
+
+## Protocol
+
+A client initiates a sync session using:
+
+1. A JWT token that typically contains the user\_id, and additional parameters (optional).
+2. A list of current buckets and the latest operation id in each.
+
+The server then responds with a stream of:
+
+1. "Checkpoint available": A new checkpoint id, with a checksum for each bucket in the checkpoint.
+2. "Data": New operations for the above checkpoint for each relevant bucket, starting from the last operation id as sent by the client.
+3. "Checkpoint complete": Sent once all data for the checkpoint have been sent.
+
+The server then waits until a new checkpoint is available, then repeats the above sequence.
+
+The stream can be interrupted at any time, at which point the client will initiate a new session, resuming from the last point.
+
+If a checksum validation fails on the client, the client will delete the bucket and start a new sync session.
+
+Data for individual rows are represented using JSON. The protocol itself is schemaless - the client is expected to use their own copy of the schema, and gracefully handle schema differences.
+
+#### Write Checkpoints
+
+Write checkpoints are used to ensure clients have synced their own changes back before applying downloaded data locally.
+
+Creating a write checkpoint is a separate operation, which is performed by the client after all data has been uploaded. It is important that this happens after the data has been written to the Postgres database.
+
+The server then keeps track of the current [LSN](https://www.postgresql.org/docs/current/wal-internals.html) on the database, and notifies the client when the data has been replicated, as part of checkpoint data in the normal data stream.

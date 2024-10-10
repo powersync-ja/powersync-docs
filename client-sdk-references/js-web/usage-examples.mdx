@@ -1,0 +1,270 @@
+---
+title: "Usage Examples"
+description: "Code snippets and guidelines for common scenarios"
+---
+
+## Multiple Tab Support
+
+<Note>
+  Multiple tab support is not currently available on Android or Safari.
+</Note>
+
+Using PowerSync between multiple tabs is supported on some web browsers. Multiple tab support relies on shared web workers for database and sync streaming operations. When enabled, shared web workers named `shared-DB-worker-[dbFileName]` and `shared-sync-[dbFileName]` will be created.
+
+#### `shared-DB-worker-[dbFileName]`
+
+The shared database worker will ensure writes to the database will instantly be available between tabs.
+
+#### `shared-sync-[dbFileName]`
+
+The shared sync worker connects directly to the PowerSync backend instance and applies changes to the database. Note that the shared sync worker will call the `fetchCredentials` and `uploadData` method of the latest opened available tab. Closing a tab will shift the latest tab to the previously opened one.
+
+Currently, using the SDK in multiple tabs without enabling the [enableMultiTabs](https://powersync-ja.github.io/powersync-js/web-sdk/interfaces/WebPowerSyncFlags#enablemultitabs) flag will spawn a standard web worker per tab for DB operations. These workers are safe to operate on the DB concurrently, however changes from one tab may not update watches on other tabs. Only one tab can sync from the PowerSync instance at a time. The sync status will not be shared between tabs, only the oldest tab will connect and display the latest sync status.
+
+Support is enabled by default if available. This can be disabled as below:
+
+```js
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'my_app_db.sqlite'
+  },
+  flags: {
+    /**
+     * Multiple tab support is enabled by default if available.
+     * This can be disabled by setting this flag to false.
+     */
+    enableMultiTabs: false
+  }
+});
+```
+
+## Using transactions to group changes
+
+Read and write transactions present a context where multiple changes can be made then finally committed to the DB or rolled back. This ensures that either all the changes get persisted, or no change is made to the DB (in the case of a rollback or exception).
+
+[PowerSyncDatabase.writeTransaction(callback)](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#writetransaction) automatically commits changes after the transaction callback is completed if `tx.rollback()` has not explicitly been called. If an exception is thrown in the callback then changes are automatically rolled back.
+
+```js
+// ListsWidget.jsx
+import React, { useState } from 'react';
+
+export const ListsWidget = () => {
+  const [lists, setLists] = useState([]);
+
+  return (
+    <div>
+      <ul>
+        {lists.map((list) => (
+          <li key={list.id}>
+            {list.name}
+            <button
+              onClick={async () => {
+                try {
+                    await PowerSync.writeTransaction(async (tx) => {
+                        // Delete the main list
+                        await tx.execute(`DELETE FROM lists WHERE id = ?`, [item.id]);
+                        // Delete any children of the list
+                        await tx.execute(`DELETE FROM todos WHERE list_id = ?`, [item.id]);
+
+                        // Transactions are automatically committed at the end of execution
+                        // Transactions are automatically rolled back if an exception occurred
+                      })
+                    // Watched queries should automatically reload after mutation
+                  } catch (ex) {
+                    Alert.alert('Error', ex.message)
+                  }
+              }}
+            >
+              Delete
+            </button>
+          </li>
+        ))}
+      </ul>
+      <button
+        onClick={async () => {
+          try {
+              await PowerSync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
+                'A list name',
+                "[The user's uuid]"
+              ])
+              // Watched queries should automatically reload after mutation
+            } catch (ex) {
+              Alert.alert('Error', ex.message)
+            }
+        }}
+      >
+        Create List
+      </button>
+    </div>
+  );
+};
+```
+
+Also see [PowerSyncDatabase.readTransaction(callback)](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#readtransaction).
+
+## Subscribe to changes in data
+
+Use [PowerSyncDatabase.watch](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#watch) to watch for changes in source tables.
+
+The `watch` method can be used with a `AsyncIterable` signature as follows:
+
+```js
+async *attachmentIds(): AsyncIterable<string[]> {
+  for await (const result of this.powersync.watch(
+    `SELECT photo_id as id FROM ${TODO_TABLE} WHERE photo_id IS NOT NULL`,
+    []
+  )) {
+    yield result.rows?._array.map((r) => r.id) ?? [];
+  }
+}
+```
+
+As of version **1.3.3** of the SDK, the `watch` method can also be used with a callback:
+
+```js
+attachmentIds(onResult: (ids: string[]) => void): void {
+  this.powersync.watch(
+    `SELECT photo_id as id FROM ${TODO_TABLE} WHERE photo_id IS NOT NULL`,
+    [],
+    {
+      onResult: (result) => {
+        onResult(result.rows?._array.map((r) => r.id) ?? []);
+      }
+    }
+  );
+}
+```
+
+## Insert, update, and delete data in the local database
+
+Use [PowerSyncDatabase.execute](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#execute) to run INSERT, UPDATE or DELETE queries.
+
+```js
+const handleButtonClick = async () => {
+  await db.execute(
+    'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
+    ['Fred', 'fred@example.org']
+  );
+};
+
+return (
+  <button onClick={handleButtonClick} title="+">
+    <span>+</span>
+    <i className="material-icons">add</i>
+  </button>
+);
+```
+
+## Send changes in local data to your backend service
+
+Override [uploadData](https://powersync-ja.github.io/powersync-js/web-sdk/interfaces/PowerSyncBackendConnector#uploaddata) to send local updates to your backend service.
+
+
+```js
+// Implement the uploadData method in your backend connector
+async function uploadData(database) {
+  const batch = await database.getCrudBatch();
+  if (batch === null) return;
+
+  for (const op of batch.crud) {
+    switch (op.op) {
+      case 'put':
+        // Send the data to your backend service
+        // replace `_myApi` with your own API client or service
+        await _myApi.put(op.table, op.opData);
+        break;
+      default:
+        // TODO: implement the other operations (patch, delete)
+        break;
+    }
+  }
+
+  await batch.complete();
+}
+```
+
+## Accessing PowerSync connection status information
+
+Use [PowerSyncDatabase.connected](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#connected) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#registerlistener) to listen for status changes to your PowerSync instance.
+
+```js
+// Example of using connected status to show online or offline
+
+// Tap into connected
+const [connected, setConnected] = React.useState(powersync.connected);
+
+React.useEffect(() => {
+// Register listener for changes made to the powersync status
+  return powersync.registerListener({
+    statusChanged: (status) => {
+      setConnected(status.connected);
+    }
+  });
+}, [powersync]);
+
+// Icon to show connected or not connected to powersync
+// as well as the last synced time
+<Icon
+  name={connected ? 'wifi' : 'wifi-off'}
+  type="material-community"
+  color="black"
+  size={20}
+  style={{ padding: 5 }}
+  onPress={() => {
+    Alert.alert(
+      'Status',
+      `${connected ? 'Connected' : 'Disconnected'}. \nLast Synced at ${powersync.currentStatus?.lastSyncedAt.toISOString() ?? '-'
+      }\nVersion: ${powersync.sdkVersion}`
+    );
+  }}
+/>;
+```
+
+## Wait for the initial sync to complete
+
+Use the [hasSynced](https://powersync-ja.github.io/powersync-js/web-sdk/classes/SyncStatus#hassynced) property (available since version 0.4.1 of the SDK) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#registerlistener) to indicate to the user whether the initial sync is in progress.
+
+```js
+// Example of using hasSynced to show whether the first sync has completed
+
+// Tap into hasSynced
+const [hasSynced, setHasSynced] = React.useState(powerSync.currentStatus?.hasSynced || false);
+
+  React.useEffect(() => {
+    // Register listener for changes made to the powersync status
+    return powerSync.registerListener({
+      statusChanged: (status) => {
+        setHasSynced(!!status.hasSynced);
+      }
+    });
+  }, [powerSync]);
+
+return <div>{hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...'}</div>;
+```
+
+For async use cases, see [PowerSyncDatabase.waitForFirstSync()](https://powersync-ja.github.io/powersync-js/web-sdk/classes/AbstractPowerSyncDatabase#waitforfirstsync), which returns a promise that resolves once the first full sync has completed (it queries the internal SQL [ps\_buckets](/architecture/client-architecture) table to determine if data has been synced).
+
+## Using logging to troubleshoot issues
+
+You can enable logging to see what's happening under the hood or to debug connection/authentication/sync issues. This SDK uses [js-logger](https://www.npmjs.com/package/js-logger).
+
+Enable JS Logger with your logging interface of choice or use the default `console`.
+
+```js
+import Logger from 'js-logger';
+
+// Log messages will be written to the window's console.
+Logger.useDefaults();
+
+Logger.setLevel(Logger.DEBUG);
+```
+<Info>
+  Enable verbose output in the developer tools for detailed logs.
+</Info>
+
+The [WASQLiteDBAdapter](https://powersync-ja.github.io/powersync-js/web-sdk/classes/WASQLiteDBAdapter) opens SQLite connections inside a shared web worker. This worker can be inspected in Chrome by accessing:
+
+```js
+chrome://inspect/#workers
+```

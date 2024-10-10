@@ -1,0 +1,157 @@
+---
+title: "Usage Examples"
+description: "Code snippets and guidelines for common scenarios"
+---
+
+## Using transactions to group changes
+
+Use `writeTransaction` to group statements that can write to the database.
+
+```js
+database.writeTransaction {
+    database.execute(
+        sql = "DELETE FROM list WHERE id = ?",
+        parameters = listOf(listId)
+    )
+    database.execute(
+        sql = "DELETE FROM todos WHERE list_id = ?",
+        parameters = listOf(listId)
+    )
+}
+```
+
+## Subscribe to changes in data
+
+Use the `watch` method to watch for changes to the dependent tables of any SQL query.
+
+```js
+// You can watch any SQL query
+fun watchCustomers(): Flow<List<User>> {
+    // TODO: implement your UI based on the result set
+    return database.watch("SELECT * FROM customers", mapper = { cursor ->
+        User(
+            id = cursor.getString(0)!!,
+            name = cursor.getString(1)!!,
+            email = cursor.getString(2)!!
+        )
+    })
+}
+```
+
+## Insert, update, and delete data in the local database
+
+Use `execute` to run INSERT, UPDATE or DELETE queries.
+
+```js
+suspend fun updateCustomer(id: String, name: String, email: String) {
+    database.execute(
+        "UPDATE customers SET name = ? WHERE email = ?",
+        listOf(name, email)
+    )
+}
+```
+
+## Send changes in local data to your backend service
+
+Override `uploadData` to send local updates to your backend service. If you are using Supabase, see [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/connectors/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) for a complete implementation.
+
+```js
+/**
+ * This function is called whenever there is data to upload, whether the device is online or offline.
+ * If this call throws an error, it is retried periodically.
+ */
+override suspend fun uploadData(database: PowerSyncDatabase) {
+
+    val transaction = database.getNextCrudTransaction() ?: return;
+
+    var lastEntry: CrudEntry? = null;
+    try {
+
+        for (entry in transaction.crud) {
+            lastEntry = entry;
+
+            val table = supabaseClient.from(entry.table)
+            when (entry.op) {
+                UpdateType.PUT -> {
+                    val data = entry.opData?.toMutableMap() ?: mutableMapOf()
+                    data["id"] = entry.id
+                    table.upsert(data)
+                }
+
+                UpdateType.PATCH -> {
+                    table.update(entry.opData!!) {
+                        filter {
+                            eq("id", entry.id)
+                        }
+                    }
+                }
+
+                UpdateType.DELETE -> {
+                    table.delete {
+                        filter {
+                            eq("id", entry.id)
+                        }
+                    }
+                }
+            }
+        }
+
+        transaction.complete(null);
+
+    } catch (e: Exception) {
+        println("Data upload error - retrying last entry: ${lastEntry!!}, $e")
+        throw e
+    }
+}
+```
+
+## Accessing PowerSync connection status information
+
+```js
+// Intialize the DB
+val db = remember { PowerSyncDatabase(factory, schema) }
+// Get the status as a flow
+val status = db.currentStatus.asFlow().collectAsState(initial = null)
+// Use the emitted values from the flow e.g. to check if connected
+val isConnected = status.value?.connected
+```
+
+## Wait for the initial sync to complete
+
+This section is a work-in-progress. An example is coming soon.
+
+## Using logging to troubleshoot issues
+
+You can include your own Logger that must conform to the [Kermit Logger](https://kermit.touchlab.co/docs/) as shown here.
+
+```js
+PowerSyncDatabase(
+  ...
+  logger: Logger? = YourLogger
+)
+```
+
+If you don't supply a Logger then a default Kermit Logger is created with settings to only show `Warnings` in release and `Verbose` in debug as follows:
+
+```js
+val defaultLogger: Logger = Logger
+
+// Severity is set to Verbose in Debug and Warn in Release
+if(BuildConfig.isDebug) {
+    Logger.setMinSeverity(Severity.Verbose)
+} else {
+    Logger.setMinSeverity(Severity.Warn)
+}
+
+return defaultLogger
+```
+
+You are able to use the Logger anywhere in your code as follows to debug:
+
+```js
+import co.touchlab.kermit.Logger
+
+Logger.i("Some information");
+Logger.e("Some error");
+...
+```

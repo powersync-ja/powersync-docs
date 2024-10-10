@@ -1,0 +1,262 @@
+---
+title: "Flutter"
+description: "Full SDK reference for using PowerSync in Flutter/Dart clients"
+sidebarTitle: Overview
+---
+
+<CardGroup>
+  <Card title="PowerSync SDK on pub.dev" icon="cube" href="https://pub.dev/packages/powersync">
+  The PowerSync Flutter/Dart SDK is distributed via pub.dev [[External link].](https://pub.dev/packages/powersync)
+  </Card>
+  <Card title="API Reference" icon="book" href="https://pub.dev/documentation/powersync/latest/powersync/powersync-library.html">
+Full API reference for the PowerSync SDK [[External link].](https://pub.dev/documentation/powersync/latest/powersync/powersync-library.html)
+  </Card>
+  <Card title="Example Projects" icon="code" href="/resources/demo-apps-example-projects">
+  Gallery of example projects/demo apps built with Flutter and PowerSync.
+  </Card>
+</CardGroup>
+
+### SDK Features
+
+* Provides real-time streaming of database changes.
+* Offers direct access to the SQLite database, enabling the use of SQL on both client and server sides.
+* Operations are asynchronous by default, ensuring the user interface remains unblocked.
+* Supports concurrent database operations, allowing one write and multiple reads simultaneously.
+* Enables subscription to queries for receiving live updates.
+* Eliminates the need for client-side database migrations as these are managed automatically.
+
+<Info>
+  Web support is currently in an alpha release. Refer to [Flutter Web Support (Alpha)](/client-sdk-references/flutter/flutter-web-support-alpha) for more details.
+</Info>
+
+## Installation
+
+See the [SDK's README](https://pub.dev/packages/powersync#getting-started) for installation instructions.
+
+## Getting Started
+
+Before implementing the PowerSync SDK in your project, make sure you have completed these steps:
+
+* Signed up for a PowerSync Cloud account ([here](https://accounts.journeyapps.com/portal/get-started?powersync=true)) or [self-host PowerSync](/self-hosting/getting-started).
+* [Configured your backend database](/usage/installation/database-setup) and connected it to your PowerSync instance.
+* [Installed](/client-sdk-references/flutter#installation) the PowerSync Flutter SDK.
+
+### 1\. Define the Schema
+
+The first step is defining the schema for the local SQLite database. This will be provided as a `schema` parameter to the [PowerSyncDatabase](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/PowerSyncDatabase.html) constructor.
+
+This schema represents a "view" of the downloaded data. No migrations are required — the schema is applied directly when the PowerSync database is constructed.
+
+<Info>
+**Generate schema automatically**
+
+In the [dashboard](/usage/tools/powersync-dashboard), the schema can be generated based off your sync rules by right-clicking on an instance and selecting **Generate client-side schema**.
+
+Similar functionality exists in the [CLI](/usage/tools/cli).
+
+</Info>
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/usage/sync-rules). If a value doesn't match, it is cast automatically. For details on how Postgres types are mapped to the types below, see the section on [Types](/usage/sync-rules/types) in the _Sync Rules_ documentation.
+
+**Example**:
+```js
+// lib/models/schema.dart
+import 'package:powersync/powersync.dart';
+
+const schema = Schema(([
+  Table('todos', [
+    Column.text('list_id'),
+    Column.text('created_at'),
+    Column.text('completed_at'),
+    Column.text('description'),
+    Column.integer('completed'),
+    Column.text('created_by'),
+    Column.text('completed_by'),
+  ], indexes: [
+    // Index to allow efficient lookup within a list
+    Index('list', [IndexedColumn('list_id')])
+  ]),
+  Table('lists', [
+    Column.text('created_at'),
+    Column.text('name'),
+    Column.text('owner_id')
+  ])
+]));
+```
+
+<Info>
+  **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Info>
+
+### 2\. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database — this is the core managed client-side database.
+
+Its primary functions are to record all changes in the local database, whether online or offline. In addition, it automatically uploads changes to your app backend when connected.
+
+To instantiate `PowerSyncDatabase`, inject the Schema you defined in the previous step and a file path — it's important to only instantiate one instance of `PowerSyncDatabase` per file.
+
+**Example**:
+
+```js
+import 'package:powersync/powersync.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart';
+
+openDatabase() async {
+  final dir = await getApplicationSupportDirectory();
+  final path = join(dir.path, 'powersync-dart.db');
+
+  // Set up the database
+  // Inject the Schema you defined in the previous step and a file path
+  db = PowerSyncDatabase(schema: schema, path: path);
+  await db.initialize();
+}
+```
+
+Once you've instantiated your PowerSync database, you will need to call the [connect()](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/connect.html) method to activate it. This method requires the backend connector that will be created in the next step.
+
+```bash
+// Uses the backend connector that will be created in the next step
+db.connect(connector: MyBackendConnector(db));
+```
+
+### 3\. Integrate with your Backend
+
+The PowerSync backend connector provides the connection between your application backend and the PowerSync client-slide managed SQLite database.
+
+It is used to:
+
+1. [Retrieve an auth token](/usage/installation/authentication-setup) to connect to the PowerSync instance.
+2. [Apply local changes](/usage/installation/app-backend-setup/writing-client-changes) on your backend application server (and from there, to Postgres)
+
+Accordingly, the connector must implement two methods:
+
+1. [PowerSyncBackendConnector.fetchCredentials](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncBackendConnector/fetchCredentials.html) \- This is called every couple of minutes and is used to obtain credentials for your app backend API. -> See [Authentication Setup](/usage/installation/authentication-setup) for instructions on how the credentials should be generated.
+2. [PowerSyncBackendConnector.uploadData](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncBackendConnector/uploadData.html) \- Use this to upload client-side changes to your app backend.
+\-> See [Writing Client Changes](/usage/installation/app-backend-setup/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```js
+import 'package:powersync/powersync.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart';
+
+late PowerSyncDatabase db;
+
+class MyBackendConnector extends PowerSyncBackendConnector {
+  PowerSyncDatabase db;
+
+  MyBackendConnector(this.db);
+  @override
+  Future<PowerSyncCredentials?> fetchCredentials() async {
+    // Implement fetchCredentials to obtain a JWT from your authentication service
+    // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
+    // - https://docs.powersync.com/usage/installation/authentication-setup/supabase-auth
+    // - https://docs.powersync.com/usage/installation/authentication-setup/firebase-auth
+
+    // See example implementation here: https://pub.dev/documentation/powersync/latest/powersync/DevConnector/fetchCredentials.html
+
+    return {
+        endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+        // Use a development token (see Authentication Setup https://docs.powersync.com/usage/installation/authentication-setup/development-tokens) to get up and running quickly
+        token: 'An authentication token'
+    };
+  }
+  @override
+  Future<void> uploadData(PowerSyncDatabase database) async {
+    // Implement uploadData to send local changes to your backend service
+    // You can omit this method if you only want to sync data from the server to the client
+
+    // See example implementation here: https://docs.powersync.com/client-sdk-references/flutter#id-3.-integrate-with-your-backend
+  }
+}
+
+```
+
+## Using PowerSync: CRUD functions
+
+Once the PowerSync instance is configured you can start using the SQLite DB functions.
+
+The most commonly used CRUD functions to interact with your SQLite data are:
+
+* [PowerSyncDatabase.get](/client-sdk-references/flutter#fetching-a-single-item) \- get (SELECT) a single row from a table.
+* [PowerSyncDatabase.getAll](/client-sdk-references/flutter#querying-items-powersync.getall) \- get (SELECT) a set of rows from a table.
+* [PowerSyncDatabase.watch](/client-sdk-references/flutter#watching-queries-powersync.watch) \- execute a read query every time source tables are modified.
+* [PowerSyncDatabase.execute](/client-sdk-references/flutter#mutations-powersync.execute) \- execute a write (INSERT/UPDATE/DELETE) query.
+
+### Fetching a Single Item
+
+The [get](https://pub.dev/documentation/powersync/latest/sqlite%5Fasync/SqliteQueries/get.html) method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use [getOptional](https://pub.dev/documentation/powersync/latest/sqlite%5Fasync/SqliteQueries/getOptional.html) to return a single optional result (returns `null` if no result is found).
+
+```js
+// Find a list item by ID
+Future<TodoList> find(id) async {
+  final result = await db.get('SELECT * FROM lists WHERE id = ?', [id]);
+  return TodoList.fromRow(result);
+}
+```
+
+### Querying Items (PowerSync.getAll)
+
+The [getAll](https://pub.dev/documentation/powersync/latest/sqlite%5Fasync/SqliteQueries/getAll.html) method returns a set of rows from a table.
+
+```bash
+/// Get all list IDs
+Future<List<String>> getLists() async {
+  ResultSet results = await db.getAll('SELECT id FROM lists WHERE id IS NOT NULL');
+  List<String> ids = results.map((row) => row['id'] as String).toList();
+  return ids;
+}
+```
+### Watching Queries (PowerSync.watch)
+
+The [watch](https://pub.dev/documentation/powersync/latest/sqlite%5Fasync/SqliteQueries/watch.html) method executes a read query whenever a change to a dependent table is made.
+
+```js
+StreamBuilder(
+  // You can watch any SQL query
+  stream: db.watch('SELECT * FROM customers ORDER BY id asc'),
+  builder: (context, snapshot) {
+    if (snapshot.hasData) {
+      // TODO: implement your own UI here based on the result set
+      return ...;
+    } else {
+      return const Center(child: CircularProgressIndicator());
+    }
+  },
+)
+```
+
+### Mutations (PowerSync.execute)
+
+The [execute](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/execute.html) method can be used for executing single SQLite write statements.
+
+```js
+FloatingActionButton(
+  onPressed: () async {
+    await db.execute(
+      'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
+      ['Fred', 'fred@example.org'],
+    );
+  },
+  tooltip: '+',
+  child: const Icon(Icons.add),
+);
+```
+
+## Additional Usage Examples
+
+See [Usage Examples](/client-sdk-references/flutter/usage-examples) for further examples of the SDK.
+
+## ORM Support
+
+See [Flutter ORM Support](/client-sdk-references/flutter/flutter-orm-support) for details.
+
+## Source Code
+
+To access the source code for this SDK, refer to the [powersync.dart](https://github.com/powersync-ja/powersync.dart) repo on GitHub.
+
+## Troubleshooting
+
+See [Troubleshooting](/resources/troubleshooting) for pointers to debug common issues.

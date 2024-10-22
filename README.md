@@ -2,7 +2,7 @@
 
 ## Things to note:
 
-The `docs` branch is the one that's published on docs.powersync.com (to work around branch-protection requirements).
+The `docs` branch is the one that's published on docs.powersync.com (to work around branch-protection rules).
 
 Navigation (and other global settings) is defined in `mint.json`. If you move or rename a page, ensure you add a redirect.
 
@@ -29,6 +29,12 @@ Run the following command at the root of your documentation (where mint.json is)
 
 ```
 mintlify dev
+```
+
+Regularly check for broken links by running
+
+```
+mintlify broken-links
 ```
 
 ### Publishing Changes

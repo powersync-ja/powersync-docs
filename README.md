@@ -1,12 +1,21 @@
 # Mintlify Starter Kit
 
-Click on `Use this template` to copy the Mintlify starter kit. The starter kit contains examples including
+## Things to note:
 
-- Guide pages
-- Navigation
-- Customizations
-- API Reference pages
-- Use of popular components
+The `docs` branch is the one that's published on docs.powersync.com (to work around branch-protection requirements).
+
+Navigation (and other global settings) is defined in `mint.json`. If you move or rename a page, ensure you add a redirect.
+
+Only Fontawesome icons are currently supported: https://fontawesome.com/search
+
+We use the following icons for the SDKs and backend databases:
+- Postgres: `icon="elephant"`
+- MongoDB: `icon="leaf"`
+- Flutter: `icon="flutter"`
+- React Native: `icon="react"`
+- Web: `icon="js"`
+- Kotlin: `icon="flag"`
+- Swift: `icon="swift"`
 
 ### Development
 
@@ -24,7 +33,7 @@ mintlify dev
 
 ### Publishing Changes
 
-Install our Github App to auto propagate changes from your repo to your deployment. Changes will be deployed to production automatically after pushing to the default branch. Find the link to install on your dashboard. 
+Changes will be deployed to production automatically after pushing to the `docs` branch. 
 
 #### Troubleshooting
 

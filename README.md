@@ -51,7 +51,7 @@ Some useful references:
 
 ### Publishing Changes
 
-Changes will be deployed to production automatically after pushing to the `docs` branch. 
+Changes will be deployed to production automatically after pushing to the `docs` branch. You can review the deploy status in the Dashboard [here](https://dashboard.mintlify.com/powersync/powersync).
 
 #### Troubleshooting
 

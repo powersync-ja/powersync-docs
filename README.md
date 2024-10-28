@@ -1,4 +1,4 @@
-# Mintlify Starter Kit
+# PowerSync Docs
 
 - Our Mintlify dashboard: https://dashboard.mintlify.com/powersync/powersync
 - Mintlify Slack community: https://mintlify.com/community 

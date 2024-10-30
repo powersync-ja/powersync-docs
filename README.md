@@ -6,7 +6,7 @@
 
 ## Things to note:
 
-The `docs` branch is the one that's published on docs.powersync.com (to work around branch-protection rules). Merge your changes into this branch.
+The `docs` branch is the one that's published on docs.powersync.com. Merge your changes into this branch.
 
 Navigation (and other global settings) is defined in `mint.json`. If you move or rename a page, ensure you add a redirect (via the `redirects` property).
 

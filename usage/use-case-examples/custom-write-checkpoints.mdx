@@ -1,43 +1,45 @@
 ---
 title: "Data Pipelines"
 sidebarTitle: "Data Pipelines"
-description: "Use custom write checkpoints to handle asynchronous data uploads, as in chained data pipelines."
+description: "Use Custom Write Checkpoints to handle asynchronous data uploads, as in chained data pipelines."
 ---
 
 <Info>
 **Availability**:
-Custom write checkpoints are available for customers on our [Team and Enterprise](https://www.powersync.com/pricing) plans.
+Custom Write Checkpoints are available for customers on our [Team and Enterprise](https://www.powersync.com/pricing) plans.
 </Info>
 
-To ensure [consistency](/architecture/consistency), PowerSync relies on write checkpoints. These checkpoints ensure that clients have synced their own changes to the server before applying downloaded data from the server locally. The essential requirement is that the client must get a write checkpoint after the last write/upload. Then, when syncing data from the server, the client checks whether the write checkpoint is part of the largest [sync checkpoint](https://github.com/powersync-ja/powersync-service/blob/main/docs/sync-protocol.md). If it is, the client applies the server-side changes locally.
+To ensure [consistency](/architecture/consistency), PowerSync relies on Write Checkpoints. These checkpoints ensure that clients have uploaded their own local changes/mutations to the server before applying downloaded data from the server to the local database.
 
-The default write checkpoints implementation relies on uploads being acknowledged synchronously, i.e. data persists in the source database before the `uploadData` call completes.
+The essential requirement is that the client must get a Write Checkpoint after uploading its last write/mutation. Then, when downloading data from the server, the client checks whether the Write Checkpoint is part of the largest [sync checkpoint](https://github.com/powersync-ja/powersync-service/blob/main/docs/sync-protocol.md) received from the server (i.e. from the PowerSync Service). If it is, the client applies the server-side state to the local database.
 
-Problems occur if the upload is asynchronous. If the client's upload is meant to mutate the source database (and eventually does), but this process is delayed, it will effectively seem as if changes were reverted then applied again thereafter.
+The default Write Checkpoints implementation relies on uploads being acknowledged _synchronously_, i.e. the change persists in the source database (to which PowerSync is connected) before the [`uploadData` call](/usage/installation/client-side-setup/integrating-with-your-backend) completes.
 
-Chained *data pipelines* are a common example of asynchronous uploads -- e.g. data uploads are first written to a different database, or a separate queue for processing, and finally replicated to the source database. 
+Problems occur if the persistence in the source database happens _asynchronously_. If the client's upload is meant to mutate the source database (and eventually does), but this is delayed, it will effectively seem as if the client's uploaded changes were reverted on the server, and then applied again thereafter.
+
+Chained *data pipelines* are a common example of asynchronous uploads -- e.g. data uploads are first written to a different upstream database, or a separate queue for processing, and then finally replicated to the 'source database' (to which PowerSync is connected). 
 
 For example, consider the following data pipeline:
 
 1. The client makes a change locally and the local database is updated.
 2. The client uploads this change to the server. 
 3. The server resolves the request and writes the change into an intermediate database (not the source database yet).
-4. The client thinks the upload is complete. It requests a Write Checkpoint from the PowerSync Service.
-5. The PowerSync Service increments the replication HEAD in the source database, and creates a Write Checkpoint for the user. The Write Checkpoint number is returned and recorded in the client.
-6. The PowerSync Service replicates past the previous replication HEAD (but the changes are still not present in the source database).
-7. It should be fine for the client to apply the state of the server to the local database. The server state does not include the upload's changes. This is the same as if the changes were not applied by the server. This results in the client reverting the changes.
-8. Eventually the change is written to the source database and increments the replication HEAD.
-9. The PowerSync Service replicates this change and sends it to the client. The client then reapplies the changes.
+4. The client thinks the upload is complete (i.e. persisted into the source database). It requests a Write Checkpoint from the PowerSync Service.
+5. The PowerSync Service increments the replication `HEAD` in the source database, and creates a Write Checkpoint for the client. The Write Checkpoint number is returned and recorded in the client.
+6. The PowerSync Service replicates past the previous replication `HEAD` (but the changes are still not present in the source database).
+7. It should be fine for the client to apply the state of the server to the local database. But the server state does not include the client's uploaded changes mentioned in #2. This is the same as if the client's uploaded changes were rejected (not applied) by the server. This results in the client reverting the changes in its local database.
+8. Eventually the change is written to the source database, and increments the replication `HEAD`.
+9. The PowerSync Service replicates this change and sends it to the client. The client then reapplies the changes to its local database.
 
-In the above case, the client may see the write checkpoint before the data has been replicated. This will cause the client to revert its changes, then apply them again later when it has actually replicated, causing data to “flicker” in the app.
+In the above case, the client may see the Write Checkpoint before the data has been replicated. This will cause the client to revert its changes, then apply them again later when it has actually replicated, causing data to “flicker” in the app.
 
-For these use cases, custom write checkpoints should be implemented.
+For these use cases, Custom Write Checkpoints should be implemented.
 
 ## Custom Write Checkpoints
 
-Custom write checkpoints allow the developer to define write checkpoints and insert them into the replication stream directly, instead of relying on the PowerSync Service to create and return them. An example of this is having the backend persist write checkpoints to a dedicated table which is processed as part of the replication stream.
+_Custom Write Checkpoints_ allow the developer to define Write Checkpoints and insert them into the replication stream directly, instead of relying on the PowerSync Service to create and return them. An example of this is having the backend persist Write Checkpoints to a dedicated table which is processed as part of the replication stream.
 
-The PowerSync Service then needs to process the (ordered) replication events and correlate the checkpoint table changes to write checkpoint events.
+The PowerSync Service then needs to process the (ordered) replication events and correlate the checkpoint table changes to Write Checkpoint events.
 
 ## Example Implementation
 
@@ -48,9 +50,9 @@ A self-hosted Node.js demo with Postgres is available here:
 
 ## Implementation Details
 
-This outlines what a custom write checkpoints implementation entails.
+This outlines what a Custom Write Checkpoints implementation entails.
 
-### Custom write checkpoint table
+### Custom Write Checkpoint Table
 
 Create a dedicated `checkpoints` table, which should contain the following checkpoint payload information in some form:
 
@@ -68,7 +70,7 @@ export type CheckpointPayload = {
      */
     client_id: string;
     /**
-     * A strictly increasing write checkpoint identifier.
+     * A strictly increasing Write Checkpoint identifier.
      * This number is generated by the application backend.
      */
     checkpoint: bigint;
@@ -77,9 +79,9 @@ export type CheckpointPayload = {
 
 ### Replication Requirements
 
-Replication events for the custom write checkpoint table (`checkpoints` in this example) needs to enabled.
+Replication events for the Custom Write Checkpoint table (`checkpoints` in this example) need to enabled.
 
-For Postgres this involves adding the table to the [PowerSync publication](/usage/installation/database-setup), for example:
+For Postgres, this involves adding the table to the [PowerSync logical replication publication](/usage/installation/database-setup), for example:
 
 ```SQL
 create publication powersync for table public.lists, public.todos, public.checkpoints;
@@ -87,7 +89,7 @@ create publication powersync for table public.lists, public.todos, public.checkp
 
 ### Sync Rules Requirements
 
-You need to enable the `write_checkpoints` sync event in your sync rules configuration. This event should map the rows from the `checkpoints` table to the `CheckpointPayload` payload.
+You need to enable the `write_checkpoints` sync event in your Sync Rules configuration. This event should map the rows from the `checkpoints` table to the `CheckpointPayload` payload.
 
 ```YAML
 # sync-rules.yaml
@@ -96,10 +98,10 @@ You need to enable the `write_checkpoints` sync event in your sync rules configu
 event_definitions:
   write_checkpoints:
     payloads:
-      #  This defines where the replicated custom write checkpoints should be extracted from
+      #  This defines where the replicated Custom Write Checkpoints should be extracted from
       - SELECT user_id, checkpoint, client_id FROM checkpoints
 
-# Define sync rules as usual
+# Define Sync Rules as usual
 bucket_definitions:
   global:
     data:
@@ -108,11 +110,11 @@ bucket_definitions:
 
 ### Application
 
-Your application should handle custom write checkpoints on both the frontend and backend.
+Your application should handle Custom Write Checkpoints on both the frontend and backend.
 
 #### Frontend
 
-Your client backend connector should make a call to the application backend to create a custom write checkpoint record after uploading items in the `uploadData` method. The write checkpoint number should be supplied to the CRUD transactions's `complete` method.
+Your client backend connector should make a call to the application backend to create a Custom Write Checkpoint record after uploading items in the `uploadData` method. The Write Checkpoint number should be supplied to the CRUD transactions' `complete` method.
 
 ```TypeScript
  async function uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
@@ -130,8 +132,8 @@ Your client backend connector should make a call to the application backend to c
 
  async function getCheckpoint(clientId: string): string {
   /**
-   * Should perform a request to the application backend which should create the write
-   * checkpoint record and return the corresponding checkpoint number.
+   * Should perform a request to the application backend which should create the 
+   * Write Checkpoint record and return the corresponding checkpoint number.
    */
   return "the Write Checkpoint number from the request";
  }
@@ -139,11 +141,11 @@ Your client backend connector should make a call to the application backend to c
 
 #### Backend
 
-The backend should create a write checkpoint record when the client requests it. The record should automatically increment the write checkpoint number for the associated `user_id` and `client_id`.
+The backend should create a Write Checkpoint record when the client requests it. The record should automatically increment the Write Checkpoint number for the associated `user_id` and `client_id`.
 
 #### Postgres Example
 
-With the following table defined in the database
+With the following table defined in the database...
 
 ```SQL
 CREATE TABLE checkpoints (
@@ -154,7 +156,7 @@ CREATE TABLE checkpoints (
 );
 ```
 
-the backend should have a route which creates `checkpoints` records.
+...the backend should have a route which creates `checkpoints` records:
 
 ```TypeScript
 router.put('/checkpoint', async (req, res) => {

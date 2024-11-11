@@ -1,14 +1,19 @@
 ---
-title: "Flutter Web Support (Alpha)"
+title: "Flutter Web Support (Beta)"
+sidebarTitle: "Web Support (Beta)"
 ---
 
-Web support for Flutter in version `^1.6.0` is currently in its alpha stage.
+<Note>
+Web support for Flutter in version `^1.9.0` is currently in a **beta** release. It is functionally ready for production use, provided that you've tested your use cases. 
+
+Please see the [Limitations](#limitations) detailed below.
+</Note>
 
 ## Demo app
 
-The easiest way to test out the alpha is to run the [Supabase Todo-List](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist) demo app:
+The easiest way to test Flutter Web support is to run the [Supabase Todo-List](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist) demo app:
 
-1. Checkout [the powersync.dart repo's](https://github.com/powersync-ja/powersync.dart/tree/master) `master` branch.
+1. Clone the [powersync.dart](https://github.com/powersync-ja/powersync.dart/tree/main) repo.
    1. **Note**: If you are an existing user updating to the latest code after a git pull, run `melos exec 'flutter pub upgrade'` in the repo's root and make sure it succeeds.
 2. Run `melos prepare` in the repo's root
 3. cd into the `demos/supabase-todolist` folder
@@ -17,17 +22,16 @@ The easiest way to test out the alpha is to run the [Supabase Todo-List](https:/
 
 ## Installing PowerSync in your own project
 
-Install the latest alpha version of the package, for example:
+Install the [latest version](https://pub.dev/packages/powersync/versions) of the package, for example:
 
 ```bash
-flutter pub add powersync:'^1.6.2'
+flutter pub add powersync:'^1.9.0'
 ```
 
-The latest version can be found [here](https://pub.dev/packages/powersync/versions).
+### Additional config
 
-## Additional config
-
-Web support requires `sqlite3.wasm` and `powersync_db.worker.js` assets to be served from the web application. They can be downloaded to the `web` directory by running the following command in your application's root folder.
+#### Assets
+Web support requires `sqlite3.wasm` and worker (`powersync_db.worker.js` and `powersync_sync.worker.js`) assets to be served from the web application. They can be downloaded to the web directory by running the following command in your application's root folder.
 
 ```bash
 dart run powersync:setup_web
@@ -35,7 +39,39 @@ dart run powersync:setup_web
 
 The same code is used for initializing native and web `PowerSyncDatabase` clients.
 
-## Imports
+#### OPFS for improved performance
+
+This SDK supports different storage modes of the SQLite database with varying levels of performance and compatibility:
+
+- **IndexedDB**: Highly compatible with different browsers, but performance is slow.
+- **OPFS** (Origin-Private File System): Significantly faster but requires additional configuration.
+
+OPFS is the preferred mode when it is available. Otherwise database storage falls back to IndexedDB.
+
+Enabling OPFS requires adding two headers to the HTTP server response when a client requests the Flutter web application:
+
+- `Cross-Origin-Opener-Policy`: Needs to be set to `same-origin`.
+- `Cross-Origin-Embedder-Policy`: Needs to be set to `require-corp`.
+
+When running the app locally, you can use the following command to include the required headers:
+
+```bash
+flutter run -d chrome --web-header "Cross-Origin-Opener-Policy=same-origin" --web-header "Cross-Origin-Embedder-Policy=require-corp"
+```
+
+When serving a Flutter Web app in production, the [Flutter docs](https://docs.flutter.dev/deployment/web#building-the-app-for-release) recommend building the web app with `flutter build web`, then serving the content with an HTTP server. The server should be configured to use the above headers.
+
+<Tip>
+**Further reading**:
+
+[Drift](https://drift.simonbinder.eu/) uses the same packages as our [`sqlite_async`](https://github.com/powersync-ja/sqlite_async.dart) package under the hood, and has excellent documentation for how the web filesystem is selected. See [here](https://drift.simonbinder.eu/platforms/web/) for web compatibility notes and [here](https://drift.simonbinder.eu/platforms/web/#additional-headers) for additional notes on the required web headers.
+</Tip>
+
+## Limitations
+
+The API for Web is essentially the same as for native platforms, however, some features within `PowerSyncDatabase` clients are not available.
+
+### Imports
 
 Flutter Web does not support importing directly from `sqlite3.dart` as it uses `dart:ffi`.
 
@@ -53,14 +89,8 @@ import 'package/powersync/sqlite3_common.dart'
 
 in code which needs to run on the Web platform. Isolated native-specific code can still import from `sqlite3.dart`.
 
-## Database connections
+### Database connections
 
 Web database connections do not support concurrency. A single database connection is used. `readLock` and `writeLock` contexts do not implement checks for preventing writable queries in read connections and vice-versa.
 
 Direct access to the synchronous `CommonDatabase` (`sqlite.Database` equivalent for web) connection is not available. `computeWithDatabase` is not available on web.
-
-## Limitations
-
-The API for web is essentially the same as for native platforms. Some features within `PowerSyncDatabase` clients are not available.
-
-Full multiple tab support is not yet available. Some sync status indicators will not be available in each tab. Multiple requests from tabs to connect/disconnect might result in undefined behaviour.

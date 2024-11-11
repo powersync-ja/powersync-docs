@@ -1,0 +1,42 @@
+---
+title: "Prioritizied Sync"
+description: "In some scenarios, you may want to sync tables using different priorities. For example, you may want to sync a subset of all tables first to log a user in as fast as possible, then sync the reamining tables in the background."
+---
+
+## Overview
+
+The general approach is as follows:
+
+1. Define how many priority types you want - typically only two are needed: "high priority" and "the rest"
+2. Create a sync bucket for each priority type
+3. Use [client parameters](/usage/sync-rules/advanced-topics/client-parameters) to control which priorities you want the client to sync
+
+## Example
+Suppose we have two tables: `lists` and `todos` (as per the standard todolist demo app [schema](/integration-guides/supabase-+-powersync#create-the-demo-database-schema)). We want the sync to behave as follows:
+
+1. First, sync all the user's lists, enabling us to render the initial screen in the app
+2. Then, sync the user's todos
+
+Below are the sync rules that will enable this:
+
+```yaml
+bucket_definitions:
+  # sync high priority tables first, in this case the user's lists
+  high_priority:
+    parameters: select id as list_id from lists where owner_id = token_parameters.user_id and (request.parameters() ->> 'high_priority' = 'true')
+    data:
+        - select * from lists where id = bucket.list_id
+  # sync any remaining tables, in this case todo items
+  remaining:
+    parameters: select id as list_id from lists where owner_id = token_parameters.user_id and (request.parameters() ->> 'remaining_tables' = 'true')
+    data: 
+        - select * from todos where list_id = bucket.list_id
+```
+
+It is recommended to set Client Parammeters in the [Diagnostics App](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to verify functionality at this point:
+
+<Frame>
+  <img src="/images/usage/use-case-prioritized.png"/>
+</Frame>
+
+If everything checks out, you can then proceed to implement the client parameter switching accordingly in your app.

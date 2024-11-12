@@ -15,7 +15,7 @@ As an example, consider a social media application. The app has message boards. 
 <Accordion
   title="Full schema (for Postgres)"
 >
-```js
+```sql
 create table users (
     id uuid not null default gen_random_uuid (),
     name text not null,
@@ -100,7 +100,7 @@ To start with, in our PowerSync Sync Rules, we define a [bucket](/usage/sync-rul
 
 Next, we also want to sync comments for those boards. There is a one-to-many relationship between boards and comments, via the `posts` table. This means conceptually we can add comments to the same board bucket. With general SQL, the query could be:
 
-```bash
+```sql
 SELECT comments.* FROM comments
 JOIN posts ON posts.id = comments.post_id
 WHERE board_id = bucket.board_id
@@ -108,7 +108,7 @@ WHERE board_id = bucket.board_id
 
 Unfortunately, joins are not supported in PowerSync's Sync Rules. Instead, we denormalize the data to add a direct foreign key relationship between comments and boards: (Postgres example)
 
-```bash
+```sql
 ALTER TABLE comments ADD COLUMN board_id uuid;
 ALTER TABLE comments ADD CONSTRAINT comments_board_id_fkey FOREIGN KEY (board_id) REFERENCES boards (id);
 ```
@@ -152,7 +152,7 @@ If the topics table is limited in size (say 1,000 or less), the simplest solutio
 
 If there are many thousands of topics, we may want to avoid syncing everything. One option is to denormalize the data by copying the topic label over to `post_topics`: (Postgres example)
 
-```bash
+```sql
 ALTER TABLE post_topics ADD COLUMN topic_label text not null;
 ```
 
@@ -162,7 +162,7 @@ Next up, we want to sync the relevant user profiles, so we can show it together 
 
 One option is to add the author name to each board subscription, similar to what we've done for `topics`: (Postgres example)
 
-```bash
+```sql
 ALTER TABLE board_subscriptions ADD COLUMN user_name text;
 ```
 
@@ -185,7 +185,7 @@ If we need to sync more than just the name (let's say we need a last activity da
 
 Adding an array to the schema in Postgres:
 
-```bash
+```sql
 ALTER TABLE users ADD COLUMN subscribed_board_ids uuid[];
 ```
 
@@ -193,13 +193,13 @@ By using an array instead of or in addition to a join table, we can use it direc
 
 ```yaml
 board_data:
-    parameters: select board_id from board_subscriptions where user_id = request.user_id()
-    data:
-      - select * from posts where board_id = bucket.board_id
-      - select * from comments where board_id = bucket.board_id
-      - select * from post_topics where board_id = bucket.board_id
-      # Add participating users:
-      - select name, last_activity, profile_picture, bio from users where bucket.board_id in subscribed_board_ids
+  parameters: select board_id from board_subscriptions where user_id = request.user_id()
+  data:
+    - select * from posts where board_id = bucket.board_id
+    - select * from comments where board_id = bucket.board_id
+    - select * from post_topics where board_id = bucket.board_id
+    # Add participating users:
+    - select name, last_activity, profile_picture, bio from users where bucket.board_id in subscribed_board_ids
 ```
 
 This approach does require some extra effort to keep the array up to date. One option is to use a trigger in the case of Postgres:
@@ -207,7 +207,7 @@ This approach does require some extra effort to keep the array up to date. One o
 <Accordion
   title="Postgres trigger to update subscribed_board_ids"
 >
-```js
+```sql
 CREATE OR REPLACE FUNCTION recalculate_subscribed_boards()
 RETURNS TRIGGER AS $$
 BEGIN

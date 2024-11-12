@@ -1,0 +1,398 @@
+---
+title: "Source Database Setup"
+description: "Configure your backend database for PowerSync"
+sidebarTitle: "Overview"
+---
+
+## <Icon icon="elephant" iconType="solid" size="24"/> Postgres
+
+<Check>
+**Version compatibility**: PowerSync requires Postgres version 11 or greater.
+</Check>
+
+Configuring your Postgres database with PowerSync generally involves three tasks:
+
+* Enable logical replication
+* Create a PowerSync database user
+* Create `powersync` publication
+
+We have documented steps for some hosting providers:
+<AccordionGroup>
+<Accordion title="Supabase">
+### 1\. Enable logical replication
+
+Supabase has logical replication enabled by default — no action required.
+
+### 2\. Create a PowerSync Database User
+
+It is not currently possible to create a new user on Supabase with replication permissions without contacting their support. Instead, use the default `postgres` user.
+
+### 3\. Create "powersync" Publication
+
+The `postgres` user does not have access to create a publication for all tables. Instead, list each table explicitly.
+
+This can also be done on the Supabase dashboard in the database _Replication_ page.
+
+```sql
+CREATE PUBLICATION powersync FOR TABLE public.lists, public.todos;
+```
+</Accordion>
+<Accordion title="AWS RDS">
+
+### Prerequisites
+
+The instance must be publicly accessible using an IPv4 address.
+<Frame>
+  <img src="/images/setup-1.avif"/>
+</Frame>
+
+Access may be restricted to specific IPs if required — see [IP Filtering](/installation/database-setup/security-and-ip-filtering).
+
+### 1\. Enable Logical Replication
+
+Set the `rds.logical_replication` parameter to `1` in the parameter group for the instance.
+
+<Frame>
+  <img src="/images/setup-2.png"/>
+</Frame>
+
+### 2\. Create a PowerSync Database User
+
+Create a PowerSync user on Postgres:
+
+```sql
+-- SQL to create powersync user
+
+CREATE ROLE powersync_role WITH LOGIN PASSWORD 'myhighlyrandompassword';
+
+-- Allow the role to perform replication tasks
+
+GRANT rds_replication TO powersync_role;
+
+-- Set up permissions for the newly created role
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO powersync_role;
+
+```
+
+For read-only access, only the `SELECT` privilege is required — `INSERT`, `UPDATE` and `DELETE` can be removed.
+
+To restrict read access to specific tables, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+
+### 3\. Create "powersync" Publication
+
+```sql
+-- Create publication to replicate tables. Specify a subset of tables if required.
+
+-- NOTE: this must be named "powersync" at the moment
+
+CREATE PUBLICATION powersync FOR ALL TABLES;
+```
+</Accordion>
+<Accordion title="Azure Postgres">
+PowerSync supports both "Azure Database for PostgreSQL" and "Azure Database for PostgreSQL Flexible Server".
+
+### Prerequisites
+
+The database must be accessible on the public internet. Once you have created your database, navigate to Settings -> Networking and enable **Public access.**
+
+### 1\. Enable Logical Replication
+
+Follow the steps as noted in this article to allow logical replication:
+
+[https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-logical#prerequisites-for-logical-replication-and-logical-decoding](https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-logical#prerequisites-for-logical-replication-and-logical-decoding)
+
+### 2\. Create a PowerSync Database User
+
+Create a PowerSync user on Postgres:
+
+```sql
+-- SQL to create powersync user
+
+CREATE ROLE powersync_role WITH REPLICATION LOGIN PASSWORD 'myhighlyrandompassword';
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO powersync_role;
+
+```
+
+For read-only access, only the `SELECT` privilege is required — `INSERT`, `UPDATE` and `DELETE` can be removed.
+
+To restrict read access to specific tables, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+
+### 3\. Create "powersync" Publication
+
+
+```sql
+-- Create publication to replicate tables. Specify a subset of tables if required.
+
+-- NOTE: this must be named "powersync" at the moment
+
+CREATE PUBLICATION powersync FOR ALL TABLES;
+
+-- Example for specifying a subset of tables:
+
+-- CREATE PUBLICATION powersync FOR table users, projects, user_projects, checklists;
+```
+</Accordion>
+<Accordion title="Google Cloud SQL">
+
+
+### 1\. Enable Logical Replication
+
+In Google Cloud SQL Postgres, enabling the logical replication is done using flags:
+
+<Frame>
+  <img src="/images/setup-3.png"/>
+</Frame>
+
+
+### 2\. Create a PowerSync Database User
+
+Create a PowerSync user on Postgres:
+
+
+```sql
+-- SQL to create powersync user
+
+CREATE ROLE powersync_role WITH REPLICATION LOGIN PASSWORD 'myhighlyrandompassword';
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO powersync_role;
+
+```
+
+For read-only access, only the `SELECT` privilege is required — `INSERT`, `UPDATE` and `DELETE` can be removed.
+
+To restrict read access to specific tables, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+
+### 3\. Create "powersync" Publication
+
+
+```sql
+-- Create publication to replicate tables. Specify a subset of tables if required.
+
+-- NOTE: this must be named "powersync" at the moment
+
+CREATE PUBLICATION powersync FOR ALL TABLES;
+```
+</Accordion>
+<Accordion title="Neon">
+
+
+Neon is a serverless Postgres environment with an innovative pricing model that separates storage and compute.
+
+### 1\. Enable Logical Replication
+
+Open your project and navigate to "**Settings**" -> "**Beta**", then click "**Enable**".
+
+<Frame>
+  <img src="/images/setup-4.avif"/>
+</Frame>
+
+### 2\. Create a PowerSync Database User
+
+Create a PowerSync user on Postgres:
+
+
+```sql
+-- SQL to create powersync user
+
+CREATE ROLE powersync_role WITH REPLICATION LOGIN PASSWORD 'myhighlyrandompassword';
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO powersync_role;
+```
+
+For read-only access, only the `SELECT` privilege is required — `INSERT`, `UPDATE` and `DELETE` can be removed.
+
+To restrict read access to specific tables, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+
+### 3\. Create "powersync" Publication
+
+```sql
+-- Create publication to replicate tables. Specify a subset of tables if required.
+
+-- NOTE: this must be named "powersync" at the moment
+
+CREATE PUBLICATION powersync FOR ALL TABLES;
+```
+</Accordion>
+
+<Accordion title="Fly Postgres">
+
+
+Fly Postgres is a [Fly](https://fly.io/) app with [flyctl](https://fly.io/docs/flyctl/) sugar on top to help you bootstrap and manage a database cluster for your apps.
+
+### 1\. Enable Logical Replication
+
+Once you've deployed your Fly Postgres cluster, it's time to enable logical replication.
+
+This is performed by running the below command:
+
+
+
+```bash
+fly pg config update --wal-level=logical
+```
+
+<Frame>
+  <img src="/images/setup-5.avif"/>
+</Frame>
+
+### 2\. Create a PowerSync Database User
+
+Create a PowerSync user on Postgres:
+
+
+
+```sql
+-- SQL to create powersync user
+
+CREATE ROLE powersync_role WITH REPLICATION LOGIN PASSWORD 'myhighlyrandompassword';
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO powersync_role;
+```
+
+For read-only access, only the `SELECT` privilege is required — `INSERT`, `UPDATE` and `DELETE` can be removed.
+
+To restrict read access to specific tables, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+
+### 3\. Create "powersync" Publication
+
+
+
+```sql
+-- Create publication to replicate tables. Specify a subset of tables if required.
+
+-- NOTE: this must be named "powersync" at the moment
+
+CREATE PUBLICATION powersync FOR ALL TABLES;
+```
+</Accordion>
+</AccordionGroup>
+
+For other providers and self-hosted databases:
+
+<Accordion title="Other / Self-hosted">
+Need help? Simply contact us on [Discord](https://discord.gg/powersync) and we'll help you get set up.
+
+### 1\. Enable Logical Replication
+
+PowerSync reads the Postgres WAL using logical replication in order to create sync buckets in accordance with the specified PowerSync [Sync Rules](/usage/sync-rules).
+
+If you are managing Postgres yourself, set `wal_level = logical` in your config file:
+
+<Frame>
+  <img src="/images/setup-6.avif"/>
+</Frame>
+
+Alternatively, you can use the below SQL commands to check and enable logical replication:
+
+
+
+```sql
+-- Check the replication type
+
+SHOW wal_level;
+
+-- Enable logical replication
+
+ALTER SYSTEM SET wal_level = logical;
+```
+
+Note that Postgres must be restarted after changing this config.
+
+If you're using a managed Postgres service, there may be a setting for this in the relevant section of the service's admin console.
+
+### 2\. Create a PowerSync Database User
+
+Create a PowerSync user on Postgres:
+
+
+
+```sql
+-- SQL to create powersync user
+
+CREATE ROLE powersync_role WITH REPLICATION LOGIN PASSWORD 'myhighlyrandompassword';
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO powersync_role;
+```
+
+For read-only access, only the `SELECT` privilege is required — `INSERT`, `UPDATE` and `DELETE` can be removed.
+
+To restrict read access to specific tables, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+
+### 3\. Create "powersync" Publication
+
+
+
+```sql
+-- Create publication to replicate tables. Specify a subset of tables if required.
+
+-- NOTE: this must be named "powersync" at the moment
+
+CREATE PUBLICATION powersync FOR ALL TABLES;
+```
+</Accordion>
+
+### Unsupported Hosted Postgres Providers
+
+Due to the logical replication requirement, not all hosting providers are supported.
+
+Notably, some "serverless Postgres" providers do not support logical replication, and are therefore not supported by PowerSync yet.
+
+## <Icon icon="leaf" iconType="solid" size="24"/> MongoDB (Alpha)
+<Info>
+  This section is a work in progress. More details for MongoDB connections are coming soon. In the meantime, check our [MongoDB guide](/migration-guides/mongodb-atlas) to try out our MongoDB alpha support, and ask on our [Discord server](https://discord.gg/powersync) if you have any questions.
+</Info>
+
+<Check>
+**Version compatibility**: PowerSync requires MongoDB version 6.0 or greater.
+</Check>
+
+PowerSync requires the `find` and `changeStream` permissions on all databases and collections.
+
+PowerSync also requires `createCollection`, `insert`, `update`, and `remove` permissions to the `_powersync_checkpoints` collection.
+
+For MongoDB Atlas users, PowerSync requires `readWrite@mydb._powersync_checkpoints` and `readAnyDatabase@admin`
+
+## <Icon icon="dolphin" iconType="solid" size="24"/> MySQL (Alpha)
+
+<Info>
+  This section is a work in progress. More details for MySQL connections are coming soon. In the meantime, ask on our [Discord server](https://discord.gg/powersync) if you have any questions.
+</Info>
+
+<Check>
+**Version compatibility**: PowerSync requires MySQL version 5.7 or greater.
+</Check>
+
+MySQL connections use the [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html) to replicate changes.
+
+Generally, this requires the following config:
+
+* `gtid_mode` : `ON`
+* `enforce_gtid_consistency` : `ON`
+* `binlog_format` : `ROW`
+
+PowerSync also requires a user with replication permissions on the database. An example:
+
+```sql
+-- Create a user with necessary privileges
+CREATE USER 'repl_user'@'%' IDENTIFIED BY 'good_password';
+
+-- Grant replication client privilege
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl_user'@'%';
+
+-- Grant access to the specific database
+GRANT ALL PRIVILEGES ON powersync.* TO 'repl_user'@'%';
+
+-- Apply changes
+FLUSH PRIVILEGES;
+```
+
+## Next Step
+Next, connect PowerSync to your database:
+
+[Database Connection](/installation/database-connection)
+
+<Tip>
+**Self-hosting:** If you are self-hosting PowerSync, refer to [PowerSync Service Setup](/self-hosting/installation/powersync-service-setup) next.
+</Tip>

@@ -1,8 +1,234 @@
 ---
-title: "Drizzle (coming soon)"
-icon: "person-digging"
-iconType: "solid"
+title: "Drizzle"
 mode: wide
 ---
 
-We are currently working on adding support for Drizzle.
+<Card
+  title="npm: @powersync/drizzle-driver"
+  icon="npm"
+  href="https://www.npmjs.com/package/@powersync/drizzle-driver"
+  horizontal
+/>
+
+This package enables using [Drizzle](https://orm.drizzle.team/) with the PowerSync [React Native](/client-sdk-references/react-native-and-expo) and [JavaScript Web](/client-sdk-references/javascript-web) SDKs.
+
+## Setup
+
+Set up the PowerSync Database and wrap it with Drizzle.
+
+Currently, you need to create the Drizzle schema manually, and it should match the table definitions of your PowerSync [client-side schema](/installation/client-side-setup/define-your-schema).
+
+```js
+import { wrapPowerSyncWithDrizzle } from "@powersync/drizzle-driver";
+import { PowerSyncDatabase } from "@powersync/web";
+import { relations } from "drizzle-orm";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { appSchema } from "./schema";
+
+export const lists = sqliteTable("lists", {
+  id: text("id"),
+  name: text("name"),
+});
+
+export const todos = sqliteTable("todos", {
+  id: text("id"),
+  description: text("description"),
+  list_id: text("list_id"),
+  created_at: text("created_at"),
+});
+
+export const listsRelations = relations(lists, ({ one, many }) => ({
+  todos: many(todos),
+}));
+
+export const todosRelations = relations(todos, ({ one, many }) => ({
+  list: one(lists, {
+    fields: [todos.list_id],
+    references: [lists.id],
+  }),
+}));
+
+export const drizzleSchema = {
+  lists,
+  todos,
+  listsRelations,
+  todosRelations,
+};
+
+export const powerSyncDb = new PowerSyncDatabase({
+  database: {
+    dbFilename: "test.sqlite",
+  },
+  schema: appSchema,
+});
+
+export const db = wrapPowerSyncWithDrizzle(powerSyncDb, {
+  schema: drizzleSchema,
+});
+```
+
+## Compilable queries
+
+To use Drizzle queries in your hooks and composables, they currently need to be converted using `toCompilableQuery`.
+
+```js
+import { toCompilableQuery } from "@powersync/drizzle-driver";
+
+const query = db.select().from(users);
+const { data: listRecords, isLoading } = useQuery(toCompilableQuery(query));
+```
+
+## Usage Examples
+
+Below are examples comparing Drizzle and PowerSync syntax for common database operations.
+
+### Select Operations
+
+<CodeGroup>
+  ```js Drizzle
+  const result = await db.select().from(users);
+
+// [{ id: '1', name: 'user1' }, { id: '2', name: 'user2' }]
+
+````
+
+```js PowerSync
+const result = await powerSyncDb.getAll('SELECT * from users');
+
+// [{ id: '1', name: 'user1' }, { id: '2', name: 'user2' }]
+
+````
+
+</CodeGroup>
+
+### Insert Operations
+
+<CodeGroup>
+  ```js Drizzle
+  await db.insert(users).values({ id: '1', name: 'John' });
+  const result = await db.select().from(users);
+
+// [{ id: '1', name: 'John' }]
+
+````
+
+```js PowerSync
+await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(1, ?)', ['John']);
+const result = await powerSyncDb.getAll('SELECT * from users');
+
+// [{ id: '1', name: 'John' }]
+
+````
+
+</CodeGroup>
+
+### Delete Operations
+
+<CodeGroup>
+  ```js Drizzle
+  await db.insert(users).values({ id: '2', name: 'Ben' });
+  await db.delete(users).where(eq(users.name, 'Ben'));
+  const result = await db.select().from(users);
+
+// []
+
+````
+
+```js PowerSync
+await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(2, ?)', ['Ben']);
+await powerSyncDb.execute(`DELETE FROM users WHERE name = ?`, ['Ben']);
+const result = await powerSyncDb.getAll('SELECT * from users');
+
+// []
+
+````
+
+</CodeGroup>
+
+### Update Operations
+
+<CodeGroup>
+  ```js Drizzle
+await db.insert(users).values({ id: '3', name: 'Lucy' });
+await db.update(users).set({ name: 'Lucy Smith' }).where(eq(users.name, 'Lucy'));
+const result = await db.select({ name: users.name }).from(users).get();
+
+// 'Lucy Smith'
+
+````
+
+```js PowerSync
+await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(3, ?)', ['Lucy']);
+await powerSyncDb.execute('UPDATE users SET name = ? WHERE name = ?', ['Lucy Smith', 'Lucy']);
+const result = await powerSyncDb.get('SELECT name FROM users WHERE name = ?', ['Lucy Smith'])
+
+// 'Lucy Smith'
+
+````
+
+</CodeGroup>
+
+### Transactions
+
+<CodeGroup>
+
+```js Drizzle
+await db.transaction(async (transaction) => {
+  await db.insert(users).values({ id: "4", name: "James" });
+  await db
+    .update(users)
+    .set({ name: "Lucy James Smith" })
+    .where(eq(users.name, "James"));
+});
+
+const result = await db.select({ name: users.name }).from(users).get();
+
+// 'James Smith'
+```
+
+```js PowerSync
+await powerSyncDb.writeTransaction((transaction) => {
+  await transaction.execute('INSERT INTO users (id, name) VALUES(4, ?)', ['James']);
+  await transaction.execute("UPDATE users SET name = ? WHERE name = ?", ['James Smith', 'James']);
+})
+const result = await powerSyncDb.get('SELECT name FROM users WHERE name = ?', ['James Smith'])
+
+// 'James Smith'
+
+```
+
+</CodeGroup>
+
+### Watched Queries
+
+<CodeGroup>
+
+```js Drizzle
+import { toCompilableQuery } from "@powersync/drizzle-driver";
+
+// `compile()` is automatically called internally in the hooks, but not for `watch()`
+const compiledQuery = toCompilableQuery(db.select().from(users)).compile();
+
+powerSyncDb.watch(compiledQuery.sql, compiledQuery.parameters, {
+  onResult(results) {
+    console.log(results.rows?._array);
+
+    // With Typescript typing
+    // console.log((results.rows?._array as (typeof users.$inferSelect)[]));
+  },
+});
+
+// [{ id: '1', name: 'John' }]
+```
+
+```js PowerSync
+powerSyncDb.watch("select * from users", [], {
+  onResult(results) {
+    console.log(results.rows?._array);
+  },
+});
+
+// [{ id: '1', name: 'John' }]
+```
+
+</CodeGroup>

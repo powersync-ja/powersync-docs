@@ -3,12 +3,13 @@ title: "Drizzle"
 mode: wide
 ---
 
-<Card
-  title="npm: @powersync/drizzle-driver"
-  icon="npm"
-  href="https://www.npmjs.com/package/@powersync/drizzle-driver"
-  horizontal
-/>
+***
+
+title: "Drizzle"
+mode: wide
+----------
+
+<Card title="npm: @powersync/drizzle-driver" icon="npm" href="https://www.npmjs.com/package/@powersync/drizzle-driver" horizontal />
 
 This package enables using [Drizzle](https://orm.drizzle.team/) with the PowerSync [React Native](/client-sdk-references/react-native-and-expo) and [JavaScript Web](/client-sdk-references/javascript-web) SDKs.
 
@@ -25,6 +26,7 @@ import { relations } from "drizzle-orm";
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { appSchema } from "./schema";
 
+// Define Drizzle schema
 export const lists = sqliteTable("lists", {
   id: text("id"),
   name: text("name"),
@@ -55,6 +57,7 @@ export const drizzleSchema = {
   todosRelations,
 };
 
+// Existing PowerSync database constructor
 export const powerSyncDb = new PowerSyncDatabase({
   database: {
     dbFilename: "test.sqlite",
@@ -62,6 +65,8 @@ export const powerSyncDb = new PowerSyncDatabase({
   schema: appSchema,
 });
 
+// Wrap the database with Drizzle
+// Provide the Drizzle schema you created above
 export const db = wrapPowerSyncWithDrizzle(powerSyncDb, {
   schema: drizzleSchema,
 });
@@ -88,17 +93,16 @@ Below are examples comparing Drizzle and PowerSync syntax for common database op
   ```js Drizzle
   const result = await db.select().from(users);
 
-// [{ id: '1', name: 'user1' }, { id: '2', name: 'user2' }]
+  // [{ id: '1', name: 'user1' }, { id: '2', name: 'user2' }]
 
-````
+  ```
 
-```js PowerSync
-const result = await powerSyncDb.getAll('SELECT * from users');
+  ```js PowerSync
+  const result = await powerSyncDb.getAll('SELECT * from users');
 
-// [{ id: '1', name: 'user1' }, { id: '2', name: 'user2' }]
+  // [{ id: '1', name: 'user1' }, { id: '2', name: 'user2' }]
 
-````
-
+  ```
 </CodeGroup>
 
 ### Insert Operations
@@ -108,18 +112,17 @@ const result = await powerSyncDb.getAll('SELECT * from users');
   await db.insert(users).values({ id: '1', name: 'John' });
   const result = await db.select().from(users);
 
-// [{ id: '1', name: 'John' }]
+  // [{ id: '1', name: 'John' }]
 
-````
+  ```
 
-```js PowerSync
-await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(1, ?)', ['John']);
-const result = await powerSyncDb.getAll('SELECT * from users');
+  ```js PowerSync
+  await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(1, ?)', ['John']);
+  const result = await powerSyncDb.getAll('SELECT * from users');
 
-// [{ id: '1', name: 'John' }]
+  // [{ id: '1', name: 'John' }]
 
-````
-
+  ```
 </CodeGroup>
 
 ### Delete Operations
@@ -130,105 +133,101 @@ const result = await powerSyncDb.getAll('SELECT * from users');
   await db.delete(users).where(eq(users.name, 'Ben'));
   const result = await db.select().from(users);
 
-// []
+  // []
 
-````
+  ```
 
-```js PowerSync
-await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(2, ?)', ['Ben']);
-await powerSyncDb.execute(`DELETE FROM users WHERE name = ?`, ['Ben']);
-const result = await powerSyncDb.getAll('SELECT * from users');
+  ```js PowerSync
+  await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(2, ?)', ['Ben']);
+  await powerSyncDb.execute(`DELETE FROM users WHERE name = ?`, ['Ben']);
+  const result = await powerSyncDb.getAll('SELECT * from users');
 
-// []
+  // []
 
-````
-
+  ```
 </CodeGroup>
 
 ### Update Operations
 
 <CodeGroup>
   ```js Drizzle
-await db.insert(users).values({ id: '3', name: 'Lucy' });
-await db.update(users).set({ name: 'Lucy Smith' }).where(eq(users.name, 'Lucy'));
-const result = await db.select({ name: users.name }).from(users).get();
+  await db.insert(users).values({ id: '3', name: 'Lucy' });
+  await db.update(users).set({ name: 'Lucy Smith' }).where(eq(users.name, 'Lucy'));
+  const result = await db.select({ name: users.name }).from(users).get();
 
-// 'Lucy Smith'
+  // 'Lucy Smith'
 
-````
+  ```
 
-```js PowerSync
-await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(3, ?)', ['Lucy']);
-await powerSyncDb.execute('UPDATE users SET name = ? WHERE name = ?', ['Lucy Smith', 'Lucy']);
-const result = await powerSyncDb.get('SELECT name FROM users WHERE name = ?', ['Lucy Smith'])
+  ```js PowerSync
+  await powerSyncDb.execute('INSERT INTO users (id, name) VALUES(3, ?)', ['Lucy']);
+  await powerSyncDb.execute('UPDATE users SET name = ? WHERE name = ?', ['Lucy Smith', 'Lucy']);
+  const result = await powerSyncDb.get('SELECT name FROM users WHERE name = ?', ['Lucy Smith'])
 
-// 'Lucy Smith'
+  // 'Lucy Smith'
 
-````
+  ```
+</CodeGroup>
 
+
+
+### Watched Queries
+
+<CodeGroup>
+  ```js Drizzle
+  import { toCompilableQuery } from "@powersync/drizzle-driver";
+
+  // `compile()` is automatically called internally in the hooks, but not for `watch()`
+  const compiledQuery = toCompilableQuery(db.select().from(users)).compile();
+
+  powerSyncDb.watch(compiledQuery.sql, compiledQuery.parameters, {
+    onResult(results) {
+      console.log(results.rows?._array);
+
+      // With Typescript typing
+      // console.log((results.rows?._array as (typeof users.$inferSelect)[]));
+    },
+  });
+
+  // [{ id: '1', name: 'John' }]
+  ```
+
+  ```js PowerSync
+  powerSyncDb.watch("select * from users", [], {
+    onResult(results) {
+      console.log(results.rows?._array);
+    },
+  });
+
+  // [{ id: '1', name: 'John' }]
+  ```
 </CodeGroup>
 
 ### Transactions
 
 <CodeGroup>
+  ```js Drizzle
+  await db.transaction(async (transaction) => {
+    await db.insert(users).values({ id: "4", name: "James" });
+    await db
+      .update(users)
+      .set({ name: "Lucy James Smith" })
+      .where(eq(users.name, "James"));
+  });
 
-```js Drizzle
-await db.transaction(async (transaction) => {
-  await db.insert(users).values({ id: "4", name: "James" });
-  await db
-    .update(users)
-    .set({ name: "Lucy James Smith" })
-    .where(eq(users.name, "James"));
-});
+  const result = await db.select({ name: users.name }).from(users).get();
 
-const result = await db.select({ name: users.name }).from(users).get();
+  // 'James Smith'
+  ```
 
-// 'James Smith'
-```
+  ```js PowerSync
+  await powerSyncDb.writeTransaction((transaction) => {
+    await transaction.execute('INSERT INTO users (id, name) VALUES(4, ?)', ['James']);
+    await transaction.execute("UPDATE users SET name = ? WHERE name = ?", ['James Smith', 'James']);
+  })
+  const result = await powerSyncDb.get('SELECT name FROM users WHERE name = ?', ['James Smith'])
 
-```js PowerSync
-await powerSyncDb.writeTransaction((transaction) => {
-  await transaction.execute('INSERT INTO users (id, name) VALUES(4, ?)', ['James']);
-  await transaction.execute("UPDATE users SET name = ? WHERE name = ?", ['James Smith', 'James']);
-})
-const result = await powerSyncDb.get('SELECT name FROM users WHERE name = ?', ['James Smith'])
+  // 'James Smith'
 
-// 'James Smith'
-
-```
-
-</CodeGroup>
-
-### Watched Queries
-
-<CodeGroup>
-
-```js Drizzle
-import { toCompilableQuery } from "@powersync/drizzle-driver";
-
-// `compile()` is automatically called internally in the hooks, but not for `watch()`
-const compiledQuery = toCompilableQuery(db.select().from(users)).compile();
-
-powerSyncDb.watch(compiledQuery.sql, compiledQuery.parameters, {
-  onResult(results) {
-    console.log(results.rows?._array);
-
-    // With Typescript typing
-    // console.log((results.rows?._array as (typeof users.$inferSelect)[]));
-  },
-});
-
-// [{ id: '1', name: 'John' }]
-```
-
-```js PowerSync
-powerSyncDb.watch("select * from users", [], {
-  onResult(results) {
-    console.log(results.rows?._array);
-  },
-});
-
-// [{ id: '1', name: 'John' }]
-```
-
+  ```
 </CodeGroup>

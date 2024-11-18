@@ -7,6 +7,7 @@ title: "Client Architecture"
 From the client-side perspective, there are two data flow paths:
 
 * Reading data from the server or downloading data (to the SQLite database)
+
 * Writing changes back to the server, or uploading data (from the SQLite database)
 
 #### Reading Data
@@ -18,13 +19,13 @@ A developer configures [Sync Rules](/usage/sync-rules) for their PowerSync insta
 The PowerSync Service connects directly to the backend database and uses a change stream to hydrate dynamic data partitions, called [sync buckets](/usage/sync-rules/organize-data-into-buckets). Sync buckets are used to partition data according to the configured Sync Rules. (In most use cases, only a subset of data is required in a client's database and not a copy of the entire backend database.)
 
 <Frame>
-  <img src="/images/powersync-docs-architecture-diagram-006 (2).png"/>
+  <img src="/images/powersync-docs-architecture-diagram-006 (2).png" />
 </Frame>
 
 The local SQLite database embedded in the PowerSync SDK is automatically kept in sync with the backend database, based on the [Sync Rules](/usage/sync-rules) configured by the developer:
 
 <Frame>
-  <img src="/images/powersync-docs-architecture-diagram-007 (2).png"/>
+  <img src="/images/powersync-docs-architecture-diagram-007 (2).png" />
 </Frame>
 
 #### Writing Data
@@ -34,10 +35,11 @@ Client-side data modifications, namely updates, deletes and inserts, are persist
 Each entry in the queue is processed by writing the entry to your existing backend application API, using a function [defined by you](/installation/client-side-setup/integrating-with-your-backend) (the developer). This is to ensure that existing backend business logic is honored when uploading data changes. For more information, see the section on [integrating with your backend](/installation/client-side-setup/integrating-with-your-backend).
 
 <Frame>
-  <img src="/images/powersync-docs-architecture-diagram-008 (3).png"/>
+  <img src="/images/powersync-docs-architecture-diagram-008 (3).png" />
 </Frame>
 
 ### Schema
+
 On the client, the application [defines a schema](/installation/client-side-setup/define-your-schema) with tables, columns and indexes.
 
 These are then usable as if they were actual SQLite tables, while in reality these are created as SQLite views.
@@ -45,14 +47,21 @@ These are then usable as if they were actual SQLite tables, while in reality the
 The client SDK maintains the following tables:
 
 1. `ps_data__<table>` This contains the data for `<table>` , in JSON format. This table's schema does not change when columns are added, removed or changed.
+
 2. `ps_data_local__<table>` Same as the above, but for local-only tables.
+
 3. `<table>` (VIEW) - this is a view on the above table, with each defined column extracted from the JSON field. For example, a "description" text column would be `CAST(data ->> '$.description' as TEXT)`.
-4. `ps_untyped` \- Any synced table that does is not defined in the client-side schema is placed here. If the table is added to the schema at a later point, the data is then migrated to `ps_data__<table>`.
-5. `ps_oplog` \- This is data as received by the [PowerSync Service](/architecture/powersync-service), grouped per bucket.
-6. `ps_crud` \- The local upload queue.
-7. `ps_buckets` \- A small amount of metadata for each bucket.
-8. `ps_migrations` \- Table keeping track of SDK schema migrations.
+
+4. `ps_untyped` - Any synced table that does is not defined in the client-side schema is placed here. If the table is added to the schema at a later point, the data is then migrated to `ps_data__<table>`.
+
+5. `ps_oplog` - This is data as received by the [PowerSync Service](/architecture/powersync-service), grouped per bucket.
+
+6. `ps_crud` - The local upload queue.
+
+7. `ps_buckets` - A small amount of metadata for each bucket.
+
+8. `ps_migrations` - Table keeping track of SDK schema migrations.
 
 Most rows will be present in at least two tables — the `ps_data__<table>` table, and in `ps_oplog`. It may be present multiple times in `ps_oplog`, if it was synced via multiple buckets.
 
-The copy in `ps_oplog` may be newer than the one in `ps_data__<table>`. Only when a full checkpoint has been download, will the data be copied over to the individual tables. If multiple rows with the same table and id has been synced, only one will be preserved (the one with the highest `op_id`).
+The copy in `ps_oplog` may be newer than the one in `ps_data__<table>`. Only when a full checkpoint has been downloaded, will the data be copied over to the individual tables. If multiple rows with the same table and id has been synced, only one will be preserved (the one with the highest `op_id`).

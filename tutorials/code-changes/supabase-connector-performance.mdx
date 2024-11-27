@@ -1,0 +1,271 @@
+---
+title: "Improve Supabase Connector Performance"
+description: "In this tutorial we will show you how to improve the performance of the Supabase Connector for the [React Native To-Do List example app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist)."
+---
+
+<AccordionGroup>
+    <Accordion title="Sequential Merge Strategy">
+        <Note>
+            Shoutout to Christoffer Årstrand for the original implementation of this optimization.
+        </Note>
+        ```typescript {7-8, 11, 13-15, 17, 19-20, 24-36, 39, 43-56, 59-60, 75}
+        async uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
+            const transaction = await database.getNextCrudTransaction();
+            if (!transaction) {
+                return;
+            }
+
+            const MERGE_BATCH_LIMIT = 100;
+            let batchedOps: CrudEntry[] = [];
+
+            try {
+                console.log(`Processing transaction with ${transaction.crud.length} operations`);
+
+                for (let i = 0; i < transaction.crud.length; i++) {
+                    const cruds = transaction.crud;
+                    const op = cruds[i];
+                    const table = this.client.from(op.table);
+                    batchedOps.push(op);
+
+                    let result: any;
+                    let batched = 1;
+
+                    switch (op.op) {
+                        case UpdateType.PUT:
+                            const records = [{ ...cruds[i].opData, id: cruds[i].id }];
+                            while (
+                                i + 1 < cruds.length &&
+                                cruds[i + 1].op === op.op &&
+                                cruds[i + 1].op === op.op &&
+                                batched < MERGE_BATCH_LIMIT
+                            ) {
+                                i++;
+                                records.push({ ...cruds[i].opData, id: cruds[i].id });
+                                batchedOps.push(cruds[i]);
+                                batched++;
+                            }
+                            result = await table.upsert(records);
+                            break;
+                        case UpdateType.PATCH:
+                            batchedOps = [op];
+                            result = await table.update(op.opData).eq('id', op.id);
+                            break;
+                        case UpdateType.DELETE:
+                            batchedOps = [op];
+                            const ids = [op.id];
+                            while (
+                                i + 1 < cruds.length &&
+                                cruds[i + 1].op === op.op &&
+                                cruds[i + 1].op === op.table &&
+                                batched < MERGE_BATCH_LIMIT
+                            ) {
+                                i++;
+                                ids.push(cruds[i].id);
+                                batchedOps.push(cruds[i]);
+                                batched++;
+                            }
+                            result = await table.delete().in('id', ids);
+                            break;
+                    }
+                    if (batched > 1) {
+                        console.log(`Merged ${batched} ${op.op} operations for table ${op.table}`);
+                    }
+                }
+                await transaction.complete();
+            } catch (ex: any) {
+                console.debug(ex);
+                if (typeof ex.code == 'string' && FATAL_RESPONSE_CODES.some((regex) => regex.test(ex.code))) {
+                    /**
+                     * Instead of blocking the queue with these errors,
+                     * discard the (rest of the) transaction.
+                     *
+                     * Note that these errors typically indicate a bug in the application.
+                     * If protecting against data loss is important, save the failing records
+                     * elsewhere instead of discarding, and/or notify the user.
+                     */
+                    console.error('Data upload error - discarding:', ex);
+                    await transaction.complete();
+                } else {
+                    // Error may be retryable - e.g. network error or temporary server error.
+                    // Throwing an error here causes this call to be retried after a delay.
+                    throw ex;
+                }
+            }
+        }
+        ```
+    </Accordion>
+    <Accordion title="Pre-sorted Batch Strategy ">
+        ```typescript {8-11, 17-20, 23, 26-29, 32-53, 56, 72}
+        async uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
+            const transaction = await database.getNextCrudTransaction();
+            if (!transaction) {
+                return;
+            }
+
+            try {
+                // Group operations by type and table
+                const putOps: { [table: string]: any[] } = {};
+                const deleteOps: { [table: string]: string[] } = {};
+                let patchOps: CrudEntry[] = [];
+
+                // Organize operations
+                for (const op of transaction.crud) {
+                    switch (op.op) {
+                        case UpdateType.PUT:
+                            if (!putOps[op.table]) {
+                                putOps[op.table] = [];
+                            }
+                            putOps[op.table].push({ ...op.opData, id: op.id });
+                            break;
+                        case UpdateType.PATCH:
+                            patchOps.push(op);
+                            break;
+                        case UpdateType.DELETE:
+                            if (!deleteOps[op.table]) {
+                                deleteOps[op.table] = [];
+                            }
+                            deleteOps[op.table].push(op.id);
+                            break;
+                    }
+                }
+
+                // Execute bulk operations
+                for (const table of Object.keys(putOps)) {
+                    const result = await this.client.from(table).upsert(putOps[table]);
+                    if (result.error) {
+                        console.error(result.error);
+                        throw new Error(`Could not bulk PUT data to Supabase table ${table}: ${JSON.stringify(result)}`);
+                    }
+                }
+
+                for (const table of Object.keys(deleteOps)) {
+                    const result = await this.client.from(table).delete().in('id', deleteOps[table]);
+                    if (result.error) {
+                        console.error(result.error);
+                        throw new Error(`Could not bulk DELETE data from Supabase table ${table}: ${JSON.stringify(result)}`);
+                    }
+                }
+
+                // Execute PATCH operations individually since they can't be easily batched
+                for (const op of patchOps) {
+                    const result = await this.client.from(op.table).update(op.opData).eq('id', op.id);
+                    if (result.error) {
+                        console.error(result.error);
+                        throw new Error(`Could not PATCH data in Supabase: ${JSON.stringify(result)}`);
+                    }
+                }
+
+                await transaction.complete();
+            } catch (ex: any) {
+                console.debug(ex);
+                if (typeof ex.code == 'string' && FATAL_RESPONSE_CODES.some((regex) => regex.test(ex.code))) {
+                    /**
+                     * Instead of blocking the queue with these errors,
+                    * discard the (rest of the) transaction.
+                    *
+                    * Note that these errors typically indicate a bug in the application.
+                    * If protecting against data loss is important, save the failing records
+                    * elsewhere instead of discarding, and/or notify the user.
+                    */
+                    console.error('Data upload error - discarding transaction:', ex);
+                    await transaction.complete();
+                } else {
+                    // Error may be retryable - e.g. network error or temporary server error.
+                    // Throwing an error here causes this call to be retried after a delay.
+                    throw ex;
+                }
+            }
+        }
+        ```
+        </Accordion>
+</AccordionGroup>
+
+# Differences
+
+<AccordionGroup>
+    <Accordion title="Operation grouping strategy">
+        ### Sequential merge strategy
+        ```typescript
+        const MERGE_BATCH_LIMIT = 100;
+        let batchedOps: CrudEntry[] = [];
+        ```
+        - Pre-sorts all operations by type and table
+        - Processes each type in bulk after grouping
+
+        ### Pre-sorted batch strategy
+       ```typescript
+        const putOps: { [table: string]: any[] } = {};
+        const deleteOps: { [table: string]: string[] } = {};
+        let patchOps: CrudEntry[] = [];
+       ```
+        - Processes operations sequentially
+        - Merges consecutive operations of the same type up to a batch limit
+        - More dynamic/streaming approach
+    </Accordion>
+    <Accordion title="Batching methodology">
+        ### Sequential merge strategy
+        - Uses a sliding window approach with `MERGE_BATCH_LIMIT`
+        - Merges consecutive operations up to the limit
+        - More granular control over batch sizes
+        - Better for mixed operation types
+
+        ### Pre-sorted batch strategy
+        - Groups ALL operations of the same type together
+        - Executes one bulk operation per type per table
+        - Better for large numbers of similar operations
+    </Accordion>
+</AccordionGroup>
+
+
+## Key similarities and differences
+<CardGroup cols={2}>
+    <Card title="Key Similarities">
+        Handling of CRUD operations (PUT, PATCH, DELETE) to sync local changes to Supabase
+        <br />
+        Transaction management with `getNextCrudTransaction()`
+        <br />
+        Implement similar error handling for fatal and retryable errors
+        <br />
+        Complete the transaction after successful processing
+    </Card>
+    <Card title="Key Differences">
+        Operation grouping strategy
+        <br />
+        Batching methodology
+    </Card>
+</CardGroup>
+
+# Use cases
+
+<CardGroup cols={2}>
+    <Card title="Sequential Merge Strategy">
+        You need more granular control over batch sizes
+
+        Memory might be constrained
+
+        You want more detailed operation logging
+        
+        You need to handle mixed operation types more efficiently
+        <br />
+        <br />
+        **Best for**: Mixed operation types
+        <br />
+        **Optimizes for**: Memory efficiency
+        <br />
+        **Trade-off**: Potentially more network requests
+    </Card>
+    <Card title="Pre-sorted Batch Strategy">
+        You have a large number of similar operations.
+
+        Memory isn't a constraint.
+        
+        You want to minimize the number of network requests.
+        <br />
+        <br />
+        **Best for**: Large volumes of similar operations
+        <br />
+        **Optimizes for**: Minimal network requests
+        <br />
+        **Trade-off**: Higher memory usage
+    </Card>
+</CardGroup>

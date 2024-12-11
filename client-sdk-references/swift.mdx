@@ -1,22 +1,22 @@
 ---
-title: "Swift (Alpha)"
+title: "Swift (Beta)"
 sidebarTitle: "Overview"
 ---
 
 <Note>
-  The PowerSync Swift SDK is currently in an alpha release. It is not suitable for production use at this stage unless you've tested your use cases extensively. Breaking changes are still likely to occur.
+  The PowerSync Swift SDK is currently in a beta release. It is suitable for production use at this stage given you've tested your use cases extensively. Breaking changes are unlikely to occur.
 </Note>
 
 ## Kotlin Multiplatform -> Native Swift SDK
 
 This SDK is an extension of the [Kotlin Multiplatform SDK](https://github.com/powersync-ja/powersync-kotlin), and utilizes the API tool [SKIE](https://skie.touchlab.co/) to generate and publish a [PowerSync SDK](https://github.com/powersync-ja/powersync-kotlin/tree/main/PowerSync) that can be used in a standalone Swift app. Further details about this configuration can be found in our blog [here](https://www.powersync.com/blog/using-kotlin-multiplatform-with-kmmbridge-and-skie-to-publish-a-native-swift-sdk).
 
-For the beta, we are moving away from this Kotlin-based architecture towards more Swift-native APIs. For the stable release, will are planning a fully native Swift SDK.
+For the beta, we are moving away from this Kotlin-based architecture towards more Swift-native APIs. For the stable release, we are planning to move to a fully native Swift SDK.
 
 <Tip>
   **Demo App**
 
-  We recommend the [Supabase Todo List Demo](https://github.com/powersync-ja/powersync-kotlin-swift-demo) app as a starting point for using the Swift SDK. See the README for details to run it.
+  We recommend the [Supabase Todo List Demo](https://github.com/powersync-ja/powersync-swift/tree/main/Demo) app as a starting point for using the Swift SDK. See the README for details to run it.
 </Tip>
 
 ### SDK Features
@@ -43,11 +43,9 @@ let package = Package(
     dependencies: [
         ...
         .package(
-            url: "https://github.com/powersync-ja/powersync-kotlin",
-            exact: "1.0.0-BETA5.0"
-        ),
-        .package(
-            url: "https://github.com/powersync-ja/powersync-sqlite-core-swift",
+            url: "https://github.com/powersync-ja/powersync-swift",
+            // Exact version required while still in beta
+            exact: "<version>"
         ),
     ],
     targets: [
@@ -56,11 +54,7 @@ let package = Package(
             dependencies: [
                 .product(
                     name: "PowerSync",
-                    package: "powersync-kotlin"
-                ),
-                .product(
-                    name: "PowerSyncSqliteCore",
-                    package: "powersync-sqlite-core-swift"
+                    package: "powersync-swift"
                 ),
             ]
         )
@@ -71,21 +65,12 @@ let package = Package(
 2.  Using Xcode:
 
     1. Follow [this](https://developer.apple.com/documentation/xcode/adding-package-dependencies-to-your-app#Add-a-package-dependency) guide to add a package to your project.
-    2.  When searching for the package use [https://github.com/powersync-ja/powersync-kotlin.git](https://github.com/powersync-ja/powersync-kotlin.git) as the URL and include the exact version `1.0.0-BETA5.0` as shown below:
+    2. When searching for the package use [https://github.com/powersync-ja/powersync-swift.git](https://github.com/powersync-ja/powersync-swift.git) as the URL and include the exact version e.g. `1.0.0-Beta.x` as shown below:
 
     <Frame>
-        
-        <img src="/images/swift.avif"></img>
-    </Frame>
 
-    3. Do the same for `power-sqlite-core-swift` using [https://github.com/powersync-ja/powersync-sqlite-core-swift.git](https://github.com/powersync-ja/powersync-kotlin.git) and choose a range between `0.3.1` and `0.4.0` as shown below:
-    <Frame>
-        <img src="/images/image (1).png"></img>
+        <img src="/images/Swift-Xcode.png"></img>
     </Frame>
-
-<Note>
-    Use the exact version for `powersync-kotlin` as we are actively making changes to the Swift SDK which could result in breaking changes. The version history can be found [here](https://central.sonatype.com/artifact/com.powersync/core/versions).
-</Note>
 
 ## Getting Started
 
@@ -116,44 +101,37 @@ let lists = Table(
     name: LISTS_TABLE,
     columns: [
         // ID column is automatically included
-        Column(name: "name", type: ColumnType.text),
-        Column(name: "created_at", type: ColumnType.text),
-        Column(name: "owner_id", type: ColumnType.text)
-    ],
-    indexes: [],
-    localOnly: false,
-    insertOnly: false,
-    viewNameOverride: LISTS_TABLE
+        .text("name"),
+        .text("created_at"),
+        .text("owner_id")
+    ]
 )
 
 let todos = Table(
     name: TODOS_TABLE,
     // ID column is automatically included
     columns: [
-        Column(name: "list_id", type: ColumnType.text),
-        Column(name: "photo_id", type: ColumnType.text),
-        Column(name: "description", type: ColumnType.text),
+        .text("list_id"),
+        .text("photo_id"),
+        .text("description"),
         // 0 or 1 to represent false or true
-        Column(name: "completed", type: ColumnType.integer),
-        Column(name: "created_at", type: ColumnType.text),
-        Column(name: "completed_at", type: ColumnType.text),
-        Column(name: "created_by", type: ColumnType.text),
-        Column(name: "completed_by", type: ColumnType.text)
+        .integer("completed"),
+        .text("created_at"),
+        .text("completed_at"),
+        .text("created_by"),
+        .text("completed_by")
     ],
     indexes: [
         Index(
             name: "list_id",
             columns: [
-                IndexedColumn(column: "list_id", ascending: true, columnDefinition: nil, type: nil)
+                IndexedColumn.ascending("list_id")
             ]
         )
-    ],
-    localOnly: false,
-    insertOnly: false,
-    viewNameOverride: TODOS_TABLE
+    ]
 )
 
-let AppSchema = Schema(tables: [lists, todos])
+let AppSchema = Schema(lists, todos)
 ```
 
 <Info>
@@ -169,15 +147,11 @@ Its primary function is to record all changes in the local database, whether onl
 **Example**:
 
 ```swift
-// Comes from the PowerSync package
-let factory = DatabaseDriverFactory()
 // Comes from the AppSchema defined above
 let schema = AppSchema
-var db = PowerSyncDatabase(
-    factory: factory,
+let db = PowerSyncDatabase(
     schema: schema,
-    dbFilename: "powersync-swift.sqlite",
-    params: [:]
+    dbFilename: "powersync-swift.sqlite"
 )
 ```
 
@@ -204,11 +178,10 @@ Accordingly, the connector must implement two methods:
 import PowerSync
 
 @Observable
-@MainActor
 class MyConnector: PowerSyncBackendConnector {
     override func fetchCredentials() async throws -> PowerSyncCredentials? {
     // implement fetchCredentials to obtain the necessary credentials to connect to your backend
-    // See an example implementation in https://github.com/powersync-ja/powersync-kotlin-swift-demo/blob/main/PowerSyncExample/PowerSync/SupabaseConnector.swift
+    // See an example implementation in https://github.com/powersync-ja/powersync-swift/blob/main/Demo/PowerSyncExample/PowerSync/SupabaseConnector.swift
 
         return {
             endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
@@ -218,7 +191,7 @@ class MyConnector: PowerSyncBackendConnector {
         }
     }
 
-    override func uploadData(database: any PowerSyncDatabase) async throws {
+    override func uploadData(database: PowerSyncDatabaseProtocol) async throws {
         // Implement uploadData to send local changes to your backend service
         // You can omit this method if you only want to sync data from the server to the client
         // See an example implementation under Usage Examples (sub-page)
@@ -227,10 +200,6 @@ class MyConnector: PowerSyncBackendConnector {
 }
 
 ```
-
-<Info>
-  If you are using **Supabase**, you can use [SupabaseConnector.swift](https://github.com/powersync-ja/powersync-kotlin-swift-demo/blob/main/PowerSyncExample/PowerSync/SupabaseConnector.swift) as a starting point.
-</Info>
 
 ## Using PowerSync: CRUD functions
 
@@ -311,7 +280,7 @@ func watchLists(_ callback: @escaping (_ lists: [ListContent]) -> Void ) async {
             )
         }
     ) {
-        callback(lists as! [ListContent])
+        callback(lists)
     }
 }
 ```
@@ -336,11 +305,11 @@ func updateTodo(_ todo: Todo) async throws {
 }
 
 func deleteTodo(id: String) async throws {
-    try await db.writeTransaction(callback: SuspendTaskWrapper {
-        try await db.execute(
-            sql: "DELETE FROM \(TODOS_TABLE) WHERE id = ?",
-            parameters: [id]
-        )
+    try await db.writeTransaction(callback: { transaction in
+        _ = try await transaction.execute(
+                sql: "DELETE FROM \(TODOS_TABLE) WHERE id = ?",
+                parameters: [id]
+            )
         return
     })
 }

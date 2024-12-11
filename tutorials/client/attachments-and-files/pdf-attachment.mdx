@@ -1,0 +1,314 @@
+---
+title: "PDF attachments"
+description: "In this tutorial we will show you how to modify the [PhotoAttachmentQueue](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/PhotoAttachmentQueue.ts) for PDF attachments."
+keywords: ["pdf", "attachment", "storage"]
+---
+
+
+# Introduction
+
+The current version of the [To-Do List demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) implements a `PhotoAttachmentQueue` class which 
+enables photo attachments (specifially a `jpeg`) to be synced. This tutorial will guide you on the changes needed to support PDF attachments.
+
+An overview of the required changes are:
+1. Update the app schema by adding a `pdf_id` column to the todos table to link a pdf to a to-do item.
+2. Add a `PdfAttachmentQueue` class
+3. Initialize the `PdfAttachmentQueue` class
+
+<Warning>
+    The following pre-requisites are required to complete this tutorial:
+    - Clone the [To-Do List demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) repo
+        - Follow the instructions in the [README](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/README.md) and ensure that the app runs locally
+    - A running PowerSync Service and Supabase (can be self-hosted)
+    - [Storage configuration in Supabase](/integration-guides/supabase-+-powersync/handling-attachments#configure-storage-in-supabase)
+</Warning>
+
+# Steps
+
+<AccordionGroup>
+    <Accordion title="Step 1: Update app schema">
+        You can add a _nullable text_ `pdf_id` column to the to-do table via either the `Table Editor` or `SQL Editor` in Supabase.
+        
+        ## Table Editor
+        <img height="200" src="/images/tutorials/pdf-attachment/Supabase-table-editor.png" />
+
+        ## SQL Editor
+        - Navigate to the `SQL Editor` tab:
+        <img height="200" src="/images/tutorials/pdf-attachment/Supabase-sql-editor.png" />
+        - Execute the following SQL:
+        ```sql
+        ALTER TABLE public.todos ADD COLUMN pdf_id text NULL;
+        ```
+
+        You can now update the [AppSchema](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/AppSchema.ts) to include the newly created column.
+        ```typescript AppSchema.ts
+        export interface TodoRecord {
+            // existing code
+            pdf_id?: string;
+        }
+
+        export const AppSchema = new Schema([
+            new Table({
+                name: 'todos',
+                columns: [
+                    // existing columns
+                    new Column({ name: 'pdf_id', type: ColumnType.TEXT })
+                ]
+            })
+        // existing code
+        ]);
+        ```
+
+    </Accordion>
+
+    <Accordion title="Step 2: Create the `PdfAttachmentQueue` class">
+        The `PdfAttachmentQueue` class below updates the existing [PhotoAttachmentQueue](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/PhotoAttachmentQueue.ts)
+        found in the demo app. The highlighted lines indicate which lines have been updated. For more information on attachments, see the [attachments package](https://github.com/powersync-ja/powersync-js/tree/main/packages/attachments).
+
+        ```typescript {7, 10, 20, 26-27, 29, 31, 37-40, 45, 48} PdfAttachmentQueue.ts
+        import * as FileSystem from 'expo-file-system';
+        import { randomUUID } from 'expo-crypto';
+        import { AppConfig } from '../supabase/AppConfig';
+        import { AbstractAttachmentQueue, AttachmentRecord, AttachmentState } from '@powersync/attachments';
+        import { TODO_TABLE } from './AppSchema';
+
+        export class PdfAttachmentQueue extends AbstractAttachmentQueue {
+            async init() {
+                if (!AppConfig.supabaseBucket) {
+                    console.debug('No Supabase bucket configured, skip setting up PdfAttachmentQueue watches');
+                    // Disable sync interval to prevent errors from trying to sync to a non-existent bucket
+                    this.options.syncInterval = 0;
+                    return;
+                }
+
+                await super.init();
+            }
+
+            onAttachmentIdsChange(onUpdate: (ids: string[]) => void): void {
+                this.powersync.watch(`SELECT pdf_id as id FROM ${TODO_TABLE} WHERE pdf_id IS NOT NULL`, [], {
+                    onResult: (result) => onUpdate(result.rows?._array.map((r) => r.id) ?? [])
+                });
+            }
+
+            async newAttachmentRecord(record?: Partial<AttachmentRecord>): Promise<AttachmentRecord> {
+                const pdfId = record?.id ?? randomUUID();
+                const filename = record?.filename ?? `${pdfId}.pdf`;
+                return {
+                    id: pdfId,
+                    filename,
+                    media_type: 'application/pdf',
+                    state: AttachmentState.QUEUED_UPLOAD,
+                    ...record
+                };
+            }
+
+            async saveAttachment(base64Data: string): Promise<AttachmentRecord> {
+                const attachment = await this.newAttachmentRecord();
+                attachment.local_uri = this.getLocalFilePathSuffix(attachment.filename);
+                const localUri = this.getLocalUri(attachment.local_uri);
+                await this.storage.writeFile(localUri, base64Data, { encoding: FileSystem.EncodingType.Base64 });
+
+                const fileInfo = await FileSystem.getInfoAsync(localUri);
+                if (fileInfo.exists) {
+                    attachment.size = fileInfo.size;
+                }
+
+                return this.saveToQueue(photoAttachment);
+            }
+        }
+        ```
+    </Accordion>
+
+    <Accordion title="Step 3: Initialize the `PdfAttachmentQueue` class">
+        We start by importing the `PdfAttachmentQueue` and adding an `attachmentPdfQueue` class variable.
+
+        ```typescript
+        // Additional imports
+        import { PdfAttachmentQueue } from './PdfAttachmentQueue';
+
+        export class System {
+            // Existing class variables
+            attachmentPdfQueue: PdfAttachmentQueue | undefined = undefined;
+            ...
+        }
+        ```
+        The `attachmentPdfQueue` can then be initialized in the constructor, where a new instance of PdfAttachmentQueue is created and assigned to `attachmentPdfQueue` if the `supabaseBucket` is configured.
+        ```typescript
+        constructor() {
+            // init code
+            if (AppConfig.supabaseBucket) {
+                // init PhotoAttachmentQueue
+                this.attachmentPdfQueue = new PdfAttachmentQueue({
+                    powersync: this.powersync,
+                    storage: this.storage,
+                    // Use this to handle download errors where you can use the attachment
+                    // and/or the exception to decide if you want to retry the download
+                    onDownloadError: async (attachment: AttachmentRecord, exception: any) => {
+                        if (exception.toString() === 'StorageApiError: Object not found') {
+                            return { retry: false };
+                        }
+
+                        return { retry: true };
+                    }
+                });
+            }
+        }
+        ```
+
+        We can then update the `init` method to include the initialization of the `attachmentPdfQueue`.
+        ```typescript
+        await init() {
+            //  init powersync
+            if (this.attachmentPdfQueue) {
+                await this.attachmentPdfQueue.init();
+            }
+        }
+        ```
+
+
+
+        The complete updated `system.ts` file can be found below with highlighted lines indicating the changes made above.
+        ```typescript system.ts {14, 24, 63-75, 86-88}
+        import '@azure/core-asynciterator-polyfill';
+
+        import { PowerSyncDatabase } from '@powersync/react-native';
+        import React from 'react';
+        import { SupabaseStorageAdapter } from '../storage/SupabaseStorageAdapter';
+
+        import { type AttachmentRecord } from '@powersync/attachments';
+        import Logger from 'js-logger';
+        import { KVStorage } from '../storage/KVStorage';
+        import { AppConfig } from '../supabase/AppConfig';
+        import { SupabaseConnector } from '../supabase/SupabaseConnector';
+        import { AppSchema } from './AppSchema';
+        import { PhotoAttachmentQueue } from './PhotoAttachmentQueue';
+        import { PdfAttachmentQueue } from './PdfAttachmentQueue';
+
+        Logger.useDefaults();
+
+        export class System {
+            kvStorage: KVStorage;
+            storage: SupabaseStorageAdapter;
+            supabaseConnector: SupabaseConnector;
+            powersync: PowerSyncDatabase;
+            attachmentQueue: PhotoAttachmentQueue | undefined = undefined;
+            attachmentPdfQueue: PdfAttachmentQueue | undefined = undefined;
+
+            constructor() {
+                this.kvStorage = new KVStorage();
+                this.supabaseConnector = new SupabaseConnector(this);
+                this.storage = this.supabaseConnector.storage;
+                this.powersync = new PowerSyncDatabase({
+                    schema: AppSchema,
+                    database: {
+                        dbFilename: 'sqlite.db'
+                    }
+                });
+                /**
+                * The snippet below uses OP-SQLite as the default database adapter.
+                * You will have to uninstall `@journeyapps/react-native-quick-sqlite` and
+                * install both `@powersync/op-sqlite` and `@op-engineering/op-sqlite` to use this.
+                *
+                * import { OPSqliteOpenFactory } from '@powersync/op-sqlite'; // Add this import
+                *
+                * const factory = new OPSqliteOpenFactory({
+                * dbFilename: 'sqlite.db'
+                * });
+                * this.powersync = new PowerSyncDatabase({ database: factory, schema: AppSchema });
+                */
+
+                if (AppConfig.supabaseBucket) {
+                    this.attachmentQueue = new PhotoAttachmentQueue({
+                        powersync: this.powersync,
+                        storage: this.storage,
+                        // Use this to handle download errors where you can use the attachment
+                        // and/or the exception to decide if you want to retry the download
+                        onDownloadError: async (attachment: AttachmentRecord, exception: any) => {
+                        if (exception.toString() === 'StorageApiError: Object not found') {
+                            return { retry: false };
+                        }
+
+                        return { retry: true };
+                        }
+                    });
+                    this.attachmentPdfQueue = new PdfAttachmentQueue({
+                        powersync: this.powersync,
+                        storage: this.storage,
+                        // Use this to handle download errors where you can use the attachment
+                        // and/or the exception to decide if you want to retry the download
+                        onDownloadError: async (attachment: AttachmentRecord, exception: any) => {
+                            if (exception.toString() === 'StorageApiError: Object not found') {
+                                return { retry: false };
+                            }
+
+                            return { retry: true };
+                        }
+                    });
+                }
+            }
+
+            async init() {
+                await this.powersync.init();
+                await this.powersync.connect(this.supabaseConnector);
+
+                if (this.attachmentQueue) {
+                    await this.attachmentQueue.init();
+                }
+                if (this.attachmentPdfQueue) {
+                    await this.attachmentPdfQueue.init();
+                }
+            }
+        }
+
+        export const system = new System();
+
+        export const SystemContext = React.createContext(system);
+        export const useSystem = () => React.useContext(SystemContext);
+        ```
+    </Accordion>
+</AccordionGroup>
+
+# Usage Example
+
+The newly created `attachmentPdfQueue` can now be used in a component by using the `useSystem` hook created in [step-3](#step-3-initialize-the-pdfattachmentqueue-class) above
+
+The code snippet below illustrates how a pdf could be saved when pressing a button. It uses a [DocumentPicker](https://www.npmjs.com/package/react-native-document-picker) UI component
+to allow the user to select a pdf. When the button is pressed, `savePdf` is called.
+
+The `saveAttachment` method in the `PdfAttachmentQueue` class expects a base64 encoded string. We can therefore use 
+[react-native-fs](https://www.npmjs.com/package/react-native-fs) to read the file and return the base64 encoded string which is passed to `saveAttachment`.
+<Note>
+If your use-case generates a pdf file, ensure that you return a base64 encoded string.
+</Note>
+
+
+```typescript
+import DocumentPicker from 'react-native-document-picker';
+import RNFS from 'react-native-fs';
+
+// Within some component
+
+// useSystem is imported from system.ts 
+const system = useSystem();
+
+const savePdf = async (id: string) => {  
+  if (system.attachmentPdfQueue) {  
+    const res = await DocumentPicker.pick({  
+      type: [DocumentPicker.types.pdf]  
+    });  
+  
+    console.log(`Selected PDF: ${res[0].uri}`);
+    const base64 = await RNFS.readFile(res[0].uri, 'base64');  
+    const { id: attachmentId } = await system.attachmentPdfQueue.saveAttachment(base64);  
+  
+    await system.powersync.execute(`UPDATE ${TODO_TABLE} SET pdf_id = ? WHERE id = ?`, [attachmentId, id]);  
+  }  
+};
+
+<Button title="Select PDF" onPress={savePdf} />
+```
+
+# Notes
+Although this tutorial adds a new `pdf_id` column, the approach you should take strongly depends on your requirements.
+
+An alternative approach could be to replace the `photo_id` with an `attachment_id` and have one `AttachmentQueue` class that handles all attachment types instead of having a class per attachment type.

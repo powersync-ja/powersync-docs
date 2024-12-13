@@ -340,9 +340,6 @@ Due to the logical replication requirement, not all hosting providers are suppor
 Notably, some "serverless Postgres" providers do not support logical replication, and are therefore not supported by PowerSync yet.
 
 ## <Icon icon="leaf" iconType="solid" size="24"/> MongoDB (Alpha)
-<Info>
-  This section is a work in progress. More details for MongoDB connections are coming soon. In the meantime, check our [MongoDB guide](/migration-guides/mongodb-atlas) to try out our MongoDB alpha support, and ask on our [Discord server](https://discord.gg/powersync) if you have any questions.
-</Info>
 
 <Check>
 **Version compatibility**: PowerSync requires MongoDB version 6.0 or greater.
@@ -357,7 +354,7 @@ readWrite@<your_database>._powersync_checkpoints
 read@<your_database>
 ```
 
-To allow PowerSync to automatically configure enable `changeStreamPreAndPostImages` on
+To allow PowerSync to automatically configure enable [`changeStreamPreAndPostImages`](#post-images) on
 replicated collections, instead use:
 
 ```
@@ -377,31 +374,31 @@ For self-hosted MongoDB, PowerSync requires the `find` and `changeStream` permis
 
 PowerSync also requires `createCollection`, `dropCollection`, `insert`, `update`, and `remove` permissions to the `_powersync_checkpoints` collection.
 
-### postImages
+### Post-Images
 
 To replicate data from MongoDB to PowerSync in a consistent manner, PowerSync
-uses Change Streams with `fullDocument: 'required'` to get postImages with every change.
-For this to work, `changeStreamPreAndPostImages` must be enabled on every replicated collection.
+uses Change Streams with [post-images](https://www.mongodb.com/docs/v6.0/reference/command/collMod/#change-streams-with-document-pre--and-post-images) to get the complete document after each change.
+This requires the `changeStreamPreAndPostImages` option to be enabled on replicated collections.
 
-A PowerSync instance can be configured to enable this automatically, if it has
-sufficient permissions (see permissions above). Alternatively, run this on every collection:
+PowerSync supports three configuration options for post-images:
 
-```js
-db.runCommand({
-  collMod: COLLECTION_NAME,
-  changeStreamPreAndPostImages: { enabled: true }
-})
-```
+- `post_images: off`: Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling postImages support instead.
+- `post_images: auto_configure` [Default for new instances]: Automatically configures the `changeStreamPreAndPostImages` option on collections as needed. 
+- `post_images: read_only`: Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in sync rules. Replication will error if this is not configured. Ideal when permissions are restricted.
 
-You can view which collections have the option enabled using:
+  - To manually configure collections for `read_only` mode, run this on each collection:
+  ```js
+  db.runCommand( {
+   collMod: <collection>,
+   changeStreamPreAndPostImages: { enabled: <boolean> }
+  } )
+  ```
+  - You can view which collections have the option enabled using:
 
-```js
-db.getCollectionInfos().filter(c => c.options?.changeStreamPreAndPostImages?.enabled)
-```
+  ```js
+  db.getCollectionInfos().filter(c => c.options?.changeStreamPreAndPostImages?.enabled)
+  ```
 
-A PowerSync instance can alternatively be configured to replicate using `fullDocument: 'updateLookup'`.
-This was the default for older instances. However, this may lead to consistency issues,
-so we strongly recommend enabling postImages support instead.
 
 ## <Icon icon="dolphin" iconType="solid" size="24"/> MySQL (Alpha)
 

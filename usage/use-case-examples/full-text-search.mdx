@@ -9,16 +9,11 @@ This requires creating a separate FTS5 table(s) to index the data, and updating 
   Note that the availability of FTS is dependent on the underlying `sqlite` package used, as it is an extension that must first be enabled in the package.
 </Note>
 
-Currently, FTS is supported in:
+Full-text search is supported in all PowerSync client SDKs. Some SDKs have additional requirements:
 
-* **Flutter:** [powersync.dart](https://github.com/powersync-ja/powersync.dart) ([PowerSync Flutter SDK](/client-sdk-references/flutter))
-   * Relies on the [sqlite\_async](https://pub.dev/documentation/sqlite_async/latest/) package for migrations
-* **Web:** [powersync-sdk-web](https://github.com/powersync-ja/powersync-js/blob/main/packages/web/README.md) ([JavaScript Web SDK](/client-sdk-references/javascript-web))
-   * Requires version 0.5.0 or greater of the SDK (incl. version 0.2.0 of the [wa-sqlite](https://github.com/powersync-ja/wa-sqlite) package)
-* [Kotlin](/client-sdk-references/kotlin-multiplatform)
-* [Swift](/client-sdk-references/swift)
-
-**React Native:** SQLite recursive triggers are supported in the [React Native SDK](/client-sdk-references/react-native-and-expo), and it should be possible to implement FTS with some additional config. [This issue](https://github.com/ospfranco/react-native-quick-sqlite/issues/37) could be a good starting point.
+* [**Flutter SDK**](/client-sdk-references/flutter): Uses the [sqlite_async](https://pub.dev/documentation/sqlite_async/latest/) package for migrations
+* [**JavaScript/Web SDK**](/client-sdk-references/javascript-web): Requires version 0.5.0 or greater (including [wa-sqlite](https://github.com/powersync-ja/wa-sqlite) 0.2.0+)
+* [**React Native SDK**](/client-sdk-references/react-native-and-expo): Requires version 1.16.0 or greater (including [@powersync/react-native-quick-sqlite](https://github.com/powersync-ja/react-native-quick-sqlite) 2.2.1+)
 
 ## Example Implementations
 
@@ -26,8 +21,9 @@ FTS is implemented in the following demo apps:
 
 * [Flutter To-Do List App](https://github.com/powersync-ja/powersync.dart/tree/master/demos/supabase-todolist)
 * [React To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist)
+* [React Native To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist)
 
-We explain these implementations in more detail below. Example code is shown mainly in Dart, but references to the React equivalents are included where relevant, so you should be able to cross-reference.
+We explain these implementations in more detail below. Example code is shown mainly in Dart, but references to the React or React Native equivalents are included where relevant, so you should be able to cross-reference.
 
 ## Walkthrough: Full-text search in the To-Do List Demo App
 
@@ -35,44 +31,58 @@ We explain these implementations in more detail below. Example code is shown mai
 
 FTS tables are created when instantiating the client-side PowerSync database (DB).
 
-This occurs in [powersync.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/powersync.dart#L186) (Flutter implementation) and [SystemProvider.tsx](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/providers/SystemProvider.tsx#L41) (Web implementation).
+<Tabs>
+<Tab title="Dart">
+  ```dart
+  // https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/powersync.dart#L186
 
-**Dart example:**
-
-```dart
-// powersync.dart
-
-Future<void> openDatabase() async {
-...
+  Future<void> openDatabase() async {
+    ...
     await configureFts(db);
-}
-```
+  }
+  ```
+</Tab>
+<Tab title="React">
+  ```ts
+  // https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/providers/SystemProvider.tsx#L41
 
-Note: The Web implementation does not use migrations. It creates the FTS tables separately in [utils/fts\_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_setup.ts).
-
-**TypeScript example:**
-
-```ts
-// SystemProvider.tsx
-
-SystemProvider = ({ children }: { children: React.ReactNode }) => {
-...
+  SystemProvider = ({ children }: { children: React.ReactNode }) => {
+    ...
     React.useEffect(() => {
     ...
         configureFts();
+    })
+  }
+  ```
+</Tab>
+<Tab title="React Native">
+  ```ts
+  // https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/system.ts#L75
+
+  export class System {
+    ...
+    powersync: PowerSyncDatabase;
+    ...
+    async init() {
+      ...
+      await configureFts(this.powersync);
     }
-}
-```
+  }
+  ```
+</Tab>
+</Tabs>
+
 
 First, we need to set up the FTS tables to match the `lists` and `todos` tables already created in this demo app. Don't worry if you already have data in the tables, as it will be copied into the new FTS tables.
 
 To simplify implementation these examples make use of SQLite migrations. The migrations are run in [migrations/fts\_setup.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/migrations/fts_setup.dart) in the Flutter implementation. Here we use the [sqlite\_async](https://pub.dev/documentation/sqlite_async/latest/) Dart package to generate the migrations.
 
-The FTS tables are created in [utils/fts\_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_setup.ts) in the Web implementation.
+<Note>
+Note: The Web and React Native implementations do not use migrations. It creates the FTS tables separately, see for example [utils/fts\_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_setup.ts) (Web) and [library/fts/fts\_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/fts/fts_setup.ts) (React Native).
+</Note>
+
 
 **Dart example:**
-
-Copy
 
 ```dart
 // migrations/fts_setup.dart

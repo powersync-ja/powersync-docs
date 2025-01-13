@@ -310,29 +310,11 @@ powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP
 ### Configuring Different SQLite Virtual Filesystems for Web
 The default SQLite VFS (`IDBBatchAtomicVFS`) can be replaced by supported [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) alternatives.
 `IDBBatchAtomicVFS` uses `IndexedDB` as the underlying storage which may have worse performance and stability issues with browsers such as Safari when compared with `OPFS` based VFSs.
-See [WA-SQLite README](https://github.com/powersync-ja/wa-sqlite/blob/1bb58d3619b96a2708e0320e1c22d0f2b9db35c6/src/examples/README.md#L28) for more details on each option.
+See the [WA-SQLite README](https://github.com/powersync-ja/wa-sqlite/blob/1bb58d3619b96a2708e0320e1c22d0f2b9db35c6/src/examples/README.md#L28) for more details on each option.
 
 `OPFS` can be configured with a `WASQLiteOpenFactory`.
 
 <CodeGroup>
-```js AccessHandlePoolVFS
-import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
-
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: new WASQLiteOpenFactory({
-    dbFilename: 'exampleVFS.db',
-    vfs: WASQLiteVFS.AccessHandlePoolVFS,
-    flags: {
-      enableMultiTabs: typeof SharedWorker !== 'undefined'
-    } 
-  }),
-  flags: {
-    enableMultiTabs: typeof SharedWorker !== 'undefined'
-  }
-});
-```
-
 ```js OPFSCoopSyncVFS (Safari Multiple Tabs Support)
 import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
 
@@ -350,34 +332,75 @@ export const db = new PowerSyncDatabase({
   }
 });
 ```
+
+```js AccessHandlePoolVFS
+import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: new WASQLiteOpenFactory({
+    dbFilename: 'exampleVFS.db',
+    vfs: WASQLiteVFS.AccessHandlePoolVFS,
+    flags: {
+      enableMultiTabs: typeof SharedWorker !== 'undefined'
+    } 
+  }),
+  flags: {
+    enableMultiTabs: typeof SharedWorker !== 'undefined'
+  }
+});
+```
 </CodeGroup>
 
 **Note**: The `AccessHandlePoolVFS` does not to work correctly in the multiple tabs use case. `OPFSCoopSyncVFS` works with multiple tabs, and adds multiple tab support for both Safari and Safari iOS.
+
+**Note**: There are known limitations with `OPFS` in Safari’s incognito mode, which may cause it to not function properly.
+
 | VFS Type               | Multi-Tab Support on Normal Browsers | Multi-Tab Support on Safari/Safari iOS | Notes                                                             |
 |-------------------------|-------------------------------------|----------------------------------------|-------------------------------------------------------------------|
 | **IDBBatchAtomicVFS**  | Supported                        | Not supported                        | May have stability issues on Safari. |
 | **AccessHandlePoolVFS**| Not supported                    | Not supported                       | Does not work correctly in multi-tab scenarios.                  |
 | **OPFSCoopSyncVFS**    | Supported                        | Supported                           | Works with multiple tabs on all browsers, including Safari.      |
 
-### HTTP Requirements
+### Clearing OPFS Storage
 
-The use of `OPFS` requires a secure context and additional HTTP headers when serving a web application.
+Clearing `OPFS` storage isn’t as straightforward as clearing `IndexedDB` which can be done through browser developer tools. 
+This requires developers to manually iterate through and delete files and directories.
 
-For Vite these headers can be configured in the Vite config file:
-`vite.config.mts`
-```js
-import { defineConfig } from 'vite';
+```js 
+async function purgeVFS() {
+  await powerSync.disconnect();
+  await powerSync.close();
 
-export default defineConfig({
-  server: {
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-  },
-});
+  const root = await navigator.storage.getDirectory();
 
+  // .db-wal needs a moment to become deletable
+  await new Promise((resolve) => setTimeout(resolve, 1));
+
+  for await (const [name, entry] of root.entries!()) {
+    try {
+      if (entry.kind === 'file') {
+        console.log(`Deleted file: ${name}`);
+        await root.removeEntry(name);
+      } else if (entry.kind === 'directory') {
+        await root.removeEntry(name, { recursive: true });
+        console.log(`Deleted directory: ${name}`);
+      }
+    } catch (err) {
+      console.error(`Failed to delete ${entry.kind}: ${name}`, err);
+    }
+  }
+}
+
+async function listVfsEntries() {
+  const root = await navigator.storage.getDirectory();
+
+  for await (const [name, entry] of root.entries()) {
+      console.log(`Entry ${entry.kind}: ${name}`);
+  }
+}
 ```
+
 
 ## ORM Support
 

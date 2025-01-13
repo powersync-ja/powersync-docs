@@ -23,9 +23,13 @@ Examples of the above can be found in our demo application [here](https://github
   **Deploy PowerSync on Coolify:** See our [integration guide](/integration-guides/coolify) for deploying the PowerSync Service on Coolify. This can simplify the setup and management of the deployment.
 </Tip>
 
-## Configure MongoDB
+## Configure Storage Backend
 
-The PowerSync Service uses [MongoDB](https://www.mongodb.com/) under the hood and requires at least one replica set node. A single node is fine for development/staging environments, but a 3-node replicas set is recommended [for production](/self-hosting/lifecycle-maintenance/server-specs).
+The PowerSync Service requires a storage backend for sync buckets. You can use either MongoDB or Postgres for this purpose.
+
+### MongoDB Storage
+
+MongoDB requires at least one replica set node. A single node is fine for development/staging environments, but a 3-node replicas set is recommended [for production](/self-hosting/lifecycle-maintenance/server-specs).
 
 [MongoDB Atlas](https://www.mongodb.com/products/platform/atlas-database) enables replica sets by default for new clusters.
 
@@ -50,6 +54,33 @@ If you are rolling your own Docker environment, you can include this init script
       - 'sleep 10 && mongosh --host mongo:27017 --eval ''try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'''
 ```
 
+### Postgres Storage
+
+Postgres can also be used as a storage backend. This requires a separate Postgres instance from your data source database.
+
+#### Database Setup
+
+You'll need to create a user and schema for PowerSync storage. You can either:
+
+1. Let PowerSync create the schema (recommended):
+
+```sql
+CREATE USER powersync_storage_user WITH PASSWORD 'secure_password';
+-- The user should only have access to the schema it created
+GRANT CREATE ON DATABASE postgres TO powersync_storage_user;
+```
+
+2. Or manually create the schema:
+
+```sql
+CREATE USER powersync_storage_user WITH PASSWORD 'secure_password';
+CREATE SCHEMA IF NOT EXISTS powersync AUTHORIZATION powersync_storage_user;
+GRANT CONNECT ON DATABASE postgres TO powersync_storage_user;
+GRANT USAGE ON SCHEMA powersync TO powersync_storage_user;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA powersync TO powersync_storage_user;
+```
+
+
 ## PowerSync Configuration
 
 The PowerSync Service is configured using key/value pairs in a config file, and supports the following configuration methods:
@@ -70,7 +101,7 @@ The config file schema is also available here:
 
 <Card title="self-host-demo/schema/schema.json at main · powersync-ja/self-host-demoGitHub" icon="github" href="https://github.com/powersync-ja/self-host-demo/blob/main/schema/schema.json" horizontal />
 
-Below is a skeleton config file that you can copy/paste and edit locally:
+Below is a skeleton config file you can copy and paste to edit locally:
 
 ```yaml
 # config.yaml
@@ -92,13 +123,22 @@ replication:
       sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
       # 'disable' is OK for local/private networks, not for public networks
 
-# Connection settings for sync bucket storage
+# Connection settings for sync bucket storage (Postgres and MongoDB are supported)
 storage:
+  # Option 1: MongoDB Storage
   type: mongodb
   uri: mongodb://mongo:27017/powersync_demo
-  # use these if authentication is required
   # username: myuser
   # password: mypassword
+
+  # Option 2: Postgres Storage
+  # type: postgresql
+  # uri: postgresql://powersync_storage_user:secure_password@storage-db:5432/postgres
+  # Optional batch limits configuration
+  # batch_limits:
+  #   max_estimated_size: 5000000
+  #   max_record_count: 2000
+  #   max_current_data_batch_size: 50000000
 
 # The port which the PowerSync API server will listen on
 port: 80
@@ -132,6 +172,10 @@ client_auth:
 
 ```
 
+<Info>
+**Important:** When using Postgres storage, you must use a separate database instance from your data source database. Using the same database for both purposes may cause unexpected results.
+</Info>
+
 Specify the connection to Postgres in the `replication` section. Retrieving your database connection string / individual parameters differs by database hosting provider. See [Database Connection](/self-hosting/appendix/database-connection) for further details.
 
 <Info>
@@ -142,7 +186,7 @@ Specify the connection to Postgres in the `replication` section. Retrieving your
   This is because Supabase only allows direct database connections over IPv6 — PowerSync cannot connect using the connection pooler.
 </Info>
 
-Specify the connection to MongoDB in the `storage` section.
+Specify the connection to your sync bucket storage provider (Postgres or MongoDB) in the `storage` section.
 
 ### Environment Variables
 

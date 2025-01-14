@@ -16,6 +16,7 @@ description: "Usage and billing FAQs and troubleshooting strategies."
     A sync operation occurs when a single row is synced from the PowerSync Service to a user device. 
 
     The PowerSync Service maintains a history of operations for each row to ensure efficient streaming and data integrity. As a result, sync operation counts may exceed the number of actual data mutations. See the [Usage Troubleshooting](#usage-troubleshooting) section for more details.
+
   </Accordion>
 
   <Accordion title="What are concurrent connections?">
@@ -79,12 +80,16 @@ While sync operations typically correspond to data mutations on synced rows (tho
    - Providing manual defragmentation options (in the PowerSync Dashboard)
 
 2. **Existing Users**
-   While compacting and defragmenting reduces the operations history, they may trigger additional sync operations for existing users.
+   While compacting and defragmenting reduces the operations history, they trigger additional sync operations for existing users.
    - Want to optimize this? Check out our [defragmenting guide](/usage/lifecycle-maintenance/compacting-buckets#defragmenting-trade-offs)
 
-### A Sync Rule deploy can increase sync operations temporarily
+### How do Sync Rule deployments impact sync operations?
 
-When changes to Sync Rules are deployed, sync buckets are recreated from scratch. This can have a similar effect to compacting + defragmenting, which could lead to a temporary increase in sync operations to existing users. More info: https://docs.powersync.com/usage/lifecycle-maintenance/compacting-buckets#sync-rule-deployments 
+When you deploy changes to Sync Rules, PowerSync recreates the sync buckets from scratch. This has two effects:
+1. New app installations will sync fewer operations since the operations history is reset.
+2. Existing users will temporarily experience increased sync operations as they need to re-sync the updated buckets.
+
+We are planning [incremental sync rule reprocessing](https://roadmap.powersync.com/c/85-more-efficient-sync-reprocessing), which will allow PowerSync to only reprocess buckets whose definitions have changed, rather than all buckets.
 
 ### Do updates to unsynced columns trigger sync operations?
 
@@ -128,10 +133,40 @@ Because of this structure, your hosted data size may be larger than your source 
    Use the [Diagnostics app](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to compare total rows vs. operations synced to the user device. If you are seeing a much higher number of operations, you might benefit from [defragmentation](/usage/lifecycle-maintenance/compacting-buckets#defragmenting).
 
 4. **Detailed Sync Operations**
-   - Use the [test-client](https://github.com/powersync-ja/powersync-service/blob/main/test-client/src/bin.ts)'s `fetch-operations` command:
+   - Use the [test-client](https://github.com/powersync-ja/powersync-service/blob/main/test-client/src/bin.ts)'s `fetch-operations` command with the `--raw` flag:
      ```bash
      node dist/bin.js fetch-operations --raw --token your-jwt --endpoint https://12345.powersync.journeyapps.com
      ```
+     This returns the individual operations for a user in JSON. Example response:
+     ```bash
+     {
+        "by_user[\"0b32a7cb-26fb-4993-9c60-9291a430337e\"]": [
+            {
+            "op_id": "0",
+            "op": "CLEAR",
+            "checksum": 2082236117
+            },
+            {
+            "op_id": "1145383",
+            "op": "PUT",
+            "object_type": "todos",
+            "object_id": "69688ea0-d3f6-46c9-81a2-cdbe54eeb54d",
+            "checksum": 3246341700,
+            "subkey": "6752f74f8176c1b5ba851480/fcb2cd3c-dcef-5c46-8b17-7b83d31fda2b",
+            "data": "{\"id\":\"69688ea0-d3f6-46c9-81a2-cdbe54eeb54d\",\"created_at\":\"2024-09-16 10:16:35.352665Z\",\"description\":\"Buy groceries\",\"user_id\":\"0b32a7cb-26fb-4993-9c60-9291a430337e\"}"
+            },
+            {
+            "op_id": "1145387",
+            "op": "PUT",
+            "object_type": "todos",
+            "object_id": "7e4a4550-af3b-4876-a01a-10dc0084f0a6",
+            "checksum": 1103209588,
+            "subkey": "6752f74f8176c1b5ba851480/75bbc91d-cfc9-5b22-9f85-ea31a8720bf8",
+            "data": "{\"id\":\"7e4a4550-af3b-4876-a01a-10dc0084f0a6\",\"created_at\":\"2024-10-07 16:17:37Z\",\"description\":\"Plant tomatoes\",\"user_id\":\"0b32a7cb-26fb-4993-9c60-9291a430337e\"}"
+            }
+        ]
+      }
+     ```
 
 # Accident Forgiveness
-Accidentally ran up a high bill? No problem — we’ve got your back. We understand these things happen and we're here to help. Reach out to us at support@powersync.com and we'll work with you to resolve the issue and prevent it from happening again. 
+Accidentally ran up a high bill? No problem — we’ve got your back. Reach out to us at support@powersync.com and we'll work with you to resolve the issue and prevent it from happening again. 

@@ -70,39 +70,32 @@ The most common cause of seeing excessive concurrent connections is opening mult
 
 ## Sync operations
 
-While sync operations typically correspond to data mutations on synced rows (those in your Sync Rules), there are several scenarios that can increase your operation count:
+While sync operations typically correspond to data mutations on synced rows (those in your Sync Rules), there are several scenarios that can affect your operation count:
 
 ### Key Scenarios to Watch For
 
-1. **New App Installations**
+1. **New App Installations:**
    When a new user installs your app, PowerSync needs to sync the complete operations history. We help manage this by:
    - Running automatic daily compacting on Cloud instances
    - Providing manual defragmentation options (in the PowerSync Dashboard)
 
-2. **Existing Users**
+2. **Existing Users:**
    While compacting and defragmenting reduces the operations history, they trigger additional sync operations for existing users.
    - Want to optimize this? Check out our [defragmenting guide](/usage/lifecycle-maintenance/compacting-buckets#defragmenting-trade-offs)
 
-### How do Sync Rule deployments impact sync operations?
+3. **Sync Rule Deployments:**
+   When you deploy changes to Sync Rules, PowerSync recreates the sync buckets from scratch. This has two effects:
+   - New app installations will sync fewer operations since the operations history is reset.
+   - Existing users will temporarily experience increased sync operations as they need to re-sync the updated buckets.
 
-When you deploy changes to Sync Rules, PowerSync recreates the sync buckets from scratch. This has two effects:
-1. New app installations will sync fewer operations since the operations history is reset.
-2. Existing users will temporarily experience increased sync operations as they need to re-sync the updated buckets.
+   We are planning [incremental sync rule reprocessing](https://roadmap.powersync.com/c/85-more-efficient-sync-reprocessing), which will allow PowerSync to only reprocess buckets whose definitions have changed, rather than all buckets.
+4. **Unsynced Columns:**
+   Any row update triggers a new operation in the logical replication stream, regardless of which columns changed. In other words, PowerSync tracks changes at the row level, not the column level. This means:
 
-We are planning [incremental sync rule reprocessing](https://roadmap.powersync.com/c/85-more-efficient-sync-reprocessing), which will allow PowerSync to only reprocess buckets whose definitions have changed, rather than all buckets.
+   - Updates to columns not included in your Sync Rules still create sync operations.
+   - Even a no-op update like `UPDATE mytable SET id = id` generates a new operation for each affected row.
 
-### Do updates to unsynced columns trigger sync operations?
-
-Yes. Any row update triggers a new operation in the logical replication stream, regardless of which columns changed. This means:
-
-- Updates to columns not included in your Sync Rules still create sync operations.
-- Even a no-op update like `UPDATE mytable SET id = id` generates a new operation for each affected row.
-
-While selectively syncing columns helps with:
-- Data access control
-- Reducing data transfer size
-
-It doesn't reduce the number of sync operations. PowerSync tracks changes at the row level, not the column level.
+   While selectively syncing columns helps with data access control and reducing data transfer size, it doesn't reduce the number of sync operations. 
 
 ## Data hosted
 

@@ -1,0 +1,344 @@
+---
+title: Sequential ID Mapping
+description: In this tutorial we will show you how to map a local UUID to a remote sequential (auto-incrementing) ID.
+sidebarTitle: Sequential ID Mapping
+keywords: ["data", "uuid", "map", "auto increment", "id", "sequential id"]
+---
+
+# Introduction
+When auto-incrementing / sequential IDs are used on the backend database, the ID can only be generated on the backend database, and not on the client while offline.
+To handle this, you can use a secondary UUID on the client, then map them to a sequential ID when performing an update on the backend database.
+This allows using a sequential primary key for each record, with a UUID as a secondary ID.
+
+<Note>
+    This mapping must be performed wherever the UUIDs are referenced, including for every foreign key column.
+</Note>
+
+To illustrate this, we will use the [React To-Do List demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist) and modify it to use UUIDs
+on the client and map them to sequential IDs on the backend database (Supabase in this case).
+
+### Overview
+Before we get started, let's outline the changes we will have to make:
+<Steps>
+    <Step title={"Schema"}>
+        Update the `lists` and `todos` tables
+    </Step>
+
+    <Step title={"Create SQL triggers"}>
+        Add two triggers that will map the UUID to the integer ID and vice versa.
+    </Step>
+
+    <Step title={"Update Sync Rules"}>
+        Update the Sync Rules to use the new integer ID instead of the UUID column.
+    </Step>
+
+    <Step title={"Update client to use UUIDs."}>
+        The following components/files will have to be updated:
+        - *Files*:
+            - `AppSchema.ts`
+            - `fts_setup.ts`
+            - `SupabaseConnector.ts`
+        - *Components*:
+            - `lists.tsx`
+            - `page.tsx`
+            - `SearchBarWidget.tsx`
+            - `TodoListsWidget.tsx`
+    </Step>
+</Steps>
+
+# Schema
+
+In order to map the UUID to the integer ID, we need to update the
+- `lists` table by adding a `uuid` column, which will be the secondary ID, and
+- `todos` table by adding a `uuid` column, and a `list_uuid` foreign key column which references the `uuid` column in the `lists` table.
+
+<CodeGroup>
+    ```sql schema {3, 13, 21, 26}
+    create table public.lists (
+        id serial,
+        uuid uuid not null unique,
+        created_at timestamp with time zone not null default now(),
+        name text not null,
+        owner_id uuid not null,
+        constraint lists_pkey primary key (id),
+        constraint lists_owner_id_fkey foreign key (owner_id) references auth.users (id) on delete cascade
+    ) tablespace pg_default;
+
+    create table public.todos (
+        id serial,
+        uuid uuid not null unique,
+        created_at timestamp with time zone not null default now(),
+        completed_at timestamp with time zone null,
+        description text not null,
+        completed boolean not null default false,
+        created_by uuid null,
+        completed_by uuid null,
+        list_id int not null,
+        list_uuid uuid not null,
+        constraint todos_pkey primary key (id),
+        constraint todos_created_by_fkey foreign key (created_by) references auth.users (id) on delete set null,
+        constraint todos_completed_by_fkey foreign key (completed_by) references auth.users (id) on delete set null,
+        constraint todos_list_id_fkey foreign key (list_id) references lists (id) on delete cascade,
+        constraint todos_list_uuid_fkey foreign key (list_uuid) references lists (uuid) on delete cascade
+    ) tablespace pg_default;
+    ```
+</CodeGroup>
+
+With the schema updated, we now need a method to synchronize and map the `list_id` and `list_uuid` in the `todos` table, with the `id` and `uuid` columns in the `lists` table.
+We can achieve this by creating SQL triggers.
+
+# Create SQL Triggers
+
+We need to create triggers that can look up the integer ID for the given UUID and vice versa.
+These triggers will maintain consistency between `list_id` and `list_uuid` in the `todos` table by ensuring that they remain synchronized with the `id` and `uuid` columns in the `lists` table;
+even if changes are made to either field.
+
+We will create the following two triggers that cover either scenario of updating the `list_id` or `list_uuid` in the `todos` table:
+1. `update_integer_id`, and
+2. `update_uuid_column`
+
+<AccordionGroup>
+    <Accordion title="Trigger 1: update_integer_id" defaultOpen={true}>
+        The `update_integer_id` trigger ensures that whenever a `list_uuid` value is inserted or updated in the `todos` table,
+        the corresponding `list_id` is fetched from the `lists` table and updated automatically. It also validates that the `list_uuid` exists in the `lists` table; otherwise, it raises an exception.
+
+        ```sql
+        CREATE OR REPLACE FUNCTION func_update_integer_id()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                -- Always update list_id on INSERT
+                SELECT id INTO NEW.list_id
+                FROM lists
+                WHERE uuid = NEW.list_uuid;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'UUID % does not exist in lists', NEW.list_uuid;
+                END IF;
+
+            ELSIF TG_OP = 'UPDATE' THEN
+                -- Only update list_id if list_uuid changes
+                IF NEW.list_uuid IS DISTINCT FROM OLD.list_uuid THEN
+                    SELECT id INTO NEW.list_id
+                    FROM lists
+                    WHERE uuid = NEW.list_uuid;
+
+                    IF NOT FOUND THEN
+                        RAISE EXCEPTION 'UUID % does not exist in lists', NEW.list_uuid;
+                    END IF;
+                END IF;
+            END IF;
+
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        CREATE TRIGGER update_integer_id
+        BEFORE INSERT OR UPDATE ON todos
+        FOR EACH ROW
+        EXECUTE FUNCTION func_update_integer_id();
+        ```
+    </Accordion>
+    <Accordion title="Trigger 2: update_uuid_column" defaultOpen={true}>
+        The `update_uuid_column` trigger ensures that whenever a `list_id` value is inserted or updated in the todos table, the corresponding `list_uuid` is fetched from the
+        `lists` table and updated automatically. It also validates that the `list_id` exists in the `lists` table.
+
+        ```sql update_uuid_column
+        CREATE OR REPLACE FUNCTION func_update_uuid_column()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                -- Always update list_uuid on INSERT
+                SELECT uuid INTO NEW.list_uuid
+                FROM lists
+                WHERE id = NEW.list_id;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'ID % does not exist in lists', NEW.list_id;
+                END IF;
+
+            ELSIF TG_OP = 'UPDATE' THEN
+                -- Only update list_uuid if list_id changes
+                IF NEW.list_id IS DISTINCT FROM OLD.list_id THEN
+                    SELECT uuid INTO NEW.list_uuid
+                    FROM lists
+                    WHERE id = NEW.list_id;
+
+                    IF NOT FOUND THEN
+                        RAISE EXCEPTION 'ID % does not exist in lists', NEW.list_id;
+                    END IF;
+                END IF;
+            END IF;
+
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        CREATE TRIGGER update_uuid_column
+        BEFORE INSERT OR UPDATE ON todos
+        FOR EACH ROW
+        EXECUTE FUNCTION func_update_uuid_column();
+        ```
+    </Accordion>
+</AccordionGroup>
+
+We now have triggers in place that will handle the mapping for our updated schema and
+can move on to updating the Sync Rules to use the UUID column instead of the integer ID.
+
+# Update Sync Rules
+
+As sequential IDs can only be created on the backend database, we need to use UUIDs in the client. This can be done by updating both the `parameters` and `data` queries to use the new `uuid` columns.
+The `parameters` query is updated by removing the `list_id` alias (this is removed to avoid any confusion between the `list_id` column in the `todos` table), and
+the `data` query is updated to use the `uuid` column as the `id` column for the `lists` and `todos` tables. We also explicitly define which columns to select, as `list_id` is no longer required in the client.
+
+```yaml sync_rules.yaml {4, 7-8}
+bucket_definitions:
+  user_lists:
+    # Separate bucket per todo list
+    parameters: select id from lists where owner_id = request.user_id()
+    data:
+    # Explicitly define all the columns
+      - select uuid as id, created_at, name, owner_id from lists where id = bucket.id
+      - select uuid as id, created_at, completed_at, description, completed, created_by, list_uuid from todos where list_id = bucket.id
+```
+
+With the Sync Rules updated, we can now move on to updating the client to use UUIDs.
+
+# Update Client to Use UUIDs
+
+With our Sync Rules updated, we no longer have the `list_id` column in the `todos` table.
+We start by updating `AppSchema.ts` and replacing `list_id` with `list_uuid` in the `todos` table.
+```typescript AppSchema.ts {3, 11}
+const todos = new Table(
+  {
+    list_uuid: column.text,
+    created_at: column.text,
+    completed_at: column.text,
+    description: column.text,
+    created_by: column.text,
+    completed_by: column.text,
+    completed: column.integer
+  },
+  { indexes: { list: ['list_uuid'] } }
+);
+```
+
+The `uploadData` function in `SupabaseConnector.ts` needs to be updated to use the new `uuid` column in both tables.
+
+```typescript SupabaseConnector.ts {13, 17, 20}
+export class SupabaseConnector extends BaseObserver<SupabaseConnectorListener> implements PowerSyncBackendConnector {
+    // other code
+
+    async uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
+        // other code
+        try {
+            for (const op of transaction.crud) {
+                lastOp = op;
+                const table = this.client.from(op.table);
+                let result: any;
+                switch (op.op) {
+                    case UpdateType.PUT:
+                        const record = { ...op.opData, uuid: op.id };
+                        result = await table.upsert(record);
+                        break;
+                    case UpdateType.PATCH:
+                        result = await table.update(op.opData).eq('uuid', op.id);
+                        break;
+                    case UpdateType.DELETE:
+                        result = await table.delete().eq('uuid', op.id);
+                        break;
+                }
+            }
+        } catch (ex: any) {
+          // other code
+        }
+    }
+}
+```
+
+<Note>
+    For the remaining files, we simply need to replace any reference to `list_id` with `list_uuid`.
+</Note>
+
+```typescript fts_setup.ts {3}
+export async function configureFts(): Promise<void> {
+  await createFtsTable('lists', ['name'], 'porter unicode61');
+  await createFtsTable('todos', ['description', 'list_uuid']);
+}
+```
+
+```tsx page.tsx {4, 14}
+const TodoEditSection = () => {
+    // code
+    const { data: todos } = useQuery<TodoRecord>(
+        `SELECT * FROM ${TODOS_TABLE} WHERE list_uuid=? ORDER BY created_at DESC, id`,
+        [listID]
+    );
+
+    // code
+    const createNewTodo = async (description: string) => {
+        // other code
+        await powerSync.execute(
+          `INSERT INTO
+                    ${TODOS_TABLE}
+                        (id, created_at, created_by, description, list_uuid)
+                    VALUES
+                        (uuid(), datetime(), ?, ?, ?)`,
+          [userID, description, listID!]
+        );
+    }
+}
+```
+
+```tsx TodoListWidget.tsx {10, 18}
+export function TodoListsWidget(props: TodoListsWidgetProps) {
+    // hooks and navigation
+
+    const { data: listRecords, isLoading } = useQuery<ListRecord & { total_tasks: number; completed_tasks: number }>(`
+        SELECT
+            ${LISTS_TABLE}.*, COUNT(${TODOS_TABLE}.id) AS total_tasks, SUM(CASE WHEN ${TODOS_TABLE}.completed = true THEN 1 ELSE 0 END) as completed_tasks
+        FROM
+            ${LISTS_TABLE}
+        LEFT JOIN ${TODOS_TABLE}
+            ON  ${LISTS_TABLE}.id = ${TODOS_TABLE}.list_uuid
+        GROUP BY
+            ${LISTS_TABLE}.id;
+      `);
+
+    const deleteList = async (id: string) => {
+        await powerSync.writeTransaction(async (tx) => {
+            // Delete associated todos
+            await tx.execute(`DELETE FROM ${TODOS_TABLE} WHERE list_uuid = ?`, [id]);
+            // Delete list record
+            await tx.execute(`DELETE FROM ${LISTS_TABLE} WHERE id = ?`, [id]);
+        });
+    };
+}
+```
+
+```tsx SearchBarWidget.tsx {8, 19}
+export const SearchBarWidget: React.FC<any> = () => {
+    const handleInputChange = async (value: string) => {
+        if (value.length !== 0) {
+            let listsSearchResults: any[] = [];
+            const todoItemsSearchResults = await searchTable(value, 'todos');
+            for (let i = 0; i < todoItemsSearchResults.length; i++) {
+                const res = await powersync.get<ListRecord>(`SELECT * FROM ${LISTS_TABLE} WHERE id = ?`, [
+                    todoItemsSearchResults[i]['list_uuid']
+                ]);
+                todoItemsSearchResults[i]['list_name'] = res.name;
+            }
+            if (!todoItemsSearchResults.length) {
+                listsSearchResults = await searchTable(value, 'lists');
+            }
+            const formattedListResults: SearchResult[] = listsSearchResults.map(
+              (result) => new SearchResult(result['id'], result['name'])
+            );
+            const formattedTodoItemsResults: SearchResult[] = todoItemsSearchResults.map((result) => {
+                return new SearchResult(result['list_uuid'], result['list_name'] ?? '', result['description']);
+            });
+            setSearchResults([...formattedTodoItemsResults, ...formattedListResults]);
+        }
+    };
+}
+```

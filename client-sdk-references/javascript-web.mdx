@@ -285,37 +285,48 @@ See [Usage Examples](/client-sdk-references/javascript-web/usage-examples) for f
 
 ## Developer Notes
 
-### Connecting via WebSocket or HTTP Stream
+### Connection Methods
 
-This SDK connects to a PowerSync instance and streams sync commands via WebSockets (enabled by default since @powersync/web@1.6.0) or HTTP streaming.
+This SDK supports two methods for streaming sync commands:
 
-The WebSocket implementation uses reactive socket streams from the cross-platform [RSocket](https://github.com/powersync-ja/powersync-js/pull/rsocket.io) library. This allows the client to request commands from the server after processing existing events, alleviating any back-pressure build-up of commands. Sync commands are transmitted as BSON (binary) documents.
+1. **WebSocket (Default)**
+   - The implementation leverages RSocket for handling reactive socket streams.
+   - Back-pressure is effectively managed through client-controlled command requests.
+   - Sync commands are transmitted efficiently as BSON (binary) documents.
+   - This method is **recommended** since it will support the future [BLOB column support](https://roadmap.powersync.com/c/88-support-for-blob-column-types) feature.
 
-#### Benefits of using the WebSocket Method
+2. **HTTP Streaming (Legacy)**
+   - This is the original implementation method.
+   - This method will not support the future BLOB column feature.
 
-* BLOB column support will be added on top of the WebSocket implementation (the HTTP streaming method will not support this).
-
-#### Selecting Connection Method
-
-The `PowerSyncDatabase` client's `connect` method supports a `connectionMethod` option. This is not required, as the WebSocket method is used by default.
+By default, the `PowerSyncDatabase.connect()` method uses WebSocket. You can optionally specify the `connectionMethod` to override this:
 
 ```js
-// For WebSocket
-powerSync.connect(connector)
+// WebSocket (default)
+powerSync.connect(connector);
 
-// For HTTP Streaming
+// HTTP Streaming
 powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP });
 ```
 
-### Configuring Different SQLite Virtual Filesystems for Web
-The default SQLite VFS (`IDBBatchAtomicVFS`) can be replaced by supported [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) alternatives.
-`IDBBatchAtomicVFS` uses `IndexedDB` as the underlying storage which may have worse performance and stability issues with browsers such as Safari when compared with `OPFS` based VFSs.
-See the [WA-SQLite README](https://github.com/powersync-ja/wa-sqlite/blob/1bb58d3619b96a2708e0320e1c22d0f2b9db35c6/src/examples/README.md#L28) for more details on each option.
+### SQLite Virtual File Systems
 
-`OPFS` can be configured with a `WASQLiteOpenFactory`.
+This SDK supports multiple Virtual File Systems (VFS), responsible for storing the local SQLite database:
 
-<CodeGroup>
-```js OPFSCoopSyncVFS (Safari Multiple Tabs Support)
+#### 1. IDBBatchAtomicVFS (Default)
+- This system utilizes IndexedDB as its underlying storage mechanism.
+- Multiple tabs are fully supported across most modern browsers.
+- Users may experience stability issues when using Safari.
+
+#### 2. OPFS-based Alternatives
+PowerSync supports two OPFS (Origin Private File System) implementations that generally offer improved performance:
+
+##### OPFSCoopSyncVFS (Recommended)
+- This implementation provides comprehensive multi-tab support across all major browsers.
+- It offers the most reliable compatibility with Safari and Safari iOS.
+- Example configuration:
+
+```js
 import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
 
 export const db = new PowerSyncDatabase({
@@ -333,58 +344,40 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
-```js AccessHandlePoolVFS
-import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
+##### AccessHandlePoolVFS
+- This implementation delivers optimal performance for single-tab applications.
+- The system is not designed to handle multiple tab scenarios.
+- The configuration is similar to `OPFSCoopSyncVFS`, but requires using `WASQLiteVFS.AccessHandlePoolVFS`.
 
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: new WASQLiteOpenFactory({
-    dbFilename: 'exampleVFS.db',
-    vfs: WASQLiteVFS.AccessHandlePoolVFS,
-    flags: {
-      enableMultiTabs: typeof SharedWorker !== 'undefined'
-    } 
-  }),
-  flags: {
-    enableMultiTabs: typeof SharedWorker !== 'undefined'
-  }
-});
-```
-</CodeGroup>
+#### VFS Compatibility Matrix
 
-**Note**: The `AccessHandlePoolVFS` does not to work correctly in the multiple tabs use case. `OPFSCoopSyncVFS` works with multiple tabs, and adds multiple tab support for both Safari and Safari iOS.
+| VFS Type | Multi-Tab Support (Standard Browsers) | Multi-Tab Support (Safari/iOS) | Notes |
+|----------|---------------------------|---------------------|--------|
+| IDBBatchAtomicVFS | ✅ | ❌ | Default, some Safari stability issues |
+| OPFSCoopSyncVFS | ✅ | ✅ | Recommended for multi-tab support |
+| AccessHandlePoolVFS | ❌ | ❌ | Best for single-tab applications |
 
-**Note**: There are known limitations with `OPFS` in Safari’s incognito mode, which may cause it to not function properly.
+**Note**: There are known issues with OPFS when using Safari's incognito mode.
 
-| VFS Type               | Multi-Tab Support on Normal Browsers | Multi-Tab Support on Safari/Safari iOS | Notes                                                             |
-|-------------------------|-------------------------------------|----------------------------------------|-------------------------------------------------------------------|
-| **IDBBatchAtomicVFS**  | Supported                        | Not supported                        | May have stability issues on Safari. |
-| **AccessHandlePoolVFS**| Not supported                    | Not supported                       | Does not work correctly in multi-tab scenarios.                  |
-| **OPFSCoopSyncVFS**    | Supported                        | Supported                           | Works with multiple tabs on all browsers, including Safari.      |
+### Managing OPFS Storage
 
-### Clearing OPFS Storage
+Unlike IndexedDB, OPFS storage cannot be managed through browser developer tools. The following utility functions can help you manage OPFS storage programmatically:
 
-Clearing `OPFS` storage isn’t as straightforward as clearing `IndexedDB` which can be done through browser developer tools. 
-This requires developers to manually iterate through and delete files and directories.
-
-```js 
+```js
+// Clear all OPFS storage
 async function purgeVFS() {
   await powerSync.disconnect();
   await powerSync.close();
-
+  
   const root = await navigator.storage.getDirectory();
-
-  // .db-wal needs a moment to become deletable
-  await new Promise((resolve) => setTimeout(resolve, 1));
-
+  await new Promise(resolve => setTimeout(resolve, 1)); // Allow .db-wal to become deletable
+  
   for await (const [name, entry] of root.entries!()) {
     try {
       if (entry.kind === 'file') {
-        console.log(`Deleted file: ${name}`);
         await root.removeEntry(name);
       } else if (entry.kind === 'directory') {
         await root.removeEntry(name, { recursive: true });
-        console.log(`Deleted directory: ${name}`);
       }
     } catch (err) {
       console.error(`Failed to delete ${entry.kind}: ${name}`, err);
@@ -392,15 +385,14 @@ async function purgeVFS() {
   }
 }
 
+// List OPFS entries
 async function listVfsEntries() {
   const root = await navigator.storage.getDirectory();
-
   for await (const [name, entry] of root.entries()) {
-      console.log(`Entry ${entry.kind}: ${name}`);
+    console.log(`${entry.kind}: ${name}`);
   }
 }
 ```
-
 
 ## ORM Support
 

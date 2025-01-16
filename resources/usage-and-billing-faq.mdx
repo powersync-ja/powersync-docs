@@ -1,0 +1,165 @@
+---
+title: "FAQ & Troubleshooting"
+description: "Usage and billing FAQs and troubleshooting strategies."
+---
+
+# Usage Metrics FAQs
+
+<AccordionGroup>
+  <Accordion title="Where can I review my PowerSync Service usage?">
+    You can track usage in two ways:
+    - Individual instances: Visit the [Usage metrics](/usage/tools/monitoring-and-alerting#usage-metrics) workspace in the PowerSync Dashboard.
+    - Organization-wide usage: Check the **Subscriptions** tab in the [Admin Portal](https://accounts.journeyapps.com/portal/admin/) for aggregated metrics across all instances in your current billing cycle.
+  </Accordion>
+
+  <Accordion title="What are sync operations?">
+    A sync operation occurs when a single row is synced from the PowerSync Service to a user device. 
+
+    The PowerSync Service maintains a history of operations for each row to ensure efficient streaming and data integrity. As a result, sync operation counts may exceed the number of actual data mutations. See the [Usage Troubleshooting](#usage-troubleshooting) section for more details.
+
+  </Accordion>
+
+  <Accordion title="What are concurrent connections?">
+    A concurrent connection represents one client actively connected to the PowerSync Service. When a user device runs an app using PowerSync and calls `.connect()`, it establishes one long-lived connection for streaming real-time updates.
+
+    Some key points about concurrent connections:
+
+    - Billing is based on peak concurrent connections (highest number of simultaneous connections) during the billing cycle
+    - Paid plans are limited to 3,000 concurrent connections by default
+    - Free plans are limited to 50 peak concurrent connections
+    - When connection limits are reached, new connection attempts receive a 429 HTTP response while existing connections continue syncing
+  </Accordion>
+
+  <Accordion title="What comprises data processing?">
+    Data processing is calculated as the total uncompressed size of:
+    - Data replicated from your source database(s) to PowerSync Service instances
+    - Data synced from PowerSync Service instances to user devices
+    
+    These values are available in your [Usage metrics](/usage/tools/monitoring-and-alerting#usage-metrics) as "Data replicated per day/hour" and "Data synced per day/hour".
+  </Accordion>
+
+  <Accordion title="What is the difference between data/operations replicated vs synced?">
+    Data/operations replicated refers to activity from your backend database (Postgres/MongoDB or MySQL database) to the PowerSync Service, whereas data/operations synced refer to activity from the PowerSync Service to client devices.
+  </Accordion>
+</AccordionGroup>
+
+# Billing FAQs
+
+<AccordionGroup>
+  <Accordion title="Where can I see details about my current billing cycle?">
+    Head over to the **Subscriptions** tab of the [Admin Portal](https://accounts.journeyapps.com/portal/admin/). Here you can view your total usage (aggregated across all projects in your organization) and upcoming invoice total for your current billing cycle. Data in this view updates once a day.
+  </Accordion>
+
+  <Accordion title="Where can I update my billing details, e.g. the email that receives billing receipts?">
+    You can update your billing details in the **Billing** tab of the [Admin Portal](https://accounts.journeyapps.com/portal/admin/).
+  </Accordion>
+
+  <Accordion title="Can I view my historic invoices?">
+    We are planning to surface these in the Admin Portal, but this is not yet available. In the meantime, you can review your historic invoices directly in the Stripe Customer Portal, by signing in with your billing email here.
+  </Accordion>
+</AccordionGroup>  
+
+
+# Usage Troubleshooting
+
+If you're seeing unexpected spikes in your usage metrics, here's how to diagnose and fix common issues:
+
+## Concurrent connections
+
+The most common cause of seeing excessive concurrent connections is opening multiple copies of `PowerSyncDatabase`, and calling `.connect()` on each. Debug your connection handling by reviewing your code and [Instance logs](/usage/tools/monitoring-and-alerting#instance-logs). Make sure you're only opening one connection per user/session.
+
+## Sync operations
+
+While sync operations typically correspond to data mutations on synced rows (those in your Sync Rules), there are several scenarios that can affect your operation count:
+
+### Key Scenarios to Watch For
+
+1. **New App Installations:**
+   When a new user installs your app, PowerSync needs to sync the complete operations history. We help manage this by:
+   - Running automatic daily compacting on Cloud instances
+   - Providing manual defragmentation options (in the PowerSync Dashboard)
+
+2. **Existing Users:**
+   While compacting and defragmenting reduces the operations history, they trigger additional sync operations for existing users.
+   - Want to optimize this? Check out our [defragmenting guide](/usage/lifecycle-maintenance/compacting-buckets#defragmenting-trade-offs)
+
+3. **Sync Rule Deployments:**
+   When you deploy changes to Sync Rules, PowerSync recreates the sync buckets from scratch. This has two effects:
+   - New app installations will sync fewer operations since the operations history is reset.
+   - Existing users will temporarily experience increased sync operations as they need to re-sync the updated buckets.
+
+   We are planning [incremental sync rule reprocessing](https://roadmap.powersync.com/c/85-more-efficient-sync-reprocessing), which will allow PowerSync to only reprocess buckets whose definitions have changed, rather than all buckets.
+4. **Unsynced Columns:**
+   Any row update triggers a new operation in the logical replication stream, regardless of which columns changed. In other words, PowerSync tracks changes at the row level, not the column level. This means:
+
+   - Updates to columns not included in your Sync Rules still create sync operations.
+   - Even a no-op update like `UPDATE mytable SET id = id` generates a new operation for each affected row.
+
+   While selectively syncing columns helps with data access control and reducing data transfer size, it doesn't reduce the number of sync operations. 
+
+## Data hosted
+
+The PowerSync Service hosts: 
+
+1. A current copy of the data, which should be roughly equal to the subset of your source data that is covered by your sync rules configuration; 
+2. A history of all operations on data in buckets. This can be bigger than the source, since it includes the history, and one row can be in multiple buckets; and 
+3. Data for parameter lookups. This should be fairly small in most cases.
+
+Because of this structure, your hosted data size may be larger than your source database size.
+
+# Troubleshooting Strategies
+1. **Identify Timing**
+   - Use [Usage Metrics](/usage/tools/monitoring-and-alerting#usage-metrics) to pinpoint usage spikes.
+
+2. **Review Logs**
+   - Use [Instance Logs](/usage/tools/monitoring-and-alerting#instance-logs) to review sync service logs during the spike(s). 
+   - Enable the **Metadata** option.
+   - Search for "Sync stream complete" entries (use your browser's search function) to review:
+     - How many operations synced
+     - The size of data transferred
+     - Which clients/users were involved
+     <Frame caption="Example of 'Sync stream complete' logs">
+       <img src="/images/resources/instance-logs-sync-stream-complete.png"/>
+     </Frame>
+
+3. **Compare Metrics**
+   Use the [Diagnostics app](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to compare total rows vs. operations synced to the user device. If you are seeing a much higher number of operations, you might benefit from [defragmentation](/usage/lifecycle-maintenance/compacting-buckets#defragmenting).
+
+4. **Detailed Sync Operations**
+   - Use the [test-client](https://github.com/powersync-ja/powersync-service/blob/main/test-client/src/bin.ts)'s `fetch-operations` command with the `--raw` flag:
+     ```bash
+     node dist/bin.js fetch-operations --raw --token your-jwt --endpoint https://12345.powersync.journeyapps.com
+     ```
+     This returns the individual operations for a user in JSON. Example response:
+     ```bash
+     {
+        "by_user[\"0b32a7cb-26fb-4993-9c60-9291a430337e\"]": [
+            {
+            "op_id": "0",
+            "op": "CLEAR",
+            "checksum": 2082236117
+            },
+            {
+            "op_id": "1145383",
+            "op": "PUT",
+            "object_type": "todos",
+            "object_id": "69688ea0-d3f6-46c9-81a2-cdbe54eeb54d",
+            "checksum": 3246341700,
+            "subkey": "6752f74f8176c1b5ba851480/fcb2cd3c-dcef-5c46-8b17-7b83d31fda2b",
+            "data": "{\"id\":\"69688ea0-d3f6-46c9-81a2-cdbe54eeb54d\",\"created_at\":\"2024-09-16 10:16:35.352665Z\",\"description\":\"Buy groceries\",\"user_id\":\"0b32a7cb-26fb-4993-9c60-9291a430337e\"}"
+            },
+            {
+            "op_id": "1145387",
+            "op": "PUT",
+            "object_type": "todos",
+            "object_id": "7e4a4550-af3b-4876-a01a-10dc0084f0a6",
+            "checksum": 1103209588,
+            "subkey": "6752f74f8176c1b5ba851480/75bbc91d-cfc9-5b22-9f85-ea31a8720bf8",
+            "data": "{\"id\":\"7e4a4550-af3b-4876-a01a-10dc0084f0a6\",\"created_at\":\"2024-10-07 16:17:37Z\",\"description\":\"Plant tomatoes\",\"user_id\":\"0b32a7cb-26fb-4993-9c60-9291a430337e\"}"
+            }
+        ]
+      }
+     ```
+
+# Accident Forgiveness
+Accidentally ran up a high bill? No problem — we’ve got your back. Reach out to us at support@powersync.com and we'll work with you to resolve the issue and prevent it from happening again. 

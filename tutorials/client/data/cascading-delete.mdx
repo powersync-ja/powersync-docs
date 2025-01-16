@@ -1,0 +1,41 @@
+---
+title: "Cascading Delete"
+description: "In this tutorial we will show you how to perform a cascading delete on the client."
+keywords: ["data", "cascade", "delete"]
+---
+
+# Introduction
+
+Since PowerSync utilizes SQLite views instead of standard tables, SQLite features like constraints, foreign keys, or cascading deletes are not available.
+Currently, there is no direct support for cascading deletes on the client. However, you can achieve this by either:
+1. Manually deleting all the relevant tables within a **single transaction**, OR
+    <Note>
+        Every local mutation performed against SQLite via the PowerSync SDK will be returned in `uploadData`. So as long as you are using `.execute()` for the mutation,
+        the operation will be present in the upload queue.
+    </Note>
+2. Implementing triggers (which is more complex)
+    <Note>
+        You create triggers on the [internal tables](https://docs.powersync.com/architecture/client-architecture#schema) (not the views defined by the client schema), similar to what is
+        done [here](https://github.com/powersync-ja/powersync-js/blob/e77b1abfbed91988de1f4c707c24855cd66b2219/demos/react-supabase-todolist/src/app/utils/fts_setup.ts#L50)
+    </Note>
+
+# Example
+
+The following example is taken from the [React Native To-Do List demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist).
+It showcases how to delete a `list` and all its associated `todos` in a single transaction.
+
+```typescript
+  const deleteList = async (id: string) => {
+    await system.powersync.writeTransaction(async (tx) => {
+      // Delete associated todos
+      await tx.execute(`DELETE FROM ${TODO_TABLE} WHERE list_id = ?`, [id]);
+      // Delete list record
+      await tx.execute(`DELETE FROM ${LIST_TABLE} WHERE id = ?`, [id]);
+    });
+  };
+```
+
+<Note>
+    An important thing to note is that the local SQLite database will always match the backend database, as long as the tables are in the publication, when online.
+    For example, if you delete a record from the local `lists` table and Supabase cascade deletes a record from the `todo` table, PowerSync will also delete the local `todo` record when online.
+</Note>

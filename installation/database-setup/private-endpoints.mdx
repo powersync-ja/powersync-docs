@@ -1,0 +1,58 @@
+---
+title: "Private Endpoints"
+---
+
+## PowerSync Cloud: AWS Private Endpoints
+
+To avoid exposing a database in AWS to the public internet, AWS Private Endpoints (AWS PrivateLink) is an option that provides private networking between the source database and the PowerSync service. Private Endpoints are currently available on our Team and Enterprise plans.
+
+
+<Warning>
+Do not rely on Private Endpoints as the only form of security. Always use strong database passwords, and use client certificates if additional security is required.
+</Warning>
+
+## Current Limitations
+
+1. Private Endpoints are only supported for Postgres instances currently. [Contact us](/resources/contact-us) if you need this for MongoDB or MySQL.
+2. The guide below does not handle dynamic IPs if the RDS instance's IP changes. This needs additional work to automatically update the IP - see this [AWS Blog Post](https://aws.amazon.com/blogs/database/access-amazon-rds-across-vpcs-using-aws-privatelink-and-network-load-balancer/) on the topic. This is specifically relevant if using a RDS cluster with failover support.
+3. Self-service is not yet available on the PowerSync side - contact support to configure the instance.
+4. Only AWS is supported currently, other cloud providers are not supported yet.
+
+## Endpoint Service Setup
+
+To configure a Private Endpoint Service, a network load balancer is required to forward traffic to the database. Use the following steps:
+ 1. Create a Target Group for the Network Load Balancer:
+    1. Obtain the RDS Instance's private IP address. Make sure this points to a writable instance.
+    2. Create a Target Group with IP addresses as target type, using the IP address from above. Use TCP protocol, and specify the database port (typically 5432 for Postgres).
+    3. Note: The IP address of your RDS instance may change over time. To maintain a consistent connection, consider implementing automation to monitor and update the target group's IP address as needed. See the [AWS Blog Post](https://aws.amazon.com/blogs/database/access-amazon-rds-across-vpcs-using-aws-privatelink-and-network-load-balancer/) on the topic.
+ 2. Create a Network Load Balancer (NLB):
+    1. Select the same VPC as your RDS instance.
+    2. Choose at least two subnets in different availability zones.
+    3. Configure a TCP listener and pick a port (for example 5432 again).
+    4. Associate the listener with the target group created earlier.
+ 3. Modify the security group associated with your RDS instance to permit traffic from the load balancer.
+ 4. Create a VPC Endpoint Service:
+    1. In the AWS Management Console, navigate to the VPC service and select Endpoint Services.
+    2. Click on Create Endpoint Service.
+    3. Select the Network Load Balancer created in the previous step.
+    4. If the load balancer is in one of the PowerSync regions (see below), it is not required to select any "Supported Region". If the load balancer is in a different region, select the region corresponding to your PowerSync instance here. Note that this will incur additional AWS charges.
+    5. Decide whether to require acceptance for endpoint connections. Disabling acceptance can simplify the process but may reduce control over connections.
+    6. Under "Supported IP address types", select both IPv4 and IPv6.
+    7. After creating the endpoint service, note the Service Name. This identifier will be used when configuring PowerSync to connect via PrivateLink.
+    8. Configure the Endpoint Service to accept connections from the principal `arn:aws:iam::131569880293:root`. See the [AWS documentation](https://docs.aws.amazon.com/vpc/latest/privatelink/configure-endpoint-service.html#add-remove-permissions) for details.
+
+## PowerSync Setup
+
+On PowerSync, create a new instance, but do not configure the connection yet.
+
+[Contact us](/resources/contact-us) and provide the Service Name from above, as well as the PowerSync instance id created above. We will then configure the instance to use the Endpoint Service for the database connection.
+
+## AWS Regions
+
+PowerSync currently runs in the AWS regions below. Make sure the region matching your PowerSync instance is supported in by the Endpoint Service.
+
+ 1. US: us-east-1
+ 2. EU: eu-west-1
+ 3. BR: sa-east-1
+ 4. JP: ap-northeast-1
+ 5. AU: ap-southeast-2

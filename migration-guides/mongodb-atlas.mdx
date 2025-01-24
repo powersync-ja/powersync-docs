@@ -1,7 +1,8 @@
 ---
-title: "MongoDB Atlas Migration Guide"
-description: "This page was last updated on 2024-12-27"
+title: "MongoDB Atlas Device Sync Migration Guide"
 ---
+
+<Info>We are currently working on a more detailed migration guide. In the meantime, the below guide provides high-level migration information.</Info>
 
 ## MongoDB Atlas deprecation
 
@@ -18,32 +19,30 @@ If you have MongoDB Atlas Device Sync deployed today, at a high level your archi
 
 ## PowerSync beta support for MongoDB
 
-As of December 2024, support for MongoDB as a backend database source is available in a beta release. This means that MongoDB replication is considered ready for production-use, provided that you have adequately tested your use cases.
+As of December 2024, support for MongoDB as a backend database source in PowerSync is available in [a Beta release](https://www.powersync.com/blog/powersync-mongodb-connector-module-now-in-beta). This means that MongoDB replication is considered ready for production-use, provided that you have adequately tested your use cases.
 
-It is currently available for testing in hosted or self-hosted environments:
+It is currently available in [PowerSync Cloud](https://www.powersync.com/pricing) and self-hosted environments:
 
-* Hosted by us: Refer to [Database Connection](/installation/database-connection#mongodb-beta-specifics)
-* Self-hosted using Docker Compose: An end-to-end demo app is [available here](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb). Please refer to its README for further instructions.
+* **PowerSync Cloud**: Refer to [Database Connection](/installation/database-connection#mongodb-beta-specifics)
+* **Self-hosted**: An end-to-end demo app using Docker Compose is [available here](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb). Please refer to its README for further instructions.
 
-Migrating to PowerSync's MongoDB module would take you to this: (new components in green)
+Migrating to PowerSync would take you to this: (new components in green)
 
 <Frame>
   <img src="/images/resources-2.png"/>
 </Frame>
 
-As you can see, this is not a point-and-click migration, however it does enable you to stay on MongoDB and those are the customers we are primarily interested in working with and supporting.
+### Explanation of the migrated architecture
 
-### Notable comments on the architecture
-
-1. PowerSync handles writes differently from reads. This is because developers typically want to have some business logic running on an authoritative server before allowing a client device to change data in the backend database.
-   1. Reads are partitioned using [Sync Rules](/usage/sync-rules)
-         1. Sync Rules are more flexible than MongoDB Realm Flexible Sync, but are defined server-side and not client-side.
-   2. Writes are queued locally on the device and sent to the backend sequentially.
-         1. The backend can be a very thin API layer or can contain significant amounts of logic — [it is up to the developer](/installation/app-backend-setup/writing-client-changes)
+1. PowerSync handles writes differently from reads. 
+   * **Reads:** The PowerSync Service connects to your MongoDB database and replicates data in real-time to PowerSync clients. Reads are partitioned using PowerSync's [Sync Rules](/usage/sync-rules)
+         * Sync Rules are more flexible than MongoDB Realm Flexible Sync, but are defined server-side and not client-side.
+   * **Writes:** The client-side application can perform writes directly on the local SQLite database. The writes are also automatically placed into an upload queue by the PowerSync client SDK. The SDK then uses a developer-defined `uploadData()` function to manage the uploading of those writes sequentially to the backend. In the `uploadData()` function, the developer calls their backend API.
+         * The backend can be a very thin API layer or can contain significant amounts of logic — [it is up to the developer](/installation/app-backend-setup/writing-client-changes)
 2. The PowerSync Service is generally [available](https://powersync.com/pricing) as a cloud-hosted service (PowerSync Cloud), or you can self-host using our Open Edition.
-3. The PowerSync Client SDKs use SQLite under the hood. While there is nothing on a protocol level preventing us from supporting Realm as a client-side database, we are waiting to see whether Realm becomes a community project or not before investing in it, since it would be a significant amount of work for us to support Realm on the client-side.
-   1. The client-side will most likely be where the bulk of migration work takes place for customers migrating from Atlas Device Sync to PowerSync.
-   2. Client-side queries are typically written in SQL. [ORM support](https://www.powersync.com/blog/using-orms-with-powersync) is available for our JavaScript ([React Native](/client-sdk-references/javascript-web/javascript-orm/overview) and [web](/client-sdk-references/javascript-web/javascript-orm/overview)) and Flutter/[Dart](/client-sdk-references/flutter/flutter-orm-support) Client SDKs.
+3. The PowerSync Client SDKs use **SQLite** under the hood. Even though MongoDB is a "NoSQL" document database, PowerSync's use of SQLite works well with MongoDB, since the [PowerSync protocol](/architecture/powersync-protocol) is schemaless (it syncs schemaless JSON data) and we dynamically apply a [client-side schema](/installation/client-side-setup/define-your-schema) to the data in SQLite using SQLite views.
+   * The client-side will most likely be where the bulk of migration work takes place for customers migrating from Atlas Device Sync to PowerSync. See [this post on our blog](https://www.powersync.com/blog/migrating-a-mongodb-atlas-device-sync-app-to-powersync) for a migration example. 
+   * Client-side queries are typically written in SQL. [ORM support](https://www.powersync.com/blog/using-orms-with-powersync) is available for our JavaScript ([React Native](/client-sdk-references/javascript-web/javascript-orm/overview) and [web](/client-sdk-references/javascript-web/javascript-orm/overview)) and Flutter/[Dart](/client-sdk-references/flutter/flutter-orm-support) Client SDKs.
 4. PowerSync piggybacks off your existing authentication, however, it uses JWTs. If you were using Atlas Device SDKs for authentication, you will need to implement an authentication provider.
 
 ### Migration steps
@@ -51,21 +50,22 @@ As you can see, this is not a point-and-click migration, however it does enable 
 <Tip>The blog post [Migrating a MongoDB Atlas Device Sync App to PowerSync](https://www.powersync.com/blog/migrating-a-mongodb-atlas-device-sync-app-to-powersync) can serve as a handy guide through the migration process.</Tip>
 
 1. Connect your database to an instance of the PowerSync Service:
-   1. Using PowerSync Cloud (hosted by us): See [Database Connection](/installation/database-connection#mongodb-alpha-specifics)
-   2. Using PowerSync Open Edition (self-hosted): Refer to our end-to-end demo app [available here](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb)
+   1. **PowerSync Cloud**: See [Database Connection](/installation/database-connection#mongodb-alpha-specifics)
+   2. **Self-hosted**: Refer to our end-to-end demo app [available here](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb)
 2. Define [Sync Rules](/usage/sync-rules) in PowerSync — this enables dynamic partial replication so that you don't need to sync your entire MongoDB database to devices.
    1. We recommend starting with one or two simple [Global Data](/usage/sync-rules/example-global-data) queries
 3. Generate a [Development Token](/installation/authentication-setup/development-tokens)
 4. Use our [Diagnostics App](https://diagnostics-app.powersync.com/) to validate that MongoDB is syncing into SQLite as expected.
-5. Implement an app using one of our Client SDKs
-   1. You can continue using your Development Token for a start
-   2. Implement a "Hello World" app to get a feel, **or** jump straight into pulling the Client SDK into your existing app.
-   3. Verify that downloads from MongoDB are working.
+5. Implement an app using one of our [Client SDKs](/client-sdk-references/introduction)
+   1. You can continue using your _Development Token_ for authentication as a start.
+   2. We recommend implementing a "Hello World" app to get a feel for how PowerSync works, _or_ you can jump straight into pulling the Client SDK into your existing app.
+   3. Verify that syncing from MongoDB is working.
 6. Implement [authentication](/installation/authentication-setup/custom)
-7. Implement your backend app to accept writes.
-   1. We have Node.js, Django and Rails demos available [here](/resources/demo-apps-example-projects#custom-backend-examples).
+7. Implement your backend app to accept writes. There are currently two options:
+   1. **Custom self-hosted backend:** If you already have a backend application as part of your stack, you should use your existing backend. Alternatively, we have Node.js, Django and Rails example implementations available [here](/resources/demo-apps-example-projects#custom-backend-examples).
+   2. **CloudCode hosted/managed backend:** An alternative option is to use CloudCode, a serverless cloud functions environment provided by us. We provide a template that you can use as a turnkey starting point. See our [documentation here](/usage/tools/cloudcode).
 
-### Implementation notes
+### Additional notes
 
 #### PowerSync Service
 
@@ -75,17 +75,17 @@ To [self-host](https://github.com/powersync-ja/powersync-service?tab=readme-ov-f
 
 #### PowerSync Client SDKs
 
-We are constantly adding additional PowerSync Client SDKs and some of them are under very active development. Below are the release status for each language/platform:
+We are constantly adding additional [PowerSync Client SDKs](/client-sdk-references/introduction) and some of them are under very active development. Below are the release status for each language/platform:
 
-| Flavor                                                              | Status      | ETA              |
+| Client SDK                                                          | Status      | Release ETA      |
 | ------------------------------------------------------------------- | ----------- | ---------------- |
 | [JavaScript/Web](/client-sdk-references/javascript-web)             | Stable      | N/A              |
-| [React Native](/client-sdk-references/react-native-and-expo) & Expo | Stable      | N/A              |
+| [React Native & Expo](/client-sdk-references/react-native-and-expo) | Stable      | N/A              |
 | [Flutter/Dart](/client-sdk-references/flutter)                      | Stable      | N/A              |
 | [Kotlin Multiplatform](/client-sdk-references/kotlin-multiplatform) | Beta        | V1 ETA 2025Q1    |
 | [Swift](/client-sdk-references/swift)                               | Beta        | V1 ETA 2025Q1    |
 | Node.js                                                             | PoC         | Alpha ETA 2025Q1 |
-| .NET                                                                | Not Started | Alpha ETA 2025Q1 |
+| .NET                                                                | In Progress | Alpha ETA 2025Q1 |
 
 <Info>
    We've had customers inquire about the availability of a Rust/C++ SDK. The PowerSync core SQLite extension is implemented in Rust and we can work with customers to integrate PowerSync into their C++ applications. Please reach out to us at hello@powersync.com or [schedule a call](https://www.powersync.com/contact) with us
@@ -93,6 +93,10 @@ We are constantly adding additional PowerSync Client SDKs and some of them are u
 
 #### App Backend
 
-You will need to host a backend that can accept client writes if you do not already have one. The app backend needs to expose an API endpoint to write changes from the PowerSync client.
+Your app backend needs to expose an API endpoint to write changes from the PowerSync client to the backend MongoDB database.
 
-Additional implementation notes are available [here](/installation/app-backend-setup/writing-client-changes).
+As noted above, there are currently two options:
+  1. **Custom self-hosted backend:** If you already have a backend application as part of your stack, you should use your existing backend. If you don't yet have one: We have Node.js, Django and Rails example implementations available [here](/resources/demo-apps-example-projects#custom-backend-examples).
+  2. **CloudCode hosted/managed backend:** An alternative option is to use CloudCode, a serverless cloud functions environment provided by us. We provide a template that you can use as a turnkey starting point. See our [documentation here](/usage/tools/cloudcode).
+
+Additional backend implementation details are available here: [Writing Client Changes](/installation/app-backend-setup/writing-client-changes).

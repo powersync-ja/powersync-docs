@@ -356,20 +356,29 @@ replicated collections, additionally add the `dbAdmin` permission:
 
 ```
 readWrite@<your_database>._powersync_checkpoints
+read@<your_database>
 dbAdmin@<your_database>
 ```
 
-If you are replicating from multiple databases in the cluster, you need read permissions on the entire cluster:
+If you are replicating from multiple databases in the cluster, you need read permissions on the entire cluster, in addtion to the above:
 
 ```
 readAnyDatabase@admin
 ```
 
-### Permissions required - Self-hosted
+### Privileges required - Self-hosted / Custom roles
 
-For self-hosted MongoDB, PowerSync requires the `find`, `changeStream` and `listCollections` permissions on the database being replicated.
+For self-hosted MongoDB, or for creating custom roles on MongoDB Atlas, PowerSync requires the following privileges/granted actions:
 
-PowerSync also requires `createCollection`, `dropCollection`, `insert`, `update`, and `remove` permissions to the `_powersync_checkpoints` collection.
+* On the database being replicated: `listCollections`.
+* On all collections in the database: `changeStream`.
+   * This must apply to the entire database, not individual collections, `collection: ""`.
+   * If replicating from multiple databases, this must apply to the entire cluster, `db: ""`.
+* On each collection being replicated: `find`.
+* On the `_powersync_checkpoints` collection: `createCollection`, `dropCollection`, `find`, `changeStream`, `insert`, `update`, and `remove`.
+* To allow PowerSync to automatically enable [`changeStreamPreAndPostImages`](#post-images) on
+replicated collections, additionally add the `collMod` permission on all replicated collections.
+
 
 ### Post-Images
 
@@ -381,11 +390,11 @@ PowerSync supports three configuration options for post-images:
 
 1. `post_images: off`: Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling post-images instead.
 
-2. `post_images: auto_configure` (Default for new instances): Automatically enables the `changeStreamPreAndPostImages` option on collections as needed.
+2. `post_images: auto_configure` (Default for new instances): Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above.
 
 3. `post_images: read_only`: Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in Sync Rules. Replication will error if this is not configured. This option is ideal when permissions are restricted.
 
-* To manually configure collections for `read_only` mode, run this on each collection:
+To manually configure collections for `read_only` mode, run this on each collection:
 
 ```js
 db.runCommand( {
@@ -394,7 +403,7 @@ db.runCommand( {
 } )
 ```
 
-* You can view which collections have the option enabled using:
+You can view which collections have the option enabled using:
 
 ```js
 db.getCollectionInfos().filter(c => c.options?.changeStreamPreAndPostImages?.enabled)

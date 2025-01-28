@@ -12,22 +12,16 @@ There is also a WYSIWYG editor available in our [Mintlify dashboard](https://das
 
 ### Development
 
-Install the [Mintlify CLI](https://www.npmjs.com/package/mintlify) to preview the documentation changes locally. To install, use the following command
-
-```
-npm i -g mintlify
-```
-
 Run the following command at the root of your documentation (where mint.json is)
 
 ```
-mintlify dev
+npx mintlify dev
 ```
 
 Regularly check for broken links by running
 
 ```
-mintlify broken-links
+npx mintlify broken-links
 ```
 
 Navigation (and other global settings) is defined in `mint.json`. Learn more about these in [Mintlify's docs](https://mintlify.com/docs/settings/global).

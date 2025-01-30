@@ -1,12 +1,118 @@
 ---
 title: "Lifecycle / Maintenance"
-description: "Notes for sysadmins"
+description: "Self-hosting setup and maintenance"
 sidebarTitle: Overview
 ---
 
-## Migrations
+## Minimal Setup
 
-Migrations run automatically by default.
+A minimal "development" setup (e.g. for a staging or a QA environment) is:
+
+1. A single PowerSync "compute" container (API + replication) with 512MB memory, 1 vCPU.
+2. A single MongoDB node in replica set mode, 2GB memory, 1 vCPU. M10+ when using Atlas.
+3. Load balancer for TLS.
+
+This setup has no redundancy. If the replica set fails, you may need to recreate it from scratch which will re-sync all clients.
+
+## Production
+
+For production, we recommend running a high-availability setup:
+
+1. 1x PowerSync replication container, 1GB memory, 1 vCPU
+2. 2+ PowerSync API containers, 1GB memory each, 1vCPU each.
+3. A 3-node MongoDB replica set, 2+GB memory each. Refer to the MongoDB documentation for deployment requirements. M10+ when using Atlas.
+4. A load balancer with redundancy.
+5. Run a daily compact job.
+
+For scaling up, add 1x PowerSync API container per 100 connections. The MongoDB replica set should be scaled based on CPU and memory usage.
+
+### Replication Container
+
+The replication container handles replicating from the source database to PowerSync's bucket storage.
+
+The replication process is run using the docker command `start -r sync`, for example `docker run powersync start -r sync`.
+
+Only one process can replicate at a time. If multiple are running concurrently, you may see an error `[PSYNC_S1003] Sync rules have been locked by another process for replication`.
+If you use rolling deploys, it is normal to see this error for a short duration while multiple processes are running.
+
+Memory and CPU usage of the replication container is primarily driven by write load on the source database. A good starting point is 1GB memory and 1 vCPU for the container, but this may be scaled down depending on the load patterns.
+
+Set the environment variable `NODE_OPTIONS=--max-old-space-size=800` for 800MB, or set to 80% of the total assigned memory if scaling up or down.
+
+### API Containers
+
+The API container handles streaming sync connections, as well as any other API calls.
+
+The replication process is run using the docker command `start -r api`, for example `docker run powersync start -r api`.
+
+Each API container is limited to 200 concurrent connections, but we recommend targeting 100 concurrent connections or less per container. This may change as we implement additional performance optimizations.
+
+Memory and CPU usage of API containers are driven by:
+1. Number of concurrent connections.
+2. Number of buckets per connection.
+3. Amount of data synced to each connection.
+
+A good starting point is 1GB memory and 1 vCPU per container, but this may be scaled up or down depending on the specific load patterns.
+
+Set the environment variable `NODE_OPTIONS=--max-old-space-size=800` for 800MB, or set to 80% of the total assigned memory if scaling up or down.
+
+### Compact Job
+
+We recommend running a compact job daily as a cron job, or after any large maintenance jobs. For details, see the documentation on [Compacting Buckets](/usage/lifecycle-maintenance/compacting-buckets).
+
+Run the compact job using the docker command `compact`, for example `docker run powersync compact`.
+
+The compact job uses up to 1GB memory for compacting, if available. Set the environment variable `NODE_OPTIONS=--max-old-space-size=800` for 800MB, or set to 80% of the total assigned memory if scaling up or down.
+
+### Load Balancer
+
+A load balancer is required in front of the API containers to provide TLS support and load balancing. Most cloud providers have built-in options for load balancing, such as ALB on AWS.
+
+It is currently required to host the API container on a dedicated subdomain - we do not support running it on the same subdomain as another service.
+
+For self-hosting, [nginx](https://nginx.org/en/) is always a good option. A basic nginx configuration could look like this:
+
+```yaml
+server {
+    listen 443 ssl;
+    server_name powersync.example.org;
+
+    # SSL configuration here
+
+    # Reverse proxy settings
+    location / {
+        proxy_pass http://powersync_server_ip:powersync_port;  # Replace with your powersync details
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # Disable proxy response buffering.
+        # This is not relevant for websocket connections, but is important when using
+        # HTTP streaming connections (configured in the PowerSync client SDK).
+        proxy_buffering off;
+    }
+}
+```
+
+When using nginx as a Kubernetes ingress, set the proxy buffering option as an annotation on the ingress:
+
+```yaml
+nginx.ingress.kubernetes.io/proxy-buffering: "off"
+```
+
+### Health Checks
+
+If the load balancer supports health checks, it may be configured to poll the API container at `/probes/liveness`. This endpoint is expected to have a 200 response when the container is healthy. See [Healthchecks](./lifecycle-maintenance/healthchecks) for details.
+
+### Migrations
+
+Occasionally, new versions of the PowerSync service image may require migrations on the underlying storage database. This is also specifically required the first time the service starts up on a new storage database.
+
+By default, migrations are run as part of the replication and API containers. In some cases, a migration may add significant delay to the container startup.
+
+To avoid this startup delay, the migrations may be run as a separate job on each update, before replacing the rest of the containers. To run the migrations, run the docker command `migrate up`, for example `docker run powersync migrate up`.
+
+In this case, disable automatic migrations in the config:
 
 ```yaml
 # powersync.yaml
@@ -16,10 +122,14 @@ migrations:
     # When set to true, migrations must be triggered manually by modifying the container `command`.
     disable_auto_migration: true
 ```
-MongoDB locks ensure migrations are executed exactly once, even when multiple containers start simultaneously.
+
+Note that if you disable automatic migrations, and do not run the migration job manually,
+the service may run with an outdated storage schema version. This may lead to unexpected and potentially difficult-to-debug errors in the service.
 
 ## Backups
 
 We recommend using Git to backup your configuration files.
 
-The sync bucket storage database doesn't require backups as it can be easily reconstructed.
+None of the containers use any local storage, so no backups are required there.
+
+The sync bucket storage database may be backed up using the recommendations for the storage database system. This is not a strong requirement, since this data can be recovered by re-replicating from the source database.

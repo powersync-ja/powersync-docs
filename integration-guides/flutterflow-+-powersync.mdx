@@ -7,61 +7,56 @@ sidebarTitle: "Overview"
 import CreateCloudInstance from '/snippets/create-cloud-instance.mdx';
 import SupabaseConnection from '/snippets/supabase-database-connection.mdx';
 
-Used in conjunction with **FlutterFlow**, PowerSync enables developers to build local-first apps that are robust in poor network conditions and that have highly responsive frontends while relying on Supabase for their backend. This guide provides instructions for how to configure PowerSync for use with your FlutterFlow project that has Supabase integration enabled.
+Used in conjunction with **FlutterFlow**, PowerSync enables developers to build local-first apps that are robust in poor network conditions and that have highly responsive frontends while relying on Supabase for their backend. This guide walks you through configuring PowerSync within your FlutterFlow project that has Supabase integration enabled.
 
 ## Guide Overview
 
 <Check>
-   Before you proceed, this guide assumes that you have already signed up for free accounts with both Supabase and PowerSync. If you haven't signed up for a **PowerSync** account yet, [click here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs) (and if you haven't signed up for Supabase yet, [click here](https://supabase.com/dashboard/sign-up)). This guide also assumes that you already have **Flutter** set up.
+    This guide assumes you have active accounts with both Supabase and PowerSync. If you haven't signed up for a **PowerSync** account yet, [click here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs) (and if you haven't signed up for Supabase yet, [click here](https://supabase.com/dashboard/sign-up)). You'll also need Flutter installed on your development machine.
 </Check>
 
-This guide takes you through building a basic app from scratch and takes about 30-40 minutes to complete. The app lets you manage a list of items. You should then be able to use this knowledge to build and extend your own app.
+This guide walks you through building a basic item management app from scratch and takes about 30-40 minutes to complete. You should then be able to use this knowledge to build and extend your own app.
 
-1. Configure Supabase and PowerSync prerequisites
-2. Initialize your FlutterFlow project
-3. Build a sign-in screen
-4. Reading data
-5. Creating data
-6. Updating data (Coming soon)
-7. Deleting data
-8. Signing out
-9. Displaying Connectivity and Sync Status
-10. Securing your app
-    1.  Enable RLS in Supabase
-    2.  Update Sync Rules in PowerSync
+1. Configure Supabase and PowerSync Prerequisites 
+2. Initialize Your FlutterFlow Project
+3. Build a Sign-in Screen
+4. Read Data
+5. Create Data 
+6. Update Data (Coming Soon)
+7. Delete Data
+8. Sign Out
+9. Display Connectivity and Sync Status
+10. Secure Your App
+    1. Enable RLS in Supabase
+    2. Update Sync Rules in PowerSync
 
 ## Configure Supabase
 
 1. Create a new project in Supabase.
 2. PowerSync uses the Postgres [Write Ahead Log (WAL)](https://www.postgresql.org/docs/current/wal-intro.html) to replicate data changes in order to keep PowerSync SDK clients up to date.
+3. Run the below SQL statement in your **Supabase SQL Editor**:
+   ```sql
+   create table
+   public.lists (
+      id uuid not null default gen_random_uuid (),
+      created_at timestamp with time zone not null default now(),
+      name text not null,
+      owner_id uuid not null,
+      constraint lists_pkey primary key (id),
+      constraint lists_owner_id_fkey foreign key (owner_id) references auth.users (id) on delete cascade
+   ) tablespace pg_default
+   ```
+4. Create a Postgres publication using the SQL Editor. This will enable data to be replicated from Supabase so that your FlutterFlow app can download it.
+   ```sql
+   create publication powersync for table public.lists;
+   ```
+   <Note>
+      This is a static list of tables. If you add additional tables to your schema, they must also be added to this publication.
+   </Note>
 
-Run the below SQL statement in your **Supabase SQL Editor**:
-
-```sql
-create table
-  public.lists (
-    id uuid not null default gen_random_uuid (),
-    created_at timestamp with time zone not null default now(),
-    name text not null,
-    owner_id uuid not null,
-    constraint lists_pkey primary key (id),
-    constraint lists_owner_id_fkey foreign key (owner_id) references auth.users (id) on delete cascade
-  ) tablespace pg_default
-```
-
-3. Create a Postgres publication using the SQL Editor. This will enable data to be replicated from Supabase so that your FlutterFlow app can download it.
-
-```sql
-create publication powersync for table public.lists;
-```
-
-<Note>
-   This is a static list of tables. If you add additional tables to your schema, they must also be added to this publication.
-</Note>
-
-<Info>
-   This guide uses the default `postgres` user in your Supabase account for replicating changes to PowerSync, since elevating custom roles to replication [has been disabled](https://github.com/orgs/supabase/discussions/9314) in Supabase. If you want to use a custom role for this purpose, contact the Supabase support team.
-</Info>
+   <Info>
+      This guide uses the default `postgres` user in your Supabase account for replicating changes to PowerSync, since elevating custom roles to replication [has been disabled](https://github.com/orgs/supabase/discussions/9314) in Supabase. If you want to use a custom role for this purpose, contact the Supabase support team.
+   </Info>
 
 ## Configure PowerSync
 
@@ -77,10 +72,11 @@ create publication powersync for table public.lists;
 
 1. To update your Sync Rules, open the `sync-rules.yaml` file.
    <Frame>
-   <img src="/images/integration-22.avif" width="60%"/>
+   <img src="/images/integration-22.avif" width="80%"/>
    </Frame>
 2. Replace the `sync-rules.yaml` file's contents with the below:
-   ```yaml This will sync the entire table to all users - we will refine this later
+   ```yaml 
+   # This will sync the entire table to all users - we will refine this later
    bucket_definitions:
       global:
          data:
@@ -94,18 +90,18 @@ If you're wondering how Sync Rules relate to Supabase Postgres [RLS](https://sup
 ## Initialize Your FlutterFlow Project
 
 1. Create a new Blank app, give it a name, and disable Firebase.
-2. Under **"App Settings" -> "Integrations"**, enable Supabase. 
-   1. Enter your Supabase **"API URL"** and public **"Anon Key"**. You can find these under **“Project Settings” -> “API”** in your Supabase dashboard.
-   2. Click **"Get Schema"**.
-3. Under **"App Settings" -> "Project Dependencies" -> "FlutterFlow Libraries"** click **"Add Library"**. 
-   1. Select the **"PowerSync"** library.
+2. Under **"App Settings" -> "Integrations"**, enable "Supabase". 
+   1. Enter your Supabase "API URL" and public "Anon Key". You can find these under **"Project Settings" -> "API"** in your Supabase dashboard.
+   2. Click "Get Schema".
+3. Under **"App Settings" -> "Project Dependencies" -> "FlutterFlow Libraries"** click "Add Library". 
+   1. Select the "PowerSync" library.
    2. Add your schema:
-      1. On the PowerSync Dashboard, right-click on your instance and select **"Generate Client-Side Schema"** and select FlutterFlow as the language.
+      1. On the PowerSync Dashboard, right-click on your instance and select "Generate Client-Side Schema" and select "FlutterFlow" as the language.
       <Frame>
          <img src="/images/integration-31.avif"/>
       </Frame>
-      2. Copy and paste the generated schema into the **"PowerSyncSchema"** field.
-   3. Copy and paste your PowerSync instance URL into the **"PowerSyncURL"** field. 
+      2. Copy and paste the generated schema into the "PowerSyncSchema" field.
+   3. Copy and paste your PowerSync instance URL into the "PowerSyncURL" field. 
    <Frame>
       <img src="/images/integration-guides/flutterflow/powersync-library-config.png"/>
    </Frame>
@@ -113,20 +109,20 @@ If you're wondering how Sync Rules relate to Supabase Postgres [RLS](https://sup
 
 ## Build A Sign-In Screen
 
-1. Under the **Page Selector**, click **"Add Page, Component, or Flow"**.
+1. Under the **"Page Selector"**, click **"Add Page, Component, or Flow"**.
 <Frame>
   <img src="/images/integration-25.avif"/>
 </Frame>
-2. Select the "Auth1" template and name the page "Login".
+2. Select the "Auth1" template and name the page `Login`.
 3. Delete the _Sign Up_, _Forgot Password_ and _Social Login_ buttons — we will only be supporting Sign In for this demo app.
 <Frame>
   <img src="/images/integration-26.avif"/>
 </Frame>
 4. Under **"App Settings" -> "App Settings" -> "Authentication"**:
    1. Enable Authentication.
-   2. Set Supabase as the Authentication Type.
-   3. Set the Login page you just created as the Entry Page.
-   4. Set HomePage as the Logged In Page:
+   2. Set "Supabase" as the "Authentication Type".
+   3. Set the `Login` page you just created as the "Entry Page".
+   4. Set "HomePage" as the "Logged In Page":
 <Frame>
   <img src="/images/integration-27.avif"/>
 </Frame>
@@ -134,23 +130,24 @@ If you're wondering how Sync Rules relate to Supabase Postgres [RLS](https://sup
 <Frame>
   <img src="/images/integration-28.png" width="60%"/>
 </Frame>
-6. Test your app:
+6. Test your app with test mode:
 <Frame caption="Click on 'Test'">
   <img src="/images/integration-guides/flutterflow/test-run.png"/>
 </Frame>
 
 <Check>
-   **Checkpoint:** you should now be able to log into the app using the Supabase user account you just created. After logging in you should see a blank screen.
+   **Checkpoint:** You should now be able to log into the app using the Supabase user account you just created. After logging in you should see a blank screen.
+
+   <Frame caption=" For once, a blank screen means success!">
+      <img src="/images/integration-30.avif" width="30%"/>
+   </Frame>   
 </Check>
 
-For once, a blank screen means success:
-<img src="/images/integration-30.avif" width="30%"/>
-
-## Reading Data
+## Read Data
 
 We will now create our first UI and bind it to the data in the local SQLite database on the device.
 
-There are three ways to read data from the SQLite database using PowerSync’s FlutterFlow library:
+There are three ways to read data from the SQLite database using PowerSync's FlutterFlow library:
 1. Auto-updating queries for Layout Elements with Dynamic Children e.g. the ListView Element
    * This uses the library's `PowerSyncQuery` component
 2. Auto-updating queries for basic Layout Elements e.g. Text Elements
@@ -162,23 +159,23 @@ There are three ways to read data from the SQLite database using PowerSync’s F
 
 For reading data in FlutterFlow, you need a Custom Function per Supabase table to map Supabase rows to data that can be used by the library. This is because FlutterFlow Libraries do not support Supabase classes.
 
-1. Navigate to **Custom Code** and add a Custom Function.
+1. Navigate to **"Custom Code"** and add a Custom Function.
 2. Name the function `supabaseRowsToList` (if your Supabase table name is "Customers", you would name this `supabaseRowsToCustomers`).
 3. Under Function Settings, set the "Return Value" to `Supabase Row`
-    1. Check `Is List`
-    2. Uncheck `Nullable`
-    3. Specify `lists` as the Table Name.
-4. Also under Function Settings, click “Add Arguments”
-    1. Set its name to `supabaseRows`
-    2. Set its Type to `JSON`
-    3. Check `Is List`
-    4. Uncheck `Nullable`
+    1. Check "Is List".
+    2. Uncheck "Nullable".
+    3. Specify `lists` as the "Table Name".
+4. Also under Function Settings, click "Add Arguments".
+    1. Set its "Name" to `supabaseRows`
+    2. Set its "Type" to "JSON".
+    3. Check "Is List".
+    4. Uncheck "Nullable".
 5. In the Function Code, paste the following code:
-    ```
+    ```dart
     /// MODIFY CODE ONLY BELOW THIS LINE
     return supabaseRows.map((r) => ListsRow(r)).toList();
     ```
-6. Click “Save Function”
+6. Click "Save Function".
 
 <Frame caption="Custom function to map the lists table from Supabase">
    <img src="/images/integration-guides/flutterflow/supabase-rows-custom-function.png"/>
@@ -188,60 +185,58 @@ For reading data in FlutterFlow, you need a Custom Function per Supabase table t
 
 #### Create a Component to display List Items
 
-1. Under the **Page Selector**, click **“Add Page, Component, or Flow”**.
-2. Select the **“New Component”** tab.
-3. Select “Create Blank” and call the component `ListItems`.
-4. Under the **Widget Palette**, drag a "ListView" widget into the `ListItems` component.
-5. Still under the **Widget Palette**, drag a "ListTile" into the `ListView` widget.
+1. Under the **"Page Selector"**, click **"Add Page, Component, or Flow"**.
+2. Select the **"New Component"** tab.
+3. Select "Create Blank" and call the component `ListItems`.
+4. Under the **"Widget Palette"**, drag a "ListView" widget into the `ListItems` component.
+5. Still under the **"Widget Palette"**, drag a "ListTile" into the `ListView` widget.
    <Frame caption="The ListItems component should now look like this">
       <img src="/images/integration-guides/flutterflow/listitems-component.png"/>
    </Frame>
-6. Under the **Widget Tree**, select the `ListItems` component.
-    1. At the top right under “Component Parameters” click “Add Parameters”.
-    2. Click “Add Parameter”
-    3. Set its "Name" to `lists`
-    4. Set its "Type" to `Supabase Row`
-    5. Check `Is List`
-    6. Specify `lists` as the "Table Name"
-    7. Click “Confirm”
-7. Still under the **Widget Tree**, select the “ListView” widget.
-    1. Click on “Generate Dynamic Children”
-    2. Set the "Variable Name" to `listItem`
-    3. Set the "Value" to the component parameter created in the previous step (`lists`)
-    4. Click "Confirm"
-    5. Click "Save"
+6. Under the **"Widget Tree"**, select the `ListItems` component.
+    1. At the top right under "Component Parameters" click "Add Parameters".
+    2. Click "Add Parameter".
+    3. Set its "Name" to `lists`.
+    4. Set its "Type" to `Supabase Row`.
+    5. Check "Is List".
+    6. Specify `lists` as the "Table Name".
+    7. Click "Confirm".
+7. Still under the **"Widget Tree"**, select the "ListView" widget.
+    1. Select the **"Generate Dynamic Children"** panel on the right.
+    2. Set the "Variable Name" to `listItem`.
+    3. Set the "Value" to the component parameter created in the previous step (`lists`).
+    4. Click "Confirm".
+    5. Click "Save".
     6. Click "Ok" when being prompted about the widget generating its children dynamically.
    <Frame caption="The ListItems component should now look like this">
       <img src="/images/integration-guides/flutterflow/listitems-component-children.png"/>
    </Frame>
-8. Still under the Widget Tree, select the `ListTile` widget.
-    1. In the "Properties" panel on the right, under “Title”, click on the settings icon next to “Text”
-    2. Set as “listItem Item”
-    3. Under Available Options, select “Get Row Field”
-    4. Under Supabase Row Fields, select “name”
-    5. Click “Confirm”
+8. Still under the **"Widget Tree"**, select the `ListTile` widget.
+    1. In the **"Properties"** panel on the right, under "Title", click on the settings icon next to "Text".
+    2. Set as "listItem Item".
+    3. Under "Available Options", select "Get Row Field".
+    4. Under "Supabase Row Fields", select "name".
+    5. Click "Confirm".
    <Frame caption="Set the list item title text">
       <img src="/images/integration-guides/flutterflow/list-item-title-text.png"/>
    </Frame>
- 9. Repeat Step 8 above for the "Subtitle", setting it to “created_at”.
+ 9. Repeat Step 8 above for the "Subtitle", setting it to "created_at".
  
 <Frame caption="The ListItems component should now look like this">
    <img src="/images/integration-guides/flutterflow/listitems-component-titles.png"/>
 </Frame>
 
 
-
 #### Display the List Component and populate it with Data
 
-
-1. Under the **Page Selector**, select your `HomePage`.
-2. Under the **Widget Palette**, select the "Components and custom widgets imported from library projects" panel.
+1. Under the **"Page Selector"**, select your `HomePage`.
+2. Under the **"Widget Palette"**, select the "Components and custom widgets imported from library projects" panel.
    <Frame>
       <img src="/images/integration-guides/flutterflow/powersync-components.png"/>
    </Frame>
 3. Drag the `PowerSyncQuery` library component into your page.
-4. In the Properties panel on the right, under **“Component Parameters” -> “child”**:
-    1. Click on “Unknown”.
+4. In the Properties panel on the right, under **"Component Parameters" -> "child"**:
+    1. Click on "Unknown".
     2. Select `ListItems` we previously created.
     3. Click on `lists`.
     4. Set the "Value" to "Custom Functions" > `supabaseRowsToList` we created previously.
@@ -251,20 +246,20 @@ For reading data in FlutterFlow, you need a Custom Function per Supabase table t
    </Frame>
     6. Click "Confirm".
     7. Click "Confirm".
-5. Still under “Component Parameters” add the SQL Query to fetch all list items from the SQLite database:
+5. Still under "Component Parameters" add the SQL query to fetch all list items from the SQLite database:
     1. Paste the following into the "sql [String]" field:
     ```select * from lists order by created_at;```
     2. For this query there are no parameters - this will be covered further down in the guide.
-6. Still under “Component Parameters”, check "watch [Boolean]". This ensures that the query auto-updates.
+6. Still under "Component Parameters", check "watch [Boolean]". This ensures that the query auto-updates.
 
 #### Test your App
 
 1. Check that there are no project issues or errors.
-2. Instant Reload your app or start another test session.
-3. Notice that your homepage is still blank. This is because the `lists` table is empty in Supabase. Create a test row in the table by clicking on “Insert” -> “Insert Row” in your Supabase Table Editor.
+2. Reload your app or start another test session.
+3. Notice that your homepage is still blank. This is because the `lists` table is empty in Supabase. Create a test row in the table by clicking on "Insert" -> "Insert Row" in your Supabase Table Editor.
    1. Leave `id` and `created_at` blank.
-   2. Enter a name such as “Test from Supabase”.
-   3. Click “Select Record” for `owner_id` and select your test user.
+   2. Enter a name such as "Test from Supabase".
+   3. Click "Select Record" for `owner_id` and select your test user.
 
 <Check>
    **Checkpoint:** You should now see your single test row magically appear in your app:
@@ -282,13 +277,13 @@ In this section, we will be making the `ListView` component clickable and naviga
 
 This parameter will store the selected list's ID.
 
-1. Under the **Page Selector**, click **"Add Page, Component, or Flow"**.
+1. Under the **"Page Selector"**, click **"Add Page, Component, or Flow"**.
 <Frame>
   <img src="/images/integration-25.avif"/>
 </Frame>
 1. Create a blank page and name it `Todos`.
 
-2. Under the **Widget Tree**, select your `Todos` page.
+2. Under the **"Widget Tree"**, select your `Todos` page.
 3. At the top right of the **"Properties"** panel on the right, click on the plus icon for Page Parameters.
 4. Click "Add Parameter".
 5. Set the "Parameter Name" to `id`.
@@ -300,28 +295,28 @@ This parameter will store the selected list's ID.
 This variable will store the selected list row.
 
 1. Still in the **"Widget Tree"** with the `Todos` page selected:
-2. Select the **“State Management Panel"** on the right.
+2. Select the **"State Management Panel"** on the right.
 <Frame>
   <img src="/images/integration-guides/flutterflow/state-management.png"/>
 </Frame>
-3. Click on “Add Field”.
-4. Set “Field Name” to `list`.
-5. Set the “Type” to “Supabase Row”.
-6. Select `lists` as the “Table Name”.
+3. Click on "Add Field".
+4. Set "Field Name" to `list`.
+5. Set the "Type" to "Supabase Row".
+6. Select `lists` as the "Table Name".
 7. Click "Confirm".
 
 #### Bind the Page Title to the Page State
 
-1. Under the **Widget Palette**, select the "Components and custom widgets imported from library projects" panel.
+1. Under the **"Widget Palette"**, select the "Components and custom widgets imported from library projects" panel.
    <Frame>
       <img src="/images/integration-guides/flutterflow/powersync-components.png"/>
    </Frame>
 2. Drag the `PowerSyncStateUpdater` library component into your page.
 3. Under the **"Widget Tree"**, select the `PowerSyncStateUpdater` component.
-4. In the **"Properties"** panel on the right, under “Component Parameters”:
+4. In the **"Properties"** panel on the right, under "Component Parameters":
     1. Add the SQL query to fetch the selected list from the SQLite database. Paste the following into the "sql [String]" field:
          ```select * from lists where id = :id;```
-    2. Click on "parameters [Json]" select "Create Map (JSON)" as the Variable.
+    2. Click on "parameters [Json]" select "Create Map (JSON)" as the variable.
         1. Under "Add Map Entires", click "Add Key Value Pair".
         2. Set the "Key" to `id`.
         3. Set the "Value" to the page parameter created previously called `id`.
@@ -329,49 +324,49 @@ This variable will store the selected list row.
             <img src="/images/integration-guides/flutterflow/json-parameters.png"/>
          </Frame>
         4. Click "Confirm".
-5. Still under “Component Parameters”, configure the "onData" action:
-    1. Open the Action Flow Editor.
-    2. Select the “Callback” trigger type.
-    3. Click “Add Action”.
-    4. search for “update page” and select “Update Page State”.
-    5. Click “Add Field”.
+5. Still under "Component Parameters", configure the "onData" action:
+    1. Open the "Action Flow Editor".
+    2. Select the "Callback" trigger type.
+    3. Click "Add Action".
+    4. search for "update page" and select "Update Page State".
+    5. Click "Add Field".
     6. Select your `list` page state variable.
-    7. Set “Select Update Type” to “Set Value”.
-    8. Set “Value to set” to "Custom Functions" > `supabaseRowsToList`.
-    9. Set the "Value" to “Callback Parameters” > `rows`
+    7. Set "Select Update Type" to "Set Value".
+    8. Set "Value to set" to "Custom Functions" > `supabaseRowsToList`.
+    9. Set the "Value" to "Callback Parameters" > `rows`
     10. Click "Confirm".
-    11. Under "Available Options", select “Item at Index”.
-    12. Set “List Index Options” to “First”
+    11. Under "Available Options", select "Item at Index".
+    12. Set "List Index Options" to "First"
       <Frame>
          <img src="/images/integration-guides/flutterflow/update-page-state-action.png"/>
       </Frame>
     13. Click "Confirm".
     14. Close the Action Flow Editor.
 6. Still under the **"Widget Tree"**, select the "AppBar" -> "Text" widget.
-    1. In the **"Properties"** panel on the right, click on settings icon next to “Text”.
+    1. In the **"Properties"** panel on the right, click on settings icon next to "Text".
     2. Click on "Page State" > "List".
-    3. Set “Supabase Row Fields” to “name”.
+    3. Set "Supabase Row Fields" to "name".
     4. (Optional) Set the "Default Variable Value" to `List Name`.
     5. Click "Confirm".
 
 #### Make the `ListView` Component Clickable
 
-1. Under the **Page Selector**, select your `ListItems` component.
+1. Under the **"Page Selector"**, select your `ListItems` component.
 2. Under the **"Widget Tree"**, select the `ListTile` widget.
-3. In the **"Actions"** panel on the right, click “Add Action”. “On Tap” should be selected by default.
-4. In the "Navigate" subsection, select “Navigate To”.
-5. Select the “Todos” page.
-6. Under "Parameters" click “Pass”.
-7. “id” should be auto-selected, click on it.
+3. In the **"Actions"** panel on the right, click "Add Action". "On Tap" should be selected by default.
+4. In the "Navigate" subsection, select "Navigate To".
+5. Select the "Todos" page.
+6. Under "Parameters" click "Pass".
+7. "id" should be auto-selected, click on it.
 8. Click on the settings icon next to "Value" 
-9. Set it to “listItem Item”.
-10. Under "Available Options" select “Get Row Field”
-11. Under "Supabase Row Fields" select “id”.
+9. Set it to "listItem Item".
+10. Under "Available Options" select "Get Row Field"
+11. Under "Supabase Row Fields" select "id".
 12. Click "Confirm".
 13. (Optional) Enable the back button to navigate back:
-    1. Under the **Page Selector**, select your `Todos` page.
-    2. Under the **"Widget Tree"**, select the **AppBar** component
-    3. In the **"Properties"** panel on the right, enable “Show Default Button”.
+    1. Under the **"Page Selector"**, select your `Todos` page.
+    2. Under the **"Widget Tree"**, select the "AppBar" component.
+    3. In the **"Properties"** panel on the right, enable "Show Default Button".
 
 
 #### Test your App
@@ -392,20 +387,20 @@ Instant Reload your app or start another test session.
   This section is a work in progress. Please reach out on [our Discord](https://discord.gg/powersync) if you have any questions.
 </Info>
 
-## Creating Data
+## Create Data
 
 You will now update the app so that we can capture new list entries.
 
-1. Under the **Page Selector**, select your `HomePage` page.
+1. Under the **"Page Selector"**, select your `HomePage` page.
 2. Under the **"Widget Palette"**, search for "float" and drag the "FAB" widget onto your page.
-3. In the **"Actions"** panel on the right, click “Add Action”.
+3. In the **"Actions"** panel on the right, click "Add Action".
     1. Under "Custom Action" > "PowerSync", select "powersyncWrite".
     2. Under the "Set Action Arguments" > "sql" section, add the SQL query to create a new list item. For the purpose of this guide we are hardcoding the list's name, normally you would build UI for this.
        1. Paste the following into the "Value" field:
          ```INSERT INTO lists(id, created_at, name, owner_id) VALUES(uuid(), datetime(), 'new item', :userId);```
     3. Under the "parameters" section, set the `userId` parameter we're using the above query:
-        1. Click on "UNSET"
-        2. Select "Create Map (JSON)" as the Variable.
+        1. Click on "UNSET".
+        2. Select "Create Map (JSON)" as the variable.
         3. Under "Add Map Entires", click "Add Key Value Pair".
         4. Set the "Key" to `userId`.
         5. Set the "Value" to "Authenticated User" > "User ID".
@@ -419,37 +414,37 @@ You will now update the app so that we can capture new list entries.
    </Frame>
 </Check>
 
-## Updating Data
+## Update Data
 
 <Info>
   This section is a work in progress. Please reach out on [our Discord](https://discord.gg/powersync) if you have any questions.
 </Info>
 
-## Deleting Data
+## Delete Data
 
 In this section we will add the ability to swipe on a `ListTile` to delete it.
 
-1. Under the **Page Selector**, select your `ListItems` component.
-2. Under the **Widget Tree**, select the `ListTile` widget.
+1. Under the **"Page Selector"**, select your `ListItems` component.
+2. Under the **"Widget Tree"**, select the `ListTile` widget.
 3. In the **"Properties"** panel on the right, enable "Slidable".
 4. Click "Open Slidable".
 5. Select the "SlidableActionWidget".
    <Frame>
       <img src="/images/integration-guides/flutterflow/slidable-action-widget.png"/>
    </Frame>
-6. In the **"Actions"** panel on the right, click “Add Action”.
+6. In the **"Actions"** panel on the right, click "Add Action".
    1. Under "Custom Action" > "PowerSync", select "powersyncWrite".
    2. Under the "Set Action Arguments" > "sql" section, add the SQL query to delete the list item.
       1. Paste the following into the "Value" field:
          ```delete from lists where id = :id;```
    3. Under the "parameters" section, set the `id` parameter we're using the above query:
-        1. Click on "UNSET"
-        2. Select "Create Map (JSON)" as the Variable.
+        1. Click on "UNSET".
+        2. Select "Create Map (JSON)" as the variable.
         3. Under "Add Map Entires", click "Add Key Value Pair".
         4. Set the "Key" to `id`.
         5. Set the "Value" to "listItem Item".
-        6. Under "Available Options" select “Get Row Field".
-        7. Under "Supabase Row Fields" select “id”.
+        6. Under "Available Options" select "Get Row Field".
+        7. Under "Supabase Row Fields" select "id".
         8. Click "Confirm".
         9. Click "Confirm".
 
@@ -457,9 +452,9 @@ In this section we will add the ability to swipe on a `ListTile` to delete it.
    **Checkpoint:** Reload your app and swipe on a list item. Delete it, and note how it is deleted from the list as well as from Supabase.
 </Check>
 
-## Signing Out
+## Sign Out
 
-1. Under **"Custom Code"**, create a new Custom Action called `signOut` without Arguments or Return Values and paste the below code:
+1. Navigate to **"Custom Code"** and create a new Custom Action called `signOut` without Arguments or Return Values and paste the below code:
 
 ```dart
 // Automatic FlutterFlow imports
@@ -489,7 +484,7 @@ Future signOut() async {
 ```
 
 2. Click "Save Action".
-3. Under the **Page Selector**, select your `HomePage` page.
+3. Under the **"Page Selector"**, select your `HomePage` page.
 4. Under the **"Widget Palette"**, drag a "Button" onto the right of your "AppBar".
    <Frame>
       <img src="/images/integration-guides/flutterflow/sign-out-button.png"/>
@@ -502,13 +497,13 @@ Future signOut() async {
 <Frame>
    <img src="/images/integration-66.avif"/>
 </Frame>
-10. Click Close
+10. Click "Close".
 
 <Check>
    **Checkpoint:** You should now be able to reload your app and sign out and in again.
 </Check>
 
-## (Optional) Displaying Connectivity and Sync Status
+## (Optional) Display Connectivity and Sync Status
 
 The PowerSync library for FlutterFlow includes a component to display the connectivity and sync status to the user. This can easily be added to your app:
 
@@ -521,7 +516,7 @@ The PowerSync library for FlutterFlow includes a component to display the connec
       <img src="/images/integration-guides/flutterflow/powersync-connectivity.png"/>
    </Frame>
 
-## Securing Your App
+## Secure Your App
 
 PowerSync's [Sync Rules](/usage/sync-rules) and Supabase's support for [Row Level Security (RLS)](https://supabase.com/docs/guides/auth/row-level-security) can be used in conjunction. Here are some high level similarities and differences:
 

@@ -1,0 +1,135 @@
+---
+title: Best Practices for Compound Indexing and Query Optimization in PowerSync
+description: In this tutorial we will show you the Best Practices for Compound Indexing and Query Optimization using the [PowerSync Web SDK](https://github.com/powersync-ja/powersync-js).
+sidebarTitle: Compound Indexing & Query Performance
+---
+
+## Introduction
+
+This tutorial outlines findings and recommendations based on extensive testing of compound indexes, query execution, and table performance using the [PowerSync Web SDK](https://github.com/powersync-ja/powersync-js).
+These best practices are designed to assist developers in optimizing their schemas and queries when working with large datasets.
+
+## Key Findings
+
+### 1. Compound Index Behavior
+
+- Compound indexes significantly improve query performance when filters align with the indexed column order.
+- Queries that skip leading columns in a compound index result in full table scans, negating performance benefits.
+- Performance is consistent with SQLite's behavior as PowerSync uses SQLite under the hood.
+
+### 2. Performance Benchmarks
+
+Using a table with 1999 columns and 50k entries:
+
+#### Queries with Leading Column Filters
+
+```sql
+EXPLAIN QUERY PLAN SELECT * FROM dummy_table WHERE col1 = 'val1';
+```
+
+- **Execution Time:** 256 ms
+- **Query Plan:** SEARCH dummy_table USING COMPOUND INDEX
+
+#### Queries with Multiple Indexed Columns
+
+```sql
+EXPLAIN QUERY PLAN SELECT * FROM dummy_table WHERE col1 = 'val1' AND col2 = 'val2';
+```
+
+- **Execution Time:** 206
+- **Query Plan:** SEARCH dummy_table USING COMPOUND INDEX
+
+#### Queries Skipping Leading Columns
+
+```sql
+EXPLAIN QUERY PLAN SELECT * FROM dummy_table WHERE col2 = 'val2' AND col3 = 'val3';
+```
+
+- **Execution Time:** 556 ms
+- **Query Plan:** SCAN dummy_table
+### Performance
+
+| Query Type                        | Execution Time | Query Plan                          |
+|-----------------------------------|----------------|-------------------------------------|
+| Leading Column Filters            | 253 ms        | SEARCH dummy_table USING COMPOUND INDEX |
+| Multiple Indexed Columns          | 206 ms         | SEARCH dummy_table USING COMPOUND INDEX |
+| Skipping Leading Columns          | 556 ms         | SCAN dummy_table                    |
+### 3. Column Limitations
+
+- PowerSync supports a maximum of 1,999 columns in a compound index, aligning with SQLite's limitations.
+- Queries including non-indexed columns slightly increase execution time but remain performant under typical workloads.
+
+## Best Practices
+
+### Schema Definition
+
+Define compound indexes to match your most frequent query patterns:
+
+```javascript
+import { column, Table } from '@powersync/web';
+
+const todos = new Table(
+  {
+    list_id: column.text,            // Foreign key to lists
+    created_at: column.text,         // Creation timestamp
+    description: column.text,        // Task description
+  },
+  {
+    indexes: {
+      list_created: ['list_id', 'created_at'],
+    },
+  }
+);
+```
+
+### Query Optimization
+
+#### Aligned Filters
+
+Ensure that queries align with the column order of compound indexes:
+
+```javascript
+const results = await powerSync.get(
+  `SELECT * FROM todos WHERE list_id = ? AND created_at = ?`,
+  ['list1', '2025-01-26']
+);
+```
+
+#### Skipping Leading Columns
+
+For queries skipping leading columns, define additional indexes:
+
+```javascript
+await powerSync.execute(
+  `CREATE INDEX idx_description ON todos (description);`
+);
+```
+
+### Advanced Scenarios
+
+#### Testing Column Order
+
+The order of indexed columns affects query performance:
+
+```javascript
+// Create compound index with a different order
+await powerSync.execute(`CREATE INDEX idx_order ON todos (description, list_id);`);
+
+// Query execution profiling
+console.time('Query with reordered index');
+await powerSync.get(
+  `SELECT * FROM todos WHERE description = ? AND list_id = ?`,
+  ['Task 1', 'list1']
+);
+console.timeEnd('Query with reordered index');
+```
+
+## Key Takeaways
+
+- Define compound indexes aligned with your most frequent query patterns.
+- Avoid skipping leading columns in compound indexes; create additional indexes if necessary.
+
+## Conclusion
+
+By following these best practices and leveraging PowerSync's schema capabilities, developers can achieve significant performance gains and ensure scalability for their applications.
+The findings above can be integrated directly into PowerSync's documentation to assist other developers in navigating these challenges effectively.

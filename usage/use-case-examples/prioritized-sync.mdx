@@ -3,48 +3,76 @@ title: "Prioritized Sync"
 description: "In some scenarios, you may want to sync tables using different priorities. For example, you may want to sync a subset of all tables first to log a user in as fast as possible, then sync the remaining tables in the background."
 ---
 
-<Info>
-  Note that this strategy is specifically to prioritize data on initial sync, and cannot be used for incremental sync after that.
-</Info>
+# Overview
 
-## Overview
+PowerSync supports defining [sync bucket](/usage/sync-rules/organize-data-into-buckets) priorities, which allows you to control the sync order for different data sets. Use this to load critical data first while syncing bulk data in the background. 
 
-The general approach is as follows:
+# How It Works
 
-1. Define how many priority types you want - typically only two are needed: "high priority" and "the rest"
+Each sync bucket can be assigned a priority (0–3):
 
-2. Create a sync bucket for each priority type
+- 0 – Highest priority; syncs immediately, even if uploads are pending.
+- 1 – Default priority.
+- 2-3 – Lower priority; syncs only after higher-priority buckets.
 
-3. Use [client parameters](/usage/sync-rules/advanced-topics/client-parameters) to control which priorities you want the client to sync
+Sync priorities are best-effort, meaning higher-priority buckets may sync first, but no guarantee exists if sync conditions change. In general, sync follows this order:
 
-## Example
+- 1️⃣ Sync all buckets with priority 0.
+- 2️⃣ Sync all buckets with priority 0 or 1.
+- 3️⃣ Sync all buckets with priority 0, 1, or 2.
+- 4️⃣ Sync all buckets with priority 0, 1, 2, or 3.
 
-Suppose we have two tables: `lists` and `todos` (as per the standard todolist demo app [schema](/integration-guides/supabase-+-powersync#create-the-demo-database-schema)). Further, suppose we want the sync priority to behave as follows:
+# Example: Syncing Lists Before Todos
 
-1. First, sync all the user's lists, enabling us to render the initial screen in the app
+Consider a scenario where you want to display lists immediately while loading todos in the background. This approach allows users to view and interact with lists right away without waiting for todos to sync. Here's how to configure sync priorities in your Sync Rules to achieve this:
 
-2. Then, sync the user's todos
-
-Below are the sync rules that will enable this:
-
-```yaml
+```sql
 bucket_definitions:
-  # always sync high priority tables (first), in this case the user's lists
-  high_priority:
-    parameters: select id as list_id from lists where owner_id = token_parameters.user_id
+  user_lists:
+    # Sync the user's lists with a higher priority
+    parameters: select id as list_id, 1 as _priority from lists where user_id = request.user_id()
     data:
-        - select * from lists where id = bucket.list_id
-  # sync any remaining tables, in this case todo items
-  remaining:
-    parameters: select id as list_id from lists where owner_id = token_parameters.user_id and (request.parameters() ->> 'remaining_tables' = true)
-    data: 
-        - select * from todos where list_id = bucket.list_id
+      - select * from lists where id = bucket.list_id
+
+  user_todos:
+    # Sync the user's todos with a lower priority
+    parameters: select id as todo_id, 2 as _priority from todos where list_id in (select id from lists where user_id = request.user_id())
+    data:
+      - select * from todos where list_id = bucket.todo_id
 ```
 
-It is recommended to set Client Parameters in the [Diagnostics App](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to verify functionality at this point:
+In this configuration:
 
-<Frame>
-  <img src="/images/usage/use-case-prioritized.png" />
-</Frame>
+The `lists` bucket has the default priority of 1, meaning it syncs early but allows for consistency.
 
-If everything checks out, you can then proceed to implement the client parameter switching accordingly in your app.
+The `todos` bucket is assigned a priority of 2, meaning it will sync only after the lists have been synced.
+
+
+
+# Behavioral Considerations
+
+- **Interruption for Higher Priority Data**: If new data arrives for a higher-priority bucket, ongoing syncs for lower-priority buckets may be interrupted.
+- **Local Changes & Consistency**: If local writes fail due to validation or permission issues, they are only reverted after all buckets sync.
+- **Deleted Data**: Data deletion is deferred until all buckets sync, ensuring consistency. Future updates may improve this behavior.
+- **Data Ordering**: Data in lower-priority buckets will never appear before higher-priority data.
+
+## Special Case: Priority 0
+
+Priority 0 buckets sync regardless of pending uploads.
+
+For example, in a collaborative document editing app (e.g., using Yjs), each change is stored as a separate row. Since out-of-order updates don’t affect document integrity, Priority 0 can ensure immediate availability of updates.
+
+Caution: If misused, Priority 0 may cause flickering or inconsistencies, as updates could arrive out of order.
+
+# Consistency Considerations
+
+Priority levels ensure consistency within each level but not across different levels. Consider the following example:
+
+Example: Todo List Syncing
+
+Imagine a task management app where users create lists and todos. Some users have millions of todos. To improve first-load speed:
+
+- Lists are assigned Priority 1, syncing first to allow UI rendering.
+- Todos are assigned Priority 2, loading in the background.
+
+Now, if another user adds new todos, it’s possible for the list count (synced at Priority 1) to temporarily not match the actual todos (synced at Priority 2). If real-time accuracy is required, both lists and todos should use the same priority.

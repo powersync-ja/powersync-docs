@@ -39,7 +39,7 @@ We use the following icons for the SDKs and backend databases:
 - Flutter: `icon="flutter"`
 - React Native: `icon="react"`
 - Web: `icon="js"`
-- Kotlin: `icon="flag"`
+- Kotlin: `icon="k"`
 - Swift: `icon="swift"`
 
 #### Some useful references:

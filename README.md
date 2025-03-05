@@ -60,5 +60,4 @@ Changes will be deployed to production automatically after pushing to the `docs`
 ### Getting help
 
 - Mintlify Slack community: https://mintlify.com/community 
-- We also have the `#mintlify-powersync-setup` Slack channel shared with members of the Mintlify team, where yo ucan ask your question directly.
 - Send an email to support@mintlify.com.

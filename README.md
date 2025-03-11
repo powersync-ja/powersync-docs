@@ -28,6 +28,14 @@ Navigation (and other global settings) is defined in `mint.json`. Learn more abo
 
 NB: If you move or rename a page, ensure you add a redirect (via the `redirects` property) to that existing links that were shared via Discord etc continue to work.
 
+#### Whitelisting Terms
+
+Certain terms can be whitelisted such that Mintlify's Vale integration does not flag them as misspelled.
+
+Modify the `.github/vale/config/vocabularies/PowerSync/accept.txt` file to add terms to the whitelist - every line is a new term. Terms added to the whitelist are not case-sensitive, but capitalisation is still used for readability purposes. Further info on Vale vocab lists can be found in [Mintlify's docs](https://mintlify.com/docs/settings/ci#vale) and [Vale's docs](https://vale.sh/docs/keys/vocab).
+
+NB: If you need to blacklist terms, you can create a `reject.txt` file in the same folder as `accept.txt`.
+
 #### Icons
 
 Only Fontawesome icons are currently supported: https://fontawesome.com/search

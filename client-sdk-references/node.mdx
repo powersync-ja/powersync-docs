@@ -1,0 +1,194 @@
+---
+title: "NodeJS client (alpha)"
+description: "SDK reference for using PowerSync in NodeJS clients."
+sidebarTitle: Overview
+---
+
+<Note>
+  This page describes the PowerSync _client_ SDK for NodeJS.
+  If you're interested in using PowerSync for your NodeJS backend, no special package is required.
+  Instead, follow our guides on [app backend setup](/installation/app-backend-setup).
+</Note>
+
+<CardGroup>
+  <Card title="PowerSync SDK on NPM" icon="npm" href="https://www.npmjs.com/package/@powersync/node">
+    This SDK is distributed via NPM [\[External link\].](https://www.npmjs.com/package/@powersync/node)
+  </Card>
+
+  <Card title="Source Code" icon="github" href="https://github.com/powersync-ja/powersync-js/tree/main/packages/node">
+    Refer to packages/node in the powersync-js repo on GitHub.
+  </Card>
+
+  <Card title="API Reference" icon="book" href="https://powersync-ja.github.io/powersync-js/node-sdk">
+    Full API reference for the PowerSync SDK [\[External link\].](https://powersync-ja.github.io/powersync-js/node-sdk)
+  </Card>
+
+  <Card title="Example Project" icon="code" href="https://github.com/powersync-ja/powersync-js/tree/main/demos/example-node">
+    A small CLI app showcasing bidirectional sync.
+  </Card>
+</CardGroup>
+
+## SDK Features
+
+* Provides real-time streaming of database changes.
+* Offers direct access to the SQLite database, enabling the use of SQL on both client and server sides.
+* Operations run on a background worker and are asynchronous by default, enabling concurrent queries.
+* Enables subscription to queries for receiving live updates.
+* Eliminates the need for client-side database migrations as these are managed automatically.
+
+## Quickstart
+
+To start using PowerSync in a Node client, first add the dependencies:
+
+<Tabs>
+<Tab title="npm">
+    ```bash
+    npm install @powersync/node
+    ```
+</Tab>
+<Tab title="yarn">
+    ```bash
+    yarn add @powersync/node
+    ```
+</Tab>
+<Tab title="pnpm">
+    ```bash
+    pnpm install @powersync/node
+    ```
+</Tab>
+</Tabs>
+
+Depending on the package manager used, you might have to approve install scripts.
+PowerSync currently requires install scripts on the `@powersync/node` and `@powersync/better-sqlite3` packages 
+to download native addons.
+
+Next, make sure that you have:
+
+* Signed up for a PowerSync Cloud account ([here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs)) or [self-host PowerSync](/self-hosting/getting-started).
+* [Configured your backend database](/installation/database-setup) and connected it to your PowerSync instance.
+
+### 1. Define the schema
+
+The first step is defining the schema for the local SQLite database.
+
+This schema represents a "view" of the downloaded data. No migrations are required — the schema is applied directly when the local PowerSync database is constructed (as we'll show in the next step).
+You can use [this example](https://github.com/powersync-ja/powersync-js/blob/e5a57a539150f4bc174e109d3898b6e533de272f/demos/example-node/src/powersync.ts#L47-L77) as a reference when defining your schema.
+
+<Info>
+  **Generate schema automatically**
+
+  In the [dashboard](/usage/tools/powersync-dashboard), the schema can be generated based off your sync rules by right-clicking on an instance and selecting **Generate client-side schema**.
+  Select JavaScript and replace the suggested import with `@powersync/node`.
+
+  Similar functionality exists in the [CLI](/usage/tools/cli).
+</Info>
+
+### 2. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database — this is the core managed database.
+
+Its primary functions are to record all changes in the local database, whether online or offline. In addition, it automatically uploads changes to your app backend when connected.
+
+**Example**:
+
+```js
+import { PowerSyncDatabase } from '@powersync/node';
+import { Connector } from './Connector';
+import { AppSchema } from './Schema';
+
+export const db = new PowerSyncDatabase({
+  // The schema you defined in the previous step
+  schema: AppSchema,
+  database: {
+    // Filename for the SQLite database — it's important to only instantiate one instance per file.
+    dbFilename: 'powersync.db',
+    // Optional. Directory where the database file is located.'
+    // dbLocation: 'path/to/directory'
+  },
+});
+```
+
+### 3. Integrate with your Backend
+
+The PowerSync backend connector provides the connection between your application backend and the PowerSync client-slide managed SQLite database.
+
+It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+2. Apply local changes on your backend application server (and from there, to Postgres)
+
+Accordingly, the connector must implement two methods:
+
+1. [PowerSyncBackendConnector.fetchCredentials](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L16) - This is called every couple of minutes and is used to obtain credentials for your app backend API. -> See [Authentication Setup](/installation/authentication-setup) for instructions on how the credentials should be generated.
+2. [PowerSyncBackendConnector.uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) - Use this to upload client-side changes to your app backend.
+   -> See [Writing Client Changes](/installation/app-backend-setup/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```js
+import { UpdateType } from '@powersync/node';
+
+export class Connector implements PowerSyncBackendConnector {
+    constructor() {
+        // Setup a connection to your server for uploads
+        this.serverConnectionClient = TODO;
+    }
+
+    async fetchCredentials() {
+        // Implement fetchCredentials to obtain a JWT from your authentication service.
+        // See https://docs.powersync.com/installation/authentication-setup
+        // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
+        // - https://docs.powersync.com/installation/authentication-setup/supabase-auth
+        // - https://docs.powersync.com/installation/authentication-setup/firebase-auth
+        return {
+            endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+            // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
+            token: 'An authentication token'
+        };
+    }
+
+    async uploadData(database) {
+      // Implement uploadData to send local changes to your backend service.
+      // You can omit this method if you only want to sync data from the database to the client
+
+      // See example implementation here: https://docs.powersync.com/client-sdk-references/javascript-web#3-integrate-with-your-backend
+    }
+}
+```
+
+With your database instantiated and your connector ready, call `connect` to start the synchronization process:
+
+```js
+await db.connect(new Connector());
+await db.waitForFirstSync(); // Optional, to wait for a complete snapshot of data to be available
+```
+
+## Usage
+
+After connecting the client database, it is ready to be used. The API to run queries and updates is identical to our
+[web SDK](/client-sdk-references/javascript-web#using-powersync%3A-crud-functions):
+
+```js
+// Use db.get() to fetch a single row:
+console.log(await db.get('SELECT powersync_rs_version();'));
+
+// Or db.all() to fetch all:
+console.log(await db.all('SELECT * FROM lists;'));
+
+// Use db.watch() to watch queries for changes:
+const watchLists = async () => {
+  for await (const rows of db.watch('SELECT * FROM lists;')) {
+    console.log('Has todo lists', rows.rows!._array);
+  }
+};
+watchLists();
+
+// And db.execute for inserts, updates and deletes:
+await db.execute(
+  "INSERT INTO lists (id, created_at, name, owner_id) VALUEs (uuid(), datetime('now'), ?, uuid());",
+  ['My new list']
+);
+```
+
+PowerSync runs queries asynchronously on a background pool of workers and automatically configures WAL to
+allow a writer and multiple readers to operate in parallel.

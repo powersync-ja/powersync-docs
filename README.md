@@ -49,11 +49,14 @@ We use the following icons for the SDKs and backend databases:
 - Web: `icon="js"`
 - Kotlin: `icon="k"`
 - Swift: `icon="swift"`
+- Node.js: `icon="node-js"`
+- .NET: `icon="wave-sine"`
 
 #### Some useful references:
 - Writing content: https://mintlify.com/docs/page
 - Available components: https://mintlify.com/docs/content/components/accordions
 - Global settings: https://mintlify.com/docs/settings/global
+- Reusable Snippets for repeated content: https://mintlify.com/docs/reusable-snippets
 
 ### Publishing Changes
 

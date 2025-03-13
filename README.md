@@ -56,6 +56,7 @@ We use the following icons for the SDKs and backend databases:
 - Writing content: https://mintlify.com/docs/page
 - Available components: https://mintlify.com/docs/content/components/accordions
 - Global settings: https://mintlify.com/docs/settings/global
+- Reusable Snippets for repeated content: https://mintlify.com/docs/reusable-snippets
 
 ### Publishing Changes
 

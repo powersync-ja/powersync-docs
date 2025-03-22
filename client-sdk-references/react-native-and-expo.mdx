@@ -75,8 +75,11 @@ The types available are `text`, `integer` and `real`. These should map directly 
 
 **Example**:
 
-```js
-// AppSchema.ts
+<Info>
+    **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Info>
+
+```typescript powersync/AppSchema.ts
 import { column, Schema, Table } from '@powersync/react-native';
 
 const lists = new Table({
@@ -111,9 +114,7 @@ export type TodoRecord = Database['todos'];
 export type ListRecord = Database['lists'];
 ```
 
-<Info>
-  **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
-</Info>
+For more info on types, see the
 
 ### 2\. Instantiate the PowerSync Database
 
@@ -123,26 +124,52 @@ Its primary functions are to record all changes in the local database, whether o
 
 **Example**:
 
-```js
-import { PowerSyncDatabase } from '@powersync/react-native';
-import { Connector } from './Connector';
-import { AppSchema } from './Schema';
+<Tabs>
+    <Tab title="React Native Quick SQLite">
+        For getting started and testing PowerSync use the [@journeyapps/react-native-quick-sqlite](https://github.com/powersync-ja/react-native-quick-sqlite) package.
+        <Note>By default, this SDK requires @journeyapps/react-native-quick-sqlite as a peer dependency.</Note>
 
-/**
- * Instantiate the local PowerSync database
- * This uses react-native-quick-sqlite to open a SQLite database file
- */
-export const db = new PowerSyncDatabase({
-  // The schema you defined in the previous step
-  schema: AppSchema,
-  database: {
-    // Filename for the SQLite database — it's important to only instantiate one instance per file.
-    dbFilename: 'powersync.db'
-    // Optional. Directory where the database file is located.'
-    // dbLocation: 'path/to/directory'
-  }
-});
-```
+        ```typescript powersync/system.ts
+        import { PowerSyncDatabase } from '@powersync/react-native';
+        import { AppSchema } from './Schema';
+
+        export const powersync = new PowerSyncDatabase({
+            // The schema you defined in the previous step
+            schema: AppSchema,
+            // For other options see,
+            // https://powersync-ja.github.io/powersync-js/web-sdk/globals#powersyncopenfactoryoptions
+            database: {
+                // Filename for the SQLite database — it's important to only instantiate one instance per file.
+                // For other database options see,
+                // https://powersync-ja.github.io/powersync-js/web-sdk/globals#sqlopenoptions
+                dbFilename: 'powersync.db'
+            }
+        });
+        ```
+    </Tab>
+    <Tab title="OP-SQLite">
+        If you want to include encryption with SQLCipher use the [@powersync/op-sqlite](https://www.npmjs.com/package/@powersync/op-sqlite) package.
+        <Note>If you've already installed `@journeyapps/react-native-quick-sqlite`, You will have to uninstall it and then install both `@powersync/op-sqlite` and it's peer dependency `@op-engineering/op-sqlite` to use this.</Note>
+
+        ```typescript powersync/system.ts
+        import { PowerSyncDatabase } from '@powersync/react-native';
+        import { OPSqliteOpenFactory } from '@powersync/op-sqlite'; // Add this import
+        import { AppSchema } from './Schema';
+
+        // Create the factory
+        const opSqlite = new OPSqliteOpenFactory({
+            dbFilename: 'powersync.db'
+        });
+
+        export const powersync = new PowerSyncDatabase({
+            // For other options see,
+            schema: AppSchema,
+            // Override the default database
+            database: opSqlite
+        });
+        ```
+    </Tab>
+</Tabs>
 
 <Note>
 **SDK versions lower than 1.8.0**
@@ -152,11 +179,13 @@ In SDK versions lower than 1.8.0, you will need to use the deprecated [RNQSPower
 
 Once you've instantiated your PowerSync database, you will need to call the [connect()](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/AbstractPowerSyncDatabase#connect) method to activate it.
 
-```js
+```typescript powersync/system.ts
+import { Connector } from './Connector';
+
 export const setupPowerSync = async () => {
   // Uses the backend connector that will be created in the next section
   const connector = new Connector();
-  db.connect(connector);
+  powersync.connect(connector);
 };
 ```
 
@@ -177,46 +206,65 @@ Accordingly, the connector must implement two methods:
 
 **Example**:
 
-```js
-// lib/Connector.js
-import { UpdateType } from '@powersync/react-native';
+```typescript powersync/Connector.ts
+import { PowerSyncBackendConnector, UpdateType  } from "@powersync/react-native"
 
-/// Postgres Response codes that we cannot recover from by retrying.
-const FATAL_RESPONSE_CODES = [
-  // Class 22 — Data Exception
-  // Examples include data type mismatch.
-  new RegExp('^22...$'),
-  // Class 23 — Integrity Constraint Violation.
-  // Examples include NOT NULL, FOREIGN KEY and UNIQUE violations.
-  new RegExp('^23...$'),
-  // INSUFFICIENT PRIVILEGE - typically a row-level security violation
-  new RegExp('^42501$')
-];
+export class Connector implements PowerSyncBackendConnector {
+  /**
+  * Implement fetchCredentials to obtain a JWT from your authentication service.
+  * See https://docs.powersync.com/installation/authentication-setup
+  * If you're using Supabase or Firebase, you can re-use the JWT from those clients, see:
+  * https://docs.powersync.com/installation/authentication-setup/supabase-auth
+  * https://docs.powersync.com/installation/authentication-setup/firebase-auth
+  */
+  async fetchCredentials() {
+    return {
+      // The PowerSync instance URL or self-hosted endpoint
+      endpoint: 'https://xxxxxx.powersync.journeyapps.com',
+      /**
+      * To get started quickly, use a development token, see:
+      * Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
+      */
+      token: 'An authentication token'
+    };
+  }
 
-export class Connector {
-    constructor() {
-        // Setup a connection to your server for uploads
-        this.serverConnectionClient = TODO;
+  /**
+  * Implement uploadData to send local changes to your backend service.
+  * You can omit this method if you only want to sync data from the database to the client
+  * See example implementation here:https://docs.powersync.com/client-sdk-references/react-native-and-expo#3-integrate-with-your-backend
+  */
+  async uploadData(database: AbstractPowerSyncDatabase) {
+
+    /**
+    * For batched crud transactions, use data.getCrudBatch(n);
+    * https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/SqliteBucketStorage#getcrudbatch
+    */
+    const transaction = await database.getNextCrudTransaction();
+
+    if (!transaction) {
+      return;
     }
 
-    async fetchCredentials() {
-    // Implement fetchCredentials to obtain a JWT from your authentication service.
-    // See https://docs.powersync.com/installation/authentication-setup
-    // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
-    // - https://docs.powersync.com/installation/authentication-setup/supabase-auth
-    // - https://docs.powersync.com/installation/authentication-setup/firebase-auth
-        return {
-            endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
-            // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
-            token: 'An authentication token'
-        };
+    for (const op of transaction.crud) {
+      // The data that needs to be changed in the remote db
+      const record = { ...op.opData, id: op.id };
+      switch (op.op) {
+        case UpdateType.PUT:
+          // TODO: Instruct your backend API to CREATE a record
+          break;
+        case UpdateType.PATCH:
+          // TODO: Instruct your backend API to PATCH a record
+          break;
+        case UpdateType.DELETE:
+          //TODO: Instruct your backend API to DELETE a record
+          break;
+      }
     }
 
-    async uploadData(database) {
-    // Implement uploadData to send local changes to your backend service.
-    // You can omit this method if you only want to sync data from the database to the client
-
-    // See example implementation here:https://docs.powersync.com/client-sdk-references/react-native-and-expo#3-integrate-with-your-backend
+    // Completes the transaction and moves onto the next one
+    await transaction.complete();
+  }
 }
 ```
 
@@ -236,9 +284,9 @@ The most commonly used CRUD functions to interact with your SQLite data are:
 The [get](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#get) method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use [getOptional](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#getoptional) to return a single optional result (returns `null` if no result is found).
 
 
-```js
-// TodoItemWidget.jsx
+```js TodoItemWidget.jsx
 import { Text } from 'react-native';
+import { powersync } from "../powersync/system";
 
 export const TodoItemWidget = ({id}) => {
     const [todoItem, setTodoItem] = React.useState([]);
@@ -246,7 +294,7 @@ export const TodoItemWidget = ({id}) => {
 
     React.useEffect(() => {
         // .get returns the first item of the result. Throws an exception if no result is found.
-        PowerSync.get('SELECT * from todos WHERE id = ?', [id])
+        powersync.get('SELECT * from todos WHERE id = ?', [id])
           .then(setTodoItem)
           .catch(ex => setError(ex.message))
     }, []);
@@ -259,15 +307,15 @@ export const TodoItemWidget = ({id}) => {
 
 The [getAll](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#getall) method returns a set of rows from a table.
 
-```js
-// ListsWidget.jsx
+```js ListsWidget.jsx
 import { FlatList, Text} from 'react-native';
+import { powersync } from "../powersync/system";
 
 export const ListsWidget = () => {
     const [lists, setLists] = React.useState([]);
 
     React.useEffect(() => {
-        PowerSync.getAll('SELECT * from lists').then(setLists)
+        powersync.getAll('SELECT * from lists').then(setLists)
     }, []);
 
     return (<FlatList
@@ -281,9 +329,9 @@ export const ListsWidget = () => {
 
 The [watch](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#watch) method executes a read query whenever a change to a dependent table is made. It can be used with an `AsyncGenerator`, or with a callback.
 
-```js
-// ListsWidget.jsx
+```js ListsWidget.jsx
 import { FlatList, Text } from 'react-native';
+import { powersync } from "../powersync/system";
 
 export const ListsWidget = () => {
     const [lists, setLists] = React.useState([]);
@@ -293,13 +341,13 @@ export const ListsWidget = () => {
 
         // Option 1: Use with AsyncGenerator
         (async () => {
-          for await(const update of PowerSync.watch('SELECT * from lists', [], {signal: abortController.signal})) {
+          for await(const update of powersync.watch('SELECT * from lists', [], {signal: abortController.signal})) {
               setLists(update)
           }
         })();
 
         // Option 2: Use a callback (available since version 1.3.3 of the SDK)
-        PowerSync.watch('SELECT * from lists', [], { onResult: (result) => setLists(result) }, { signal: abortController.signal });
+        powersync.watch('SELECT * from lists', [], { onResult: (result) => setLists(result) }, { signal: abortController.signal });
 
         return () => {
             abortController.abort();
@@ -317,10 +365,9 @@ export const ListsWidget = () => {
 
 The [execute](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#execute) method can be used for executing single SQLite write statements.
 
-```js
-
-// ListsWidget.jsx
+```js ListsWidget.jsx
 import { Alert, Button, FlatList, Text, View } from 'react-native';
+import { powersync } from "../powersync/system";
 
 export const ListsWidget = () => {
   // Populate lists with one of methods listed above
@@ -336,7 +383,7 @@ export const ListsWidget = () => {
               title="Delete"
               onPress={async () => {
                   try {
-                    await PowerSync.execute(`DELETE FROM lists WHERE id = ?`, [item.id])
+                    await powersync.execute(`DELETE FROM lists WHERE id = ?`, [item.id])
                     // Watched queries should automatically reload after mutation
                   } catch (ex) {
                     Alert('Error', ex.message)
@@ -350,7 +397,7 @@ export const ListsWidget = () => {
         color="#841584"
         onPress={async () => {
             try {
-              await PowerSync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
+              await powersync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
                 'A list name',
                 "[The user's uuid]"
               ])

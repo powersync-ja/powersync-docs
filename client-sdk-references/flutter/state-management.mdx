@@ -1,0 +1,283 @@
+---
+title: "State management"
+description: "Guidance on using PowerSync with popular state management libraries."
+---
+
+Our [demo apps](/resources/demo-apps-example-projects) for Flutter are intentionally kept simple to put a focus on demonstrating
+PowerSync APIs.
+Instead of using heavy state management solutions, they use simple global fields to make the PowerSync database accessible to widgets.
+When adopting PowerSync, you might be interested in using a more sophisticated approach for state management.
+This section explains how PowerSync integrates with popular packages for state management.
+
+PowerSync exposes database queries with the standard `Future` and `Stream` classes from `dart:async`. Given how widely used these are
+in the Dart ecosystem, PowerSync works well with all popular approaches for state management, such as:
+
+1. Providers with `package:provider`: Create your database as a `Provider` and expose watched queries to child widgets with `StreamProvider`!
+   The provider for databases should `close()` the database in `dispose`.
+2. Providers with `package:riverpod`: We mention relevant snippets [below](#riverpod).
+3. Dependency injection with `package:get_it`: PowerSync databases can be registered with `registerSingletonAsync`. Again, make sure
+   to `close()` the database in the `dispose` callback.
+4. The BLoC pattern with the `bloc` package: You can easily listen to watched queries in Cubits (although, if you find your
+   Blocs and Cubits becoming trivial wrappers around database streams, consider just `watch()`ing database queries in widgets directly.
+   That doesn't make your app [less testable](/client-sdk-references/flutter/unit-testing)!).
+   To simplify state management, avoid the use of hydrated blocs and cubits for state that depends on database queries. With PowerSync,
+   regular data is already available locally and doesn't need a second local cache.
+
+## Riverpod
+
+We have a [complete example](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist-drift) demonstrating how
+PowerSync can be used in an app using [Riverpod](https://riverpod.dev) for state management.
+This section also provides a few relevant snippets and explanations.
+
+For this example, we use a simple utility to make `NotifierProvider`s easier to create:
+
+```dart
+import 'package:riverpod/riverpod.dart';
+
+final class _StatefulNotifier<T> extends Notifier<T> {
+  T? _currentValue;
+  final T Function(Ref, void Function(T)) _initial;
+
+  _StatefulNotifier(this._initial);
+
+  @override
+  T build() => _currentValue ??= _initial(ref, (updated) {
+        _currentValue = state = updated;
+      });
+}
+
+/// A [NotifierProvider] that exposes the [Notifier.state] setter to the
+/// [initialValue] function, allowing notifier providers to be written without
+/// a custom notifier for each provider.
+NotifierProvider<Notifier<T>, T> statefulProvider<T>(
+  T Function(Ref ref, void Function(T) change) initialValue,
+) {
+  return NotifierProvider(() => _StatefulNotifier<T>(initialValue));
+}
+```
+
+### Opening the database
+
+To open a `PowerSync` database with Riverpod, wrap the initialization logic in an async provider:
+
+```dart
+@Riverpod(keepAlive: true)
+Future<PowerSyncDatabase> initializePowerSync(Ref ref) async {
+  final db = PowerSyncDatabase(
+      schema: schema, path: await _getDatabasePath(), logger: attachedLogger);
+  await db.initialize();
+  ref.onDispose(db.close);
+  return db;
+}
+```
+
+To automatically connect and disconnect your backend connector depending on the current auth state,
+you could use side effects in that provider. With Supabase, that may look like this:
+
+```dart
+final session = statefulProvider<Session?>((ref, change) {
+  final instance = Supabase.instance.client.auth;
+
+  final sub = instance.onAuthStateChange.listen((data) {
+    change(instance.currentSession);
+  });
+  ref.onDispose(sub.cancel);
+
+  return instance.currentSession;
+});
+
+@Riverpod(keepAlive: true)
+Future<PowerSyncDatabase> initializePowerSync(Ref ref) async {
+  final db = PowerSyncDatabase(
+      schema: schema, path: await _getDatabasePath(), logger: attachedLogger);
+  await db.initialize();
+
+  SupabaseConnector? currentConnector;
+
+  if (ref.read(session) != null) {
+    currentConnector = SupabaseConnector();
+    db.connect(connector: currentConnector);
+  }
+
+  final instance = Supabase.instance.client.auth;
+  final sub = instance.onAuthStateChange.listen((data) async {
+    final event = data.event;
+    if (event == AuthChangeEvent.signedIn) {
+      // Connect to PowerSync when the user is signed in
+      currentConnector = SupabaseConnector();
+      db.connect(connector: currentConnector!);
+    } else if (event == AuthChangeEvent.signedOut) {
+      // Implicit sign out - disconnect, but don't delete data
+      currentConnector = null;
+      await db.disconnect();
+    } else if (event == AuthChangeEvent.tokenRefreshed) {
+      // Supabase token refreshed - trigger token refresh for PowerSync.
+      currentConnector?.prefetchCredentials();
+    }
+  });
+  ref.onDispose(sub.cancel);
+
+  return db;
+}
+```
+
+### Running queries
+
+To expose auto-updating query results, use a `StreamProvider` reading the database:
+
+```dart
+final _lists = StreamProvider((ref) async* {
+  final database = await ref.read(initializePowerSyncProvider.future);
+  yield* database.watch('SELECT * FROM lists');
+});
+```
+
+### Waiting for sync
+
+If you were awaiting `waitForFirstSync` before, you can keep doing that:
+
+```dart
+final db = await ref.read(initializePowerSyncProvider.future);
+await db.waitForFirstSync();
+```
+
+Alternatively, you can expose the sync status as a provider and use that to determine
+whether the synchronization has completed:
+
+```dart
+final syncStatus = statefulProvider<SyncStatus>((ref, change) {
+  final status = Stream.fromFuture(ref.read(initializePowerSyncProvider.future))
+      .asyncExpand((db) => db.statusStream);
+  final sub = status.listen(change);
+  ref.onDispose(sub.cancel);
+
+  return const SyncStatus();
+});
+
+@riverpod
+bool didCompleteSync(Ref ref, [BucketPriority? priority]) {
+  final status = ref.watch(syncStatus);
+  if (priority != null) {
+    return status.statusForPriority(priority).hasSynced ?? false;
+  } else {
+    return status.hasSynced ?? false;
+  }
+}
+
+final class MyWidget extends ConsumerWidget {
+  const MyWidget({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final didSync = ref.watch(didCompleteSyncProvider());
+
+    if (!didSync) {
+      return const Text('Busy with sync...');
+    }
+
+    // ... content after first sync
+  }
+}
+```
+
+### Attachment queue
+
+If you're using the attachment queue helper to synchronize media assets, you can also wrap that in a provider:
+
+```dart
+@Riverpod(keepAlive: true)
+Future<YourAttachmentQueue> attachmentQueue(Ref ref) async {
+  final db = await ref.read(initializePowerSyncProvider.future);
+  final queue = YourAttachmentQueue(db, remoteStorage);
+  await queue.init();
+  return queue;
+}
+```
+
+Reading and awaiting this provider can then be used to show attachments:
+
+```dart
+final class PhotoWidget extends ConsumerWidget {
+  final TodoItem todo;
+
+  const PhotoWidget({super.key, required this.todo});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final photoState = ref.watch(_getPhotoStateProvider(todo.photoId));
+    if (!photoState.hasValue) {
+      return Container();
+    }
+
+    final data = photoState.value;
+    if (data == null) {
+      return Container();
+    }
+
+    String? filePath = data.photoPath;
+    bool fileIsDownloading = !data.fileExists;
+    bool fileArchived =
+        data.attachment?.state == AttachmentState.archived.index;
+
+    if (fileArchived) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Text("Unavailable"),
+          const SizedBox(height: 8),
+        ],
+      );
+    }
+
+    if (fileIsDownloading) {
+      return const Text("Downloading...");
+    }
+
+    File imageFile = File(filePath!);
+    int lastModified = imageFile.existsSync()
+        ? imageFile.lastModifiedSync().millisecondsSinceEpoch
+        : 0;
+    Key key = ObjectKey('$filePath:$lastModified');
+
+    return Image.file(
+      key: key,
+      imageFile,
+      width: 50,
+      height: 50,
+    );
+  }
+}
+
+class _ResolvedPhotoState {
+  String? photoPath;
+  bool fileExists;
+  Attachment? attachment;
+
+  _ResolvedPhotoState(
+      {required this.photoPath, required this.fileExists, this.attachment});
+}
+
+@riverpod
+Future<_ResolvedPhotoState> _getPhotoState(Ref ref, String? photoId) async {
+  if (photoId == null) {
+    return _ResolvedPhotoState(photoPath: null, fileExists: false);
+  }
+  final queue = await ref.read(attachmentQueueProvider.future);
+  final photoPath = await queue.getLocalUri('$photoId.jpg');
+
+  bool fileExists = await File(photoPath).exists();
+
+  final row = await queue.db
+      .getOptional('SELECT * FROM attachments_queue WHERE id = ?', [photoId]);
+
+  if (row != null) {
+    Attachment attachment = Attachment.fromRow(row);
+    return _ResolvedPhotoState(
+        photoPath: photoPath, fileExists: fileExists, attachment: attachment);
+  }
+
+  return _ResolvedPhotoState(
+      photoPath: photoPath, fileExists: fileExists, attachment: null);
+}
+```

@@ -273,33 +273,36 @@ This action handles uploads by passing the `UploadedFile` to local storage and t
     import 'set_up_attachments.dart' show attachmentQueue;
 
     Future setItemPicture(
-      String list,
       FFUploadedFile? picture,
+      Future Function(String? photoId) applyToDatabase,
     ) async {
       if (picture == null) {
-        await db.execute('update lists set photo_id = null where id = ?', [list]);
+        await applyToDatabase(null);
         return;
       }
-      
+
       final queue = attachmentQueue;
       if (queue == null) {
         return;
       }
-      
+
       String photoId = powersync.uuid.v4();
       final storageDirectory = await queue.getStorageDirectory();
       await queue.localStorage
           .saveFile('$storageDirectory/$photoId.jpg', picture.bytes!);
       queue.saveFile(photoId, picture.bytes!.length);
-      await db
-          .execute('update lists set photo_id = ? where id = ?', [photoId, list]);
+      await applyToDatabase(photoId);
     }
     ```
 3. Under **Action Settings -> Define Arguments** on the right, click "Add Arguments".
-   1. Set the "Name" to `list`.
-   2. Uncheck "Nullable".
+   1. Set the "Name" to `picture`.
+   2. Under "Type" select "UploadedFile".
 4. Click "Add Arguments" again.
-   1. Set the "Name" to `id`.
+   1. Set the "Name" to `applyToDatabase`.
+   2. Under "Type" select "Action".
+   3. Add an Action Parameter.
+   4. Set the "Name" tp `photoId`.
+   5. Set its "Type" to "String".
 5. Click "Save Action".
 6. Click "Yes" when prompted about parameters in the settings not matching parameters in the code editor.
 7. Check the Custom Actions for any errors.
@@ -387,12 +390,26 @@ This action handles uploads by passing the `UploadedFile` to local storage and t
     4. Add an action, search for "media" and select "Upload/Save Media".
     5. Under "Upload Type" select "Local Upload (Widget State).
     6. Chain another action and select the `setItemPicture` custom action.
-    7. Under "Set Action Arguments", under the "list" argument, click on the settings icon next to "Value".
-    8. Select the "Component Parameter" -> `list` variable.
-    9. Under "Supabase Row Fields" select "id".
-    10. Click "Confirm".
-    11. Under the "picture" argument, set the "Value", to the "Widget State" -> "Uploaded Local File" variable.
-    12. Click "Confirm".
+    7. Under "Set Action Arguments", under the "picture" argument, set the "Value", to the "Widget State" -> "Uploaded Local File" variable.
+    8. Click "Confirm".
+    9. Under the "applyToDatabase" argument, add an action and under "Custom Action" -> "PowerSync", select "powersyncWrite".
+    10. Under the "Set Action Arguments" -> "sql" section, add the SQL query to update the photo. 
+        1.  Paste the following into the "Value" field:
+         ```update lists set photo_id = :photo where id = :id;```
+        2. Under the "parameters" section, set the `photo` parameter and `id` parameters we're using the above query:
+        3. Click on "UNSET".
+        4. Select "Create Map (JSON)" as the variable.
+        5. Under "Add Map Entries", click "Add Key Value Pair".
+        6. Set the "Key" to `photo`.
+        7. Set the "Value" to "Action Parameter" -> `photoId`.
+        8. Click "Confirm".
+        9. Add another Key Value Pair.
+        10. Set the "Key" to `id`.
+        11. Set the "Component Parameters" -> `list`.
+        12. Under "Available Options" select "Get Row Field".
+        13. Under "Supabase Row Fields" select "id".
+        14. Click "Confirm".
+        15. Click "Confirm".
 11. Chain another action, search for "update com" and select "Update Component State".
     1.  Click on "Add Field".
     2.  Select the "image - Uploaded File" field.

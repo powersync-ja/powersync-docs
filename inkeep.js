@@ -2,18 +2,18 @@
 const inkeepSettings = {
     baseSettings: {
       apiKey: "1c24ba8dde97e56465741f2e64a51389662f75793a7d0ec1", // required
-      primaryBrandColor: "#26D6FF", // required -- your brand color, the color scheme is derived from this
+      primaryBrandColor: "#4e89ff", // required -- your brand color, the color scheme is derived from this
       organizationDisplayName: "PowerSync",
       // ...optional settings
     },
     aiChatSettings: {
       // ...optional settings
-      aiAssistantAvatar: "https://mydomain.com/mylogo.svg",
+      // aiAssistantAvatar: "https://mydomain.com/mylogo.svg",
       exampleQuestions: [
-        "Example question 1?",
-        "Example question 2?",
-        "Example question 3?",
-      ],
+        "What backend databases are supported?",
+        "What SDKs are available on the client-side?",
+        "How do I get started?",
+      ]
     },
     modalSettings: {
       isShortcutKeyEnabled: false, // disable default cmd+k behavior
@@ -77,7 +77,7 @@ const inkeepSettings = {
       },
     });
    
-    function handleOpenChange(newOpen: boolean) {
+    function handleOpenChange(newOpen) {
       inkeepSearchModal.update({ modalSettings: { isOpen: newOpen } });
     }
    

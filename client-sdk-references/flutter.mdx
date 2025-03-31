@@ -62,8 +62,7 @@ The types available are `text`, `integer` and `real`. These should map directly 
 
 **Example**:
 
-```dart
-// lib/models/schema.dart
+```dart lib/models/schema.dart
 import 'package:powersync/powersync.dart';
 
 const schema = Schema(([
@@ -101,10 +100,12 @@ To instantiate `PowerSyncDatabase`, inject the Schema you defined in the previou
 
 **Example**:
 
-```dart
-import 'package:powersync/powersync.dart';
-import 'package:path_provider/path_provider.dart';
+```dart lib/util/powersync.dart
+import 'package:demo/models/schema.dart';
+import 'package:demo/util/my_backend_connector.dart';
 import 'package:path/path.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:powersync/powersync.dart';
 
 openDatabase() async {
   final dir = await getApplicationSupportDirectory();
@@ -119,9 +120,46 @@ openDatabase() async {
 
 Once you've instantiated your PowerSync database, you will need to call the [connect()](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/connect.html) method to activate it. This method requires the backend connector that will be created in the next step.
 
-```dart
-// Uses the backend connector that will be created in the next step
-db.connect(connector: MyBackendConnector(db));
+```dart lib/main.dart
+import 'package:flutter_counter/util/my_backend_connector.dart';
+import 'package:flutter_counter/util/powersync.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await openDatabase();
+  runApp(const DemoApp());
+}
+
+class DemoApp extends StatefulWidget {
+  const DemoApp({super.key});
+
+  @override
+  State<DemoApp> createState() => _DemoAppState();
+}
+
+class _DemoAppState extends State<DemoApp> {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+        title: 'Demo',
+        home: // TODO: Implement your own UI here.
+        // You could listen for authentication state changes to connect or disconnect from PowerSync
+        StreamBuilder(
+          stream: // TODO: some stream,
+          builder: (ctx, snapshot) {,
+            // TODO: implement your own condition here
+            if ( ... ) {
+              // Uses the backend connector that will be created in the next step
+              db.connect(connector: MyBackendConnector());
+              // TODO: implement your own UI here
+            }
+          },
+        )
+    );
+  }
+}
+
 ```
 
 ### 3\. Integrate with your Backend
@@ -141,10 +179,8 @@ Accordingly, the connector must implement two methods:
 
 **Example**:
 
-```dart
+```dart lib/util/my_backend_connector.dart
 import 'package:powersync/powersync.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart';
 
 late PowerSyncDatabase db;
 
@@ -161,18 +197,40 @@ class MyBackendConnector extends PowerSyncBackendConnector {
 
     // See example implementation here: https://pub.dev/documentation/powersync/latest/powersync/DevConnector/fetchCredentials.html
 
-    return {
-        endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
-        // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
-        token: 'An authentication token'
-    };
+    return PowerSyncCredentials(
+      endpoint: 'https://xxxxxx.powersync.journeyapps.com',
+      token: 'An authentication token'
+    );
   }
+
+  // Implement uploadData to send local changes to your backend service
+  // You can omit this method if you only want to sync data from the server to the client
+  // See example implementation here: https://docs.powersync.com/client-sdk-references/flutter#3-integrate-with-your-backend
   @override
   Future<void> uploadData(PowerSyncDatabase database) async {
-    // Implement uploadData to send local changes to your backend service
-    // You can omit this method if you only want to sync data from the server to the client
+    // This function is called whenever there is data to upload, whether the
+    // device is online or offline.
+    // If this call throws an error, it is retried periodically.
 
-    // See example implementation here: https://docs.powersync.com/client-sdk-references/flutter#3-integrate-with-your-backend
+    final transaction = await database.getNextCrudTransaction();
+    if (transaction == null) {
+      return;
+    }
+
+    // The data that needs to be changed in the remote db
+    for (var op in transaction.crud) {
+      switch (op.op) {
+        case UpdateType.put:
+          // TODO: Instruct your backend API to CREATE a record
+        case UpdateType.patch:
+          // TODO: Instruct your backend API to PATCH a record
+        case UpdateType.delete:
+        //TODO: Instruct your backend API to DELETE a record
+      }
+    }
+
+    // Completes the transaction and moves onto the next one
+    await transaction.complete();
   }
 }
 
@@ -193,8 +251,11 @@ The most commonly used CRUD functions to interact with your SQLite data are:
 
 The [get](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/get.html) method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use [getOptional](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/getOptional.html) to return a single optional result (returns `null` if no result is found).
 
-```dart
-// Find a list item by ID
+The following is an example of selecting a list item by ID
+```dart lib/widgets/todo_item_widget.dart
+import 'package:demo/util/my_backend_connector.dart';
+import 'package:demo/models/todo_list.dart';
+
 Future<TodoList> find(id) async {
   final result = await db.get('SELECT * FROM lists WHERE id = ?', [id]);
   return TodoList.fromRow(result);
@@ -205,19 +266,25 @@ Future<TodoList> find(id) async {
 
 The [getAll](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/getAll.html) method returns a set of rows from a table.
 
-```dart
-/// Get all list IDs
+```dart lib/widgets/lists_widget.dart
+import 'package:flutter_counter/util/my_backend_connector.dart';
+import 'package:powersync/sqlite3.dart';
+
 Future<List<String>> getLists() async {
   ResultSet results = await db.getAll('SELECT id FROM lists WHERE id IS NOT NULL');
   List<String> ids = results.map((row) => row['id'] as String).toList();
   return ids;
 }
 ```
+
 ### Watching Queries (PowerSync.watch)
 
 The [watch](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/watch.html) method executes a read query whenever a change to a dependent table is made.
 
-```dart
+```dart lib/widgets/customers_widget.dart
+import 'package:flutter/material.dart';
+import 'package:demo/util/my_backend_connector.dart';
+
 StreamBuilder(
   // You can watch any SQL query
   stream: db.watch('SELECT * FROM customers ORDER BY id asc'),
@@ -229,14 +296,17 @@ StreamBuilder(
       return const Center(child: CircularProgressIndicator());
     }
   },
-)
+);
 ```
 
 ### Mutations (PowerSync.execute)
 
 The [execute](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/execute.html) method can be used for executing single SQLite write statements.
 
-```dart
+```dart lib/widgets/customers_widget.dart
+import 'package:flutter/material.dart';
+import 'package:demo/util/my_backend_connector.dart';
+
 FloatingActionButton(
   onPressed: () async {
     await db.execute(

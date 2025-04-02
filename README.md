@@ -50,7 +50,7 @@ We use the following icons for the SDKs and backend databases:
 - Kotlin: `icon="k"`
 - Swift: `icon="swift"`
 - Node.js: `icon="node-js"`
-- .NET: `icon="wave-sine"`
+- .NET: `icon="microsoft"`
 
 #### Some useful references:
 - Writing content: https://mintlify.com/docs/page

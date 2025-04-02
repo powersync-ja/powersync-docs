@@ -44,6 +44,25 @@ Before implementing the PowerSync SDK in your project, make sure you have comple
 * [Configured your backend database](/installation/database-setup) and connected it to your PowerSync instance.
 * [Installed](/client-sdk-references/flutter#installation) the PowerSync Flutter SDK.
 
+<Note>
+For this reference document, we assume that you have created a Flutter project and have the following directory structure:
+
+```plaintext
+lib/
+├── main.dart
+├── powersync/
+    ├── my_backend_connector.dart
+    └── powersync.dart
+├── models/
+    ├── schema.dart
+    └── todolist.dart
+├── widgets/
+    ├── lists_widget.dart
+    ├── customers_widget.dart
+    └── todo_item_widget.dart
+```
+</Note>
+
 ### 1\. Define the Schema
 
 The first step is defining the schema for the local SQLite database. This will be provided as a `schema` parameter to the [PowerSyncDatabase](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/PowerSyncDatabase.html) constructor.
@@ -100,12 +119,12 @@ To instantiate `PowerSyncDatabase`, inject the Schema you defined in the previou
 
 **Example**:
 
-```dart lib/util/powersync.dart
-import 'package:demo/models/schema.dart';
-import 'package:demo/util/my_backend_connector.dart';
+```dart lib/powersync/powersync.dart
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:powersync/powersync.dart';
+import '../main.dart';
+import '../models/schema.dart';
 
 openDatabase() async {
   final dir = await getApplicationSupportDirectory();
@@ -120,9 +139,13 @@ openDatabase() async {
 
 Once you've instantiated your PowerSync database, you will need to call the [connect()](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/connect.html) method to activate it. This method requires the backend connector that will be created in the next step.
 
-```dart lib/main.dart
-import 'package:flutter_counter/util/my_backend_connector.dart';
-import 'package:flutter_counter/util/powersync.dart';
+```dart lib/main.dart {35}
+import 'package:flutter/material.dart';
+import 'package:powersync/powersync.dart';
+
+import 'powersync/powersync.dart';
+
+late PowerSyncDatabase db;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -146,20 +169,19 @@ class _DemoAppState extends State<DemoApp> {
         home: // TODO: Implement your own UI here.
         // You could listen for authentication state changes to connect or disconnect from PowerSync
         StreamBuilder(
-          stream: // TODO: some stream,
-          builder: (ctx, snapshot) {,
-            // TODO: implement your own condition here
-            if ( ... ) {
-              // Uses the backend connector that will be created in the next step
-              db.connect(connector: MyBackendConnector());
-              // TODO: implement your own UI here
-            }
-          },
+            stream: // TODO: some stream,
+            builder: (ctx, snapshot) {,
+              // TODO: implement your own condition here
+              if ( ... ) {
+                // Uses the backend connector that will be created in the next step
+                db.connect(connector: MyBackendConnector());
+                // TODO: implement your own UI here
+              }
+            },
         )
     );
   }
 }
-
 ```
 
 ### 3\. Integrate with your Backend
@@ -179,10 +201,8 @@ Accordingly, the connector must implement two methods:
 
 **Example**:
 
-```dart lib/util/my_backend_connector.dart
+```dart lib/powersync/my_backend_connector.dart
 import 'package:powersync/powersync.dart';
-
-late PowerSyncDatabase db;
 
 class MyBackendConnector extends PowerSyncBackendConnector {
   PowerSyncDatabase db;
@@ -199,6 +219,7 @@ class MyBackendConnector extends PowerSyncBackendConnector {
 
     return PowerSyncCredentials(
       endpoint: 'https://xxxxxx.powersync.journeyapps.com',
+      // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
       token: 'An authentication token'
     );
   }
@@ -253,8 +274,32 @@ The [get](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQuer
 
 The following is an example of selecting a list item by ID
 ```dart lib/widgets/todo_item_widget.dart
-import 'package:demo/util/my_backend_connector.dart';
-import 'package:demo/models/todo_list.dart';
+import '../main.dart';
+import '../models/todolist.dart';
+
+/// This is a simple model class representing a TodoList
+class TodoList {
+  final int id;
+  final String name;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  TodoList({
+    required this.id,
+    required this.name,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory TodoList.fromRow(Map<String, dynamic> row) {
+    return TodoList(
+      id: row['id'],
+      name: row['name'],
+      createdAt: DateTime.parse(row['created_at']),
+      updatedAt: DateTime.parse(row['updated_at']),
+    );
+  }
+}
 
 Future<TodoList> find(id) async {
   final result = await db.get('SELECT * FROM lists WHERE id = ?', [id]);
@@ -267,8 +312,8 @@ Future<TodoList> find(id) async {
 The [getAll](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/getAll.html) method returns a set of rows from a table.
 
 ```dart lib/widgets/lists_widget.dart
-import 'package:flutter_counter/util/my_backend_connector.dart';
 import 'package:powersync/sqlite3.dart';
+import '../main.dart';
 
 Future<List<String>> getLists() async {
   ResultSet results = await db.getAll('SELECT id FROM lists WHERE id IS NOT NULL');
@@ -281,42 +326,58 @@ Future<List<String>> getLists() async {
 
 The [watch](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/watch.html) method executes a read query whenever a change to a dependent table is made.
 
-```dart lib/widgets/customers_widget.dart
+```dart lib/widgets/customers_widget.dart {10-21}
 import 'package:flutter/material.dart';
-import 'package:demo/util/my_backend_connector.dart';
+import '../main.dart';
 
-StreamBuilder(
-  // You can watch any SQL query
-  stream: db.watch('SELECT * FROM customers ORDER BY id asc'),
-  builder: (context, snapshot) {
-    if (snapshot.hasData) {
-      // TODO: implement your own UI here based on the result set
-      return ...;
-    } else {
-      return const Center(child: CircularProgressIndicator());
-    }
-  },
-);
+// Example customer widget
+class CustomersWidget extends StatelessWidget {
+  const CustomersWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder(
+      // You can watch any SQL query
+      stream: db.watch('SELECT * FROM customers ORDER BY id asc'),
+      builder: (context, snapshot) {
+        if (snapshot.hasData) {
+          // TODO: implement your own UI here based on the result set
+          return ...;
+        } else {
+        return const Center(child: CircularProgressIndicator());
+        }
+      },
+    );
+  }
+}
 ```
 
 ### Mutations (PowerSync.execute)
 
 The [execute](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/execute.html) method can be used for executing single SQLite write statements.
 
-```dart lib/widgets/customers_widget.dart
+```dart lib/widgets/customers_widget.dart {10-19}
 import 'package:flutter/material.dart';
-import 'package:demo/util/my_backend_connector.dart';
+import '../main.dart';
 
-FloatingActionButton(
-  onPressed: () async {
-    await db.execute(
-      'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
-      ['Fred', 'fred@example.org'],
+// Example customer widget
+class CustomersWidget extends StatelessWidget {
+  const CustomersWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return FloatingActionButton(
+      onPressed: () async {
+        await db.execute('INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)', [
+          'Fred',
+          'fred@example.org',
+        ]);
+      },
+      tooltip: '+',
+      child: const Icon(Icons.add),
     );
-  },
-  tooltip: '+',
-  child: const Icon(Icons.add),
-);
+  }
+}
 ```
 
 ## Additional Usage Examples

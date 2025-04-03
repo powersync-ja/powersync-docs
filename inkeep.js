@@ -10,9 +10,9 @@ const inkeepSettings = {
     // ...optional settings
     // aiAssistantAvatar: "https://mydomain.com/mylogo.svg",
     exampleQuestions: [
-      "What backend databases are supported?",
-      "What SDKs are available on the client-side?",
       "How do I get started?",
+      "What backend databases are supported?",
+      "What SDKs are available on the client-side?"
     ]
   }
 };

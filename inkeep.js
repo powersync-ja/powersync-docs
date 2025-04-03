@@ -104,6 +104,7 @@ inkeepScript.addEventListener("load", function () {
     const searchContainer = document.getElementById("search-bar-entry");
     if (searchContainer) {
       const buttonContainer = document.createElement("div");
+      buttonContainer.id = "ask-ai-button-container";
       buttonContainer.style.display = "flex";
       buttonContainer.style.alignItems = "center";
       
@@ -119,6 +120,17 @@ inkeepScript.addEventListener("load", function () {
       
       // Insert the button container after the search container
       searchContainer.parentNode.insertBefore(buttonContainer, searchContainer.nextSibling);
+      
+      // Add CSS to hide the button on mobile
+      const style = document.createElement('style');
+      style.textContent = `
+        @media (max-width: 768px) {
+          #ask-ai-button-container {
+            display: none !important;
+          }
+        }
+      `;
+      document.head.appendChild(style);
     }
   }
 

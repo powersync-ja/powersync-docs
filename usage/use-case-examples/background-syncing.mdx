@@ -1,49 +1,70 @@
 ---
 title: "Background Syncing"
-description: "You might want to run PowerSync operations while the client device is inactive or the app is in the background."
+description: "Run PowerSync operations while your app is inactive or in the background"
 ---
 
-## Flutter
+# Background Syncing
 
-We have done an initial investigation into how background syncing could be accomplished by using Flutter with [workmanager](https://github.com/fluttercommunity/flutter_workmanager/). However, the flow for other frameworks (e.g. React Native) should be quite similar using an equivalent package. Please reach out on our [Discord](https://discord.gg/powersync) for more assistance.
+Applications often need to sync data when they're not in active use. This document explains background syncing implementations with PowerSync.
 
-### Guide
+## Platform Support
 
-We assume you have followed the platform setup guide in the [workmanager README](https://github.com/fluttercommunity/flutter_workmanager/#platform-setup). Note we are running this in the context of our [Supabase To-Do List Demo](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist) app.
+Background syncing has been tested in:
+
+- **Flutter** - Using [workmanager](https://github.com/fluttercommunity/flutter_workmanager/)
+- **Kotlin Multiplatform - Android** - Implementation details in the [Supabase To-Do List demo](https://github.com/powersync-ja/powersync-kotlin/blob/main/demos/supabase-todolist/docs/BackgroundSync.md)
+
+These examples can be adapted for other frameworks like React Native. For implementation questions or assistance, chat to us on [Discord](https://discord.gg/powersync).
+
+## Flutter Implementation Guide
+
+### Prerequisites
+
+1. Complete the [workmanager platform setup](https://github.com/fluttercommunity/flutter_workmanager/#platform-setup)
+2. Review the [Supabase To-Do List Demo](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist) for context
+
+### Configure the Background Task
 
 In `main.dart`:
 
 ```dart
 void main() async {
- ...
+  // ... existing setup code ...
+  
   const simpleTaskKey = "com.domain.myapp.taskId";
+  
   // Mandatory if the App is obfuscated or using Flutter 3.1+
   @pragma('vm:entry-point')
   void callbackDispatcher() {
     Workmanager().executeTask((task, inputData) async {
       switch (task) {
         case simpleTaskKey:
+          // Initialize PowerSync database and connection
           final currentConnector = await openDatabase();
           db.connect(connector: currentConnector!);
-          await TodoList.create('testing1234');
+          
+          // Perform database operations
+          await TodoList.create('New background task item');
           await currentConnector.uploadData(db);
           await TodoList.create('testing1111');
           await currentConnector.uploadData(db);
           // print("$simpleTaskKey was executed. inputData = $inputData");
           break;
       }
+      // Close database when done
       await db.close();
       return Future.value(true);
     });
   }
 
+  // Initialize the workmanager with your callback
   Workmanager().initialize(
     callbackDispatcher,
-    // If enabled it will post a notification whenever the task is running. Handy for debugging tasks
+    // Shows notifications during task execution (useful for debugging)
     isInDebugMode: true
   );
-
-  ...
+  
+  // ... rest of your app initialization ...
 }
 ```
 
@@ -65,7 +86,9 @@ await currentConnector.uploadData(db);
 2. Run a write (in the case of this demo app, we create a 'todo list')
 3. Make sure to run `currentConnector.uploadData(db);` so that the local write is uploaded to the remote database.
 
-Create a way to test this, e.g. by using a button:
+### Testing
+
+Add a test button:
 
 ```dart
   ElevatedButton(
@@ -85,12 +108,16 @@ Create a way to test this, e.g. by using a button:
 ),
 ```
 
-Put your app in the background and wait 10 seconds, then check your remote database and it should have the new record.
+Press the button, background the app, wait 10 seconds, then verify new records in the remote database.
 
-### Android
+### Platform Compatibility
 
-This worked with Android.
+#### Android
+- Implementation works as expected.
 
-### iOS
+#### iOS
+- At the time of writing (January 2024), we were only able to get part of this to work using the branch for [this PR](https://github.com/fluttercommunity/
+flutter_workmanager/pull/511) into workmanager.
+- While testing we were not able to get iOS background fetching to work, however this is most likely an 
+[issue](https://github.com/fluttercommunity/flutter_workmanager/issues/515) with the package.
 
-At the time of writing (January 2024), we were only able to get part of this to work using the branch for [this PR](https://github.com/fluttercommunity/flutter_workmanager/pull/511) into workmanager. While testing we were not able to get iOS background fetching to work, however this is most likely an [issue](https://github.com/fluttercommunity/flutter_workmanager/issues/515) with the package.

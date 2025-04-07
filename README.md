@@ -24,7 +24,7 @@ Regularly check for broken links by running
 npx mintlify broken-links
 ```
 
-Navigation (and other global settings) is defined in `mint.json`. Learn more about these in [Mintlify's docs](https://mintlify.com/docs/settings/global).
+Navigation (and other global settings) is defined in `docs.json`. Learn more about these in [Mintlify's docs](https://mintlify.com/docs/settings/global).
 
 NB: If you move or rename a page, ensure you add a redirect (via the `redirects` property) to that existing links that were shared via Discord etc continue to work.
 

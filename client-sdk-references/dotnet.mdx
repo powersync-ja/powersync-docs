@@ -1,9 +1,290 @@
 ---
-title: ".NET (closed alpha)"
+title: ".NET (alpha)"
 description: "SDK reference for using PowerSync in .NET clients."
 sidebarTitle: Overview
 ---
 
-<Note>
-  Our .NET client SDK is currently in a closed alpha release for early testing with select customers. You can explore the repo [here](https://github.com/powersync-ja/powersync-dotnet), however it is not yet officially published so expect breaking changes and instability as development continues.
-</Note>
+import DotNetInstallation from '/snippets/dotnet/installation.mdx';
+
+<CardGroup>
+  <Card title="PowerSync SDK on NuGet" icon="nuget" href="https://www.nuget.org/packages/PowerSync.Common/">
+    This SDK is distributed via NuGet [\[External link\].](https://www.nuget.org/packages/PowerSync.Common/)
+  </Card>
+
+  <Card title="Source Code" icon="github" href="https://github.com/powersync-ja/powersync-dotnet">
+    Refer to the powersync-dotnet repo on GitHub.
+  </Card>
+
+  <Card title="API Reference (Coming soon)" icon="book">
+    A full API Reference for this SDK is not yet available. This is planned for a future release.
+  </Card>
+
+  <Card title="Example App" icon="code" href="https://github.com/powersync-ja/powersync-dotnet/tree/main/demos/CommandLine">
+    A small CLI app showcasing bidirectional sync.
+  </Card>
+</CardGroup>
+
+<Warning>
+  This SDK is currently in an [**alpha** release](/resources/feature-status). It is not suitable for production use as breaking changes may still occur.
+</Warning>
+
+## Supported Frameworks and Targets
+
+The PowerSync .NET SDK supports:
+
+* **.NET Versions**: 6, 8, and 9
+* **.NET Framework**: Version 4.8 (requires additional configuration)
+
+**Current Limitations**:
+* The SDK in its current state is designed for desktop, server, and traditional binary applications.
+* Web and mobile platforms (Blazor, MAUI) are not yet supported, but are planned.
+
+For more details, please refer to the package [Readme](https://github.com/powersync-ja/powersync-dotnet/tree/main?tab=readme-ov-file#supported-frameworks).
+
+## SDK Features
+
+* Provides real-time streaming of database changes.
+* Offers direct access to the SQLite database, enabling the use of SQL on both client and server sides.
+* Enables subscription to queries for receiving live updates.
+* Eliminates the need for client-side database migrations as these are managed automatically.
+
+## Quickstart
+
+<DotNetInstallation />
+
+Next, make sure that you have:
+
+* Signed up for a PowerSync Cloud account ([here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs)) or [self-host PowerSync](/self-hosting/getting-started).
+* [Configured your backend database](/installation/database-setup) and connected it to your PowerSync instance.
+
+### 1. Define the schema
+
+The first step is defining the schema for the local SQLite database.
+
+This schema represents a "view" of the downloaded data. No migrations are required — the schema is applied directly when the local PowerSync database is constructed (as we'll show in the next step).
+You can use [this example](https://github.com/powersync-ja/powersync-dotnet/blob/main/demos/CommandLine/AppSchema.cs) as a reference when defining your schema.
+
+### 2. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database — this is the core managed database.
+
+Its primary functions are to record all changes in the local database, whether online or offline. In addition, it automatically uploads changes to your app backend when connected.
+
+**Example**:
+
+```cs
+using PowerSync.Common.Client;
+
+class Demo
+{
+    static async Task Main()
+    {
+        var db = new PowerSyncDatabase(new PowerSyncDatabaseOptions
+        {
+            Database = new SQLOpenOptions { DbFilename = "tododemo.db" },
+            Schema = AppSchema.PowerSyncSchema,
+        });
+        await db.Init();
+    }
+}
+```
+
+### 3. Integrate with your Backend
+
+The PowerSync backend connector provides the connection between your application backend and the PowerSync client-side managed SQLite database.
+
+It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+2. Apply local changes on your backend application server (and from there, to Postgres)
+
+Accordingly, the connector must implement two methods:
+
+1. [PowerSyncBackendConnector.FetchCredentials](https://github.com/powersync-ja/powersync-dotnet/blob/main/demos/CommandLine/NodeConnector.cs#L50) - This is called every couple of minutes and is used to obtain credentials for your app backend API. -> See [Authentication Setup](/installation/authentication-setup) for instructions on how the credentials should be generated.
+2. [PowerSyncBackendConnector.UploadData](https://github.com/powersync-ja/powersync-dotnet/blob/main/demos/CommandLine/NodeConnector.cs#L72) - Use this to upload client-side changes to your app backend.
+   -> See [Writing Client Changes](/installation/app-backend-setup/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```cs
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
+using PowerSync.Common.Client;
+using PowerSync.Common.Client.Connection;
+using PowerSync.Common.DB.Crud;
+
+public class MyConnector : IPowerSyncBackendConnector
+{
+    private readonly HttpClient _httpClient;
+    
+    // User credentials for the current session
+    public string UserId { get; private set; }
+    
+    // Service endpoints
+    private readonly string _backendUrl;
+    private readonly string _powerSyncUrl;
+    private string? _clientId;
+
+    public MyConnector()
+    {
+        _httpClient = new HttpClient();
+        
+        // In a real app, this would come from your authentication system
+        UserId = "user-123"; 
+        
+        // Configure your service endpoints
+        _backendUrl = "https://your-backend-api.example.com";
+        _powerSyncUrl = "https://your-powersync-instance.powersync.journeyapps.com";
+    }
+
+    public async Task<PowerSyncCredentials?> FetchCredentials()
+    {
+        try {
+            // Obtain a JWT from your authentication service.
+            // See https://docs.powersync.com/installation/authentication-setup
+            // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
+            // - https://docs.powersync.com/installation/authentication-setup/supabase-auth
+            // - https://docs.powersync.com/installation/authentication-setup/firebase-auth
+
+            var authToken = "your-auth-token"; // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
+
+            // Return credentials with PowerSync endpoint and JWT token
+            return new PowerSyncCredentials(_powerSyncUrl, authToken);
+            
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error fetching credentials: {ex.Message}");
+            throw;
+        }
+    }
+
+    public async Task UploadData(IPowerSyncDatabase database)
+    {
+        // Get the next transaction to upload
+        CrudTransaction? transaction;
+        try
+        {
+            transaction = await database.GetNextCrudTransaction();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"UploadData Error: {ex.Message}");
+            return;
+        }
+
+        // If there's no transaction, there's nothing to upload
+        if (transaction == null)
+        {
+            return;
+        }
+
+        // Get client ID if not already retrieved
+        _clientId ??= await database.GetClientId();
+
+        try
+        {
+            // Convert PowerSync operations to your backend format
+            var batch = new List<object>();
+            foreach (var operation in transaction.Crud)
+            {
+                batch.Add(new
+                {
+                    op = operation.Op.ToString(),  // INSERT, UPDATE, DELETE
+                    table = operation.Table,
+                    id = operation.Id,
+                    data = operation.OpData
+                });
+            }
+
+            // Send the operations to your backend
+            var payload = JsonSerializer.Serialize(new { batch });
+            var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response = await _httpClient.PostAsync($"{_backendUrl}/api/data", content);
+            response.EnsureSuccessStatusCode();
+
+            // Mark the transaction as completed
+            await transaction.Complete();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"UploadData Error: {ex.Message}");
+            throw;
+        }
+    }
+}
+```
+
+With your database instantiated and your connector ready, call `connect` to start the synchronization process:
+
+```cs
+await db.Connect(new MyConnector());
+await db.WaitForFirstSync(); // Optional, to wait for a complete snapshot of data to be available
+```
+
+## Usage
+
+After connecting the client database, it is ready to be used. You can run queries and make updates as follows:
+
+```cs
+// Use db.Get() to fetch a single row:
+Console.WriteLine(await db.Get<object>("SELECT powersync_rs_version();"));
+
+// Or db.GetAll() to fetch all:
+// Where List result is defined:
+// record ListResult(string id, string name, string owner_id, string created_at);
+Console.WriteLine(await db.GetAll<ListResult>("SELECT * FROM lists;"));
+
+// Use db.Watch() to watch queries for changes (await is used to wait for initialization):
+await db.Watch("select * from lists", null, new WatchHandler<ListResult>
+{
+  OnResult = (results) =>
+  {
+      Console.WriteLine("Results: ");
+      foreach (var result in results)
+      {
+          Console.WriteLine(result.id + ":" + result.name);
+      }
+  },
+  OnError = (error) =>
+  {
+      Console.WriteLine("Error: " + error.Message);
+  }
+});
+
+// And db.Execute for inserts, updates and deletes:
+await db.Execute(
+  "insert into lists (id, name, owner_id, created_at) values (uuid(), 'New User', ?, datetime())",
+  [connector.UserId]
+);
+```
+
+## Logging
+
+Enable logging to help you debug your app. By default, the SDK uses a no-op logger that doesn't output any logs. To enable logging, you can configure a custom logger using .NET's `ILogger` interface:
+
+```cs
+using Microsoft.Extensions.Logging;
+using PowerSync.Common.Client;
+
+// Create a logger factory
+ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
+{
+    builder.AddConsole();             // Enable console logging
+    builder.SetMinimumLevel(LogLevel.Information);  // Set minimum log level
+});
+
+var logger = loggerFactory.CreateLogger("PowerSyncLogger");
+
+var db = new PowerSyncDatabase(new PowerSyncDatabaseOptions
+{
+    Database = new SQLOpenOptions { DbFilename = "powersync.db" },
+    Schema = AppSchema.PowerSyncSchema,
+    Logger = logger
+});
+```

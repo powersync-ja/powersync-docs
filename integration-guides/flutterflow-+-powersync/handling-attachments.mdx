@@ -76,119 +76,131 @@ This creates an attachment queue which is responsible for tracking, storing and 
     import 'package:power_sync_b0w5r9/custom_code/actions/initialize_power_sync.dart'
         show db;
     Future setUpAttachments() async {
-    // Add your function code here!
-    await _initializeAttachmentQueue(db);
+      // Add your function code here!
+      await _initializeAttachmentQueue(db);
     }
+
     PhotoAttachmentQueue? attachmentQueue;
     final _remoteStorage = SupabaseStorageAdapter();
+
     class SupabaseStorageAdapter implements AbstractRemoteStorageAdapter {
-    @override
-    Future<void> uploadFile(String filename, File file,
-        {String mediaType = 'text/plain'}) async {
+      @override
+      Future<void> uploadFile(String filename, File file,
+          {String mediaType = 'text/plain'}) async {
         _checkSupabaseBucketIsConfigured();
         try {
-        await Supabase.instance.client.storage
-            .from(FFAppConstants.supabaseStorageBucket)
-            .upload(filename, file,
-                fileOptions: FileOptions(contentType: mediaType));
+          await Supabase.instance.client.storage
+              .from(FFAppConstants.supabaseStorageBucket)
+              .upload(filename, file,
+                  fileOptions: FileOptions(contentType: mediaType));
         } catch (error) {
-        throw Exception(error);
+          throw Exception(error);
         }
-    }
-    @override
-    Future<Uint8List> downloadFile(String filePath) async {
+      }
+
+      @override
+      Future<Uint8List> downloadFile(String filePath) async {
         _checkSupabaseBucketIsConfigured();
         try {
-        return await Supabase.instance.client.storage
-            .from(FFAppConstants.supabaseStorageBucket)
-            .download(filePath);
+          return await Supabase.instance.client.storage
+              .from(FFAppConstants.supabaseStorageBucket)
+              .download(filePath);
         } catch (error) {
-        throw Exception(error);
+          throw Exception(error);
         }
-    }
-    @override
-    Future<void> deleteFile(String filename) async {
+      }
+
+      @override
+      Future<void> deleteFile(String filename) async {
         _checkSupabaseBucketIsConfigured();
         try {
-        await Supabase.instance.client.storage
-            .from(FFAppConstants.supabaseStorageBucket)
-            .remove([filename]);
+          await Supabase.instance.client.storage
+              .from(FFAppConstants.supabaseStorageBucket)
+              .remove([filename]);
         } catch (error) {
-        throw Exception(error);
+          throw Exception(error);
         }
-    }
-    void _checkSupabaseBucketIsConfigured() {
+      }
+
+      void _checkSupabaseBucketIsConfigured() {
         if (FFAppConstants.supabaseStorageBucket.isEmpty) {
-        throw Exception(
-            'Supabase storage bucket is not configured in App Constants');
+          throw Exception(
+              'Supabase storage bucket is not configured in App Constants');
         }
+      }
     }
-    }
+
     /// Function to handle errors when downloading attachments
     /// Return false if you want to archive the attachment
     Future<bool> onDownloadError(Attachment attachment, Object exception) async {
-    if (exception.toString().contains('Object not found')) {
+      if (exception.toString().contains('Object not found')) {
         return false;
+      }
+      return true;
     }
-    return true;
-    }
+
     class PhotoAttachmentQueue extends AbstractAttachmentQueue {
-    PhotoAttachmentQueue(db, remoteStorage)
-        : super(
+      PhotoAttachmentQueue(db, remoteStorage)
+          : super(
                 db: db,
                 remoteStorage: remoteStorage,
                 onDownloadError: onDownloadError);
-    @override
-    init() async {
+
+      @override
+      init() async {
         if (FFAppConstants.supabaseStorageBucket.isEmpty) {
-        log.info(
-            'No Supabase bucket configured, skip setting up PhotoAttachmentQueue watches');
-        return;
+          log.info(
+              'No Supabase bucket configured, skip setting up PhotoAttachmentQueue watches');
+          return;
         }
         await super.init();
-    }
-    @override
-    Future<Attachment> saveFile(String fileId, int size,
-        {mediaType = 'image/jpeg'}) async {
+      }
+
+      @override
+      Future<Attachment> saveFile(String fileId, int size,
+          {mediaType = 'image/jpeg'}) async {
         String filename = '$fileId.jpg';
         Attachment photoAttachment = Attachment(
-        id: fileId,
-        filename: filename,
-        state: AttachmentState.queuedUpload.index,
-        mediaType: mediaType,
-        localUri: getLocalFilePathSuffix(filename),
-        size: size,
+          id: fileId,
+          filename: filename,
+          state: AttachmentState.queuedUpload.index,
+          mediaType: mediaType,
+          localUri: getLocalFilePathSuffix(filename),
+          size: size,
         );
         return attachmentsService.saveAttachment(photoAttachment);
-    }
-    @override
-    Future<Attachment> deleteFile(String fileId) async {
+      }
+
+      @override
+      Future<Attachment> deleteFile(String fileId) async {
         String filename = '$fileId.jpg';
         Attachment photoAttachment = Attachment(
             id: fileId,
             filename: filename,
             state: AttachmentState.queuedDelete.index);
         return attachmentsService.saveAttachment(photoAttachment);
-    }
-    @override
-    StreamSubscription<void> watchIds({String fileExtension = 'jpg'}) {
+      }
+
+      @override
+      StreamSubscription<void> watchIds({String fileExtension = 'jpg'}) {
         log.info('Watching photos in lists table...');
         return db.watch('''
-        SELECT photo_id FROM lists
-        WHERE photo_id IS NOT NULL
+          SELECT photo_id FROM lists
+          WHERE photo_id IS NOT NULL
         ''').map((results) {
-        return results.map((row) => row['photo_id'] as String).toList();
+          return results.map((row) => row['photo_id'] as String).toList();
         }).listen((ids) async {
-        List<String> idsInQueue = await attachmentsService.getAttachmentIds();
-        List<String> relevantIds =
-            ids.where((element) => !idsInQueue.contains(element)).toList();
-        syncingService.processIds(relevantIds, fileExtension);
+          List<String> idsInQueue = await attachmentsService.getAttachmentIds();
+          List<String> relevantIds =
+              ids.where((element) => !idsInQueue.contains(element)).toList();
+          syncingService.processIds(relevantIds, fileExtension);
         });
+      }
     }
-    }
+
     Future<void> _initializeAttachmentQueue(powersync.PowerSyncDatabase db) async {
-    final queue = attachmentQueue = PhotoAttachmentQueue(db, _remoteStorage);
-    await queue.init();
+      final queue = attachmentQueue = PhotoAttachmentQueue(db, _remoteStorage);
+      await queue.init();
     }
     ```
 4. Click "Save Action".
@@ -219,23 +231,24 @@ This action handles downloads by taking an attachment ID and returning an `Uploa
     // DO NOT REMOVE OR MODIFY THE CODE ABOVE!
     import 'dart:io';
     import 'set_up_attachments.dart';
+
     Future<FFUploadedFile?> resolveItemPicture(String? id) async {
-    if (id == null) {
+      if (id == null) {
         return null;
-    }
-    final name = '$id.jpg';
-    final path = await attachmentQueue?.getLocalUri(name);
-    if (path == null) {
+      }
+      final name = '$id.jpg';
+      final path = await attachmentQueue?.getLocalUri(name);
+      if (path == null) {
         return null;
-    }
-    final file = File(path);
-    if (!await file.exists()) {
+      }
+      final file = File(path);
+      if (!await file.exists()) {
         return null;
-    }
-    return FFUploadedFile(
+      }
+      return FFUploadedFile(
         name: name,
         bytes: await file.readAsBytes(),
-    );
+      );
     }
     ```
 3. Under **Action Settings -> Define Arguments** on the right, click "Add Arguments".
@@ -258,32 +271,38 @@ This action handles uploads by passing the `UploadedFile` to local storage and t
         show db;
     import 'package:powersync/powersync.dart' as powersync;
     import 'set_up_attachments.dart' show attachmentQueue;
+
     Future setItemPicture(
-    String list,
-    FFUploadedFile? picture,
+      FFUploadedFile? picture,
+      Future Function(String? photoId) applyToDatabase,
     ) async {
-    if (picture == null) {
-        await db.execute('update lists set photo_id = null where id = ?', [list]);
+      if (picture == null) {
+        await applyToDatabase(null);
         return;
-    }
-    final queue = attachmentQueue;
-    if (queue == null) {
+      }
+
+      final queue = attachmentQueue;
+      if (queue == null) {
         return;
-    }
-    String photoId = powersync.uuid.v4();
-    final storageDirectory = await queue.getStorageDirectory();
-    await queue.localStorage
-        .saveFile('$storageDirectory/$photoId.jpg', picture.bytes!);
-    queue.saveFile(photoId, picture.bytes!.length);
-    await db
-        .execute('update lists set photo_id = ? where id = ?', [photoId, list]);
+      }
+
+      String photoId = powersync.uuid.v4();
+      final storageDirectory = await queue.getStorageDirectory();
+      await queue.localStorage
+          .saveFile('$storageDirectory/$photoId.jpg', picture.bytes!);
+      queue.saveFile(photoId, picture.bytes!.length);
+      await applyToDatabase(photoId);
     }
     ```
 3. Under **Action Settings -> Define Arguments** on the right, click "Add Arguments".
-   1. Set the "Name" to `list`.
-   2. Uncheck "Nullable".
+   1. Set the "Name" to `picture`.
+   2. Under "Type" select "UploadedFile".
 4. Click "Add Arguments" again.
-   1. Set the "Name" to `id`.
+   1. Set the "Name" to `applyToDatabase`.
+   2. Under "Type" select "Action".
+   3. Add an Action Parameter.
+   4. Set the "Name" to `photoId`.
+   5. Set its "Type" to "String".
 5. Click "Save Action".
 6. Click "Yes" when prompted about parameters in the settings not matching parameters in the code editor.
 7. Check the Custom Actions for any errors.
@@ -371,12 +390,26 @@ This action handles uploads by passing the `UploadedFile` to local storage and t
     4. Add an action, search for "media" and select "Upload/Save Media".
     5. Under "Upload Type" select "Local Upload (Widget State).
     6. Chain another action and select the `setItemPicture` custom action.
-    7. Under "Set Action Arguments", under the "list" argument, click on the settings icon next to "Value".
-    8. Select the "Component Parameter" -> `list` variable.
-    9. Under "Supabase Row Fields" select "id".
-    10. Click "Confirm".
-    11. Under the "picture" argument, set the "Value", to the "Widget State" -> "Uploaded Local File" variable.
-    12. Click "Confirm".
+    7. Under "Set Action Arguments", under the "picture" argument, set the "Value", to the "Widget State" -> "Uploaded Local File" variable.
+    8. Click "Confirm".
+    9. Under the "applyToDatabase" argument, add an action and under "Custom Action" -> "PowerSync", select "powersyncWrite".
+    10. Under the "Set Action Arguments" -> "sql" section, add the SQL query to update the photo. 
+        1.  Paste the following into the "Value" field:
+         ```update lists set photo_id = :photo where id = :id;```
+        2. Under the "parameters" section, set the `photo` parameter and `id` parameters we're using the above query:
+        3. Click on "UNSET".
+        4. Select "Create Map (JSON)" as the variable.
+        5. Under "Add Map Entries", click "Add Key Value Pair".
+        6. Set the "Key" to `photo`.
+        7. Set the "Value" to "Action Parameter" -> `photoId`.
+        8. Click "Confirm".
+        9. Add another Key Value Pair.
+        10. Set the "Key" to `id`.
+        11. Set the "Component Parameters" -> `list`.
+        12. Under "Available Options" select "Get Row Field".
+        13. Under "Supabase Row Fields" select "id".
+        14. Click "Confirm".
+        15. Click "Confirm".
 11. Chain another action, search for "update com" and select "Update Component State".
     1.  Click on "Add Field".
     2.  Select the "image - Uploaded File" field.

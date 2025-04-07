@@ -24,7 +24,7 @@ Regularly check for broken links by running
 npx mintlify broken-links
 ```
 
-Navigation (and other global settings) is defined in `mint.json`. Learn more about these in [Mintlify's docs](https://mintlify.com/docs/settings/global).
+Navigation (and other global settings) is defined in `docs.json`. Learn more about these in [Mintlify's docs](https://mintlify.com/docs/settings/global).
 
 NB: If you move or rename a page, ensure you add a redirect (via the `redirects` property) to that existing links that were shared via Discord etc continue to work.
 
@@ -50,7 +50,7 @@ We use the following icons for the SDKs and backend databases:
 - Kotlin: `icon="k"`
 - Swift: `icon="swift"`
 - Node.js: `icon="node-js"`
-- .NET: `icon="wave-sine"`
+- .NET: `icon="microsoft"`
 
 #### Some useful references:
 - Writing content: https://mintlify.com/docs/page

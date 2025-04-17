@@ -115,22 +115,49 @@ This creates a new PUT operation at the end of the bucket, which allows the comp
 The bucket is now back to two operations, allowing new clients to sync efficiently.
 
 <Check>
-Note: All rows in the bucket must be updated for this to be effective.
+  Note: All rows in the bucket must be updated for this to be effective.
 </Check>
 
-### Defragmenting trade-offs
+### When to Defragment
+
+You should consider defragmenting your buckets when:
+
+1. **High Operations-to-Rows Ratio**: If you notice that the number of operations significantly exceeds the number of rows in a bucket (e.g., 100+ operations per row). You can inspect this using the [Diagnostics app](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app).
+2. **Frequent Updates**: Tables that are frequently updated (e.g., status fields, counters, or audit logs)
+3. **Large Data Churn**: Tables where you frequently insert and delete many rows
+
+### Defragmenting Strategies
+
+There are manual and automated approaches to defragmenting, each with different trade-offs:
+
+1. **Manual Defragmentation**
+   - Use the PowerSync Dashboard to manually trigger defragmentation
+     - Right-click on an instance and select "Compact Buckets" with the "Defragment" checkbox selected
+   - Best for one-time cleanup or after major data changes
+
+2. **Scheduled Defragmentation**
+   - Set up a cron job to regularly update rows
+   - Recommended for frequently updated tables or tables with large churn
+   - Example using pg_cron:
+   ```sql
+   -- Daily defragmentation for high-churn tables
+   UPDATE audit_logs SET last_updated = now() 
+   WHERE last_updated < now() - interval '1 day';
+   
+   -- Weekly defragmentation for other tables
+   UPDATE users SET last_updated = now() 
+   WHERE last_updated < now() - interval '1 week';
+   ```
+   - This will cause clients to re-sync each updated row, while preventing the number of operations from growing indefinitely. Depending on how often rows in the bucket are modified, the interval can be increased or decreased.
+
+### Defragmenting Trade-offs
 
 Defragmenting + compacting as described above can significantly reduce the number of operations in a bucket, at the cost of existing clients needing to re-sync that data. When and how to do this depends on the specific use-case and data update patterns.
 
-One approach is to have regular partial defragmentation, using a query such as:
-
-```sql
-UPDATE lists SET updated_at = now() WHERE updated_at < now() - interval '1 week'
-```
-
-This can be performed on a regular schedule such as every hour or every day, using [pg\_cron](https://github.com/citusdata/pg_cron) or backend-level scheduled tasks.
-
-The above example will cause clients to re-sync each row once a week, while preventing the number of operations from growing indefinitely. Depending on how often rows in the bucket are modified, the interval can be increased or decreased.
+Key considerations:
+1. **Frequency**: More frequent defragmentation means fewer operations per sync but more frequent re-syncs
+2. **Scope**: Defragmenting all rows at once is more efficient but causes a larger sync cycle
+3. **Monitoring**: Use the [Diagnostics app](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to track operations-to-rows ratio
 
 ## Sync Rule deployments
 

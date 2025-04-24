@@ -69,12 +69,21 @@ The `CLEAR` operation can only remove operations at the start of the bucket, not
 
 ### Defragmenting
 
-There are cases that the above compacting steps cannot optimize efficiently. Imagine this sequence of statements:
+There are cases that the above compacting steps cannot optimize efficiently. The key factor is that the oldest PUT operation in a bucket determines how much of the history can be compacted. This means:
+
+1. If a row has never been updated since its initial creation, its original PUT operation remains at the start of the bucket
+2. All operations that come after this oldest PUT cannot be fully compacted
+3. This is particularly problematic when you have:
+   - A small number of rarely-changed rows in the same bucket as frequently-updated rows
+   - The rarely-changed rows' original PUT operations "block" compacting of the entire bucket
+   - The frequently-updated rows continue to accumulate operations that can't be fully compacted
+
+For example, imagine this sequence of statements:
 
 ```sql
--- Insert a single row
+-- Insert a single row that rarely changes
 INSERT INTO lists(name) VALUES('a');
--- Insert 50k rows
+-- Insert 50k rows that change frequently
 INSERT INTO lists (name) SELECT 'b' FROM generate_series(1, 50000);
 -- Delete those 50k rows, but keep 'a'
 DELETE FROM lists WHERE name = 'b';
@@ -83,7 +92,7 @@ DELETE FROM lists WHERE name = 'b';
 After compacting, the bucket looks like this:
 
 ```bash
-(1, PUT, row_1, <data>)
+(1, PUT, row_1, <data>)  -- This original PUT blocks further compacting
 (2, MOVE)
 (3, MOVE)
 ...
@@ -94,18 +103,21 @@ After compacting, the bucket looks like this:
 (100001, REMOVE, row50000)
 ```
 
-This is inefficient, since we have over 100k operations for downloading a single row.
+This is inefficient because:
+1. The original PUT operation for row 'a' remains at the start
+2. All subsequent operations can't be fully compacted
+3. We end up with over 100k operations for what should be a simple bucket
 
-To handle this case, we "defragment" the bucket by updating existing rows in the source database. In this case, we can run:
+To handle this case, we "defragment" the bucket by updating existing rows in the source database. This creates new PUT operations at the end of the bucket, allowing the compact steps to efficiently compact the entire history:
 
 ```sql
--- Touch all rows
+-- Touch all rows to create new PUT operations
 UPDATE lists SET name = name;
 -- OR touch specific rows at the start of the bucket
 UPDATE lists SET name = name WHERE name = 'a';
 ```
 
-This creates a new PUT operation at the end of the bucket, which allows the compact steps to efficiently compact the bucket:
+After defragmenting and compacting, the bucket looks like this:
 
 ```bash
 (100001, CLEAR)
@@ -115,22 +127,53 @@ This creates a new PUT operation at the end of the bucket, which allows the comp
 The bucket is now back to two operations, allowing new clients to sync efficiently.
 
 <Check>
-Note: All rows in the bucket must be updated for this to be effective.
+Note: All rows in the bucket must be updated for this to be effective. If some rows are never updated, they will continue to block compacting of the entire bucket.
 </Check>
 
-### Defragmenting trade-offs
+<Info>
+**Bucket Design Tip**: If you have a mix of frequently-updated and rarely-changed rows, consider splitting them into separate buckets. This prevents the rarely-changed rows from blocking compacting of the frequently-updated ones.
+</Info>
+
+### When to Defragment
+
+You should consider defragmenting your buckets when:
+
+1. **High Operations-to-Rows Ratio**: If you notice that the number of operations significantly exceeds the number of rows in a bucket (e.g., 100+ operations per row). You can inspect this using the [Diagnostics app](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app).
+2. **Frequent Updates**: Tables that are frequently updated (e.g., status fields, counters, or audit logs)
+3. **Large Data Churn**: Tables where you frequently insert and delete many rows
+
+### Defragmenting Strategies
+
+There are manual and automated approaches to defragmenting:
+
+1. **Manual Defragmentation**
+   - Use the PowerSync Dashboard to manually trigger defragmentation
+     - Right-click on an instance and select "Compact Buckets" with the "Defragment" checkbox selected
+   - Best for one-time cleanup or after major data changes
+
+2. **Scheduled Defragmentation**
+   - Set up a cron job to regularly update rows
+   - Recommended for frequently updated tables or tables with large churn
+   - Example using pg_cron:
+   ```sql
+   -- Daily defragmentation for high-churn tables
+   UPDATE audit_logs SET last_updated = now() 
+   WHERE last_updated < now() - interval '1 day';
+   
+   -- Weekly defragmentation for other tables
+   UPDATE users SET last_updated = now() 
+   WHERE last_updated < now() - interval '1 week';
+   ```
+   - This will cause clients to re-sync each updated row, while preventing the number of operations from growing indefinitely. Depending on how often rows in the bucket are modified, the interval can be increased or decreased.
+
+### Defragmenting Trade-offs
 
 Defragmenting + compacting as described above can significantly reduce the number of operations in a bucket, at the cost of existing clients needing to re-sync that data. When and how to do this depends on the specific use-case and data update patterns.
 
-One approach is to have regular partial defragmentation, using a query such as:
-
-```sql
-UPDATE lists SET updated_at = now() WHERE updated_at < now() - interval '1 week'
-```
-
-This can be performed on a regular schedule such as every hour or every day, using [pg\_cron](https://github.com/citusdata/pg_cron) or backend-level scheduled tasks.
-
-The above example will cause clients to re-sync each row once a week, while preventing the number of operations from growing indefinitely. Depending on how often rows in the bucket are modified, the interval can be increased or decreased.
+Key considerations:
+1. **Frequency**: More frequent defragmentation means fewer operations per sync but more frequent re-syncs
+2. **Scope**: Defragmenting all rows at once is more efficient but causes a larger sync cycle
+3. **Monitoring**: Use the [Diagnostics app](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to track operations-to-rows ratio
 
 ## Sync Rule deployments
 

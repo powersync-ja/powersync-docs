@@ -1,0 +1,174 @@
+---
+title: "Usage Examples"
+description: "Code snippets and guidelines for common scenarios in Swift"
+---
+
+## Using transactions to group changes
+
+Read and write transactions present a context where multiple changes can be made then finally committed to the DB or rolled back. This ensures that either all the changes get persisted, or no change is made to the DB (in the case of a rollback or exception).
+
+```swift
+// Delete a list and its todos in a transaction
+func deleteList(db: PowerSyncDatabase, listId: String) async throws {
+    try await db.writeTransaction { tx in
+        try await tx.execute(sql: "DELETE FROM lists WHERE id = ?", parameters: [listId])
+        try await tx.execute(sql: "DELETE FROM todos WHERE list_id = ?", parameters: [listId])
+    }
+}
+```
+
+Also see [`readTransaction`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/queries/readtransaction(callback:)).
+
+## Subscribe to changes in data
+
+Use [`watch`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/queries/watch(sql:parameters:mapper:)) to watch for changes to the dependent tables of any SQL query.
+
+```swift
+// Watch for changes to the customers table
+func watchCustomers(db: PowerSyncDatabase, onUpdate: @escaping ([Customer]) -> Void) async {
+    do {
+        for try await customers in try db.watch(
+            sql: "SELECT * FROM customers",
+            parameters: [],
+            mapper: { cursor in
+                Customer(
+                    id: try cursor.getString(name: "id"),
+                    name: try cursor.getString(name: "name"),
+                    email: try cursor.getString(name: "email")
+                )
+            }
+        ) {
+            onUpdate(customers)
+        }
+    } catch {
+        print("Error in watch: \(error)")
+    }
+}
+```
+
+## Insert, update, and delete data in the local database
+
+Use [`execute`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/queries/execute(sql:parameters:)) to run INSERT, UPDATE or DELETE queries.
+
+```swift
+// Insert a new customer
+func insertCustomer(db: PowerSyncDatabase, name: String, email: String) async throws {
+    try await db.execute(
+        sql: "INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)",
+        parameters: [name, email]
+    )
+}
+```
+
+## Send changes in local data to your backend service
+
+Override [`uploadData`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncbackendconnector/uploaddata(database:)) to send local updates to your backend service.
+
+```swift
+class MyConnector: PowerSyncBackendConnector {
+    override func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+        let batch = try await database.getCrudBatch()
+        guard let batch = batch else { return }
+        for entry in batch.crud {
+            switch entry.op {
+            case .put:
+                // Send the data to your backend service
+                // Replace `_myApi` with your own API client or service
+                try await _myApi.put(table: entry.table, data: entry.opData)
+            default:
+                // TODO: implement the other operations (patch, delete)
+                break
+            }
+        }
+        try await batch.complete()
+    }
+}
+```
+
+## Accessing PowerSync connection status information
+
+Use [`currentStatus`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/currentstatus) and observe changes to listen for status changes to your PowerSync instance.
+
+```swift
+import Combine
+
+class StatusViewModel: ObservableObject {
+    @Published var status: SyncStatusData
+    private var cancellable: AnyCancellable?
+
+    init(db: PowerSyncDatabase) {
+        self.status = db.currentStatus
+        self.cancellable = db.statusPublisher.sink { [weak self] newStatus in
+            self?.status = newStatus
+        }
+    }
+}
+```
+
+## Wait for the initial sync to complete
+
+Use the [`hasSynced`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/hassynced) property and observe status changes to indicate to the user whether the initial sync is in progress.
+
+```swift
+// Example of using hasSynced to show whether the first sync has completed
+@ObservedObject var viewModel: StatusViewModel
+
+var body: some View {
+    if viewModel.status.hasSynced == true {
+        Text("Initial sync completed!")
+    } else {
+        Text("Busy with initial sync...")
+    }
+}
+```
+
+For async use cases, see [`waitForFirstSync`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/waitforfirstsync()).
+
+## Report sync download progress
+
+You can show users a progress bar when data downloads using the `downloadProgress` property from the [`SyncStatusData`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/) object. This property gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
+
+Example (SwiftUI):
+
+```swift
+import SwiftUI
+import PowerSync
+
+struct SyncProgressBar: View {
+    @ObservedObject var db: PowerSyncDatabase
+
+    var progress: Float {
+        db.currentStatus.downloadProgress?.fraction ?? 1.0 // 1.0 = complete
+    }
+
+    var body: some View {
+        if progress < 1.0 {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Syncing data... \(Int(progress * 100))%")
+                ProgressView(value: progress)
+                    .progressViewStyle(LinearProgressViewStyle())
+            }
+            .padding(.vertical)
+        }
+    }
+}
+```
+
+Also see:
+- [SyncStatusData API](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/)
+- [SyncDownloadProgress API](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncdownloadprogress/)
+
+## Using logging to troubleshoot issues
+
+You can include your own Logger that must conform to the [LoggerProtocol](https://powersync-ja.github.io/powersync-swift/documentation/powersync/loggerprotocol) as shown here.
+
+```swift
+let logger = DefaultLogger(minSeverity: .debug)
+let db = PowerSyncDatabase(
+    schema: schema,
+    dbFilename: "powersync-swift.sqlite",
+    logger: logger
+)
+```
+
+The `DefaultLogger` supports the following severity levels: `.debug`, `.info`, `.warn`, `.error`. 

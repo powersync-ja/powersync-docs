@@ -9,6 +9,7 @@ Read and write transactions present a context where multiple changes can be made
 
 ```swift
 // Delete a list and its todos in a transaction
+//TODO: review
 func deleteList(db: PowerSyncDatabase, listId: String) async throws {
     try await db.writeTransaction { tx in
         try await tx.execute(sql: "DELETE FROM lists WHERE id = ?", parameters: [listId])
@@ -24,21 +25,22 @@ Also see [`readTransaction`](https://powersync-ja.github.io/powersync-swift/docu
 Use `watch` to watch for changes to the dependent tables of any SQL query.
 
 ```swift
-// Watch for changes to the customers table
-func watchCustomers(db: PowerSyncDatabase, onUpdate: @escaping ([Customer]) -> Void) async {
+// Watch for changes to the lists table
+func watchLists(_ callback: @escaping (_ lists: [ListContent]) -> Void ) async {
     do {
-        for try await customers in try db.watch(
-            sql: "SELECT * FROM customers",
+        for try await lists in try self.db.watch<ListContent>(
+            sql: "SELECT * FROM \(LISTS_TABLE)",
             parameters: [],
             mapper: { cursor in
-                Customer(
-                    id: try cursor.getString(name: "id"),
-                    name: try cursor.getString(name: "name"),
-                    email: try cursor.getString(name: "email")
+                try ListContent(
+                    id: cursor.getString(name: "id"),
+                    name: cursor.getString(name: "name"),
+                    createdAt: cursor.getString(name: "created_at"),
+                    ownerId: cursor.getString(name: "owner_id")
                 )
             }
         ) {
-            onUpdate(customers)
+            callback(lists)
         }
     } catch {
         print("Error in watch: \(error)")
@@ -51,11 +53,11 @@ func watchCustomers(db: PowerSyncDatabase, onUpdate: @escaping ([Customer]) -> V
 Use `execute` to run INSERT, UPDATE or DELETE queries.
 
 ```swift
-// Insert a new customer
-func insertCustomer(db: PowerSyncDatabase, name: String, email: String) async throws {
+// Insert a new TODO
+func insertTodo(_ todo: NewTodo, _ listId: String) async throws {
     try await db.execute(
-        sql: "INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)",
-        parameters: [name, email]
+        sql: "INSERT INTO \(TODOS_TABLE) (id, created_at, created_by, description, list_id, completed) VALUES (uuid(), datetime(), ?, ?, ?, ?)",
+        parameters: [connector.currentUserID, todo.description, listId, todo.isComplete]
     )
 }
 ```
@@ -65,6 +67,7 @@ func insertCustomer(db: PowerSyncDatabase, name: String, email: String) async th
 Override `uploadData` to send local updates to your backend service.
 
 ```swift
+//TODO - review
 class MyConnector: PowerSyncBackendConnector {
     override func uploadData(database: PowerSyncDatabaseProtocol) async throws {
         let batch = try await database.getCrudBatch()
@@ -90,76 +93,27 @@ class MyConnector: PowerSyncBackendConnector {
 Use [`currentStatus`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/currentstatus) and observe changes to listen for status changes to your PowerSync instance.
 
 ```swift
-import Combine
-
-class StatusViewModel: ObservableObject {
-    @Published var status: SyncStatusData
-    private var cancellable: AnyCancellable?
-
-    init(db: PowerSyncDatabase) {
-        self.status = db.currentStatus
-        self.cancellable = db.statusPublisher.sink { [weak self] newStatus in
-            self?.status = newStatus
-        }
-    }
-}
+//TODO
 ```
 
 ## Wait for the initial sync to complete
 
-Use the [`hasSynced`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/hassynced) property and observe status changes to indicate to the user whether the initial sync is in progress.
+Use the `hasSynced` property and observe status changes to indicate to the user whether the initial sync is in progress.
 
 ```swift
-// Example of using hasSynced to show whether the first sync has completed
-@ObservedObject var viewModel: StatusViewModel
-
-var body: some View {
-    if viewModel.status.hasSynced == true {
-        Text("Initial sync completed!")
-    } else {
-        Text("Busy with initial sync...")
-    }
-}
+//TODO
 ```
 
-For async use cases, see [`waitForFirstSync`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/waitforfirstsync()).
+For async use cases, use [`waitForFirstSync`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/waitforfirstsync()).
 
 ## Report sync download progress
 
 You can show users a progress bar when data downloads using the `downloadProgress` property from the [`SyncStatusData`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/) object. `downloadProgress.fraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
 
-Example (SwiftUI):
+Example:
 
 ```swift
-import SwiftUI
-import PowerSync
-
-struct SyncProgressBar: View {
-    @ObservedObject var db: PowerSyncDatabase
-
-    var progress: Float {
-        db.currentStatus.downloadProgress?.fraction ?? 1.0 // 1.0 = complete
-    }
-    // To track progress for a specific bucket priority:
-    var priorityProgress: Float {
-        db.currentStatus.downloadProgress?.untilPriority(priority: BucketPriority(2)).fraction ?? 1.0
-    }
-
-    var body: some View {
-        if progress < 1.0 {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Syncing data... \(Int(progress * 100))%")
-                ProgressView(value: progress)
-                    .progressViewStyle(LinearProgressViewStyle())
-                // Example for a specific priority
-                Text("Priority 2 progress: \(Int(priorityProgress * 100))%")
-                ProgressView(value: priorityProgress)
-                    .progressViewStyle(LinearProgressViewStyle())
-            }
-            .padding(.vertical)
-        }
-    }
-}
+//TODO
 ```
 
 Also see:

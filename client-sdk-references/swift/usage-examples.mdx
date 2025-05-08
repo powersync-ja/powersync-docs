@@ -93,7 +93,33 @@ class MyConnector: PowerSyncBackendConnector {
 Use [`currentStatus`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/currentstatus) and observe changes to listen for status changes to your PowerSync instance.
 
 ```swift
-//TODO
+import Foundation
+import SwiftUI
+import PowerSync
+
+struct PowerSyncConnectionIndicator: View {
+    private let powersync: any PowerSyncDatabaseProtocol
+    @State private var connected: Bool = false
+    
+    init(powersync: any PowerSyncDatabaseProtocol) {
+        self.powersync = powersync
+    }
+    
+    var body: some View {
+        let iconName = connected ? "wifi" : "wifi.slash"
+        let description = connected ? "Online" : "Offline"
+        
+        Image(systemName: iconName)
+            .accessibility(label: Text(description))
+            .task {
+                self.connected = powersync.currentStatus.connected
+                
+                for await status in powersync.currentStatus.asFlow() {
+                    self.connected = status.connected
+                }
+           }
+    }
+}
 ```
 
 ## Wait for the initial sync to complete
@@ -101,7 +127,26 @@ Use [`currentStatus`](https://powersync-ja.github.io/powersync-swift/documentati
 Use the `hasSynced` property and observe status changes to indicate to the user whether the initial sync is in progress.
 
 ```swift
-//TODO
+struct WaitForFirstSync: View {
+    private let powersync: any PowerSyncDatabaseProtocol
+    @State var didSync: Bool = false
+
+    init(powersync: any PowerSyncDatabaseProtocol) {
+        self.powersync = powersync
+    }
+    
+    var body: some View {
+        if !didSync {
+            ProgressView().task {
+                do {
+                    try await powersync.waitForFirstSync()
+                } catch {
+                    // TODO: Handle errors
+                }
+            }
+        }
+    }
+}
 ```
 
 For async use cases, use [`waitForFirstSync`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/waitforfirstsync()).
@@ -113,7 +158,41 @@ You can show users a progress bar when data downloads using the `downloadProgres
 Example:
 
 ```swift
-//TODO
+struct SyncProgressIndicator: View {
+    private let powersync: any PowerSyncDatabaseProtocol
+    private let priority: BucketPriority?
+    @State private var status: SyncStatusData? = nil
+
+    init(powersync: any PowerSyncDatabaseProtocol, priority: BucketPriority? = nil) {
+        self.powersync = powersync
+        self.priority = priority
+    }
+    
+    var body: some View {
+        VStack {
+            if let totalProgress = status?.downloadProgress {
+                let progress = if let priority = self.priority {
+                    totalProgress.untilPriority(priority: priority)
+                } else {
+                    totalProgress
+                }
+                
+                ProgressView(value: progress.fraction)
+
+                if progress.downloadedOperations == progress.totalOperations {
+                    Text("Applying server-side changes...")
+                } else {
+                    Text("Downloaded \(progress.downloadedOperations) out of \(progress.totalOperations)")
+                }
+            }
+        }.task {
+            status = powersync.currentStatus
+            for await status in powersync.currentStatus.asFlow() {
+                self.status = status
+            }
+        }
+    }
+}
 ```
 
 Also see:

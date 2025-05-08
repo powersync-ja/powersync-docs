@@ -9,6 +9,11 @@ Instead of using heavy state management solutions, they use simple global fields
 When adopting PowerSync, you might be interested in using a more sophisticated approach for state management.
 This section explains how PowerSync's Flutter SDK integrates with popular packages for state management.
 
+<Note>
+Adopting PowerSync can simplify the architecture of your app by using SQLite as the single source of truth for all data.
+For a general discussion on how PowerSync fits into modern app architecture on Flutter, also see [this blogpost](https://dinkomarinac.dev/building-local-first-flutter-apps-with-riverpod-drift-and-powersync).
+</Note>
+
 PowerSync exposes database queries with the standard `Future` and `Stream` classes from `dart:async`. Given how widely used these are
 in the Dart ecosystem, PowerSync works well with all popular approaches for state management, such as:
 
@@ -25,98 +30,34 @@ in the Dart ecosystem, PowerSync works well with all popular approaches for stat
 
 ## Riverpod
 
-We have a [complete example](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist-drift) demonstrating how
-PowerSync can be used in an app using [Riverpod](https://riverpod.dev) for state management.
-This section also provides a few relevant snippets and explanations.
+<Tip>
+We have a [complete example](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist-drift) on using PowerSync
+with modern Flutter libraries like Riverpod, Drift and `auto_route`.
+</Tip>
 
-For this example, we use a simple utility to make `NotifierProvider`s easier to create:
-
-```dart
-import 'package:riverpod/riverpod.dart';
-
-final class _StatefulNotifier<T> extends Notifier<T> {
-  T? _currentValue;
-  final T Function(Ref, void Function(T)) _initial;
-
-  _StatefulNotifier(this._initial);
-
-  @override
-  T build() => _currentValue ??= _initial(ref, (updated) {
-        _currentValue = state = updated;
-      });
-}
-
-/// A [NotifierProvider] that exposes the [Notifier.state] setter to the
-/// [initialValue] function, allowing notifier providers to be written without
-/// a custom notifier for each provider.
-NotifierProvider<Notifier<T>, T> statefulProvider<T>(
-  T Function(Ref ref, void Function(T) change) initialValue,
-) {
-  return NotifierProvider(() => _StatefulNotifier<T>(initialValue));
-}
-```
-
-### Opening the database
-
-To open a `PowerSync` database with Riverpod, wrap the initialization logic in an async provider:
+A good way to open PowerSync databases with Riverpod is to use an async provider. You can also manage your `connect` and
+`disconnect` calls there, for instance by listening to the authentication state:
 
 ```dart
 @Riverpod(keepAlive: true)
-Future<PowerSyncDatabase> initializePowerSync(Ref ref) async {
+Future<PowerSyncDatabase> powerSyncInstance(Ref ref) async {
   final db = PowerSyncDatabase(
-      schema: schema, path: await _getDatabasePath(), logger: attachedLogger);
-  await db.initialize();
-  ref.onDispose(db.close);
-  return db;
-}
-```
-
-To automatically connect and disconnect your backend connector depending on the current auth state,
-you could use side effects in that provider. With Supabase, that may look like this:
-
-```dart
-final session = statefulProvider<Session?>((ref, change) {
-  final instance = Supabase.instance.client.auth;
-
-  final sub = instance.onAuthStateChange.listen((data) {
-    change(instance.currentSession);
-  });
-  ref.onDispose(sub.cancel);
-
-  return instance.currentSession;
-});
-
-@Riverpod(keepAlive: true)
-Future<PowerSyncDatabase> initializePowerSync(Ref ref) async {
-  final db = PowerSyncDatabase(
-      schema: schema, path: await _getDatabasePath(), logger: attachedLogger);
+    schema: schema,
+    path: await _getDatabasePath(),
+    logger: attachedLogger,
+  );
   await db.initialize();
 
-  SupabaseConnector? currentConnector;
-
-  if (ref.read(session) != null) {
-    currentConnector = SupabaseConnector();
-    db.connect(connector: currentConnector);
-  }
-
-  final instance = Supabase.instance.client.auth;
-  final sub = instance.onAuthStateChange.listen((data) async {
-    final event = data.event;
-    if (event == AuthChangeEvent.signedIn) {
-      // Connect to PowerSync when the user is signed in
-      currentConnector = SupabaseConnector();
-      db.connect(connector: currentConnector!);
-    } else if (event == AuthChangeEvent.signedOut) {
-      // Implicit sign out - disconnect, but don't delete data
-      currentConnector = null;
-      await db.disconnect();
-    } else if (event == AuthChangeEvent.tokenRefreshed) {
-      // Supabase token refreshed - trigger token refresh for PowerSync.
-      currentConnector?.prefetchCredentials();
+  // TODO: Listen for auth changes and connect() the database here.
+  ref.listen(yourAuthProvider, (prev, next) {
+    if (next.isAuthenticated && !prev.isAuthenticated) {
+      db.connect(connector: MyConnector());
     }
-  });
-  ref.onDispose(sub.cancel);
 
+    // ...
+  });
+
+  ref.onDispose(db.close);
   return db;
 }
 ```
@@ -127,7 +68,7 @@ To expose auto-updating query results, use a `StreamProvider` reading the databa
 
 ```dart
 final _lists = StreamProvider((ref) async* {
-  final database = await ref.read(initializePowerSyncProvider.future);
+  final database = await ref.read(powerSyncInstanceProvider.future);
   yield* database.watch('SELECT * FROM lists');
 });
 ```
@@ -137,7 +78,7 @@ final _lists = StreamProvider((ref) async* {
 If you were awaiting `waitForFirstSync` before, you can keep doing that:
 
 ```dart
-final db = await ref.read(initializePowerSyncProvider.future);
+final db = await ref.read(powerSyncInstanceProvider.future);
 await db.waitForFirstSync();
 ```
 
@@ -146,7 +87,7 @@ whether the synchronization has completed:
 
 ```dart
 final syncStatus = statefulProvider<SyncStatus>((ref, change) {
-  final status = Stream.fromFuture(ref.read(initializePowerSyncProvider.future))
+  final status = Stream.fromFuture(ref.read(powerSyncInstanceProvider.future))
       .asyncExpand((db) => db.statusStream);
   final sub = status.listen(change);
   ref.onDispose(sub.cancel);
@@ -187,7 +128,7 @@ If you're using the attachment queue helper to synchronize media assets, you can
 ```dart
 @Riverpod(keepAlive: true)
 Future<YourAttachmentQueue> attachmentQueue(Ref ref) async {
-  final db = await ref.read(initializePowerSyncProvider.future);
+  final db = await ref.read(powerSyncInstanceProvider.future);
   final queue = YourAttachmentQueue(db, remoteStorage);
   await queue.init();
   return queue;

@@ -3,6 +3,18 @@ title: "Usage Examples"
 description: "Code snippets and guidelines for common scenarios"
 ---
 
+## Using Hooks
+
+A separate `powersync-react` package is available containing React hooks for PowerSync:
+<Card
+  title="npm: @powersync/react"
+  icon="npm"
+  href="https://www.npmjs.com/package/@powersync/react"
+  horizontal
+/>
+
+See its README for example code.
+
 ## Using transactions to group changes
 
 Read and write transactions present a context where multiple changes can be made then finally committed to the DB or rolled back. This ensures that either all the changes get persisted, or no change is made to the DB (in the case of a rollback or exception).
@@ -208,33 +220,43 @@ return <Text>{hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...
 
 For async use cases, see [PowerSyncDatabase.waitForFirstSync](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/AbstractPowerSyncDatabase#waitforfirstsync), which returns a promise that resolves once the first full sync has completed (it queries the internal SQL [ps\_buckets](/architecture/client-architecture) table to determine if data has been synced).
 
-## Using logging to troubleshoot issues
+## Report sync download progress
 
-```js
-import { createBaseLogger, LogLevel } from '@powersync/react-native';
+You can show users a progress bar when data downloads using the `downloadProgress` property from the [SyncStatus](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/SyncStatus) class. This is especially useful for long-running initial syncs. `downloadProgress.fraction` gives you a value from 0.0 to 1.0 representing the total sync progress. 
 
-const logger = createBaseLogger();
+Example:
 
-// Configure the logger to use the default console output
-logger.useDefaults();
+```jsx
+import { useStatus } from '@powersync/react';
+import { FC, ReactNode } from 'react';
+import { View } from 'react-native';
+import { Text, LinearProgress } from '@rneui/themed';
 
-// Set the minimum log level to DEBUG to see all log messages
-// Available levels: DEBUG, INFO, WARN, ERROR, TRACE, OFF
-logger.setLevel(LogLevel.DEBUG);
+export const SyncProgressBar: FC<{ priority?: number }> = ({ priority }) => {
+  const status = useStatus();
+  const progressUntilNextSync = status.downloadProgress;
+  const progress = priority == null ? progressUntilNextSync : progressUntilNextSync?.untilPriority(priority);
+
+  if (progress == null) {
+    return <></>;
+  }
+
+  return (
+    <View>
+      <LinearProgress variant="determinate" value={progress.downloadedFraction * 100} />
+      {progress.downloadedOperations == progress.totalOperations ? (
+        <Text>Applying server-side changes</Text>
+      ) : (
+        <Text>
+          Downloaded {progress.downloadedOperations} out of {progress.totalOperations}.
+        </Text>
+      )}
+    </View>
+  );
+};
 ```
 
-<Tip>
-  Enable verbose output in the developer tools for detailed logs.
-</Tip>
+Also see:
+- [SyncStatus API](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/SyncStatus)
+- [Demo component](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/widgets/GuardBySync.tsx)
 
-## Using Hooks
-
-A separate `powersync-react` package is available containing React hooks for PowerSync:
-<Card
-  title="npm: @powersync/react"
-  icon="npm"
-  href="https://www.npmjs.com/package/@powersync/react"
-  horizontal
-/>
-
-See its README for example code.

@@ -18,6 +18,16 @@ Run the following command at the root of your documentation (where mint.json is)
 npx mintlify dev
 ```
 
+If you get this error:
+
+`✖ Must be run in a directory where a mint.json file exists.`
+
+...you need to update your version of Mintlify. You can use the following:
+
+```
+npx mintlify@latest dev
+```
+
 Regularly check for broken links by running
 
 ```

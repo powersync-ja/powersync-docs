@@ -246,30 +246,47 @@ return <div>{hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...'
 
 For async use cases, see [PowerSyncDatabase.waitForFirstSync()](https://powersync-ja.github.io/powersync-js/web-sdk/classes/AbstractPowerSyncDatabase#waitforfirstsync), which returns a promise that resolves once the first full sync has completed (it queries the internal SQL [ps\_buckets](/architecture/client-architecture) table to determine if data has been synced).
 
-## Using logging to troubleshoot issues
+## Report sync download progress
 
-```js
-import { createBaseLogger, LogLevel } from '@powersync/web';
+You can show users a progress bar when data downloads using the `downloadProgress` property from the
+[SyncStatus](https://powersync-ja.github.io/powersync-js/web-sdk/classes/SyncStatus) class. This is especially useful for long-running initial syncs. `downloadProgress.fraction` gives you a value from 0.0 to 1.0 representing the total sync progress.
 
-const logger = createBaseLogger();
+Example (React, using [MUI](https://mui.com) components):
 
-// Configure the logger to use the default console output
-logger.useDefaults();
+```jsx
+import { Box, LinearProgress, Stack, Typography } from '@mui/material';
+import { useStatus } from '@powersync/react';
+import { FC, ReactNode } from 'react';
 
-// Set the minimum log level to DEBUG to see all log messages
-// Available levels: DEBUG, INFO, WARN, ERROR, TRACE, OFF
-logger.setLevel(LogLevel.DEBUG);
+export const SyncProgressBar: FC<{ priority?: number }> = ({ priority }) => {
+  const status = useStatus();
+  const progressUntilNextSync = status.downloadProgress;
+  const progress = priority == null ? progressUntilNextSync : progressUntilNextSync?.untilPriority(priority);
+
+  if (progress == null) {
+    return <></>;
+  }
+
+  return (
+    <Stack direction="column" spacing={1} sx={{ p: 4 }} alignItems="stretch">
+      <LinearProgress variant="determinate" value={progress.downloadedFraction * 100} />
+      <Box sx={{ alignSelf: 'center' }}>
+        {progress.downloadedOperations == progress.totalOperations ? (
+          <Typography>Applying server-side changes</Typography>
+        ) : (
+          <Typography>
+            Downloaded {progress.downloadedOperations} out of {progress.totalOperations}.
+          </Typography>
+        )}
+      </Box>
+    </Stack>
+  );
+};
 ```
 
-<Tip>
-  Enable verbose output in the developer tools for detailed logs.
-</Tip>
-
-Additionally, the [WASQLiteDBAdapter](https://powersync-ja.github.io/powersync-js/web-sdk/classes/WASQLiteDBAdapter) opens SQLite connections inside a shared web worker. This worker can be inspected in Chrome by accessing:
-
-```
-chrome://inspect/#workers
-```
+Also see:
+- [SyncStatus API](https://powersync-ja.github.io/powersync-js/web-sdk/classes/SyncStatus)
+- [Demo component](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/widgets/GuardBySync.tsx)
 
 ## Using PowerSyncDatabase Flags
 

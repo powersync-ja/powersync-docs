@@ -193,6 +193,64 @@ void dispose() {
 
 For async use cases, see the [waitForFirstSync](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/waitForFirstSync.html) method which returns a promise that resolves once the first full sync has completed.
 
-## Using logging to troubleshoot issues
+## Report sync download progress
 
-Since version 1.1.2 of the SDK, logging is enabled by default and outputs logs from PowerSync to the console in debug mode.
+You can show users a progress bar when data downloads using the `downloadProgress` property from the
+[SyncStatus](https://pub.dev/documentation/powersync/latest/powersync/SyncStatus/downloadProgress.html) class.
+`downloadProgress.fraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
+
+As an example, this widget renders a progress bar when a download is active:
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:powersync/powersync.dart' hide Column;
+
+class SyncProgressBar extends StatelessWidget {
+  final PowerSyncDatabase db;
+
+  /// When set, show progress towards the [BucketPriority] instead of towards
+  /// the full sync.
+  final BucketPriority? priority;
+
+  const SyncProgressBar({
+    super.key,
+    required this.db,
+    this.priority,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<SyncStatus>(
+      stream: db.statusStream,
+      initialData: db.currentStatus,
+      builder: (context, snapshot) {
+        final status = snapshot.requireData;
+        final progress = switch (priority) {
+          null => status.downloadProgress,
+          var priority? => status.downloadProgress?.untilPriority(priority),
+        };
+
+        if (progress != null) {
+          return Center(
+            child: Column(
+              children: [
+                const Text('Busy with sync...'),
+                LinearProgressIndicator(value: progress?.downloadedFraction),
+                Text(
+                    '${progress.downloadedOperations} out of ${progress.totalOperations}')
+              ],
+            ),
+          );
+        } else {
+          return const SizedBox.shrink();
+        }
+      },
+    );
+  }
+}
+
+```
+
+Also see:
+- [SyncDownloadProgress API](https://pub.dev/documentation/powersync/latest/powersync/SyncDownloadProgress-extension-type.html)
+- [Demo component](https://github.com/powersync-ja/powersync.dart/blob/main/demos/supabase-todolist/lib/widgets/guard_by_sync.dart)

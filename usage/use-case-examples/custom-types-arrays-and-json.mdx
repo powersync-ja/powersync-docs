@@ -1,9 +1,21 @@
 ---
 title: "Custom Types, Arrays and JSON"
-description: PowerSync is fully compatible with more advanced Postgres types. 
+description: PowerSync is compatible with more advanced types such as arrays and JSON. 
 ---
 
-Below you can find information on how to use them.
+PowerSync is compatible with advanced Postgres types, including arrays and JSON/JSONB. These types are represented as text columns in the client-side schema. When updating client data, you have the option to replace the entire column value with a string or enable advanced schema features to track more granular changes and include custom metadata.
+
+## Advanced Schema Options to Process Writes
+
+With arrays and JSON fields, it's common for only part of the value to change during an update. To make handling these writes easier, you can enable advanced schema options that let you track exactly what changed in each row—not just the new state.
+
+- `trackPreviousValues`: Access previous values for diffing custom types, arrays, or JSON fields. Accessible later via `CrudEntry.previousValues`.
+- `trackMetadata`: Adds a `_metadata` column for storing custom metadata. Value of the column is accessible later via `CrudEntry.metadata`.
+- `ignoreEmptyUpdates`: Skips updates when no data has actually changed.
+
+<Note>
+  These advanced schema options are available in the following SDK versions: Flutter v1.13.0, React Native v1.20.1, JavaScript/Web v1.20.1, Kotlin Multiplatform v1.1.0, and Swift v1.1.0.
+</Note>
 
 ## Custom Types
 
@@ -11,7 +23,7 @@ PowerSync treats custom type columns as text.
 
 ### Postgres
 
-Postgres allows developers to create custom data types for columns. Example of creating a custom type:
+Postgres allows developers to create custom data types for columns. For example:
 
 ```sql
 create type location_address AS (
@@ -24,43 +36,59 @@ create type location_address AS (
 
 ### Sync Rules
 
-Custom type columns are converted to Text by the PowerSync Service. A column of type `location_address`, as defined above, would be synced to clients as the following string:
+Custom type columns are converted to text by the PowerSync Service. A column of type `location_address`, as defined above, would be synced to clients as the following string:
 
 `("1000 S Colorado Blvd.",Denver,CO,80211)`
 
-It is not currently possible to extract fields from custom types in sync rules, so the entire column must be synced as text.
+It is not currently possible to extract fields from custom types in Sync Rules, so the entire column must be synced as text.
 
 ### Client SDK
 
 **Schema**
 
-Add your custom type column as a `text()` column in your client-side schema definition:
+Add your custom type column as a `text` column in your client-side schema definition. For advanced update tracking, see [Advanced Schema Options](#advanced-schema-options).
 
 ```dart
-Column.text('location')
+Table(
+  name: 'todos',
+  columns: [
+    Column.text('location'),
+    // ... other columns ...
+  ],
+
+  // Optionally, enable advanced update tracking options:
+  trackPreviousValues: true, 
+  trackMetadata: true, 
+  ignoreEmptyUpdates: true, 
+)
 ```
 
 **Writing Changes**
 
-Write the entire updated column value using a string:
+You can write the entire updated column value as a string, or, with `trackPreviousValues` enabled, compare the previous and new values to process only the changes you care about:
 
 ```dart
+// Full replacement (basic):
 await db.execute('UPDATE todos set location = ? WHERE id = ?', [
-
   '("1234 Update Street",Denver,CO,80212)',
-
   'faffcf7a-75f9-40b9-8c5d-67097c6b1c3b'
-
 ]);
+
+// Advanced: Diffing custom types in uploadData
+if (op.op == UpdateType.put && op.previousValues != null) {
+  final oldCustomType = op.previousValues['location'] ?? 'null';
+  final newCustomType = op.opData['location'] ?? 'null';
+  // Compare oldCustomType and newCustomType to determine what changed
+}
 ```
 
 ## Arrays
 
-PowerSync treats array columns as JSON text. This means that the SQLite JSON operators can be used on any Array columns.
+PowerSync treats array columns as JSON text. This means that the SQLite JSON operators can be used on any array columns.
 
 Additionally, some helper methods such as array membership are available in Sync Rules.
 
-**Note:** Native Postgres arrays, JSON arrays and JSONB arrays are effectively all equivalent in PowerSync.
+**Note:** Native Postgres arrays, JSON arrays, and JSONB arrays are effectively all equivalent in PowerSync.
 
 ### Postgres
 
@@ -91,42 +119,59 @@ bucket_definitions:
       - SELECT * FROM todos WHERE bucket.list_id IN unique_identifiers
 ```
 
-<Info>
-See these additional details when using the `IN` operator:
-
-[Operators](/usage/sync-rules/operators-and-functions#operators)
-</Info>
+<Tip>
+See these additional details when using the `IN` operator: [Operators](/usage/sync-rules/operators-and-functions#operators)
+</Tip>
 
 ### Client SDK
 
 **Schema**
 
-Add your array column as a `text()` column in your client-side schema definition:
+Add your array column as a `text` column in your client-side schema definition. For advanced update tracking, see [Advanced Schema Options](#advanced-schema-options).
 
 ```dart
-Column.text('unique_identifiers')
+Table(
+  name: 'todos',
+  columns: [
+    Column.text('unique_identifiers'),
+    // ... other columns ...
+  ],
+
+  // Optionally, enable advanced update tracking options:
+  trackPreviousValues: true, 
+  trackMetadata: true, 
+  ignoreEmptyUpdates: true, 
+)
 ```
 
 **Writing Changes**
 
-Write the entire updated column value using a string:
+You can write the entire updated column value as a string, or, with `trackPreviousValues` enabled, compare the previous and new values to process only the changes you care about:
 
 ```dart
+// Full replacement (basic):
 await db.execute('UPDATE todos set unique_identifiers = ? WHERE id = ?', [
   '["DEADBEEF-DEAD-BEEF-DEAD-BEEFDEADBEEF", "ABCDEFAB-ABCD-ABCD-ABCD-ABCDEFABCDEF"]',
   '00000000-0000-0000-0000-000000000000'
 ]);
+
+// Advanced: Diffing arrays in uploadData
+if (op.op == UpdateType.put && op.previousValues != null) {
+  final oldArray = jsonDecode(op.previousValues['unique_identifiers'] ?? '[]');
+  final newArray = jsonDecode(op.opData['unique_identifiers'] ?? '[]');
+  // Compare oldArray and newArray to determine what changed
+}
 ```
 
 <Info>
-  Attention Supabase users: Supabase is able to handle writes with arrays, but you'll have to do the conversion from string to array using `jsonDecode` in the connector's `uploadData` function. The default implementation of the`uploadData` function doesn't handle the more complex ones like arrays automatically
+  **Attention Supabase users:** Supabase can handle writes with arrays, but you must convert from string to array using `jsonDecode` in the connector's `uploadData` function. The default implementation of `uploadData` does not handle complex types like arrays automatically.
 </Info>
 
 ## JSON and JSONB
 
 The PowerSync Service treats JSON and JSONB columns as text and provides many helpers for working with JSON in Sync Rules.
 
-**Note:** Native Postgres arrays, JSON arrays and JSONB arrays are effectively all equivalent in PowerSync.
+**Note:** Native Postgres arrays, JSON arrays, and JSONB arrays are effectively all equivalent in PowerSync.
 
 ### Postgres
 
@@ -154,35 +199,46 @@ bucket_definitions:
 
 **Schema**
 
-Add your JSON column as a `text()` column in your client-side schema definition:
+Add your JSON column as a `text` column in your client-side schema definition. For advanced update tracking, see [Advanced Schema Options](#advanced-schema-options).
 
 ```dart
-Column.text('custom_payload')
+Table(
+  name: 'todos',
+  columns: [
+    Column.text('custom_payload'),
+    // ... other columns ...
+  ],
+  // Optionally, enable advanced update tracking options:
+  trackPreviousValues: true, 
+  trackMetadata: true, 
+  ignoreEmptyUpdates: true, 
+)
 ```
 
 **Writing Changes**
 
-The default implementation of `uploadData` in our Supabase Flutter [To-Do List Demo App](https://github.com/powersync-ja/powersync.dart/tree/master/demos/supabase-todolist) doesn't handle more complex types such as JSON objects automatically. Below is some example Dart code for writing JSON updates back to Supabase:
-
+You can write the entire updated column value as a string, or, with `trackPreviousValues` enabled, compare the previous and new values to process only the changes you care about:
 
 ```dart
+// Full replacement (basic):
+await db.execute('UPDATE todos set custom_payload = ? WHERE id = ?', [
+  '{"foo": "bar", "baz": 123}',
+  '00000000-0000-0000-0000-000000000000'
+]);
+
+// Advanced: Diffing JSON in uploadData
 import 'dart:convert';
 
-if (op.op == UpdateType.put) {
-  var data = Map<String, dynamic>.of(op.opData!);
-  ​​if (op.table == 'mytable' && data['myfield'] != null) {
-    data['myfield'] = jsonDecode(data['myfield']);
-  ​​}
-  data['id'] = op.id;
-  await table.upsert(data);
+if (op.op == UpdateType.put && op.previousValues != null) {
+  var oldJson = jsonDecode(op.previousValues['custom_payload'] ?? '{}');
+  var newJson = jsonDecode(op.opData['custom_payload'] ?? '{}');
+  // Compare oldJson and newJson to determine what changed
 }
-else if (op.op == UpdateType.patch) {
-//etc
 ```
 
 ## Bonus: Mashup
 
-What if we had a column defined as an array of custom types, where a field in the custom type was JSON? Consider the below Postgres schema:
+What if we had a column defined as an array of custom types, where a field in the custom type was JSON? Consider the following Postgres schema:
 
 ```sql
 -- define custom type
@@ -195,3 +251,4 @@ CREATE TYPE extended_location AS (
 ALTER TABLE todos
 ADD COLUMN custom_locations extended_location[];
 ```
+

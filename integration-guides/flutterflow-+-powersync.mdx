@@ -595,6 +595,82 @@ bucket_definitions:
   **Checkpoint:** Your app should continue running seamlessly as before.
 </Check>
 
+## Arrays, JSON and other types
+
+For column values, PowerSync supports three basic types: Integers, doubles, and strings. These types have been chosen because
+they're natively supported by SQLite while also being easy to transport as JSON.
+
+Of course, you may want to to store other values in your PostgreSQL database as well. When syncing a value that doesn't
+fit into the three fundamental types, PowerSync will [encode it as a JSON string](/usage/use-case-examples/custom-types-arrays-and-json#custom-types).
+To use those values in your app, you'll need to apply a mapping so that you display the correct values and use the
+correct representation when uploading data.
+
+As an example, let's consider an added `tags` column on the `lists` table used in this guide. These tags will be
+encoded as a string array in Postgres:
+
+```SQL
+CREATE TABLE public.lists (
+  # ... existing columns,
+  tags text[] DEFAULT '{"default", "tags"}'
+);
+```
+
+Like all array values, PowerSync will transport this as a JSON string. For instance, a row with the default tags would
+be represented as this string: `["default", "tags"]`.
+FlutterFlow does not support extracting a list from that string, so the [custom functions](#read-data) responsible
+for mapping SQLite rows to FlutterFlow classes needs to be aware of the transformation and reverse it:
+
+```dart
+/// MODIFY CODE ONLY BELOW THIS LINE
+return supabaseRows.map((r) {
+  return ListsRow({
+    ...r,
+    'tags': jsonDecode(r['tags'] as String),
+  });
+}).toList();
+```
+
+This transforms the `'["default", "tags"]'` value as it appears into `["default", "tags"]`, the list value expected
+for this row.
+
+A similar approach is necessary when making local writes. The local database should be consistent with the
+data synced with PowerSync. So all [local writes](#create-data) should write array and JSON values as strings by
+encoding them as JSON.
+
+Finally, the PowerSync mapping also needs to be reverted when uploading rows to PostgreSQL. For a
+`text[]` column for instance, the local string value would not be accepted by Supabase.
+For this reason, the upload behavior for columns with advanced types needs to be customized.
+
+<Note>
+  **New feature:** This option has been added in version `0.0.7` of the PowerSync FlutterFlow library.
+  Please make sure you're using that version or later.
+</Note>
+
+To customize the uploading behavior, create a new custom action (e.g. `applyPowerSyncOptions`). After the
+default imports, put this snippet:
+
+```dart
+import 'package:power_sync_b0w5r9/custom_code/actions/initialize_power_sync.dart';
+
+Future applyPowerSyncOptions() async {
+  // Add your function code here!
+  powerSyncOptions.transformData = (table, data) {
+    switch (table) {
+      case 'lists':
+        data['tags'] = jsonDecode(data['tags'] as String);
+    }
+  };
+}
+```
+
+Also, add this function to your `main.dart` as a final action.
+
+When setting `powersyncOptions.transformData`, a callback is invoked every time a created or updated row
+is uploaded to Supabase.
+This allows you to customize how individual values are represented for PostgreSQL. In this case, the `tags`
+column of the `lists` table is decoded as JSON so that it's uploaded as a proper array while being stored
+as a list locally.
+
 ## Known Issues, Limitations and Gotchas
 
 Below is a list of known issues and limitations.

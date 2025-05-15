@@ -2,7 +2,7 @@
 
 Thanks for contributing to our documentation! 
 
-This repo holds the docs for PowerSync. Our docs are powered by mintlify. The PowerSync docs, like [the service](https://github.com/powersync-ja/powersync-service), are licensed under the Functional Source License (FSL). What this means is that you need to accept our CLA (once-off) when contributing. Accepting the CLA is an automated process once you submit your PR. 
+This repo holds the docs for PowerSync. Our docs are powered by Mintlify. The PowerSync docs, like [the service](https://github.com/powersync-ja/powersync-service), are licensed under the Functional Source License (FSL). What this means is that you need to accept our CLA (once-off) when contributing. Accepting the CLA is an automated process once you submit your PR. 
 
 ## How to Contribute
 

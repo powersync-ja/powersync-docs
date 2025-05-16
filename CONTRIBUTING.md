@@ -1,21 +1,26 @@
-# Contributing to the PowerSync docs
+# Contributing to PowerSync Docs
 
 Thanks for contributing to our documentation! 
 
-This repo holds the docs for PowerSync. Our docs are powered by Mintlify. The PowerSync docs, like [the service](https://github.com/powersync-ja/powersync-service), are licensed under the Functional Source License (FSL). What this means is that you need to accept our CLA (once-off) when contributing. Accepting the CLA is an automated process once you submit your PR. 
+## License & Contributor License Agreement (CLA)
+
+The PowerSync docs, like [the Service](https://github.com/powersync-ja/powersync-service), are licensed under the Functional Source License (FSL). To contribute, you must accept our Contributor License Agreement (CLA). This is an automated process that occurs when you submit your first pull request (PR).
 
 ## How to Contribute
 
-### From the docs page (recommended)
-TODO: flesh out steps once mintlify "suggest edits" is enabled
+### From docs.powersync.com directly (recommended)
+TODO: flesh out steps once "suggest edits" is enabled
 
 ### Manually
-1. Fork the Repo: Click "Fork" on GitHub and clone your fork.
-1. Make Changes: Edit or add markdown files in the docs/ directory.
-1. Test Locally: See this repo's README for instructions
-1. Submit a PR: Push your changes and open a pull request to the main branch.
+1. Fork and clone the repo: Click "Fork" on GitHub and clone your fork.
+1. Make Changes: Edit or add markdown files in the relevant directory.
+1. Test Locally: See this repo's [README](/README.md) for instructions.
+1. Submit a PR: Push your changes and open a pull request to the `main` branch.
 
-## Need Help?
-Join our [Discord server](https://discord.gg/powersync) where you can ask questions.
+## Getting Help
+
+If you have questions or need assistance:
+- Join our [Discord server](https://discord.gg/powersync) to ask questions and connect with the community.
+- Open an issue on GitHub if you encounter a problem or have a suggestion.
 
 Happy documenting!

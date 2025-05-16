@@ -1,56 +1,68 @@
-# PowerSync Docs
+# PowerSync Documentation
 
-The `docs` branch is the one that's published on docs.powersync.com. Merge your changes into this branch.
+Welcome to the PowerSync documentation repository! Our docs are powered by [Mintlify](https://mintlify.com/docs).
 
-The workflow for updates is essentially:
-* Create a PR to the `docs` branch
-* Make sure that checks pass (these include a check for broken links)
-* Get a review
-* Merge (changes are published automatically upon merge)
+## Quick Start
 
-There is also a WYSIWYG editor available in our [Mintlify dashboard](https://dashboard.mintlify.com/powersync/powersync), which is useful for quick updates that don't require a PR or review. Note that this editor is currently in Beta and is a little bit flakey in my experience, so double-check that your updates were indeed published if you use it. If you require access to the dashboard ping Benita or Kobie.
+1. **Fork and clone your repository:**
+   - On GitHub, click "Fork" at the top right of this repository to create your own copy.
+   - Then clone your fork:
+   ```
+   git clone https://github.com/YOUR-USERNAME/powersync-docs.git
+   cd powersync-docs
+   ```
+2. **Install Mintlify CLI:**
+   ```
+   npx mintlify install
+   ```
+3. **Start the local docs server:**
+   Run the following command at the root of the repo (where docs.json is):
+   ```
+   npx mintlify dev
+   ```
+   If you see the error `✖ Must be run in a directory where a mint.json file exists.`, update Mintlify:
+   ```
+   npx mintlify@latest dev
+   ```
 
-### Development
+## Contributing
 
-Run the following command at the root of your documentation (where mint.json is)
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for details on how to contribute.
 
-```
-npx mintlify dev
-```
+## Publishing Updates
 
-If you get this error:
+Any updates merged into the `main` branch are automatically published to https://docs.powersync.com.
 
-`✖ Must be run in a directory where a mint.json file exists.`
+**Publishing workflow:**
+- Create a pull request (PR) to the `main` branch.
+- Ensure all checks pass (including a check for broken links).
+- Request a review.
+- Merge the PR once approved.
 
-...you need to update your version of Mintlify. You can use the following:
+## Navigation & Global Settings
 
-```
-npx mintlify@latest dev
-```
+- Navigation and other global settings are defined in `docs.json`. Learn more in [Mintlify's docs](https://mintlify.com/docs/settings/global).
+- If you move or rename a page, add a redirect using the `redirects` property to ensure existing links continue to work.
 
-Regularly check for broken links by running
+## Checking for Broken Links
 
+Regularly check for broken links by running:
 ```
 npx mintlify broken-links
 ```
 
-Navigation (and other global settings) is defined in `docs.json`. Learn more about these in [Mintlify's docs](https://mintlify.com/docs/settings/global).
+## Whitelisting & Blacklisting Terms (Vale)
 
-NB: If you move or rename a page, ensure you add a redirect (via the `redirects` property) to that existing links that were shared via Discord etc continue to work.
+To whitelist terms so Mintlify's Vale integration does not flag them as misspelled:
+- Add terms (one per line, case-insensitive) to `.github/vale/config/vocabularies/PowerSync/accept.txt`.
+- To blacklist terms, create a `reject.txt` file in the same folder.
+- For more info, see [Mintlify's docs](https://mintlify.com/docs/settings/ci#vale) and [Vale's docs](https://vale.sh/docs/keys/vocab).
 
-#### Whitelisting Terms
+## Icons
 
-Certain terms can be whitelisted such that Mintlify's Vale integration does not flag them as misspelled.
+FontAwesome icons are supported: https://fontawesome.com/search
 
-Modify the `.github/vale/config/vocabularies/PowerSync/accept.txt` file to add terms to the whitelist - every line is a new term. Terms added to the whitelist are not case-sensitive, but capitalisation is still used for readability purposes. Further info on Vale vocab lists can be found in [Mintlify's docs](https://mintlify.com/docs/settings/ci#vale) and [Vale's docs](https://vale.sh/docs/keys/vocab).
-
-NB: If you need to blacklist terms, you can create a `reject.txt` file in the same folder as `accept.txt`.
-
-#### Icons
-
-Only Fontawesome icons are currently supported: https://fontawesome.com/search
-
-We use the following icons for the SDKs and backend databases:
+We use the following icons for supported backend databases and SDKs:
 - Postgres: `icon="elephant"`
 - MongoDB: `icon="leaf"`
 - MySQL: `icon="dolphin"`
@@ -62,23 +74,14 @@ We use the following icons for the SDKs and backend databases:
 - Node.js: `icon="node-js"`
 - .NET: `icon="microsoft"`
 
-#### Some useful references:
-- Writing content: https://mintlify.com/docs/page
-- Available components: https://mintlify.com/docs/content/components/accordions
-- Global settings: https://mintlify.com/docs/settings/global
-- Reusable Snippets for repeated content: https://mintlify.com/docs/reusable-snippets
+## Useful References
 
-### Publishing Changes
+- [Writing content](https://mintlify.com/docs/page)
+- [Available components](https://mintlify.com/docs/content/components/accordions)
+- [Global settings](https://mintlify.com/docs/settings/global)
+- [Reusable Snippets](https://mintlify.com/docs/reusable-snippets)
 
-Changes will be deployed to production automatically after pushing to the `docs` branch. You can review the deploy status in the Dashboard [here](https://dashboard.mintlify.com/powersync/powersync).
+## Troubleshooting
 
-
-### Troubleshooting
-
-- Mintlify dev isn't running - Run `mintlify install` it'll re-install dependencies.
-- Page loads as a 404 - Make sure you are running in a folder with `docs.json`
-
-### Getting help
-
-- Mintlify Slack community: https://mintlify.com/community 
-- Send an email to support@mintlify.com.
+- **Mintlify dev isn't running:** Run `npx mintlify install` to re-install dependencies.
+- **Page loads as a 404:** Make sure you are running in a folder with `docs.json`.

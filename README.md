@@ -16,11 +16,12 @@ Welcome to the PowerSync documentation repository! Our docs are powered by [Mint
    npx mintlify install
    ```
 3. **Start the local docs server:**
-   Run the following command at the root of the repo (where docs.json is):
+   - Run the following command at the root of the repo (where docs.json is):
    ```
    npx mintlify dev
    ```
-   If you see the error `✖ Must be run in a directory where a mint.json file exists.`, update Mintlify:
+   
+   - If you see the error `✖ Must be run in a directory where a mint.json file exists.`, update Mintlify:
    ```
    npx mintlify@latest dev
    ```

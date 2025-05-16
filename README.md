@@ -28,38 +28,35 @@ Welcome to the PowerSync documentation repository! Our docs are powered by [Mint
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for details on how to contribute.
+We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
-## Publishing Updates
+## Publishing
 
-Any updates merged into the `main` branch are automatically published to https://docs.powersync.com.
+All changes merged to the `main` branch are automatically published to https://docs.powersync.com.
 
-**Publishing workflow:**
-- Create a pull request (PR) to the `main` branch.
-- Ensure all checks pass (including a check for broken links).
-- Request a review.
-- Merge the PR once approved.
 
-## Navigation & Global Settings
+## Editing guidelines
+
+### Navigation & Global Settings
 
 - Navigation and other global settings are defined in `docs.json`. Learn more in [Mintlify's docs](https://mintlify.com/docs/settings/global).
 - If you move or rename a page, add a redirect using the `redirects` property to ensure existing links continue to work.
 
-## Checking for Broken Links
+### Checking for Broken Links
 
 Regularly check for broken links by running:
 ```
 npx mintlify broken-links
 ```
 
-## Whitelisting & Blacklisting Terms (Vale)
+### Whitelisting & Blacklisting Terms (Vale)
 
 To whitelist terms so Mintlify's Vale integration does not flag them as misspelled:
 - Add terms (one per line, case-insensitive) to `.github/vale/config/vocabularies/PowerSync/accept.txt`.
 - To blacklist terms, create a `reject.txt` file in the same folder.
 - For more info, see [Mintlify's docs](https://mintlify.com/docs/settings/ci#vale) and [Vale's docs](https://vale.sh/docs/keys/vocab).
 
-## Icons
+### Icons
 
 FontAwesome icons are supported: https://fontawesome.com/search
 
@@ -75,7 +72,7 @@ We use the following icons for supported backend databases and SDKs:
 - Node.js: `icon="node-js"`
 - .NET: `icon="microsoft"`
 
-## Useful References
+### Useful References
 
 - [Writing content](https://mintlify.com/docs/page)
 - [Available components](https://mintlify.com/docs/content/components/accordions)

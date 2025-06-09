@@ -1,169 +1,507 @@
 ---
-title: "TypeScript + Node.js + PowerSync"
-description: "A guide for creating a new Node.js application using TypeScript with PowerSync for offline/local first functionality"
-keywords: ["clientsdk", "node.js"]
+title: "Node.js + PowerSync"
+description: "A guide for creating a Node.js application with PowerSync for offline/local first functionality."
+keywords: ["node.js", "typescript", "clientsdks"]
 ---
 
 ## Introduction
-In this tutorial, we’ll explore how to create a new Node.js applicaiton with TypeScript and PowerSync for offline-first capabilities. In the following sections, we’ll walk through the process of integrating PowerSync into a Node.js application, setting up local-first storage, and handling synchronization efficiently.
 
-## Prerequisits
+In this tutorial, you'll set up a Node.js application with PowerSync.
+In the following sections, we’ll walk through the process of integrating PowerSync into a Node.js application, setting up local-first storage, and handling synchronization.
 
-In this guide we'll be using Node.js 22.4.0 and pnpm.
+## Prerequisites
 
-## Setup
+Before you begin, you'll need to have [Node.js](https://nodejs.org/en/download/current) set up.
 
-### Creating a new project
+And a running PowerSync instance, with an authentication backend - for a quick setup checkout the [Supabase Guide](https://docs.powersync.com/integration-guides/supabase-+-powersync#supabase-powersync)
 
-Create a new directory and init your Node.js project
+### Step 1 - Initializing the project
+
+Create a new directory for your Node.js application and navigate into it:
+
 ```shell
-pnpm init
+mkdir my-powersync-app
+cd my-powersync-app
 ```
 
-Install TypeScript
-```shell
-pnpm install typescript -D
+Once you are in the directory, create a new `package.json`. This will be where you manage your dependencies. If you are unfamiliar, you can create a new `package.json` file by running the following command::
+
+<CodeGroup>
+
+  ```shell npm
+  npm init
+  ```
+
+  ```shell yarn
+  yarn init
+  ```
+
+  ```shell pnpm
+  pnpm init
+  ```
+
+</CodeGroup>
+
+Set the type to `module` in your `package.json` file to enable ES module support:
+
+```json package.json {6}
+{
+  "name": "my-powersync-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
 ```
 
-Install PowerSync
-```shell
-pnpm install @powersync/node @powersync/better-sqlite3
+Install the PowerSync Node.js package. This package provides the core functionality for integrating PowerSync into your Node.js application.
+
+<CodeGroup>
+
+```shell npm
+npm install @powersync/node
 ```
 
-Update TypeScript Compiler Options
+```shell yarn
+yarn add @powersync/node
+```
+
+```shell pnpm
+pnpm add @powersync/node
+```
+
+</CodeGroup>
+
+For `@powersync/node@0.1.1` or earlier, also install `@powersync/better-sqlite3` as a peer dependency.
+
+<CodeGroup>
+
+```shell npm
+npm install @powersync/better-sqlite3
+``` 
+
+```shell yarn
+yarn add @powersync/better-sqlite3
+```
+
+```shell pnpm
+pnpm add @powersync/better-sqlite3
+```
+
+</CodeGroup>
+
+### Step 2 - Set up TypeScript (Optional)
+
+To use [TypeScript](https://www.typescriptlang.org/docs/handbook/typescript-in-5-minutes.html) in your Node.js application, you need to install TypeScript and the Node.js type definitions.
+
+<CodeGroup>
+
+  ```shell npm
+  npm add -D typescript ts-node @types/node
+  ```
+  
+  ```shell yarn
+  yarn add -D typescript ts-node @types/node
+  ```
+  
+  ```shell pnpm
+  pnpm add -D typescript ts-node @types/node
+  ```
+
+</CodeGroup>
+
+Create a `tsconfig.json` file in the root of your project directory to configure TypeScript. This file will define how TypeScript compiles your code and where it outputs the compiled files.
+
 ```json tsconfig.json
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "node",
+    "module": "nodenext",
+    "target": "esnext",
     "outDir": "./dist",
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true
   },
-  "include": [
-    "src/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules"
-  ]
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
 }
 ```
 
-Update your package.json
-```json package.json
-  ...
-  "type": "module",
-  "scripts": {
-    "build": "pnpm exec tsc",
-    "start": "node ./dist/index.js"
-  }
-  ...
+### Step 3 - Create the Application Files
+
+Create the PowerSync application files in a `src` directory. This will help keep your project organized.
+
+```shell
+mkdir src
 ```
 
-<Note>The PowerSync Node.js SDK requires `@powersync/better-sqlite3` to be installed</Note>
+#### Schema
 
-## Project Setup
+This file contains the schema definitions for your local SQLite database. It defines the structure of the data you will be working with, including tables and their columns.
 
-### Adding PowerSync
+<CodeGroup>
 
-Create a `src` directory and add three files:
-* AppSchema.ts
-* Connector.ts
-* index.ts
+  ```shell javascript
+  nano src/AppSchema.js
+  ```
 
-#### AppSchema.ts
-This file essentially contains the table definitions for your local database and would look something like this:
-```typescript AppSchema.ts
-import { Schema, Table, column } from '@powersync/node';
+  ```shell typescript
+  nano src/AppSchema.ts
+  ```
 
-const todos = new Table(
+</CodeGroup>
+
+These should map directly to the values produced by the [SyncRules](https://docs.powersync.com/usage/sync-rules). If a value doesn’t match, it is cast automatically. For details on how database types are mapped to the types below, see the section on [Types](https://docs.powersync.com/usage/sync-rules/types).
+
+<CodeGroup>
+
+  ```javascript src/AppSchema.js
+  import { 
+    Schema,
+    Table,
+    column
+  } from '@powersync/node';
+  
+  const todos = new Table(
     {
-        list_id: column.text,
-        created_at: column.text,
-        completed_at: column.text,
-        description: column.text,
-        created_by: column.text,
-        completed_by: column.text,
-        completed: column.integer,
-        photo_id: column.text
+      list_id: column.text,
+      created_at: column.text,
+      completed_at: column.text,
+      description: column.text,
+      created_by: column.text,
+      completed_by: column.text,
+      completed: column.integer,
+      photo_id: column.text
     },
     { indexes: { list: ['list_id'] } }
-);
-
-const lists = new Table({
+  );
+  
+  const lists = new Table({
     created_at: column.text,
     name: column.text,
     owner_id: column.text
-});
-
-export const AppSchema = new Schema({
+  });
+  
+  export const AppSchema = new Schema({
     lists,
     todos
-});
-```
+  });
+  ```
 
-#### Connector.ts
-This file will be the connector which will fetch a JWT used by PowerSync for authentication and another function which will handle uploads to the backend source database.
-```typescript Connector.ts
-import { PowerSyncBackendConnector, AbstractPowerSyncDatabase } from '@powersync/node';
+  ```typescript src/AppSchema.ts
+  import { 
+    Schema,
+    Table,
+    column
+  } from '@powersync/node';  
+  
+  const todos = new Table(
+    {
+      list_id: column.text,
+      created_at: column.text,
+      completed_at: column.text,
+      description: column.text,
+      created_by: column.text,
+      completed_by: column.text,
+      completed: column.integer,
+      photo_id: column.text
+    },
+    { indexes: { list: ['list_id'] } }
+  );
+  const lists = new Table({
+    created_at: column.text,
+    name: column.text,
+    owner_id: column.text
+  });
+  
+  export const AppSchema = new Schema({
+    lists,
+    todos
+  });
+  ```
 
-export class Connector implements PowerSyncBackendConnector {
-    constructor() {
-        // Setup a connection to your server for uploads
-        // this.serverConnectionClient = TODO;
+</CodeGroup>
+
+#### Connector
+
+This file contains the connector for your PowerSync instance. The connector is responsible for fetching authentication credentials and handling data uploads to your backend service.
+
+If you are using [Supabase](https://docs.powersync.com/integration-guides/supabase-+-powersync#supabase-powersync) you can use the [Supabase Connector](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/supabase/SupabaseConnector.ts) class instead of implementing your own connector.
+
+<CodeGroup>
+
+  ```shell javascript
+  nano src/Connector.js
+  ```
+  
+  ```shell typescript
+  nano src/Connector.ts
+  ```
+
+</CodeGroup>
+
+<CodeGroup>
+
+  ```javascript src/Connector.js
+  
+  /**
+    * @implements {import('@powersync/node').PowerSyncConnector}
+   */
+  export class Connector {
+      async fetchCredentials() {
+          // Implement fetchCredentials to obtain a JWT from your authentication service.
+          // See https://docs.powersync.com/installation/authentication-setup
+          // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
+          // - https://docs.powersync.com/installation/authentication-setup/supabase-auth
+          // - https://docs.powersync.com/installation/authentication-setup/firebase-auth
+          return {
+              endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+              // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
+              token: 'An authentication token'
+          };
+      }
+  
+      /**
+       * @param {import('@powersync/node').AbstractPowerSyncDatabase} database
+       * @returns {Promise<void>}
+       */
+      async uploadData(database) {
+          // Implement uploadData to send local changes to your backend service.
+          // You can omit this method if you only want to sync data from the database to the client
+  
+          // See example implementation here: https://docs.powersync.com/client-sdk-references/javascript-web#3-integrate-with-your-backend
+      }
+  }
+  
+  ```
+  
+  ```typescript src/Connector.ts
+    import { 
+        PowerSyncBackendConnector,
+        AbstractPowerSyncDatabase
+    } from '@powersync/node';
+  
+    export class Connector implements PowerSyncBackendConnector {
+      async fetchCredentials() {
+          // Implement fetchCredentials to obtain a JWT from your authentication service.
+          // See https://docs.powersync.com/installation/authentication-setup
+          // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
+          // - https://docs.powersync.com/installation/authentication-setup/supabase-auth
+          // - https://docs.powersync.com/installation/authentication-setup/firebase-auth
+          return {
+              endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+              // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
+              token: 'An authentication token'
+          };
+      }
+    
+      async uploadData(database: AbstractPowerSyncDatabase) {
+          // Implement uploadData to send local changes to your backend service.
+          // You can omit this method if you only want to sync data from the database to the client
+    
+          // See example implementation here: https://docs.powersync.com/client-sdk-references/javascript-web#3-integrate-with-your-backend
+      }
     }
+  ```
 
-    async fetchCredentials() {
-        // Implement fetchCredentials to obtain a JWT from your authentication service.
-        // See https://docs.powersync.com/installation/authentication-setup
-        // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
-        // - https://docs.powersync.com/installation/authentication-setup/supabase-auth
-        // - https://docs.powersync.com/installation/authentication-setup/firebase-auth
-        return {
-            endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
-            // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
-            token: 'An authentication token'
-        };
-    }
+</CodeGroup>
 
-    async uploadData(database: AbstractPowerSyncDatabase) {
-        // Implement uploadData to send local changes to your backend service.
-        // You can omit this method if you only want to sync data from the database to the client
+- `fetchCredentials` - This is called every couple of minutes and is used to obtain credentials for your app backend API. -> See [Authentication Setup](https://docs.powersync.com/installation/authentication-setup) for instructions on how the credentials should be generated.
+- `uploadData` - Use this to upload client-side changes to your app backend. -> See [Writing Client Changes](https://docs.powersync.com/installation/app-backend-setup/writing-client-changes) for considerations on the app backend implementation.
 
-        // See example implementation here: https://docs.powersync.com/client-sdk-references/javascript-web#3-integrate-with-your-backend
-    }
-}
-```
+#### Index
 
-#### index.ts
 The main application file used in this guide to show you how to set up and initialize PowerSync.
-```typescript index.ts
-import { PowerSyncDatabase } from '@powersync/node';
-import { Connector } from './Connector.js';
-import { AppSchema } from './AppSchema.js';
 
-export const db = new PowerSyncDatabase({
+<CodeGroup>
+
+  ```shell javascript
+  nano src/index.js
+  ```
+  
+  ```shell typescript
+  nano src/index.ts
+  ```
+
+</CodeGroup>
+
+This code initializes the PowerSync database, connects to the backend, and logs the current status of the database.
+
+<CodeGroup>
+
+  ```javascript src/index.js
+  import { PowerSyncDatabase } from '@powersync/node';
+  import { Connector } from './Connector.js';
+  import { AppSchema } from './AppSchema.js';
+  export const db = new PowerSyncDatabase({
     schema: AppSchema,
     database: {
-        dbFilename: 'powersync.db'
+      dbFilename: 'powersync.db'
     },
-});
+  });
+  await db.connect(new Connector());
+  console.log(db.currentStatus);
+  ```
+  
+  ```typescript src/index.ts
+  import { PowerSyncDatabase } from '@powersync/node';
+  import { Connector } from './Connector.js';
+  import { AppSchema } from './AppSchema.js';
+  
+  export const db = new PowerSyncDatabase({
+    schema: AppSchema,
+    database: {
+      dbFilename: 'powersync.db'
+    },
+  });
+  
+  await db.connect(new Connector());
+  console.log(db.currentStatus);
+  ```
 
-(async () => {
-    await db.connect(new Connector());
-    console.log(db.currentStatus);
-})()
+</CodeGroup>
 
-```
+If you are using [Supabase](https://docs.powersync.com/integration-guides/supabase-+-powersync#supabase-powersync), replace the `index.js` or `index.ts` file with the following code:
 
-## Run the App
-```
-pnpm start
-```
+<CodeGroup>
+
+  ```javascript src/index.js [expandable]
+  import 'dotenv/config'
+  import { PowerSyncDatabase } from '@powersync/node';
+  import * as readline from 'node:readline/promises';
+  import { stdin as input, stdout as output } from 'node:process';
+  import { AppSchema } from './AppSchema.js';
+  import { SupabaseConnector } from './SupabaseConnector.js';
+  
+  export const db = new PowerSyncDatabase({
+      schema: AppSchema,
+      database: {
+          dbFilename: 'powersync.db'
+      },
+  });
+  
+  const connector = new SupabaseConnector();
+  db.init();
+  connector.registerListener({
+      initialized: () => { },
+      sessionStarted: () => {
+          db.connect(connector);
+          console.log("status", db.currentStatus);
+      }
+  });
+  
+  connector.init()
+  
+  const readlineInstance = readline.createInterface({ input, output });
+  const isLogin = await readlineInstance.question('Is this a login? (y/n): ');
+  const email = await readlineInstance.question('Enter your email: ');
+  const password = await readlineInstance.question('Enter your password: ')
+  
+  if (isLogin.toLowerCase() === 'y') {
+    console.log('Logging in...');
+    await connector.login(email, password);
+  } else {
+    console.log('Creating a new account...');
+    const {
+        data: { session },
+        error
+    } = await connector.client.auth.signUp({
+        email,
+        password
+    });
+    
+    if (error) {
+        console.error('Error creating account:', error.message);
+        process.exit(1);
+    }
+    connector.updateSession(session);
+  }
+  
+  const todos = await db.execute(`SELECT * FROM todos`);
+  console.log('Todos:', todos.rows?._array);
+  ```
+
+  ```typescript src/index.ts [expandable]
+  import 'dotenv/config'
+  import { PowerSyncDatabase } from '@powersync/node';
+  import * as readline from 'node:readline/promises';
+  import { stdin as input, stdout as output } from 'node:process';
+  import { AppSchema } from './AppSchema.js';
+  import { SupabaseConnector } from './SupabaseConnector.js';
+  
+  export const db = new PowerSyncDatabase({
+      schema: AppSchema,
+      database: {
+          dbFilename: 'powersync.db'
+      },
+  });
+  
+  const connector = new SupabaseConnector();
+  db.init();
+  connector.registerListener({
+      initialized: () => { },
+      sessionStarted: () => {
+          db.connect(connector);
+          console.log("status", db.currentStatus);
+      }
+  });
+  
+  connector.init()
+  
+  const readlineInstance = readline.createInterface({ input, output });
+  const isLogin = await readlineInstance.question('Is this a login? (y/n): ');
+  const email = await readlineInstance.question('Enter your email: ');
+  const password = await readlineInstance.question('Enter your password: ')
+  
+  if (isLogin.toLowerCase() === 'y') {
+    console.log('Logging in...');
+    await connector.login(email, password);
+  } else {
+    console.log('Creating a new account...');
+    const {
+        data: { session },
+        error
+    } = await connector.client.auth.signUp({
+        email,
+        password
+    });
+    
+    if (error) {
+        console.error('Error creating account:', error.message);
+        process.exit(1);
+    }
+    connector.updateSession(session);
+  }
+  
+  const todos = await db.execute(`SELECT * FROM todos`);
+  console.log('Todos:', todos.rows?._array);
+  ```
+
+</CodeGroup>
+
+### Step 4 - Running the Application
+
+JavaScript users can run the application using Node.js directly:
+<CodeGroup>
+
+  ```shell javascript
+  node src/index.js
+  ```
+
+  ```shell typescript
+  node --loader ts-node/esm -r dotenv/config src/index.ts
+  ```
+
+</CodeGroup>
+
 This will start the app, initialize the database and connect to the PowerSync instance.
 
 <Warning>
-    Depending on what you set for `dbFilename`, the app start (and all is working correctly) three files will be created; `<dbFilename>.db`, `<dbFilename>.db-shm` and `<dbFilename>.db-wal`. You should exclude these from version control when creating the project so make sure to update your `.gitignore` accordingly.
+  Depending on what you set for `dbFilename`, the app start (and all is working correctly) three files will be created; `<dbFilename>.db`, `<dbFilename>.db-shm` and `<dbFilename>.db-wal`. You should exclude these from version control when creating the project so make sure to update your `.gitignore` accordingly.
 </Warning>

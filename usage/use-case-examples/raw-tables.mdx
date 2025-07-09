@@ -36,33 +36,207 @@ Currently the sync system involves two general steps:
 1. Download sync bucket operations from the PowerSync Service
 2. Once the client has a complete checkpoint and no local changes, sync the local database with the bucket operations
 
-The bucket operations use JSON to store the individual operation data. The local database uses tables with a simple schemaless `ps_data__<table_name>` structure.
+The bucket operations use JSON to store the individual operation data. The local database uses tables with a simple schemaless `ps_data__<table_name>` structure
+containing only an `id` (TEXT) and `data` (JSON) column.
 
-PowerSync then creates views on that table that extract JSON fields to resemble standard tables.
+PowerSync automatically creates views on that table that extract JSON fields to resemble standard tables reflecting your schema.
 
 ### Raw Tables Approach
 
-At a high level, raw tables consist of two components:
+When opting in to raw tables, you are responsible for creating the tables before using them - PowerSync will no longer
+create them automatically.
 
-1. **Schema definition** - Define the raw table in your schema with a table name used by the PowerSync Service so it knows to forward operations to your table instead of the default `ps_data__<table>`
+Because PowerSync takes no control over raw tables, you need to manually:
 
-2. **Custom SQL statements** - SQL statements to log updates in the upload queue:
+1. Tell PowerSync how to map the [schemaless protocol](/architecture/powersync-protocol#protocol) into your existing tables.
+2. Configure custom triggers to forward local writes to PowerSync.
 
-   **Upsert statement** - SQL statement to run for `PUT` operations, using prepared statement parameters that can reference the row ID or extract values from JSON data:
-   ```sql
-   todo simple example
-   ```
+For the purpose of this example, consider a simple table like this:
 
-   **Delete statement** - SQL statement to run for `REMOVE` operations:
-   ```sql
-   todo simple example
-   ```
+```sql
+CREATE TABLE todo_lists (
+   id TEXT NOT NULL PRIMARY KEY,
+   created_by TEXT NOT NULL,
+   title TEXT NOT NULL,
+   content TEXT
+) STRICT;
+```
 
-For details, see the implementation guide below.
+#### Syncing into raw tables
 
-## Implementation Guide
+To sync into the existing `todo_lists` table instead of `ps_data__`, PowerSync needs the SQL statements extracting
+columns from the untyped JSON protocol used during syncing.
+This involves specifying two SQL statements:
 
-todo
+1. A `put` SQL statement for upserts, responsible for creating a `todo_list` row or updating it based on its `id` and data columns.
+2. A `delete` SQL statement responsible for deletions.
+
+The PowerSync client as part of our SDKs will automatically run these statements in response to sync lines being sent from
+the PowerSync service.
+
+To reference the ID or extract values, prepared statements with parameters are used. `delete` statements can reference the id
+of the affected row, while `put` statements can also reference individual column values.
+Declaring these statements and parameters happens as part of the schema passed to PowerSync databases:
+
+<Tabs>
+
+<Tab title="JavaScript">
+Raw tables are not included in the regular schema object. Instead, add them afterwards using `withRawTables`.
+For each raw table, specify the `put` and `delete` statement. The values of parameters are described as a JSON
+array either containing:
+
+- the string `Id` to reference the id of the affected row.
+- the object `{ Column: name }` to reference the value of the column `name`.
+
+```JavaScript
+const mySchema = new Schema({});
+customSchema.withRawTables({
+  // The name here doesn't have to match the name of the table in SQL. Instead, it's used to match
+  // the table name from the backend database as sent by the PowerSync service.
+  todo_lists: {
+    put: {
+      sql: 'INSERT OR REPLACE INTO todo_lists (id, created_by, title, content) VALUES (?, ?, ?, ?)',
+      params: ['Id', { Column: 'created_by' }, { Column: 'title' }, { Column: 'content' }]
+    },
+    delete: {
+      sql: 'DELETE FROM lists WHERE id = ?',
+      params: ['Id']
+    }
+  }
+});
+```
+
+We will simplify this API after understanding the use-cases for raw tables better.
+</Tab>
+
+<Tab title="Dart">
+Raw tables are not part of the regular tables list and can be defined with the optional `rawTables` parameter.
+
+```dart
+final schema = Schema(const [], rawTables: const [
+  RawTable(
+    // The name here doesn't have to match the name of the table in SQL. Instead, it's used to match
+    // the table name from the backend database as sent by the PowerSync service.
+    name: 'todo_lists',
+    put: PendingStatement(
+      sql: 'INSERT OR REPLACE INTO todo_lists (id, created_by, title, content) VALUES (?, ?, ?, ?)',
+      params: [
+        PendingStatementValue.id(),
+        PendingStatementValue.column('created_by'),
+        PendingStatementValue.column('title'),
+        PendingStatementValue.column('content'),
+      ],
+    ),
+    delete: PendingStatement(
+      sql: 'DELETE FROM todo_lists WHERE id = ?',
+      params: [
+        PendingStatementValue.id(),
+      ],
+    ),
+  ),
+]);
+```
+</Tab>
+
+<Tab title="Kotlin">
+To define a raw table, include it in the list of tables passed to the `Schema`:
+
+```Kotlin
+val schema = Schema(listOf(
+   RawTable(
+      // The name here doesn't have to match the name of the table in SQL. Instead, it's used to match
+      // the table name from the backend database as sent by the PowerSync service.
+      name = "todo_lists",
+      put = PendingStatement(
+         "INSERT OR REPLACE INTO todo_lists (id, created_by, title, content) VALUES (?, ?, ?, ?)",
+         listOf(
+            PendingStatementParameter.Id,
+            PendingStatementParameter.Column("created_by"),
+            PendingStatementParameter.Column("title"),
+            PendingStatementParameter.Column("content")
+         )
+      ),
+      delete = PendingStatement(
+         "DELETE FROM todo_lists WHERE id = ?", listOf(PendingStatementParameter.Id)
+      )
+   )
+))
+```
+</Tab>
+
+<Tab title="Swift">
+Unfortunately, raw tables are not available in the Swift SDK yet.
+</Tab>
+
+<Tab title=".NET">
+Unfortunately, raw tables are not available in the .NET SDK yet.
+</Tab>
+
+</Tabs>
+
+After adding raw tables to the schema, you're also responsible for creating them by executing the
+corresponding `CREATE TABLE` statement before `connect()`-ing the database.
+
+<Warning>Also note that raw tables are only supported by the new Rust sync client, which is currently opt-in.</Warning>
+
+#### Collecting local writes on raw tables
+
+PowerSync uses an internal SQLite table to collect local writes. For PowerSync-managed views, a trigger for
+insertions, updates and deletions automatically forwards local writes into this table.
+When using raw tables, defining those triggers is your responsibility.
+
+The PowerSync SQLite extension creates an insert-only virtual table named `powersync_crud` with these columns:
+
+```SQL
+CREATE TABLE pwoersync_crud(
+   -- The type of operation: 'PUT' or 'DELETE'
+   op TEXT,
+   -- The id of the affected row
+   id TEXT,
+   type TEXT,
+   -- optional (not set on deletes): The column values for the row
+   data TEXT,
+   -- optional: Previous column values to include in a CRUD entry
+   old_values TEXT,
+   -- optional: Metadata for the write to include in a CRUD entry
+   metadata TEXT,
+);
+```
+
+The virtual table associates writes with the current transaction and ensures writes made during the sync
+process (applying server-side changes) don't count as local writes.
+This means that triggers can be defined on raw tables like so:
+
+```SQL
+CREATE TRIGGER todo_lists_insert
+   AFTER INSERT ON todo_lists
+   FOR EACH ROW
+   BEGIN
+      INSERT INTO powersync_crud (op, id, type, data) VALUES ('PUT', NEW.id, 'todo_lists', json_object(
+         'created_by', NEW.created_by,
+         'title', NEW.title,
+         'content', NEW.content
+      ));
+   END;
+
+CREATE TRIGGER todo_lists_update
+   AFTER INSERT ON todo_lists
+   FOR EACH ROW
+   BEGIN
+      INSERT INTO powersync_crud (op, id, type, data) VALUES ('PUT', NEW.id, 'todo_lists', json_object(
+         'created_by', NEW.created_by,
+         'title', NEW.title,
+         'content', NEW.content
+      ));
+   END;
+
+CREATE TRIGGER todo_lists_delete
+   AFTER DELETE ON todo_lists
+   FOR EACH ROW
+   BEGIN
+      INSERT INTO powersync_crud (op, id, type) VALUES ('DELETE', OLD.id, 'todo_lists');
+   END;
+```
 
 ## Support and Feedback
 

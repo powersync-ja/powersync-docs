@@ -1,0 +1,367 @@
+---
+title: "Live Queries / Watch Queries"
+description: "Subscribe to real-time data changes with reactive live queries"
+---
+
+Live queries, also known as watch queries, are essential for building reactive apps where the UI automatically updates when the underlying data changes. PowerSync's watch functionality allows you to subscribe to SQL query results and receive updates whenever the dependent tables are modified.
+
+## Overview
+
+PowerSync provides three types of watch queries. All methods internally query SQLite whenever dependent tables change, but they expose results differently:
+
+- **`db.watch()`** - The original API that returns raw query results as new Array of objects every time
+- **`db.query().watch()`** - Smart stateful representation with result comparison. Only exposes results when changes are detected  
+- **`db.query().differentialWatch()`** - Advanced diffing that tracks individual items and preserves object references. Perfect for React and provides detailed change information
+
+<Info>
+**JavaScript Only**: The `db.query()` watch methods are currently available only in JavaScript SDKs.
+</Info> 
+
+## Basic Watch Queries
+
+Here are examples of how to use basic watch queries across different PowerSync client SDKs:
+
+<CodeGroup>
+
+```javascript JavaScript/Web
+// Watch changes to the lists table
+const abortController = new AbortController();
+
+export const function watchLists = (onUpdate) => {
+  for await (const update of db.watch(
+    'SELECT * from lists',
+    [],
+    { signal: abortController.signal }
+  )
+  ) {
+    onUpdate(update);
+  }
+}
+```
+
+```javascript React Native
+// Using AsyncIterable pattern for watching data changes
+async *todoIds(): AsyncIterable<string[]> {
+  for await (const result of db.watch(
+    `SELECT id FROM todos WHERE list_id = ? AND completed = ?`,
+    [listId, false]
+  )) {
+    yield result.rows?._array.map((r) => r.id) ?? [];
+  }
+}
+
+// Using callback pattern for watching data changes (SDK v1.3.3+)
+todoIds(onResult: (ids: string[]) => void): void {
+  db.watch(
+    `SELECT id FROM todos WHERE list_id = ? AND completed = ?`,
+    [listId, false],
+    {
+      onResult: (result) => {
+        onResult(result.rows?._array.map((r) => r.id) ?? []);
+      }
+    }
+  );
+}
+```
+
+```dart Flutter/Dart
+import 'package:flutter/material.dart';
+
+class TodosWidget extends StatelessWidget {
+  const TodosWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder(
+      // You can watch any SQL query
+      stream: db.watch('SELECT * FROM todos WHERE list_id = ? ORDER BY id ASC', [listId]),
+      builder: (context, snapshot) {
+        if (snapshot.hasData) {
+          // TODO: implement your own UI here based on the result set
+          return ...;
+        } else {
+          return const Center(child: CircularProgressIndicator());
+        }
+      },
+    );
+  }
+}
+```
+
+```kotlin Kotlin Multiplatform
+// You can watch any SQL query
+fun watchTodos(): Flow<List<Todo>> {
+    // TODO: implement your UI based on the result set
+    return database.watch("SELECT * FROM todos WHERE list_id = ?", listId, mapper = { cursor ->
+        Todo(
+            id = cursor.getString("id"),
+            description = cursor.getString("description"),
+            completed = cursor.getBoolean("completed")
+        )
+    })
+}
+```
+
+```swift Swift
+// Watch for changes to the lists table
+func watchLists(_ callback: @escaping (_ lists: [ListContent]) -> Void ) async {
+    do {
+        for try await lists in try self.db.watch<ListContent>(
+            sql: "SELECT * FROM \(LISTS_TABLE)",
+            parameters: [],
+            mapper: { cursor in
+                try ListContent(
+                    id: cursor.getString(name: "id"),
+                    name: cursor.getString(name: "name"),
+                    createdAt: cursor.getString(name: "created_at"),
+                    ownerId: cursor.getString(name: "owner_id")
+                )
+            }
+        ) {
+            callback(lists)
+        }
+    } catch {
+        print("Error in watch: \(error)")
+    }
+}
+```
+
+```csharp C#/.NET
+// Use db.Watch() to watch queries for changes:
+await db.Watch("SELECT * FROM lists", null, new WatchHandler<ListResult>
+{
+  OnResult = (results) =>
+  {
+      Console.WriteLine("Results: ");
+      foreach (var result in results)
+      {
+          Console.WriteLine(result.id + ":" + result.name);
+      }
+  },
+  OnError = (error) =>
+  {
+      Console.WriteLine("Error: " + error.Message);
+  }
+});
+```
+
+</CodeGroup>
+
+
+## Incremental Watch Queries
+
+Incremental watch queries solve the performance problems of basic watch queries by implementing intelligent change detection and granular updates.
+
+<Info>
+**JavaScript Only**: Incremental watch queries are currently available only in the JavaScript SDKs. 
+</Info>
+
+### The WatchedQuery Class
+
+All incremental queries use the new `WatchedQuery` class, which provides advanced features:
+
+- Automatically reprocesses itself if the PowerSync schema has been updated with updateSchema
+- Automatically closes itself when the PowerSync client has been closed.
+- Allows for the query parameters to be updated after instantiation.
+- Allows shared listening to state changes.
+
+
+### 1. Comparison Watch Queries
+
+Comparison based queries behave similar to basic watched queries. These queries still query the SQLite DB under the hood on each dependant table change, but they compare the result set and only incrementally yield results if a change has been made. The latest query result is yielded as the result set.
+
+`db.query().watch()` method
+
+```javascript
+// Comparison-based watch query - exits early when change detected
+const query = db.query({
+  sql: 'SELECT * FROM todos WHERE completed = ?',
+  parameters: [false]
+}).watch();
+
+// The registerListener method can be used multiple times to listen for updates
+const dispose = query.registerListener({
+  onData: (data) => {
+    // This callback will be called whenever the data changes
+    console.log('Data updated:', data);
+  },
+  onStateChange: (state) => {
+    // This callback will be called whenever the state changes
+    // The state contains metadata about the query, such as isFetching, isLoading, etc.
+    console.log('State changed:', state.error, state.isFetching, state.isLoading, state.data);
+  },
+  onError: (error) => {
+    // This callback will be called if the query fails
+    console.error('Query error:', error);
+  }
+});
+```
+
+### 2. Differential Watch Queries
+
+Differential queries watch a SQL query and report detailed information on the changes between result sets. This gives additional information such as the added, removed, updated rows between result set changes.
+
+`db.query().differentialWatch()` method
+
+```javascript
+// Create an instance of a WatchedQuery
+const listsQuery = db
+  .query({
+    sql: `
+      SELECT
+        lists.*,
+        COUNT(todos.id) AS total_tasks,
+        SUM(
+          CASE
+            WHEN todos.completed = true THEN 1
+            ELSE 0
+          END
+        ) as completed_tasks
+      FROM
+        lists
+        LEFT JOIN todos ON lists.id = todos.list_id
+      GROUP BY
+        lists.id;
+    `
+  })
+  .differentialWatch();
+
+// The registerListener method can be used multiple times to listen for updates
+// The returned dispose function can be used to unsubscribe from the updates
+const disposeSubscriber = listsQuery.registerListener({
+  onData: (data) => {
+    // This callback will be called whenever the data changes
+    // The data is the result of the executor
+    console.log('Data updated:', data);
+  },
+  onStateChange: (state) => {
+    // This callback will be called whenever the state changes
+    // The state contains metadata about the query, such as isFetching, isLoading, etc.
+    console.log(
+      'State changed:', 
+      state.error, 
+      state.isFetching, 
+      state.isLoading, 
+      state.data
+    );
+  },
+  onError: (error) => {
+    // This callback will be called if the query fails
+    console.error('Query error:', error);
+  }
+});
+```
+
+**Custom Differentiator Logic:**
+
+```javascript
+// The incremental logic is customizable with custom diff logic
+const watch = db
+  .query({
+    sql: `
+      SELECT
+        *
+      FROM
+        todos
+    `,
+    mapper: (raw) => {
+      return {
+        id: raw.id as string,
+        description: raw.description as string
+      };
+    }
+  })
+  .differentialWatch({
+    differentiator: {
+      identify: (item) => item.id,
+      compareBy: (item) => JSON.stringify(item)
+    }
+  });
+```
+
+### Advanced Features
+
+**Custom Differentiator Logic:**
+
+The incremental logic is customizable with custom diff logic:
+
+```javascript
+const watch = db
+  .query({
+    sql: 'SELECT * FROM todos',
+    mapper: (raw) => ({
+      id: raw.id as string,
+      description: raw.description as string
+    })
+  })
+  .differentialWatch({
+    differentiator: {
+      identify: (item) => item.id,
+      compareBy: (item) => JSON.stringify(item)
+    }
+  });
+```
+
+### Query Sharing
+
+`WatchedQuery` instances can be shared across components:
+
+```javascript
+// Create a shared query instance 
+const sharedTodosQuery = db
+  .query({ sql: 'SELECT * FROM todos WHERE list_id = ?', parameters: [listId] })
+  .watch();
+
+// Multiple components can listen to the same query
+const dispose1 = sharedTodosQuery.registerListener({ 
+  onData: (data) => updateTodosList(data) 
+});
+
+const dispose2 = sharedTodosQuery.registerListener({ 
+  onData: (data) => updateTodosCount(data.length) 
+});
+```
+
+### Dynamic Parameter Updates
+
+Update query parameters to affect all subscribers:
+
+```javascript
+// Updates to query parameters can be performed in a single place, affecting all subscribers
+watch.updateSettings({
+  query: new GetAllQuery({ sql: `SELECT * FROM todos OFFSET ? LIMIT 100`, parameters: [newOffset] })
+});
+```
+
+### Performance
+
+Incremental watch queries improve rendering performance:
+- benchmarks show that incremental updates with differential queries coupled with React memoization render 60-80% faster
+- incremental updates only render the newly added item widgets, while the standard query methods re-render the entire widget
+
+
+### React Integration
+
+Use with React hooks:
+
+```javascript
+import { useQuery } from '@powersync/react';
+
+function TodosList() {
+  const { data: todos, isLoading, error } = useQuery(
+    'SELECT * FROM todos WHERE completed = ?',
+    [false]
+  );
+
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+
+  return (
+    <div>
+      {todos.map(todo => (
+        <TodoItem key={todo.id} todo={todo} />
+      ))}
+    </div>
+  );
+}
+```

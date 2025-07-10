@@ -8,13 +8,17 @@ sidebarTitle: "Raw SQLite Tables"
 Raw tables are an experimental feature for the purpose of getting feedback from users and refining the APIs.
 </Warning>
 
-Raw tables allow you to define native SQLite tables in the client-side schema, bypassing PowerSync's default [JSON-based view system](/architecture/client-architecture#schema). This eliminates overhead associated with extracting values from the JSON data and provides access to advanced SQLite features like foreign key constraints and custom indexes.
+By default, PowerSync uses a [JSON-based view system](/architecture/client-architecture#schema). Raw tables allow you to define native SQLite tables in the client-side schema, bypassing this.
+
+This eliminates overhead associated with extracting values from the JSON data and provides access to advanced SQLite features like foreign key constraints and custom indexes.
 
 <Note>
 *Availability**
 
 Raw tables were introduced in the following versions of our client SDKs:
 - TODO
+
+Also note that raw tables are only supported by the new [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks), which is currently opt-in.
 </Note>
 
 ## When to Use Raw Tables
@@ -34,21 +38,19 @@ Consider raw tables when you need:
 Currently the sync system involves two general steps:
 
 1. Download sync bucket operations from the PowerSync Service
-2. Once the client has a complete checkpoint and no local changes, sync the local database with the bucket operations
+2. Once the client has a complete checkpoint and no pending local changes in the upload queue, sync the local database with the bucket operations
 
-The bucket operations use JSON to store the individual operation data. The local database uses tables with a simple schemaless `ps_data__<table_name>` structure
-containing only an `id` (TEXT) and `data` (JSON) column.
+The bucket operations use JSON to store the individual operation data. The local database uses tables with a simple schemaless `ps_data__<table_name>` structure containing only an `id` (TEXT) and `data` (JSON) column.
 
 PowerSync automatically creates views on that table that extract JSON fields to resemble standard tables reflecting your schema.
 
 ### Raw Tables Approach
 
-When opting in to raw tables, you are responsible for creating the tables before using them - PowerSync will no longer
-create them automatically.
+When opting in to raw tables, you are responsible for creating the tables before using them - PowerSync will no longer create them automatically.
 
 Because PowerSync takes no control over raw tables, you need to manually:
 
-1. Tell PowerSync how to map the [schemaless protocol](/architecture/powersync-protocol#protocol) into your existing tables.
+1. Tell PowerSync how to map the [schemaless protocol](/architecture/powersync-protocol#protocol) to your raw tables when syncing data.
 2. Configure custom triggers to forward local writes to PowerSync.
 
 For the purpose of this example, consider a simple table like this:
@@ -64,24 +66,22 @@ CREATE TABLE todo_lists (
 
 #### Syncing into raw tables
 
-To sync into the existing `todo_lists` table instead of `ps_data__`, PowerSync needs the SQL statements extracting
+To sync into the raw `todo_lists` table instead of `ps_data__`, PowerSync needs the SQL statements extracting
 columns from the untyped JSON protocol used during syncing.
 This involves specifying two SQL statements:
 
 1. A `put` SQL statement for upserts, responsible for creating a `todo_list` row or updating it based on its `id` and data columns.
 2. A `delete` SQL statement responsible for deletions.
 
-The PowerSync client as part of our SDKs will automatically run these statements in response to sync lines being sent from
-the PowerSync service.
+The PowerSync client as part of our SDKs will automatically run these statements in response to sync lines being sent from the PowerSync Service.
 
-To reference the ID or extract values, prepared statements with parameters are used. `delete` statements can reference the id
-of the affected row, while `put` statements can also reference individual column values.
+To reference the ID or extract values, prepared statements with parameters are used. `delete` statements can reference the id of the affected row, while `put` statements can also reference individual column values.
 Declaring these statements and parameters happens as part of the schema passed to PowerSync databases:
 
 <Tabs>
 
 <Tab title="JavaScript">
-Raw tables are not included in the regular schema object. Instead, add them afterwards using `withRawTables`.
+Raw tables are not included in the regular `Schema()` object. Instead, add them afterwards using `withRawTables`.
 For each raw table, specify the `put` and `delete` statement. The values of parameters are described as a JSON
 array either containing:
 
@@ -89,7 +89,10 @@ array either containing:
 - the object `{ Column: name }` to reference the value of the column `name`.
 
 ```JavaScript
-const mySchema = new Schema({});
+const mySchema = new Schema({
+   // Define your PowerSync-managed schema here
+   // ...
+});
 mySchema.withRawTables({
   // The name here doesn't have to match the name of the table in SQL. Instead, it's used to match
   // the table name from the backend database as sent by the PowerSync service.
@@ -177,15 +180,13 @@ Unfortunately, raw tables are not available in the .NET SDK yet.
 After adding raw tables to the schema, you're also responsible for creating them by executing the
 corresponding `CREATE TABLE` statement before `connect()`-ing the database.
 
-<Warning>Also note that raw tables are only supported by the new Rust sync client, which is currently opt-in.</Warning>
-
 #### Collecting local writes on raw tables
 
 PowerSync uses an internal SQLite table to collect local writes. For PowerSync-managed views, a trigger for
 insertions, updates and deletions automatically forwards local writes into this table.
 When using raw tables, defining those triggers is your responsibility.
 
-The PowerSync SQLite extension creates an insert-only virtual table named `powersync_crud` with these columns:
+The [PowerSync SQLite extension](https://github.com/powersync-ja/powersync-sqlite-core) creates an insert-only virtual table named `powersync_crud` with these columns:
 
 ```SQL
 CREATE VIRTUAL TABLE powersync_crud(

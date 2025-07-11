@@ -89,37 +89,38 @@ class TodosWidget extends StatelessWidget {
 ```
 
 ```kotlin Kotlin Multiplatform
-// You can watch any SQL query
-fun watchTodos(): Flow<List<Todo>> {
-    // TODO: implement your UI based on the result set
-    return database.watch("SELECT * FROM todos WHERE list_id = ?", listId, mapper = { cursor ->
+// Watch for changes to the todos table
+fun watchTodos(): Flow<List<Todo>> =
+    database.watch(
+        "SELECT * FROM todos WHERE list_id = ?",
+        listOf(listId),
+    ) { cursor ->
         Todo(
             id = cursor.getString("id"),
             description = cursor.getString("description"),
-            completed = cursor.getBoolean("completed")
+            completed = cursor.getBoolean("completed"),
         )
-    })
-}
+    }
 ```
 
 ```swift Swift
 // Watch for changes to the lists table
 func watchLists(_ callback: @escaping (_ lists: [ListContent]) -> Void ) async {
     do {
-        for try await lists in try self.db.watch<ListContent>(
-            sql: "SELECT * FROM \(LISTS_TABLE)",
-            parameters: [],
-            mapper: { cursor in
-                try ListContent(
-                    id: cursor.getString(name: "id"),
-                    name: cursor.getString(name: "name"),
-                    createdAt: cursor.getString(name: "created_at"),
-                    ownerId: cursor.getString(name: "owner_id")
-                )
-            }
-        ) {
-            callback(lists)
-        }
+        // Actually consume the stream to trigger the error
+      for try await result in try database.watch(
+          sql: "SELECT * FROM lists",
+          parameters: [],
+      ) { cursor in
+          try ListContent(
+              id: cursor.getString(name: "id"),
+              name: cursor.getString(name: "name"),
+              createdAt: cursor.getString(name: "created_at"),
+              ownerId: cursor.getString(name: "owner_id")
+          )
+      } {
+          // process result here
+      }
     } catch {
         print("Error in watch: \(error)")
     }
@@ -127,7 +128,7 @@ func watchLists(_ callback: @escaping (_ lists: [ListContent]) -> Void ) async {
 ```
 
 ```csharp C#/.NET
-// Use db.Watch() to watch queries for changes:
+// Watch for changes to the lists table
 await db.Watch("SELECT * FROM lists", null, new WatchHandler<ListResult>
 {
   OnResult = (results) =>

@@ -26,7 +26,7 @@ Also note that raw tables are only supported by the new [Rust-based sync client]
 Consider raw tables when you need:
 
 - **Advanced SQLite features** like `FOREIGN KEY` and `ON DELETE CASCADE` constraints
-- **Indexes** - PowerSync's default schema has limited support for indexes (todo: elaborate), while raw tables give you complete control to create indexes on expressions, use `GENERATED` columns, etc
+- **Indexes** - PowerSync's default schema has basic support for indexes on columns, while raw tables give you complete control to create indexes on expressions, use `GENERATED` columns, etc
 - **Improved performance** for complex queries (e.g., `SELECT SUM(value) FROM transactions`) - raw tables more efficiently get these values directly from the SQLite column, instead of extracting the value from the JSON object on every row
 - **Reduced storage overhead** - eliminate JSON object overhead for each row in `ps_data__<table>.data` column
 - **To manually create tables** - Sometimes you need full control over table creation, for example when implementing custom triggers
@@ -183,7 +183,7 @@ corresponding `CREATE TABLE` statement before `connect()`-ing the database.
 #### Collecting local writes on raw tables
 
 PowerSync uses an internal SQLite table to collect local writes. For PowerSync-managed views, a trigger for
-insertions, updates and deletions automatically forwards local writes into this table.
+insertions, updates and deletions automatically forwards local mutations into this table.
 When using raw tables, defining those triggers is your responsibility.
 
 The [PowerSync SQLite extension](https://github.com/powersync-ja/powersync-sqlite-core) creates an insert-only virtual table named `powersync_crud` with these columns:
@@ -204,7 +204,7 @@ CREATE VIRTUAL TABLE powersync_crud(
 );
 ```
 
-The virtual table associates writes with the current transaction and ensures writes made during the sync
+The virtual table associates local mutations with the current transaction and ensures writes made during the sync
 process (applying server-side changes) don't count as local writes.
 This means that triggers can be defined on raw tables like so:
 
@@ -238,6 +238,9 @@ CREATE TRIGGER todo_lists_delete
       INSERT INTO powersync_crud (op, id, type) VALUES ('DELETE', OLD.id, 'todo_lists');
    END;
 ```
+## Migrations
+
+In PowerSync's [JSON-based view system](/architecture/client-architecture#schema) the client-side schema is applied to the schemaless data, meaning no migrations are required. Raw tables however are excluded from this, so it is the developers responsibility to manage migrations for these tables.
 
 ## Support and Feedback
 

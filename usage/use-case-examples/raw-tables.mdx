@@ -246,3 +246,43 @@ CREATE TRIGGER todo_lists_delete
 ## Migrations
 
 In PowerSync's [JSON-based view system](/architecture/client-architecture#schema) the client-side schema is applied to the schemaless data, meaning no migrations are required. Raw tables however are excluded from this, so it is the developers responsibility to manage migrations for these tables.
+
+### Adding raw tables as a new table
+
+When you're adding new tables to your sync rules, clients will start to sync data on those tables - even if the tables aren't mentioned
+in the client's schema yet.
+So at the time you're introducing a new raw table to your app, it's possible that PowerSync has already synced some data for that
+table, which would be stored in `ps_untyped`. When adding regular tables, PowerSync will automatically extract rows from `ps_untyped`.
+With raw tables, that step is your responsibility. To copy data, run these statements in a transaction after creating the table:
+
+```
+INSERT INTO my_table (id, my_column, ...)
+   SELECT id, data ->> 'my_column' FROM ps_untyped WHERE type = 'my_table';
+DELETE FROM ps_untyped WHERE type = 'my_table';
+```
+
+This does not apply if you've been using the raw table from the beginning (and never called `connect()` without them) - you only
+need this for raw tables you already had locally.
+
+Another workaround is to clear PowerSync data when changing raw tables and opt for a full resync.
+
+### Migrating to raw tables
+
+To migrate from PowerSync-managed tables to raw tables, first:
+
+1. Open the database with the new schema mentioning raw tables. PowerSync will copy data from tables previously managed by PowerSync into
+   `ps_untyped`.
+2. Create raw tables.
+3. Run the `INSERT FROM SELECT` statement to insert `ps_untyped` data into your raw tables.
+
+### Migrations on raw tables
+
+When adding new columns to raw tables, there currently isn't a way to re-sync that table to add those columns from the server - we are
+investigating possible workarounds and encourage users to try out if they need this.
+
+To ensure the column values are accurate, you'd have to delete all data after a migration and wait for the next complete sync.
+
+## Deleting data and raw tables
+
+APIs that clear an entire PowerSync database, like e.g. `disconnectAndClear()`, don't affect raw tables.
+This should be kept in mind when you're using those methods - data from raw tables needs to be deleted explicitly.

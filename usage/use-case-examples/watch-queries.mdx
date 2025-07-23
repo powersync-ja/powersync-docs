@@ -1,6 +1,6 @@
 ---
 title: "Live Queries / Watch Queries"
-description: "Subscribe to real-time data changes with reactive live queries"
+description: "Subscribe to real-time data changes with reactive watch queries"
 ---
 
 Live queries, also known as watch queries, are essential for building reactive apps where the UI automatically updates when the underlying data changes. PowerSync's watch functionality allows you to subscribe to SQL query results and receive updates whenever the dependent tables are modified.
@@ -12,7 +12,7 @@ Live queries, also known as watch queries, are essential for building reactive a
 PowerSync provides multiple approaches to watching queries, each designed for different use cases and performance requirements:
 
 1. **Basic Watch Queries** - These queries work across all SDKs, providing real-time updates when dependent tables change
-2. **Comparison Watch Queries** - Only emit updates when data actually changes, preventing unnecessary re-renders
+2. **Incremental Watch Queries** - Only emit updates when data actually changes, preventing unnecessary re-renders
 3. **Differential Watch Queries** - Provide detailed information about what specifically changed between result sets
 
 Choose the approach that best fits your platform and performance needs.
@@ -95,50 +95,99 @@ const { data: pendingLists, isLoading, isFetching, error } = useQuery(
 </Tab>
 <Tab title="Dart/Flutter">
 
-todo
+```dart
+StreamBuilder(
+  stream: db.watch('SELECT * FROM lists WHERE state = ?', ['pending']),
+  builder: (context, snapshot) {
+    if (snapshot.hasData) {
+      // TODO: implement your own UI here based on the result set
+      return ...;
+    } else {
+      return const Center(child: CircularProgressIndicator());
+    }
+  },
+)
+```
 
 </Tab>
 <Tab title="Kotlin">
 
-todo
+```kotlin
+fun watchPendingLists(): Flow<List<ListItem>> =
+    db.watch(
+        "SELECT * FROM lists WHERE state = ?",
+        listOf("pending"),
+    ) { cursor ->
+        ListItem(
+            id = cursor.getString("id"),
+            name = cursor.getString("name"),
+        )
+    }    
+```
 
 </Tab>
 <Tab title="Swift">
 
-todo
+```swift
+func watchPendingLists(_ callback: @escaping (_ lists: [ListContent]) -> Void ) async {
+    do {
+        for try await result in try db.watch(
+            sql: "SELECT * FROM lists WHERE state = ?",
+            parameters: ["pending"],
+        ) { cursor in
+            try ListContent(
+                id: cursor.getString(name: "id"),
+                name: cursor.getString(name: "name")
+            )
+        } {
+            callback(result)
+        }
+    } catch {
+        print("Error in watch: \(error)")
+    }
+}
+```
 
 </Tab>
 <Tab title=".NET">
 
-todo
+```csharp
+await db.Watch("SELECT * FROM lists WHERE state = ?", new[] { "pending" }, new WatchHandler<ListResult>
+{
+  OnResult = (results) =>
+  {
+      Console.WriteLine("Pending Lists: ");
+      foreach (var result in results)
+      {
+          Console.WriteLine($"{result.id}: {result.name}");
+      }
+  },
+  OnError = (error) =>
+  {
+      Console.WriteLine("Error: " + error.Message);
+  }
+});
+```
 
 </Tab>
 </Tabs>
 
-# JavaScript SDKs: Incremental Watch Queries
 
-Basic watch queries can cause performance issues in UI frameworks like React because they return new arrays and objects on every dependent table change, even when the actual data hasn't changed. This can lead to excessive re-renders as components receive new props unnecessarily.
+# Incremental Watch Queries
 
-Incremental watch queries address this problem by comparing result sets using configurable comparators and only emitting updates when the comparison detects actual data changes. Differential watch queries additionally preserve object references for unchanged items and provide detailed diff information (added/removed/updated items) to enable granular UI updates.
+Basic watch queries can cause performance issues in UI frameworks like React because they return new data on every dependent table change, even when the actual data hasn't changed. This can lead to excessive re-renders as components receive new props unnecessarily.
+
+Incremental watch queries solve this by comparing result sets using configurable comparators and only emitting updates when the comparison detects actual data changes. These queries still query the SQLite DB under the hood on each dependent table change, but compare the result set and only yield results if a change has been made.
+
+Syntax:
+
+```javascript
+db.watch('SELECT * FROM lists WHERE state = ?', ['pending'], { comparator: { ... } })
+```
 
 <Info>
-**JavaScript Only**: Incremental watch queries are currently available only in the JavaScript SDKs. 
+**JavaScript Only**: Incremental and differential watch queries are currently available only in the JavaScript SDKs. 
 </Info>
-
-## The `WatchedQuery` Class
-
-All incremental queries use the new `WatchedQuery` class 
-- The logic required for incrementally watched queries requires additional computation and introduces additional complexity to the implementation. For these reasons a new concept of a `WatchedQuery` class is introduced, along with a new `query` method allows building a instances of `WatchedQuery`s via `watch` and `differentialWatch` methods.
-- New `updateSettings` API, see below.
-
-Provides advanced features:
-- Automatically reprocesses itself if the PowerSync schema has been updated with `updateSchema`.
-- Automatically closes itself when the PowerSync client has been closed.
-- Allows for the query parameters to be updated after instantiation.
-- Allows shared listening to state changes.
-
-## 1. Comparison Watch Queries
-Comparison based queries behave similar to basic watched queries. These queries still query the SQLite DB under the hood on each dependant table change, but they compare the result set and only incrementally yield results if a change has been made. The latest query result is yielded as the result set.
 
 <Tabs>
 <Tab title="Existing AsyncIterator Approach">
@@ -147,7 +196,7 @@ Existing AsyncIterator API with configurable comparator that compares current an
 
 ```javascript
 async function* pendingLists(): AsyncIterable<string[]> {
-  for await (const result of powerSync.watch('SELECT * FROM lists WHERE state = ?', ['pending'], {
+  for await (const result of db.watch('SELECT * FROM lists WHERE state = ?', ['pending'], {
     comparator: {
       checkEquality: (current, previous) => JSON.stringify(current) === JSON.stringify(previous)
     }
@@ -164,7 +213,7 @@ Existing Callback API with configurable comparator that compares result sets and
 
 ```javascript
 const pendingLists = (onResult: (lists: any[]) => void): void => {
-  powerSync.watch(
+  db.watch(
     'SELECT * FROM lists WHERE state = ?',
     ['pending'],
     {
@@ -221,7 +270,7 @@ WatchedQuery class with configurable comparator that compares result sets before
 
 ```javascript
 // Create an instance of a WatchedQuery
-const pendingLists = powerSync.query({
+const pendingLists = db.query({
   sql: 'SELECT * FROM lists WHERE state = ?',
   parameters: ['pending'],
 }).watch({
@@ -278,14 +327,21 @@ const { data: lists } = useSuspenseQuery(
 
 - todo recommendation from Steven: Efficiently using React Memoization for the widgets. This one is a bit indirect, but the incrementally watched queries have much less benefit without this.
 
-## 2. Differential Watch Queries
-Differential queries watch a SQL query and report detailed information on the changes between result sets. This gives additional information such as the added, removed, updated rows between result set changes.
+# Differential Watch Queries
 
-Computes and reports precise diffs between result sets (added/removed/updated items) while preserving object references for unchanged items, enabling more granular UI updates. Use differential watch when you need to update only specific list items, implement optimistic UI updates, or minimize DOM manipulation by knowing exactly which items changed:
+Differential queries go a step further than incremental watched queries by computing and reporting diffs between result sets (added/removed/updated items) while preserving object references for unchanged items. This enables more precise UI updates.
+
+Syntax:
+
+```javascript
+db.query({ sql: 'SELECT * FROM lists WHERE state = ?', parameters: ['pending'] }).differentialWatch()
+```
+
+Use differential watch when you need to know exactly which items were added, removed, or updated rather than re-processing entire result sets:
 
 ```javascript
 // Create an instance of a WatchedQuery
-const pendingLists = powerSync.query({
+const pendingLists = db.query({
   sql: 'SELECT * FROM lists WHERE state = ?',
   parameters: ['pending']
 }).differentialWatch();
@@ -314,13 +370,30 @@ const dispose = pendingLists.registerListener({
 
 todo recommendation from Steven: document optimisations for the differentiator methods. This depends on the table and query structure.
 
-<Note>
-- See a demo of the differential stuff in the updated YJS demo app
-    - Document updates are watched via a differential incremental query. New updates are passed to YJS for consolidation as they are synced.
-</Note>
+<Tip>
+The [Yjs Document Collaboration Demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/yjs-react-supabase-text-collab) showcases the use of differential watch queries. New document updates are passed to Yjs for consolidation as they are synced.
+- todo: link to main relevant code in app or explain key bits briefly.
+</Tip>
 
-### Query Sharing
+# The `WatchedQuery` Class
+
+Both incremental and differential queries use the new `WatchedQuery` class. This class, along with a new `query` method allows building instances of `WatchedQuery`s via the `watch` and `differentialWatch` methods: 
+
+```javascript
+const watchedQuery = db.query({ sql: 'SELECT * FROM lists', parameters: [] }).watch()
+```
+
+This class provides advanced features:
+- Automatically reprocesses itself if the PowerSync schema has been updated with `updateSchema`.
+- Automatically closes itself when the PowerSync client has been closed.
+- Allows for the query parameters to be updated after instantiation.
+- Allows shared listening to state changes.
+- New `updateSettings` API for dynamic parameter updates (see below).
+
+## Query Sharing
+
 `WatchedQuery` instances can be shared across components:
+
 ```javascript
 // Create a shared query instance 
 const sharedTodosQuery = db
@@ -337,7 +410,18 @@ const dispose2 = sharedTodosQuery.registerListener({
 });
 ```
 
-### React Hook for External WatchedQuery Instances
+## Dynamic Parameter Updates
+
+Update query parameters to affect all subscribers of the query:
+
+```javascript
+// Updates to query parameters can be performed in a single place, affecting all subscribers
+watch.updateSettings({
+  query: new GetAllQuery({ sql: `SELECT * FROM todos OFFSET ? LIMIT 100`, parameters: [newOffset] })
+});
+```
+
+## React Hook for External WatchedQuery Instances
 
 When you need to share query instances across components or manage their lifecycle independently from component mounting, use the `useWatchedQuerySubscription` hook. This is ideal for global state management, query caching, or when multiple components need to subscribe to the same data:
 
@@ -361,11 +445,3 @@ export const MyComponent = () => {
 }
 ```
 
-### Dynamic Parameter Updates
-Update query parameters to affect all subscribers:
-```javascript
-// Updates to query parameters can be performed in a single place, affecting all subscribers
-watch.updateSettings({
-  query: new GetAllQuery({ sql: `SELECT * FROM todos OFFSET ? LIMIT 100`, parameters: [newOffset] })
-});
-```

@@ -229,7 +229,7 @@ const pendingLists = db
 </Tab>
 <Tab title="React useQuery">
 
-React hook that uses comparators to detect changes at the item level, only triggering re-renders when individual items are added, removed, or modified. Use this when you want built-in state management plus incremental updates for React components:
+React hook that uses comparators to detect changes at the row level, only triggering re-renders when individual items are added, removed, or modified. Use this when you want built-in state management plus incremental updates for React components:
 
 ```javascript
 const {
@@ -238,7 +238,7 @@ const {
   isFetching,
   error
 } = useQuery('SELECT * FROM lists WHERE state = ?', ['pending'], {
-  comparator: {
+  rowComparator: {
     keyBy: (item) => item.id,
     compareBy: (item) => JSON.stringify(item)
   }
@@ -248,11 +248,11 @@ const {
 </Tab>
 <Tab title="React useSuspenseQuery">
 
-React Suspense hook that preserves object references for unchanged items and uses item-level comparators to minimize re-renders. Use this when you want concurrent React features, automatic state handling, and memoization-friendly object stability:
+React Suspense hook that preserves object references for unchanged items and uses row-level comparators to minimize re-renders. Use this when you want concurrent React features, automatic state handling, and memoization-friendly object stability:
 
 ```javascript
 const { data: lists } = useSuspenseQuery('SELECT * FROM lists WHERE state = ?', ['pending'], {
-  comparator: {
+  rowComparator: {
     keyBy: (item) => item.id,
     compareBy: (item) => JSON.stringify(item)
   }
@@ -262,11 +262,11 @@ const { data: lists } = useSuspenseQuery('SELECT * FROM lists WHERE state = ?', 
 </Tab>
 
 <Tab title="React Memoization">
-Providing a `comparator` to the React hooks ensures that components only re-render when the query result actually changes. When combined with React memoization (e.g., `React.memo`) on row components that receive query row objects as props, this approach prevents unnecessary updates at the individual row component level, resulting in more efficient UI rendering.
+Providing a `rowComparator` to the React hooks ensures that components only re-render when the query result actually changes. When combined with React memoization (e.g., `React.memo`) on row components that receive query row objects as props, this approach prevents unnecessary updates at the individual row component level, resulting in more efficient UI rendering.
 
 ```jsx
 const TodoListsWidget = () => {
-  const { data: lists } = useQuery('[SQL]', [...parameters], { comparator: DEFAULT_COMPARATOR });
+  const { data: lists } = useQuery('[SQL]', [...parameters], { rowComparator: DEFAULT_ROW_COMPARATOR });
 
   return (
     <Box>
@@ -332,9 +332,9 @@ const dispose = pendingLists.registerListener({
 });
 ```
 
-By default, the `differentialWatch()` method uses a `DEFAULT_COMPARATOR`. This comparator identifies (keys) each row by its `id` column if present, or otherwise by the JSON string of the entire row. For row comparison, it uses the JSON string representation of the full row. This approach is generally safe and effective for most queries.
+By default, the `differentialWatch()` method uses a `DEFAULT_ROW_COMPARATOR`. This comparator identifies (keys) each row by its `id` column if present, or otherwise by the JSON string of the entire row. For row comparison, it uses the JSON string representation of the full row. This approach is generally safe and effective for most queries.
 
-For some queries, you can improve performance by supplying a custom comparator. Such as comparing only a specific column (e.g., `updated_at`) if it always changes when the row is updated.
+For some queries, performance could be improved by supplying a custom `rowComparator`. Such as comparing by a `hash` column generated or stored in SQLite. These hashes currently require manual implementation.
 
 ```javascript
 const pendingLists = db
@@ -343,9 +343,9 @@ const pendingLists = db
     parameters: ['pending']
   })
   .differentialWatch({
-    comparator: {
+    rowComparator: {
       keyBy: (item) => item.id,
-      compareBy: (item) => item.updated_at // if the column is guaranteed to changed for any row mutation.
+      compareBy: (item) => item._hash
     }
   });
 ```

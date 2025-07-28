@@ -24,14 +24,14 @@ Choose the approach that best fits your platform and performance needs.
 
 # Basic Watch Queries
 
-PowerSync supports the following basic watch queries based on your platform. These APIs return query results whenever the underlying tables change and are available across all SDKs for backwards compatibility.
+PowerSync supports the following basic watch queries based on your platform. These APIs return query results whenever the underlying tables change and are available across all SDKs.
 
-Scroll horizontally to find your preferred framework for an example:
+Scroll horizontally to find your preferred platform/framework for an example:
 
 <Tabs>
 <Tab title="JavaScript/React Native/Node.js (AsyncIterator Approach)">
 
-The original watch method using AsyncIterator pattern. This is the foundational watch API that works across all JavaScript environments and is being maintained for backwards compatibility.
+The original watch method using the AsyncIterator pattern. This is the foundational watch API that works across all JavaScript environments and is being maintained for backwards compatibility.
 
 <JavaScriptAsyncWatch />
 
@@ -112,11 +112,11 @@ Use this method to watch for changes to the dependent tables of any SQL query:
 
 # Incremental Watch Queries
 
-Basic watch queries can cause performance issues in UI frameworks like React because they return new data on every dependent table change, even when the actual data hasn't changed. This can lead to excessive re-renders as components receive new props unnecessarily.
+Basic watch queries can cause performance issues in UI frameworks like React because they return new data on every dependent table change, even when the actual data in the query hasn't changed. This can lead to excessive re-renders as components receive updates unnecessarily.
 
-Incremental watch queries solve this by comparing result sets using configurable comparators and only emitting updates when the comparison detects actual data changes. These queries still query the SQLite DB under the hood on each dependent table change, but compare the result set and only yield results if a change has been made.
+Incremental watch queries solve this by comparing result sets using configurable comparators and only emitting updates when the comparison detects actual data changes. These queries still query the SQLite DB under the hood on each dependent table change, but compare the result sets and only yield results if a change has been made.
 
-Syntax:
+Basic Syntax:
 
 ```javascript
 db.watch('SELECT * FROM lists WHERE state = ?', ['pending'], { comparator: { ... } })
@@ -126,54 +126,12 @@ db.watch('SELECT * FROM lists WHERE state = ?', ['pending'], { comparator: { ...
   **JavaScript Only**: Incremental and differential watch queries are currently available only in the JavaScript SDKs.
 </Info>
 
+Scroll horizontally to find your preferred platform/framework for an example:
+
 <Tabs>
-<Tab title="Existing AsyncIterator Approach">
-
-Existing AsyncIterator API with configurable comparator that compares current and previous result sets, only yielding when the comparator detects changes. Use this across all SDKs to avoid re-renders from unchanged data while maintaining the familiar AsyncIterator pattern:
-
-```javascript
-async function* pendingLists(): AsyncIterable<string[]> {
-  for await (const result of db.watch('SELECT * FROM lists WHERE state = ?', ['pending'], {
-    comparator: {
-      checkEquality: (current, previous) => JSON.stringify(current) === JSON.stringify(previous)
-    }
-  })) {
-    yield result.rows?._array ?? [];
-  }
-}
-```
-
-</Tab>
-<Tab title="Existing Callback Approach">
-
-Existing Callback API with configurable comparator that compares result sets and only invokes the callback when changes are detected. Use this when you need React Native compatibility or prefer callbacks while avoiding callback execution on unchanged data:
-
-```javascript
-const pendingLists = (onResult: (lists: any[]) => void): void => {
-  db.watch(
-    'SELECT * FROM lists WHERE state = ?',
-    ['pending'],
-    {
-      onResult: (result: any) => {
-        onResult(result.rows?._array ?? []);
-      }
-    },
-    {
-      comparator: {
-        checkEquality: (current, previous) => {
-          // This comparator will only report updates if the data changes.
-          return JSON.stringify(current) === JSON.stringify(previous);
-        }
-      }
-    }
-  );
-};
-```
-
-</Tab>
 <Tab title="WatchedQuery Default">
 
-WatchedQuery class that supports multiple listeners via registerListener(), automatic cleanup on PowerSync close, and updateSettings() for dynamic parameter changes. Use this as the preferred approach for JavaScript SDKs when you need query sharing, multiple subscribers, or dynamic query modification:
+`WatchedQuery` class that comes with a better API in that it includes loading, fetching and error states, supports multiple listeners, automatic cleanup on PowerSync close, and the new `updateSettings()` API for dynamic parameter changes. This is the preferred approach for JavaScript SDKs:
 
 ```javascript
 // Create an instance of a WatchedQuery
@@ -205,7 +163,7 @@ const dispose = pendingLists.registerListener({
 </Tab>
 <Tab title="WatchedQuery with Incremental Updates">
 
-WatchedQuery class with configurable comparator that compares result sets before emitting to listeners, preventing unnecessary listener invocations when data hasn't changed. Use this when you want shared query instances plus result set comparison to minimize processing overhead:
+WatchedQuery class with configurable comparator that compares result sets before emitting to listeners, preventing unnecessary listener invocations when data hasn't changed. Use this when you want shared query instances plus result set comparison for incremental updates:
 
 ```javascript
 // Create an instance of a WatchedQuery
@@ -229,7 +187,7 @@ const pendingLists = db
 </Tab>
 <Tab title="React useQuery">
 
-React hook that uses comparators to detect changes at the row level, only triggering re-renders when individual items are added, removed, or modified. Use this when you want built-in state management plus incremental updates for React components:
+React hook that that preserves object references for unchanged items and uses row-level comparators to minimize re-renders. Use this when you want built-in state management plus incremental updates for React components:
 
 ```javascript
 const {
@@ -286,6 +244,52 @@ const TodoWidget = React.memo(({ record }) => {
 ```
 
 </Tab>
+
+<Tab title="Existing AsyncIterator Approach">
+
+Existing AsyncIterator API with configurable comparator that compares current and previous result sets, only yielding when the comparator detects changes. Use this if you want to maintain the familiar AsyncIterator pattern from the basic watch query API:
+
+```javascript
+async function* pendingLists(): AsyncIterable<string[]> {
+  for await (const result of db.watch('SELECT * FROM lists WHERE state = ?', ['pending'], {
+    comparator: {
+      checkEquality: (current, previous) => JSON.stringify(current) === JSON.stringify(previous)
+    }
+  })) {
+    yield result.rows?._array ?? [];
+  }
+}
+```
+
+</Tab>
+<Tab title="Existing Callback Approach">
+
+Existing Callback API with configurable comparator that compares result sets and only invokes the callback when changes are detected. Use this if you want to maintain the familiar callback pattern from the basic watch query API:
+
+```javascript
+const pendingLists = (onResult: (lists: any[]) => void): void => {
+  db.watch(
+    'SELECT * FROM lists WHERE state = ?',
+    ['pending'],
+    {
+      onResult: (result: any) => {
+        onResult(result.rows?._array ?? []);
+      }
+    },
+    {
+      comparator: {
+        checkEquality: (current, previous) => {
+          // This comparator will only report updates if the data changes.
+          return JSON.stringify(current) === JSON.stringify(previous);
+        }
+      }
+    }
+  );
+};
+```
+
+</Tab>
+
 
 </Tabs>
 

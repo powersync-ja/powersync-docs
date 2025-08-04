@@ -1,0 +1,73 @@
+---
+title: "Expo Go Support"
+description: "Support for Expo Go using @powersync/adapter-sql-js"
+---
+
+Expo Go is a sandbox environment that allows you to quickly test your application without building a development build. Our native SQLite database adapters for React Native apps (OP-SQLite and React Native Quick SQLite) cannot run in Expo Go because they require native code compilation. Specifically, PowerSync needs a SQLite implementation that can load our [Rust core extension](https://github.com/powersync-ja/powersync-sqlite-core), which isn't possible in Expo Go's prebuilt app container. To enable PowerSync in Expo Go, we provide a JavaScript-based database adapter: [`@powersync/adapter-sql-js`](https://www.npmjs.com/package/@powersync/adapter-sql-js).
+
+# @powersync/adapter-sql-js
+
+A development package for PowerSync which uses SQL.js to provide a pure JavaScript SQLite implementation. This eliminates the need for native dependencies and enables development with Expo Go and other JavaScript-only environments. Under the hood, it uses our custom fork [powersync-sql-js](https://github.com/powersync-ja/powersync-sql-js) - a fork of SQL.js (SQLite compiled to JavaScript via Emscripten) that loads the PowerSync's Rust core extension.
+
+<Warning>
+
+This package is in an **alpha** release. 
+
+**Expo Go Sandbox Environment Only** This adapter is specifically designed for Expo Go and similar JavaScript-only environments. It will be much slower than native database adapters and has limitations. Every write operation triggers a complete rewrite of the entire database file to persistent storage, not just the changed data. In addition to the performance overheads, this adapter doesn't provide any of the SQLite consistency guarantees - you may end up with missing data or a corrupted database file if the app is killed while writing to the database file.
+
+</Warning>
+
+## Usage
+
+```bash
+npm install @powersync/adapter-sql-js
+```
+
+```js SystemProvider.tsx
+import { SQLJSOpenFactory } from "@powersync/adapter-sql-js";
+import { PowerSyncDatabase } from "@powersync/react-native";
+
+export const powerSync = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: new SQLJSOpenFactory({
+    dbFilename: "example.db",
+  }),
+});
+```
+
+### Data Persistence
+
+The default version of this adapter uses in-memory persistence, but you can specify your own `persister` option to the open factory.
+See an example in the package [README](https://www.npmjs.com/package/@powersync/adapter-sql-js).
+
+## Moving Beyond Expo Go
+
+When you're ready to move beyond the Expo Go sandbox environment - whether for native development builds or production deployment - we recommend switching to our native database adapters:
+
+- [OP-SQLite](https://www.npmjs.com/package/@powersync/op-sqlite) (Recommended) - Offers built-in encryption support and better React Native New Architecture compatibility
+- [React Native Quick SQLite](https://www.npmjs.com/package/@journeyapps/react-native-quick-sqlite) - Our original native adapter
+
+These adapters provide better performance, full SQLite consistency guarantees, and are suitable for both development builds and production deployment. See the SDKs [Installation](/client-sdk-references/react-native-and-expo#install-peer-dependencies) details for setup instructions.
+
+### Switching Between Adapters - Example
+
+If you want to keep using Expo Go alongside development and production builds, you can switch between different adapters based on the Expo `executionEnvironment`:
+
+```js SystemProvider.tsx
+import { SQLJSOpenFactory } from "@powersync/adapter-sql-js";
+import { PowerSyncDatabase } from "@powersync/react-native";
+import Constants from "expo-constants";
+
+const isExpoGo = Constants.executionEnvironment === "storeClient";
+
+export const powerSync = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: isExpoGo
+    ? new SQLJSOpenFactory({
+        dbFilename: "app.db",
+      })
+    : {
+        dbFilename: "sqlite.db",
+      },
+});
+```

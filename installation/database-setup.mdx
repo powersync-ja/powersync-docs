@@ -309,37 +309,95 @@ For more information on migrating from Atlas Device Sync to PowerSync, see our [
 
 ## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL (Alpha)
 
-<Info>
-  This section is a work in progress. More details for MySQL connections are coming soon. In the meantime, ask on our [Discord server](https://discord.gg/powersync) if you have any questions.
-</Info>
-
 <Check>
   **Version compatibility**: PowerSync requires MySQL version 5.7 or greater.
 </Check>
 
-MySQL connections use the [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html) to replicate changes.
+PowerSync reads from the MySQL [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html) to replicate changes. We use a modified version of the [Zongji MySQL](https://github.com/powersync-ja/powersync-mysql-zongji) binlog listener to achieve this.
 
-Generally, this requires the following config:
+### Binlog Configuration
 
-- `gtid_mode` : `ON`
-- `enforce_gtid_consistency` : `ON`
-- `binlog_format` : `ROW`
+To ensure that PowerSync can read the binary log, you need to configure your MySQL server to enable binary logging and configure it with the following server command options:
+- [server_id](https://dev.mysql.com/doc/refman/8.4/en/replication-options.html#sysvar_server_id): Uniquely identifies the MySQL server instance in the replication topology. Default value is **1**.
+- [log_bin](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_log_bin): **ON**. Enables binary logging. Default is **ON** for MySQL 8.0 and later, but **OFF** for MySQL 5.7.
+- [enforce_gtid_consistency](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency): **ON**. Enforces GTID consistency. Default is **OFF**.
+- [gtid_mode](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_gtid_mode): **ON**. Enables GTID based logging. Default is **OFF**.
+- [binlog_format](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_format): **ROW**. Sets the binary log format to row-based replication. This is required for PowerSync to correctly replicate changes. Default is **ROW**.
 
-PowerSync also requires a user with replication permissions on the database. An example:
+These can be specified in a MySQL [option file](https://dev.mysql.com/doc/refman/8.4/en/option-files.html):
+```
+server_id=<Unique Integer Value>
+log_bin=ON
+enforce_gtid_consistency=ON
+gtid_mode=ON
+binlog_format=ROW
+```
+
+### Database User Configuration
+PowerSync also requires a MySQL user with **REPLICATION** and **SELECT** permission on the source databases. These can be added by running the following SQL commands:
 
 ```sql
 -- Create a user with necessary privileges
-CREATE USER 'repl_user'@'%' IDENTIFIED BY 'good_password';
+CREATE USER 'repl_user'@'%' IDENTIFIED BY '<password>';
 
 -- Grant replication client privilege
 GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl_user'@'%';
 
--- Grant access to the specific database
-GRANT ALL PRIVILEGES ON powersync.* TO 'repl_user'@'%';
+-- Grant select access to the specific database
+GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
 
 -- Apply changes
 FLUSH PRIVILEGES;
 ```
+
+### Additional Configuration (optional)
+#### Binlog
+
+The binlog can be configured to limit logging to specific databases. By default, events for tables in all the databases on the MySQL server will be logged.
+- [binlog-do-db](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#option_mysqld_binlog-do-db): Only updates for tables in the specified database will be logged.
+- [binlog-ignore-db](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#option_mysqld_binlog-ignore-db): No updates for tables in the specified database will be logged.
+
+Examples:
+```
+# Only row events for tables in the user_db and invoices_db databases will appear in the binlog.
+binlog-do-db=user_db
+binlog-do-db=invoices_db
+```
+```
+# Row events for tables in the user_db will be ignored. Events for any other database will be logged.
+binlog-ignore-db=user_db
+```
+#### Keepalive
+
+When activity on the source database is low, there can be extended periods of inactivity in the binlog.
+This can potentially cause the replication connection to be closed by the MySQL server, which will result in PowerSync being unable to read the binlog until it reconnects.
+To get around this, PowerSync can optionally be configured to regularly update an entry in a keepalive table in the source database.
+This ensures a consistent stream of updates in the binlog, which helps keep the connection alive.
+
+If the PowerSync MySQL user also has the **CREATE**, **DROP**, **INSERT** and **UPDATE** privileges, PowerSync can automatically create and manage the keepalive table in the source database.
+```sql
+-- Grant additional privileges on the source database
+GRANT CREATE, DROP, INSERT, UPDATE ON <source_database>.* TO 'repl_user'@'%';
+
+-- Apply changes
+FLUSH PRIVILEGES;
+```
+The keepalive table can also be manually created, allowing the DB user to make do with more restrictive privileges.
+```sql
+CREATE TABLE IF NOT EXISTS
+	<source_database>.powersync_keepalive(
+	id INT PRIMARY KEY DEFAULT 1,
+	last_ping TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3)
+);
+
+-- Grant additional privileges for the keepalive table
+GRANT SELECT, INSERT, UPDATE ON <source_database>.powersync_keepalive TO 'repl_user'@'%';
+
+-- Apply changes
+FLUSH PRIVILEGES;
+```
+If PowerSync is unable to create the keepalive table, and it doesn't exist, a warning is logged and the keepalive feature is disabled.
+
 
 ## Next Step
 

@@ -149,11 +149,75 @@ Renaming an unsynced collection to a name that is included in the Sync Rules tri
 Circular renames (e.g., renaming `todos` → `todos_old` → `todos`) are not directly supported. To reprocess the database after such changes, a Sync Rules update must be deployed.
 
 
-## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL (Alpha) Specifics
+## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL (Beta) Specifics
+PowerSync keeps the [sync buckets](/usage/sync-rules/organize-data-into-buckets) up to date with any incremental data changes as recorded in the MySQL [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html).
+The binary log also provides DDL (Data Definition Language) query updates, which include:
 
-<Info>
-  This section is a work in progress. More details for MySQL connections are coming soon. In the meantime, ask on our [Discord server](https://discord.gg/powersync) if you have any questions.
-</Info>
+1. Creating, dropping or renaming tables.
+
+2. Truncating tables. (Not technically a schema change, but they appear in the query updates regardless.)
+
+3. Changing replica identity of a table. (Creation, deletion or modification of primary keys, unique indexes, etc.)
+
+4. Adding, dropping, renaming or changing the types of columns.
+
+For MySQL, PowerSync detects schema changes by parsing the DDL queries in the binary log. It may not always be possible to parse the DDL queries correctly, especially if they are complex or use non-standard syntax.
+In such cases, PowerSync will ignore the schema change, but will log a warning with the schema change query. If required, the schema change would then need to be manually
+handled by redeploying the sync rules. This triggers a re-replication.
+
+### MySQL schema changes affecting Sync Rules
+
+#### DROP table
+
+PowerSync will detect when a table is dropped, and automatically remove the data from the sync buckets.
+
+#### CREATE table
+
+Table creation is detected and handled the first time row events for the new table appear on the binary log.
+
+#### TRUNCATE table
+
+PowerSync will detect truncate statements in the binary log, and consequently remove all data from the sync buckets for that table.
+
+#### RENAME table
+
+A renamed table is handled similarly to dropping the old table, and then creating a new table with existing data under the new name.
+This may be a slow operation if the table is large, since the "new" table has to be re-replicated. Replication will be blocked until the new table is replicated.
+
+#### Change REPLICA IDENTITY
+
+The replica identity of a table is considered to be changed if either:
+
+1. The type of replica identity changes (`DEFAULT`, `INDEX`, `FULL`, `NOTHING`).
+
+2. The name or type of columns which form part of the replica identity changes.
+
+The latter can happen if:
+
+1. Using `REPLICA IDENTITY FULL`, and any column is added, removed, renamed, or the type changed.
+
+2. Using `REPLICA IDENTITY DEFAULT`, and the type of any column in the primary key is changed.
+
+3. Using `REPLICA IDENTITY INDEX`, and the type of any column in the replica index is changed.
+
+4. The primary key or replica index is removed or changed.
+
+When the replication identity changes, the entire table is replicated again. This may be a slow operation if the table is large, and all other replication will be blocked until the table is replicated again.
+
+Sync rules affected by schema changes will fail "soft" — an alert would be generated, but the system will continue processing changes.
+
+#### Column changes
+
+Column changes such as adding, dropping, renaming columns, or changing column types, are detected by PowerSync but will generally not result in re-replication. (Unless the replica identity was affected as described above).
+
+Adding a column with a `NULL` default value will generally not cause issues. Existing records will have a missing value instead of `NULL` value, but those are generally treated the same on the client.
+
+Adding a column with a different default value, whether it's a static or computed value, will not have this default automatically replicated for existing rows. To propagate this value, make an update to every existing row.
+
+Removing a column will not have the values automatically removed for existing rows on PowerSync. To propagate the change, make an update to every existing row.
+
+Changing a column type, and/or changing the default value of a column using an `ALTER TABLE` statement, will not be automatically replicated to PowerSync.
+In some cases, the change will have no effect on PowerSync (for example, changing between `VARCHAR` and `TEXT` types). When the values are expected to change, make an update to every existing row to propagate the changes.
 
 ## See Also
 

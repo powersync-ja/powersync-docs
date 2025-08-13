@@ -60,13 +60,44 @@ const dispose = lists.registerListener({
 
 Trigger-based diffs use temporary SQLite triggers plus a temporary table to record row-level operations as they happen. This enables efficient downstream processing inside SQLite or in app code.
 
+## Tracking and reacting to changes (recommended)
+
+The primary API is `trackTableDiff`. It wraps the lower-level trigger setup, automatically manages a `writeLock` during processing, exposes a `DIFF` table alias to join against, and cleans up when you call the returned `stop()` function. Think of it as an automatic "watch" that processes diffs as they occur.
+
+```javascript
+const stop = await db.triggers.trackTableDiff({
+  source: 'todos',
+  // Only record UPDATEs when these columns change; always record INSERT/DELETE
+  columns: ['list_id'],
+  // Select which operations to capture
+  operations: [DiffTriggerOperation.INSERT],
+  // Optional WHEN clause per operation to filter inside the trigger
+  when: { [DiffTriggerOperation.INSERT]: `json_extract(NEW.data, '$.list_id') = ?` },
+  // Parameters for the WHEN clause
+  parameters: { [DiffTriggerOperation.INSERT]: [firstList.id] },
+  // onChange runs under a writeLock to avoid race conditions
+  onChange: async (context) => {
+    const newTodos = await context.getAll(/* sql */ `
+      SELECT todos.*
+      FROM DIFF
+      JOIN todos ON DIFF.id = todos.id
+    `);
+
+    // Handle new todos here
+  }
+});
+
+// Later, dispose triggers and internal resources
+await stop();
+```
+
 <Note>
 This API is experimental and may change. It currently targets JavaScript SDKs.
 </Note>
 
-## Creating a diff trigger
+## Lower-level: createDiffTrigger (advanced)
 
-Set up temporary triggers that write change operations into a temporary table you control:
+Set up temporary triggers that write change operations into a temporary table you control. Prefer `trackTableDiff` unless you need to manage lifecycle and locking manually (e.g., buffer diffs and process them on a later user action without holding a `writeLock`).
 
 ```javascript
 // Define the temporary table to store the diff
@@ -100,34 +131,7 @@ await db.writeLock(async (tx) => {
 await dispose();
 ```
 
-## Tracking and reacting to changes
-
-A more convenient `trackTableDiff` method uses `createDiffTrigger` internally to track table changes, but adds additional logic to automatically consume and process the changes as they occur. This eliminates the need to manually manage the temporary table and write locks.
-
-The example below uses triggers to process todo records as they are inserted into the database:
-
-```javascript
-const stop = await db.triggers.trackTableDiff({
-  source: 'todos',
-  columns: ['list_id'],
-  operations: [DiffTriggerOperation.INSERT],
-  when: { [DiffTriggerOperation.INSERT]: `json_extract(NEW.data, '$.list_id') = ?` },
-  parameters: { [DiffTriggerOperation.INSERT]: [firstList.id] },
-  onChange: async (context) => {
-    // Join against the DIFF table provided by the context
-    const newTodos = await context.getAll(/* sql */ `
-      SELECT todos.*
-      FROM DIFF
-      JOIN todos ON DIFF.id = todos.id
-    `);
-
-    // Handle new todos here
-  }
-});
-
-// Later
-await stop();
-```
+ 
 
  
 

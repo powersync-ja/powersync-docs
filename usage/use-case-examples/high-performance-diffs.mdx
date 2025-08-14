@@ -1,0 +1,113 @@
+---
+title: 'Experimental: High Performance Diffs'
+description: 'Efficiently get row changes using trigger-based table diffs (JS)'
+---
+
+# Overview
+
+While [basic/incremental watch queries](/usage/use-case-examples/watch-queries) enable reactive UIs by automatically re‑running queries when underlying data changes and returning updated results, they don't specify which individual rows were modified. To get these details, you can use [**differential watch queries**](/usage/use-case-examples/watch-queries#differential-watch-queries), which return a structured diff between successive query results. However, on large result sets they can be slow because they re‑run the query and compare full results (e.g., scanning ~1,000 rows to detect 1 new item). That’s why we introduced **trigger‑based table diffs**: a more performant approach that uses SQLite triggers to record changes on a table as they happen. This means that the overhead associated with tracking these changes overhead is more proportional to the number of rows inserted, updated, or deleted.
+
+<Note>
+  **JavaScript Only**: Trigger-based table diffs are available in the JavaScript SDKs starting from:
+  * Web v1.26.0
+  * React Native v1.24.0
+  * Node.js v0.9.0
+</Note>
+
+<Warning>
+The `db.triggers` APIs are experimental. We're actively seeking feedback on:
+
+- API design and developer experience
+- Additional features or optimizations needed
+
+Join our [Discord community](https://discord.gg/powersync) to share your experience and get help.
+</Warning>
+
+## Key differences vs. differential watch queries
+
+- **Scope**: Trigger-based diffs track row-level changes on a single table. Differential watches work with arbitrary query results (including joins).
+- **Overhead**: Trigger-based diffs do per-row work at write time (overhead grows with number of affected rows). Differential watches re-query and compare result sets on each change (overhead grows with result set size).
+- **Processing path**: Trigger-based diffs record changes at write time and require a `writeLock` during processing (only a single `writeLock` is allowed). Differential watches run on read connections and re-query/compare results on each change (often concurrent on some platforms).
+- **Storage/shape**: Trigger-based diffs store changes as rows in a temporary SQLite table that you can query with SQL. Differential watch diffs are exposed to app code as JS objects/arrays.
+- **Filtering**: Trigger-based diffs can filter/skip storing diff records inside the SQLite trigger, which prevents emissions on a lower level. Differential watches query the SQLite DB on any change to the query's dependent tables, and the changes are filtered after querying SQLite.
+
+In summary, **Differential watch queries** are the more flexible option with fewer limitations overall. However, this comes with a performance cost on large result sets. For those cases, **trigger-based diffs** are the more efficient option, but are limited to tracking updates in individual tables and come with some write overhead.
+
+In summary, **differential watch queries** are the most flexible (they work with arbitrary, multi‑table queries), but they can be slow on large result sets. For those cases, **trigger-based diffs** are more efficient, but they only track a single table and add some write overhead. For usage and examples of differential watch queries, see [Differential Watch Queries](/usage/use-case-examples/watch-queries#differential-watch-queries).
+
+ 
+## Trigger-based diffs
+
+Trigger-based diffs create temporary SQLite triggers and a temporary table to record row‑level inserts, updates, and deletes as they happen. You can then query the diff table with SQL to process the changes.
+
+## Tracking and reacting to changes (recommended)
+
+The primary API is `trackTableDiff`. It wraps the lower-level trigger setup, automatically manages a `writeLock` during processing, exposes a `DIFF` table alias to join against, and cleans up when you call the returned `stop()` function. Think of it as an automatic "watch" that processes diffs as they occur.
+
+```javascript
+const stop = await db.triggers.trackTableDiff({
+  source: 'todos',
+  // Only record UPDATEs when these columns change; always record INSERT/DELETE
+  columns: ['list_id'],
+  // Select which operations to capture
+  operations: [DiffTriggerOperation.INSERT],
+  // Optional WHEN clause per operation to filter inside the trigger
+  when: { [DiffTriggerOperation.INSERT]: `json_extract(NEW.data, '$.list_id') = ?` },
+  // Parameters for the WHEN clause
+  parameters: { [DiffTriggerOperation.INSERT]: [firstList.id] },
+  // onChange runs under a writeLock to avoid race conditions
+  onChange: async (context) => {
+    const newTodos = await context.getAll(/* sql */ `
+      SELECT todos.*
+      FROM DIFF
+      JOIN todos ON DIFF.id = todos.id
+    `);
+
+    // Handle new todos here
+  }
+});
+
+// Later, dispose triggers and internal resources
+await stop();
+```
+
+## Lower-level: createDiffTrigger (advanced)
+
+Set up temporary triggers that write change operations into a temporary table you control. Prefer `trackTableDiff` unless you need to manage lifecycle and locking manually (e.g., buffer diffs and process them on a later user action without holding a `writeLock`).
+
+```javascript
+// Define the temporary table to store the diff
+const tempTable = 'listsDiff';
+
+// Configure triggers to record INSERT and UPDATE operations on `lists`
+const dispose = await db.triggers.createDiffTrigger({
+  source: 'lists',
+  destination: tempTable,
+  columns: ['name'], // track only if these columns change (optional)
+  // when: "json_extract(NEW.data, '$.project_id') = ?", // optional SQL filter
+  // parameters: ['abc'], // optional parameters for the WHEN clause
+  operations: [DiffTriggerOperation.INSERT, DiffTriggerOperation.UPDATE]
+});
+
+// ... perform writes on `lists` ...
+
+// Consume and clear changes within a writeLock
+await db.writeLock(async (tx) => {
+  const changes = await tx.getAll(/* sql */ `
+    SELECT * FROM ${tempTable}
+  `);
+
+  // Process changes here
+
+  // Clear after processing
+  await tx.execute(/* sql */ `DELETE FROM ${tempTable};`);
+});
+
+// Later, clean up triggers and temp table
+await dispose();
+```
+
+ 
+
+ 
+

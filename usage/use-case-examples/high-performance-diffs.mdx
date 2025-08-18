@@ -45,17 +45,19 @@ The primary API is `trackTableDiff`. It wraps the lower-level trigger setup, aut
 
 ```javascript
 const stop = await db.triggers.trackTableDiff({
+  // PowerSync source table/view to trigger and track changes from.
+  // This should be present in the PowerSync database's schema.
   source: 'todos',
   // Only record UPDATEs when these columns change; always record INSERT/DELETE
+  // Defaults to all columns in the source table.
+  // Use an empty array to track only the ID and operation.
   columns: ['list_id'],
-  // Select which operations to capture
+  // Operations to track changes for.
   operations: [DiffTriggerOperation.INSERT],
   // Optional WHEN clause per operation to filter inside the trigger
-  when: { [DiffTriggerOperation.INSERT]: `json_extract(NEW.data, '$.list_id') = ?` },
-  // Parameters for the WHEN clause
-  parameters: { [DiffTriggerOperation.INSERT]: [firstList.id] },
-  // onChange runs under a writeLock to avoid race conditions
+  when: { [DiffTriggerOperation.INSERT]: `json_extract(NEW.data, '$.list_id') = '${firstList.id}'` },
   onChange: async (context) => {
+    // // Fetches the todo records that were inserted during this diff
     const newTodos = await context.getAll(/* sql */ `
       SELECT todos.*
       FROM DIFF
@@ -80,12 +82,19 @@ const tempTable = 'listsDiff';
 
 // Configure triggers to record INSERT and UPDATE operations on `lists`
 const dispose = await db.triggers.createDiffTrigger({
+  // PowerSync source table/view to trigger and track changes from.
+  // This should be present in the PowerSync database's schema.
   source: 'lists',
+  // Destination table to send changes to.
+  // This table is created internally as a SQLite temporary table.
+  // This table will be dropped once the trigger is removed.
   destination: tempTable,
-  columns: ['name'], // track only if these columns change (optional)
-  // when: "json_extract(NEW.data, '$.project_id') = ?", // optional SQL filter
-  // parameters: ['abc'], // optional parameters for the WHEN clause
-  operations: [DiffTriggerOperation.INSERT, DiffTriggerOperation.UPDATE]
+  // Operations to track changes for.
+  operations: [DiffTriggerOperation.INSERT, DiffTriggerOperation.UPDATE],
+  // Only record UPDATEs when these columns change; always record INSERT/DELETE
+  // Defaults to all columns in the source table.
+  // Use an empty array to track only the ID and operation.
+  columns: ['name']
 });
 
 // ... perform writes on `lists` ...

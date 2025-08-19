@@ -39,6 +39,20 @@ In summary, **differential watch queries** are the most flexible (they work with
 
 Trigger-based diffs create temporary SQLite triggers and a temporary table to record row‑level inserts, updates, and deletes as they happen. You can then query the diff table with SQL to process the changes.
 
+<Note>
+  **SQLite triggers and PowerSync views**
+  
+  In PowerSync, the tables you define in the client schema are exposed as SQLite views. The actual data is stored in underlying SQLite tables, with each row's values encoded as JSON (commonly in a single `data` column).
+  
+  SQLite cannot attach triggers to INSERT/UPDATE/DELETE operations on views — triggers must target the underlying base tables. The `db.triggers` API handles these details for you:
+  
+  - Developers can reference the view name in `source`; PowerSync resolves and targets the corresponding underlying table internally.
+  - Column filters are applied by inspecting JSON changes in the underlying row and determining whether the configured columns changed.
+  - Diff rows can be queried as if they were real columns (not raw JSON) using the `withExtractedDiff(...)` helper.
+  
+  You can also create your own triggers manually (for example, as shown in the [Full‑Text Search example](/usage/use-case-examples/full-text-search)), but be mindful of the view/trigger limitation and target the underlying table rather than the view.
+</Note>
+
 ## Tracking and reacting to changes (recommended)
 
 The primary API is `trackTableDiff`. It wraps the lower-level trigger setup, automatically manages a `writeLock` during processing, exposes a `DIFF` table alias to join against, and cleans up when you call the returned `stop()` function. Think of it as an automatic "watch" that processes diffs as they occur.
@@ -48,13 +62,13 @@ const stop = await db.triggers.trackTableDiff({
   // PowerSync source table/view to trigger and track changes from.
   // This should be present in the PowerSync database's schema.
   source: 'todos',
-  // Only record UPDATEs when these columns change; always record INSERT/DELETE
+  // Specifies which columns from the source table to track in the diff records.
   // Defaults to all columns in the source table.
   // Use an empty array to track only the ID and operation.
   columns: ['list_id'],
   // Operations to track changes for.
   operations: [DiffTriggerOperation.INSERT],
-  // Optional WHEN clause per operation to filter inside the trigger
+  // Optional WHEN clause per operation to filter inside the trigger. See additional details below.
   when: { [DiffTriggerOperation.INSERT]: `json_extract(NEW.data, '$.list_id') = '${firstList.id}'` },
   onChange: async (context) => {
     // // Fetches the todo records that were inserted during this diff
@@ -72,9 +86,38 @@ const stop = await db.triggers.trackTableDiff({
 await stop();
 ```
 
+### Filtering with `when`
+
+The optional `when` parameter lets you add conditions that determine when the triggers should fire. This corresponds to a SQLite [WHEN](https://sqlite.org/lang_createtrigger.html) clause in the trigger body.
+
+- Use `NEW` for `INSERT`/`UPDATE` and `OLD` for `DELETE`.
+- Row data is stored as JSON in the `data` column; the row identifier is `id`.
+- Use `json_extract(NEW.data, '$.column')` or `json_extract(OLD.data, '$.column')` to reference logical columns.
+
+Example:
+
+```javascript
+const stop = await db.triggers.trackTableDiff({
+  source: 'todos',
+  operations: [DiffTriggerOperation.INSERT, DiffTriggerOperation.UPDATE, DiffTriggerOperation.DELETE],
+  when: {
+    // Only INSERTs for a specific list
+    INSERT: sanitizeSQL`json_extract(NEW.data, '$.list_id') = ${sanitizeUUID(list.id)}`,
+    // Only UPDATEs where status becomes 'active' for a specific record
+    UPDATE: sanitizeSQL`NEW.id = ${sanitizeUUID('abcd')} AND json_extract(NEW.data, '$.status') = 'active'`,
+    // Only DELETEs for a specific list
+    DELETE: sanitizeSQL`json_extract(OLD.data, '$.list_id') = 'abcd'`
+  }
+});
+```
+
+<Warning>
+  The strings in `when` are embedded directly into the SQLite trigger creation SQL. Sanitize any user‑derived values. The `sanitizeSQL` helper performs some basic sanitization; additional sanitization is recommended.
+</Warning>
+
 ## Lower-level: createDiffTrigger (advanced)
 
-Set up temporary triggers that write change operations into a temporary table you control. Prefer `trackTableDiff` unless you need to manage lifecycle and locking manually (e.g., buffer diffs and process them on a later user action without holding a `writeLock`).
+Set up temporary triggers that write change operations into a temporary table you control. Prefer `trackTableDiff` unless you need to manage lifecycle and locking manually (e.g., buffer diffs and process them on a later user action without holding a `writeLock`). Note that since the table is created as a temporary table on the SQLite write connection, it can only be accessed within operations performed inside a writeLock.
 
 ```javascript
 // Define the temporary table to store the diff
@@ -91,7 +134,7 @@ const dispose = await db.triggers.createDiffTrigger({
   destination: tempTable,
   // Operations to track changes for.
   operations: [DiffTriggerOperation.INSERT, DiffTriggerOperation.UPDATE],
-  // Only record UPDATEs when these columns change; always record INSERT/DELETE
+  // Specifies which columns from the source table to track in the diff records.
   // Defaults to all columns in the source table.
   // Use an empty array to track only the ID and operation.
   columns: ['name']

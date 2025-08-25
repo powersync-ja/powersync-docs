@@ -66,10 +66,8 @@ const stop = await db.triggers.trackTableDiff({
   // Defaults to all columns in the source table.
   // Use an empty array to track only the ID and operation.
   columns: ['list_id'],
-  // Operations to track changes for.
-  operations: [DiffTriggerOperation.INSERT],
-  // Optional WHEN clause per operation to filter inside the trigger. See additional details below.
-  when: { [DiffTriggerOperation.INSERT]: `json_extract(NEW.data, '$.list_id') = '${firstList.id}'` },
+  // Required WHEN clause per operation to filter inside the trigger. Use 'TRUE' to track all.
+  when: { INSERT: `json_extract(NEW.data, '$.list_id') = '${firstList.id}'` },
   onChange: async (context) => {
     // // Fetches the todo records that were inserted during this diff
     const newTodos = await context.getAll(/* sql */ `
@@ -88,21 +86,21 @@ await stop();
 
 ### Filtering with `when`
 
-The optional `when` parameter lets you add conditions that determine when the triggers should fire. This corresponds to a SQLite [WHEN](https://sqlite.org/lang_createtrigger.html) clause in the trigger body.
+The required `when` parameter lets you add conditions that determine when the triggers should fire. This corresponds to a SQLite [WHEN](https://sqlite.org/lang_createtrigger.html) clause in the trigger body.
 
 - Use `NEW` for `INSERT`/`UPDATE` and `OLD` for `DELETE`.
 - Row data is stored as JSON in the `data` column; the row identifier is `id`.
 - Use `json_extract(NEW.data, '$.column')` or `json_extract(OLD.data, '$.column')` to reference logical columns.
+- Set the clause to `'TRUE'` to track all changes for a given operation.
 
 Example:
 
 ```javascript
 const stop = await db.triggers.trackTableDiff({
   source: 'todos',
-  operations: [DiffTriggerOperation.INSERT, DiffTriggerOperation.UPDATE, DiffTriggerOperation.DELETE],
   when: {
-    // Only INSERTs for a specific list
-    INSERT: sanitizeSQL`json_extract(NEW.data, '$.list_id') = ${sanitizeUUID(list.id)}`,
+    // Track all INSERTs
+    INSERT: 'TRUE',
     // Only UPDATEs where status becomes 'active' for a specific record
     UPDATE: sanitizeSQL`NEW.id = ${sanitizeUUID('abcd')} AND json_extract(NEW.data, '$.status') = 'active'`,
     // Only DELETEs for a specific list
@@ -132,8 +130,11 @@ const dispose = await db.triggers.createDiffTrigger({
   // This table is created internally as a SQLite temporary table.
   // This table will be dropped once the trigger is removed.
   destination: tempTable,
-  // Operations to track changes for.
-  operations: [DiffTriggerOperation.INSERT, DiffTriggerOperation.UPDATE],
+  // Required WHEN clause per operation to filter inside the trigger. Use 'TRUE' to track all.
+  when: {
+    [DiffTriggerOperation.INSERT]: 'TRUE',
+    [DiffTriggerOperation.UPDATE]: sanitizeSQL`json_extract(NEW.data, '$.name') IS NOT NULL`
+  },
   // Specifies which columns from the source table to track in the diff records.
   // Defaults to all columns in the source table.
   // Use an empty array to track only the ID and operation.

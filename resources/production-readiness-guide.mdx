@@ -1,0 +1,124 @@
+---
+title: "Production Readiness Best Practices Guide"
+description: "Key recommendations for ensuring your deployment is ready for production"
+---
+
+Here are the recommended items you should implement as part of supporting PowerSync in a production environment.
+
+1. Client SDK Diagnostics - Implement a sync diagnostics screen/view in your client application that provides critical sync information.
+2. Issue Alerts - Trigger notifications when the PowerSync replicator runs into errors.
+
+# Client SDK Diagnostics
+
+It’s important to know what’s going on with a PowerSync enabled client application, this becomes useful during debugging issues with end users.
+We recommend adding a view/screen in your application that offers diagnostic information about a client. Here you would want to add the following client specific information:
+
+1. `connected` - Boolean; True if the client is connected to the PowerSync Service instance. False if not.
+2. `connecting` - Boolean; True if the client is attempting to connect to the PowerSync Service instance. False if not.
+3. `uploading` - Boolean; If the client has a network connection and changes in the upload queue are present this will be set to true when the client attempts to upload changes to the backend API in the `uploadData` function. This option can be found on the `dataFlowStatus` object.
+4. `downloading` - Boolean; If the client is connected to the PowerSync Service and new data is available, this will be set to true, else it will be false. This option can be found on the `dataFlowStatus` object.
+5. `hasSynced` - Boolean; True if the client completed a full sync at least once. False if the client never completed a full sync.
+6. `lastSyncedAt` - DateTime; Timestamp of when the client last completed a full sync.
+
+Each of the PowerSync Client SDKs have the `SyncStatus` class that can be used to access the fields mentioned above.
+
+- [Flutter](https://pub.dev/documentation/powersync/latest/powersync/SyncStatus-class.html)
+- [Kotlin](https://powersync-ja.github.io/powersync-kotlin/core/com.powersync.sync/-sync-status/index.html?query=data%20class%20SyncStatus%20:%20SyncStatusData)
+- [Swift](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata)
+- [Web](https://powersync-ja.github.io/powersync-js/web-sdk/classes/SyncStatus)
+- [React Native](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/SyncStatus)
+- [Node.js](https://powersync-ja.github.io/powersync-js/node-sdk/classes/SyncStatus)
+- [.NET (Alpha)](https://github.com/powersync-ja/powersync-dotnet/blob/2728eab0d13849686ff3f9a603040940744599e1/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs)
+
+In addition to the `SyncStatus` options above, it's also a good idea to see what the current length of the upload queue looks like.
+The upload queue contains all local mutations that need to be processed by the client specific `uploadData` implementation.
+
+To get this information you can simply count the number of rows present in the internal `ps_crud` SQLite table e.g.
+
+```sqlite
+SELECT COUNT(*) AS row_count FROM ps_crud;
+```
+
+If you're interested in learning more about the internal PowerSync SQLite schema, see the [Client Architecture](/architecture/client-architecture#schema) section of the docs.
+
+# Issue Alerts
+
+## PowerSync Cloud
+
+The PowerSync Cloud dashboard offers features and functionality that makes it easy to monitor the replication process from your source DB to your PowerSync Service instance and raise alerts when issues occur.
+
+We highly recommend you read the sections below and configure alerts as suggested.
+
+### Replication Issue Alerts
+At a minimum we recommend creating an issue alert for `Replication issues`. For details instructions on how to configure Issue Alerts, see the [Issue Alerts](/usage/tools/monitoring-and-alerting#issue-alerts) section of the [Monitoring and Alerting](/usage/tools/monitoring-and-alerting) docs.
+
+Here's quick example of what the Issue alert should look like to catch replication issues:
+<img
+    src="/images/resources/production-readiness-guide-1.png"
+    alt="Example replication issue alert setup"
+    className="rounded-lg"
+/>
+
+Once configured, create a [Webhook](/usage/tools/monitoring-and-alerting#webhooks) alert or [Email](/usage/tools/monitoring-and-alerting#email-notifications) notifications to ensure you are notified when replication issues arise.
+
+## PowerSync Self-Host
+
+To view the health and errors for a self-hosted PowerSync Service there are a few different options:
+
+### Health Check Endpoints
+The PowerSync Service offers a few HTTP endpoints you can probe to perform health checks on an instance. These endpoints will return a specific HTTP status code dependent on the current health of the instance, but will not give specific error information.
+
+For more information on this, see the [Health checks](self-hosting/lifecycle-maintenance/healthchecks#health-check-endpoints) docs.
+
+
+### Diagnostics API
+The PowerSync Service Diagnostics API is an easy way to get details around specific errors that are taking place on an instance.
+
+To configure replication issue alerts for self-hosted instances, we recommend using the Diagnostics API which ships with the PowerSync Service, as the source of replication issues that could occur.
+
+First, make sure you've configured the Diagnostics API for your PowerSync Service. To do so, follow the steps outlined in the [PowerSync Self-Host Diagnostics](/self-hosting/lifecycle-maintenance/diagnostics) docs.
+
+Once enabled, send a request to the Diagnostics API to see the current status. The response of the request from the Diagnostics API would look something like this:
+```json
+{
+	"data": {
+		"connections": [
+			{
+				"id": "default",
+				"postgres_uri": "postgresql://powersync:5432/postgres",
+				"connected": true,
+				"errors": []
+			}
+		],
+		"active_sync_rules": {
+			"connections": [
+				{
+					"id": "default",
+					"tag": "default",
+					"slot_name": "powersync_1_6489",
+					"initial_replication_done": true,
+					"last_lsn": "00000000/0AB81970",
+					"last_keepalive_ts": "2025-08-26T15:51:49.746Z",
+					"last_checkpoint_ts": "2025-08-26T15:44:10.624Z",
+					"replication_lag_bytes": 0,
+					"tables": [
+						{
+							"schema": "public",
+							"name": "counters",
+							"replication_id": [
+								"id"
+							],
+							"data_queries": true,
+							"parameter_queries": false,
+							"errors": []
+						}
+					]
+				}
+			],
+			"errors": []
+		}
+	}
+}
+```
+
+The easiest way to check for replication issues is to look at the Diagnostics endpoint on intervals and keep an eye on the errors arrays, this will populate errors as they arise on the service.

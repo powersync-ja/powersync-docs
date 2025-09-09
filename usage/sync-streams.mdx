@@ -31,8 +31,8 @@ Sync Streams will be supported alongside Sync Rules for the foreseeable future, 
   * Dart: todo
   * Kotlin: Coming soon, follow https://github.com/powersync-ja/powersync-kotlin/pull/257 for updates.
   * Swift: Coming soon.
-* Enable the [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks):
-  
+* Enable the [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks)
+  <Expandable title=" instructions">
   <Tabs>
     <Tab title="JS">
         In all our JavaScript SDKs, the new implementation can be enabled with the `clientImplementation` option when connecting:
@@ -84,8 +84,8 @@ Sync Streams will be supported alongside Sync Rules for the foreseeable future, 
 
         You can migrate back to the Swift client later by removing the option.
     </Tab>
-  </Tabs>
-
+  </Tabs>  
+  </Expandable>
 * For the time being, Sync Streams are defined in the same .yaml file as Sync Rules: `sync_rules.yaml` (PowerSync Cloud) or `config.yaml` (Open Edition/self-hosted). To enable Sync Streams, your `.yaml` file must contain the following configuration option:
   
   ```yaml
@@ -96,40 +96,39 @@ Sync Streams will be supported alongside Sync Rules for the foreseeable future, 
     ... # see Stream Definition Syntax section below
   ```
 
-
 # Stream Definition Syntax
 
-Developers specify **stream definitions** similar to how bucket definitions are defined in Sync Rules. A user then subscribes to the defined streams one or more times, with different sets of parameters.
+You specify **stream definitions** similar to how bucket definitions are defined in Sync Rules. A user then subscribes to the defined streams one or more times, with different sets of parameters.
 
 Syntax:
 ```yaml sync_rules.yaml
 streams:
   <stream_name>:
     query: string # similar to data queries in bucket definitions
-    auto_subscribe: boolean # true to sync this stream by default (similar to how Sync Rules work today), false (default) if clients should explicitly subscribe
+    auto_subscribe: boolean # true to subscribe to this stream by default (similar to how Sync Rules work today), false (default) if clients should explicitly subscribe
     priority: number # bucket priority, same as in bucket definitions
     accept_potentially_dangerous_queries: boolean # silence warnings on dangerous queries, same as in bucket definitions
 ```
 
-Example:
+Basic example:
 ```yaml sync_rules.yaml
 config:
   edition: 2
 streams:
-  issue:
+  issue: # Subscription to a specific issue
     query: select * from issues where id = subscription.parameters() ->> 'id' 
-  issue_comments:
+  issue_comments: # Subscription to a specific issue's comments
     query: select * from comments where issue_id = subscription.parameters() ->> 'id' 
 
 ```
 
-Supported syntax in the query is slightly different from Sync Rules' bucket definitions. Where bucket definitions had separate parameter and data queries, Sync Streams only have a single query. Instead of parameter queries, sync streams support a limited form of subqueries, for example:
+Where Sync Rules' bucket definitions had separate parameter and data queries, Sync Streams only have a single `query`. Instead of parameter queries, Sync Streams support a limited form of subqueries, for example:
 
 ```yaml sync_rules.yaml
--- use auth and stream parameters directly in the query
+# use auth and stream parameters directly in the query
 select * from issues where id = stream.parameters() ->> 'id' and owner_id = auth.user_id()
 
--- "in (subquery)" replaces parameter queries:
+# "in (subquery)" replaces parameter queries:
 select * from comments where issue_id in (select id from issues where owner_id = auth.user_id())
 ```
 
@@ -147,6 +146,120 @@ connection.parameters() -- client parameters, as JSON
 connection.parameter('key') -- short-hand for getting a specific client parameter
 ```
 
+## Usage Examples
+
+<Expandable title="Examples">
+
+### Global data
+Sync Rules:
+```yaml sync_rules.yaml
+  bucket_definitions:
+    global:
+        data:
+        # Sync all todos
+        - SELECT * FROM todos
+        # Sync all lists except archived ones
+        - SELECT * FROM lists WHERE archived = false
+```
+Sync Streams:
+
+"Global" data, i.e. data you want all of your users to have by default, are also defined as streams and you'd specify `auto_subscribe: true` so that users subscribe to them by default.
+```yaml sync_rules.yaml
+  streams:
+    all_todos:
+        query: SELECT * FROM todos
+        auto_subscribe: true 
+    unarchived_lists:
+        query: SELECT * FROM lists WHERE archived = false
+        auto_subscribe: true     
+
+```
+
+### A user's owned lists, with a priority
+Sync Rules:
+```yaml sync_rules.yaml
+  bucket_definitions:
+    user_lists:
+        priority: 1 # See https://docs.powersync.com/usage/use-case-examples/prioritized-sync  
+        parameters: SELECT request.user_id() as user_id
+        data:
+        - SELECT * FROM lists WHERE owner_id = bucket.user_id
+```
+Sync Streams:
+```yaml sync_rules.yaml
+  streams:
+    user_lists:
+        priority: 1 # See https://docs.powersync.com/usage/use-case-examples/prioritized-sync  
+        query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+```
+
+### Grouping by list_id
+Sync Rules:
+```yaml sync_rules.yaml
+  bucket_definitions:
+    owned_lists:
+        parameters: |
+            SELECT id as list_id FROM lists WHERE
+            owner_id = request.user_id()
+        data:
+        - SELECT * FROM lists WHERE lists.id = bucket.list_id
+        - SELECT * FROM todos WHERE todos.list_id = bucket.list_id
+```
+Sync Streams:
+```yaml sync_rules.yaml
+  streams:
+  owned_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+  list_todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')
+ 
+```
+
+### Specific columns/fields, renames and transformations
+
+Selecting, renaming or transforming specific columns/fields is identical between Sync Rules and Sync Streams:
+
+Sync Rules:
+```yaml sync_rules.yaml
+  bucket_definitions:
+    global:
+        data:
+        # Select specific columns
+        - SELECT id, name, owner_id FROM todos 
+        # Rename columns
+        - SELECT id, name, created_timestamp AS created_at FROM todos 
+        # Cast number to text
+        - SELECT id, item_number :: text AS item_number FROM todos
+        # Alternative syntax for the same cast
+        - SELECT id, CAST(item_number as TEXT) AS item_number FROM todos
+        # Convert binary data (bytea) to base64
+        - SELECT id, base64(thumbnail) AS thumbnail_base64 FROM todos
+        # Extract field from JSON or JSONB column
+        - SELECT id, metadata_json ->> 'description' AS description FROM todos
+        # Convert time to epoch number
+        - SELECT id, unixepoch(created_at) AS created_at FROM todos
+```
+Sync Streams:
+```yaml sync_rules.yaml
+  streams:
+    todos:
+        # Select specific columns
+        query: SELECT id, name, owner_id FROM todos 
+        # Rename columns
+        query: SELECT id, name, created_timestamp AS created_at FROM todos 
+        # Cast number to text
+        query: SELECT id, item_number :: text AS item_number FROM todos
+      # Alternative syntax for the same cast
+        query: id, CAST(item_number as TEXT) AS item_number FROM todos
+      # Convert binary data (bytea) to base64
+        query: id, base64(thumbnail) AS thumbnail_base64 FROM todos
+      # Extract field from JSON or JSONB column
+        query: id, metadata_json ->> 'description' AS description FROM todos
+      # Convert time to epoch number
+        query: id, unixepoch(created_at) AS created_at FROM todos
+        auto_subscribe: true 
+```
+</Expandable>
 # Client Side Syntax
 
 In general each SDK supports:

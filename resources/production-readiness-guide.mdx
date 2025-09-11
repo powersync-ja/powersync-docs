@@ -52,9 +52,7 @@ Implementing logging in your client application is essential for diagnosing issu
 <Warning>Important Warning: When using insertOnly tables for logging, do not set the log level to `DEBUG` in production. Debug-level logging generates an enormous volume of logs that would be extremely resource-intensive to upload and could overwhelm your backend API and/or client. Stick to `WARN` or `ERROR` levels for production logging.</Warning>
 
 ```typescript
-import { createBaseLogger, LogLevel } from '@powersync/web';
-
-// In AppSchema.ts
+// AppSchema.ts
 const log = new Table({
   message: column.text,
   level: column.text,
@@ -62,8 +60,13 @@ const log = new Table({
   raw: column.text,
 }, 
 { insertOnly: true });
+```
 
-// In System.ts
+```typescript
+// System.ts
+
+import { createBaseLogger, LogLevel } from '@powersync/web';
+
 const logger = createBaseLogger();
 logger.useDefaults();
 // Use WARN or higher in production to avoid excessive log volume
@@ -76,11 +79,10 @@ logger.setHandler((messages, context) => {
   const message = messages.join(' ');
   
   powerSync.execute(
-    `INSERT INTO log (id, message, level, timestamp, raw) VALUES (uuid(), ?, ?, ?, ?, ?)`, 
+    `INSERT INTO log (id, message, level, timestamp, raw) VALUES (uuid(), ?, ?, date(), ?)`, 
     [
       message,
       level,
-      new Date().toUTCString(),
       JSON.stringify({ messages, context }),
     ]
   );
@@ -97,6 +99,29 @@ logger.error('Critical sync error', {
 ### Option 2: Using something like `Sentry` for Log Aggregation (Recommended)
 
 ```typescript
+//main.tsx or entry point of your app
+
+createRoot(document.getElementById("root")!, 
+{
+  onUncaughtError: Sentry.reactErrorHandler((error, errorInfo) => {
+    console.warn('Uncaught error', error, errorInfo.componentStack);
+  }),
+  // Callback called when React catches an error in an ErrorBoundary.
+  onCaughtError: Sentry.reactErrorHandler(),
+  // Callback called when React automatically recovers from errors.
+  onRecoverableError: Sentry.reactErrorHandler(),
+}).render(
+  <StrictMode>
+    <SystemProvider>
+      <App />
+    </SystemProvider>
+  </StrictMode>
+);
+```
+
+```typescript
+// System.ts
+
 import * as Sentry from '@sentry/react';
 import { createBaseLogger, LogLevel } from '@powersync/react-native';;
 

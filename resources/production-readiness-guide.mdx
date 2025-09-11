@@ -6,9 +6,11 @@ description: "Key recommendations for ensuring your deployment is ready for prod
 Here are the recommended items you should implement as part of supporting PowerSync in a production environment.
 
 1. Client SDK Diagnostics - Implement a sync diagnostics screen/view in your client application that provides critical sync information.
-2. Issue Alerts - Trigger notifications when the PowerSync replicator runs into errors.
+2. Client logging - Implement logging in your client application to capture sync events and errors.
+3. Issue Alerts - Trigger notifications when the PowerSync replicator runs into errors.
 
-# Client SDK Diagnostics
+# Client specific
+## SDK Diagnostics
 
 It’s important to know what’s going on with a PowerSync enabled client application, this becomes useful during debugging issues with end users.
 We recommend adding a view/screen in your application that offers diagnostic information about a client. Here you would want to add the following client specific information:
@@ -40,6 +42,150 @@ SELECT COUNT(*) AS row_count FROM ps_crud;
 ```
 
 If you're interested in learning more about the internal PowerSync SQLite schema, see the [Client Architecture](/architecture/client-architecture#schema) section of the docs.
+
+## Client logging
+
+Implementing logging in your client application is essential for diagnosing issues that end users may encounter. Collecting details such as `user_id`, `timestamp`, `log_level`, `message`, `sdk_version`, and `raw_log_message` can provide valuable context when troubleshooting problems. There are several approaches to enabling client-side logging.
+
+### Option 1: Using an `insertOnly` Table
+
+<Warning>Important Warning: When using insertOnly tables for logging, do not set the log level to `DEBUG` in production. Debug-level logging generates an enormous volume of logs that would be extremely resource-intensive to upload and could overwhelm your backend API and/or client. Stick to `WARN` or `ERROR` levels for production logging.</Warning>
+
+```typescript
+import { createBaseLogger, LogLevel } from '@powersync/web';
+
+// In AppSchema.ts
+const log = new Table({
+  message: column.text,
+  level: column.text,
+  timestamp: column.text,
+  raw: column.text,
+}, 
+{ insertOnly: true });
+
+// In System.ts
+const logger = createBaseLogger();
+logger.useDefaults();
+// Use WARN or higher in production to avoid excessive log volume
+logger.setLevel(LogLevel.WARN);
+
+logger.setHandler((messages, context) => {
+  if (!context) return;
+
+  const level = context.level.name;
+  const message = messages.join(' ');
+  
+  powerSync.execute(
+    `INSERT INTO log (id, message, level, timestamp, raw) VALUES (uuid(), ?, ?, ?, ?, ?)`, 
+    [
+      message,
+      level,
+      new Date().toUTCString(),
+      JSON.stringify({ messages, context }),
+    ]
+  );
+});
+
+// Usage examples
+logger.warn('PowerSync connection failed', { userId: user.id, error: error.message });
+logger.error('Critical sync error', { 
+  operation: 'sync', 
+  errorCode: error.code,
+  timestamp: Date.now()
+});
+```
+### Option 2: Using something like `Sentry` for Log Aggregation (Recommended)
+
+```typescript
+import * as Sentry from '@sentry/react';
+import { createBaseLogger, LogLevel } from '@powersync/react-native';;
+
+// Initialize Sentry
+Sentry.init({
+  dsn: 'YOUR_SENTRY_DSN_HERE',
+  sendDefaultPii: true,
+  replaysSessionSampleRate: 0.1,
+  replaysOnErrorSampleRate: 1,
+  transport: Sentry.makeBrowserOfflineTransport(Sentry.makeFetchTransport) // Handle offline scenarios
+});
+
+const logger = createBaseLogger();
+logger.useDefaults();
+logger.setLevel(LogLevel.WARN);
+
+logger.setHandler((messages: any, context) => {
+  if (!context) return;
+
+  // Normalize messages into an array first
+  const msgs: any[] = Array.isArray(messages) ? messages : [messages];
+
+  // Convert all items to strings
+  const message = msgs
+    .filter(m => m != null)
+    .map((m) => {
+      if (typeof m === "string") return m;
+      if (m instanceof Error) return m.stack ?? m.message;
+      try {
+        return JSON.stringify(m);
+      } catch {
+        return String(m);
+      }
+    })
+    .join(" ");
+
+  const level = context.level?.name ?? "UNKNOWN";
+
+  const logData = {
+    timestamp: new Date().toUTCString(),
+    level,
+    message,
+    raw_context: context,
+  };
+
+  switch (context.level?.value) {
+    case LogLevel.ERROR.value:
+      Sentry.captureException(new Error(message), {
+        level: "error",
+        tags: { component: "powersync" },
+        extra: logData,
+      });
+      break;
+
+    case LogLevel.WARN.value:
+      Sentry.captureMessage(message, {
+        level: "warning",
+        tags: { component: "powersync" },
+        extra: logData,
+      });
+      break;
+
+    default:
+      Sentry.addBreadcrumb({
+        message,
+        level: "info",
+        data: logData,
+      });
+      break;
+  }
+});
+
+// Usage with additional context
+logger.error('PowerSync sync failed', {
+              userId: userID,
+              lastSyncTime: status?.lastSyncedAt,
+              networkStatus: status?.connected,
+              sdk_version: powerSync.sdkVersion || 'unknown',
+            });
+```
+
+### Best Practices
+
+- **Log Level Management:** Use appropriate log levels `(WARN/ERROR)` in production
+- **Structured Logging:** Include relevant context like user IDs, operation types, timestamps
+- **Offline Resilience:** Always have a local fallback for critical logs
+- **Performance:** Be mindful of log volume to avoid performance impacts
+- **Privacy:** Ensure sensitive data is not logged or is properly sanitized
+- **Retention:** Implement log rotation/cleanup for local storage to manage device storage (if applicable)
 
 # Issue Alerts
 

@@ -194,12 +194,48 @@ logger.setHandler((messages: any, context) => {
   }
 });
 
+// Create PowerSync instance
+export const powerSync = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'example.db'
+  },
+  logger: logger // Pass the logger to PowerSync
+});
+
+// Register a listener to monitor PowerSync status changes and log upload/download errors that are not handled directly by the SDK
+powerSync.registerListener({
+  statusChanged: (status) => {
+    // Check for download errors and log them with context
+    if(status.dataFlowStatus?.downloadError) {
+      logger.error("PowerSync sync download failed", {
+        userSession: connector.currentSession,    // Current user session for tracking
+        lastSyncAt: status?.lastSyncedAt,        // When the last successful sync occurred
+        connected: status?.connected,            // Network connection status
+        sdkVersion: powerSync.sdkVersion || 'unknown', // PowerSync SDK version for debugging
+        downloadError: status.dataFlowStatus?.downloadError // The actual download error details
+      });
+    }
+
+    // Check for upload errors and log them with context
+    if(status.dataFlowStatus?.uploadError) {
+      logger.error("PowerSync sync upload failed", {
+        userSession: connector.currentSession,    // Current user session for tracking
+        lastSyncAt: status?.lastSyncedAt,        // When the last successful sync occurred
+        connected: status?.connected,            // Network connection status
+        sdkVersion: powerSync.sdkVersion || 'unknown', // PowerSync SDK version for debugging
+        uploadError: status.dataFlowStatus?.uploadError   // The actual upload error details
+      });
+    }
+  }
+});
+
 // Usage with additional context
 logger.error('PowerSync sync failed', {
               userId: userID,
-              lastSyncTime: status?.lastSyncedAt,
-              networkStatus: status?.connected,
-              sdk_version: powerSync.sdkVersion || 'unknown',
+              lastSyncAt: status?.lastSyncedAt,
+              connected: status?.connected,
+              sdkVersion: powerSync.sdkVersion || 'unknown',
             });
 ```
 

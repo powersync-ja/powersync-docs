@@ -79,9 +79,6 @@ import { createBaseLogger, LogLevel } from '@powersync/react-native';;
 // Initialize Sentry
 Sentry.init({
   dsn: 'YOUR_SENTRY_DSN_HERE',
-  sendDefaultPii: true,
-  replaysSessionSampleRate: 0.1,
-  replaysOnErrorSampleRate: 1,
   transport: Sentry.makeBrowserOfflineTransport(Sentry.makeFetchTransport), // Handle offline scenarios
   enableLogs: true // Enable Sentry logging
 });
@@ -90,83 +87,32 @@ const logger = createBaseLogger();
 logger.useDefaults();
 logger.setLevel(LogLevel.WARN);
 
-logger.setHandler((messages: any, context) => {
-  // This functions implementation is up to you as the developer. 
-  // The following is just an example of how to implement it.
-  if (!context) {
-    console.warn('Logger context is missing');
-    return;
-  }
+logger.setHandler((messages, context) => {
+  if (!context?.level) return;
+  
+  // Get the main message and combine any additional data
+  const messageArray = Array.from(messages);
+  const mainMessage = String(messageArray[0] || 'Empty log message');
+  const extraData = messageArray.slice(1).reduce((acc, curr) => ({ ...acc, ...curr }), {});
+  
+  const level = context.level.name.toLowerCase();
 
-  // Convert Arguments object to real array
-  const messagesArray: unknown[] = Array.from(messages);
-
-  // Handle different message formats
-  let mainMessage = '';
-  let sentryContext: Record<string, any> = {};
-
-  if (messagesArray.length === 0) {
-    console.warn('Empty messages array received');
-    return;
-  }
-
-  // First item is the main message
-  mainMessage = String(messagesArray[0] || '');
-
-  // Combine all additional items into context
-  if (messagesArray.length > 1) {
-    sentryContext = messagesArray.slice(1).reduce((acc: Record<string, any>, curr: unknown) => {
-      if (curr && typeof curr === 'object' && !Array.isArray(curr) && curr !== null) {
-        // Type assertion since we've checked it's a non-null object
-        return { ...acc, ...(curr as Record<string, any>) };
-      }
-      // Handle non-object values by adding them as contextData
-      return { ...acc, additionalData: curr };
-    }, {});
-  }
-
-  // Ensure we have a message
-  if (!mainMessage.trim()) {
-    mainMessage = 'Empty log message';
-  }
-
-  // Add debug info if context is empty
-  if (Object.keys(sentryContext).length === 0) {
-    sentryContext = {
-      debugInfo: 'No additional context provided',
-      originalMessagesLength: messagesArray.length,
-      allMessages: messagesArray // This will help you see what was actually passed
-    };
-  }
-
+  // Addbreadcrumb: creates a trail of events leading up to errors
+  // This helps debug by showing PowerSync state/operations before crashes
+  // Breadcrumbs appear in Sentry error reports for context
+  // We capture all levels (including info/debug) since we might want to know
+  // what operations happened before an error occurred
   Sentry.addBreadcrumb({
     message: mainMessage,
-    level: (context.level?.name?.toLowerCase() || 'info') as Sentry.SeverityLevel,
-    data: sentryContext,
-    timestamp: Date.now(),
+    level: level as Sentry.SeverityLevel,
+    data: extraData,
+    timestamp: Date.now()
   });
-
-  // Get log level safely
-  const logLevel = context.level?.value ?? LogLevel.INFO.value;
-
-  // Use Sentry.logger methods for specific levels
-  switch (logLevel) {
-    case LogLevel.TRACE.value:
-    case LogLevel.DEBUG.value:
-    case LogLevel.INFO.value:
-      break;
-    case LogLevel.WARN.value:
-      console.warn("PowerSync WARN:", mainMessage, sentryContext);
-      Sentry.logger.warn(mainMessage, sentryContext);
-      break;
-    case LogLevel.ERROR.value:
-      console.error("PowerSync ERROR:", mainMessage, sentryContext);
-      Sentry.logger.error(mainMessage, sentryContext);
-      break;
-    default:
-      console.error("PowerSync UNKNOWN LEVEL:", mainMessage, sentryContext);
-      Sentry.logger.error(mainMessage, sentryContext);
-      break;
+  
+  // Only send warnings and errors to Sentry
+  if (level == 'warn' || level == 'error') {
+    console[level](`PowerSync ${level.toUpperCase()}:`, mainMessage, extraData);
+    Sentry.logger[level](mainMessage, extraData);
   }
 });
 

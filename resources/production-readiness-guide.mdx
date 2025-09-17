@@ -6,9 +6,11 @@ description: "Key recommendations for ensuring your deployment is ready for prod
 Here are the recommended items you should implement as part of supporting PowerSync in a production environment.
 
 1. Client SDK Diagnostics - Implement a sync diagnostics screen/view in your client application that provides critical sync information.
-2. Issue Alerts - Trigger notifications when the PowerSync replicator runs into errors.
+2. Client logging - Implement logging in your client application to capture sync events and errors.
+3. Issue Alerts - Trigger notifications when the PowerSync replicator runs into errors.
 
-# Client SDK Diagnostics
+# Client specific
+## SDK Diagnostics
 
 It’s important to know what’s going on with a PowerSync enabled client application, this becomes useful during debugging issues with end users.
 We recommend adding a view/screen in your application that offers diagnostic information about a client. Here you would want to add the following client specific information:
@@ -40,6 +42,133 @@ SELECT COUNT(*) AS row_count FROM ps_crud;
 ```
 
 If you're interested in learning more about the internal PowerSync SQLite schema, see the [Client Architecture](/architecture/client-architecture#schema) section of the docs.
+
+## Client logging
+
+### Using `Sentry logging` for Log Aggregation
+
+<Info>This is just an example of how to implement Sentry logging. The actual implementation is up to you as the developer. You don't have to use `Sentry logging`, but we recommend using some sort of log aggregation service in production.</Info>
+
+```typescript
+// main.tsx or entry point of your app
+
+createRoot(document.getElementById("root")!, 
+{
+  onUncaughtError: Sentry.reactErrorHandler((error, errorInfo) => {
+    console.warn('Uncaught error', error, errorInfo.componentStack);
+  }),
+  // Callback called when React catches an error in an ErrorBoundary.
+  onCaughtError: Sentry.reactErrorHandler(),
+  // Callback called when React automatically recovers from errors.
+  onRecoverableError: Sentry.reactErrorHandler(),
+}).render(
+  <StrictMode>
+    <SystemProvider>
+      <App />
+    </SystemProvider>
+  </StrictMode>
+);
+```
+
+```typescript
+// System.ts
+
+import * as Sentry from '@sentry/react';
+import { createBaseLogger, LogLevel } from '@powersync/react-native';;
+
+// Initialize Sentry
+Sentry.init({
+  dsn: 'YOUR_SENTRY_DSN_HERE',
+  transport: Sentry.makeBrowserOfflineTransport(Sentry.makeFetchTransport), // Handle offline scenarios
+  enableLogs: true // Enable Sentry logging
+});
+
+const logger = createBaseLogger();
+logger.useDefaults();
+logger.setLevel(LogLevel.WARN);
+
+logger.setHandler((messages, context) => {
+  if (!context?.level) return;
+  
+  // Get the main message and combine any additional data
+  const messageArray = Array.from(messages);
+  const mainMessage = String(messageArray[0] || 'Empty log message');
+  const extraData = messageArray.slice(1).reduce((acc, curr) => ({ ...acc, ...curr }), {});
+  
+  const level = context.level.name.toLowerCase();
+
+  // Addbreadcrumb: creates a trail of events leading up to errors
+  // This helps debug by showing PowerSync state/operations before crashes
+  // Breadcrumbs appear in Sentry error reports for context
+  // We capture all levels (including info/debug) since we might want to know
+  // what operations happened before an error occurred
+  Sentry.addBreadcrumb({
+    message: mainMessage,
+    level: level as Sentry.SeverityLevel,
+    data: extraData,
+    timestamp: Date.now()
+  });
+  
+  // Only send warnings and errors to Sentry
+  if (level == 'warn' || level == 'error') {
+    console[level](`PowerSync ${level.toUpperCase()}:`, mainMessage, extraData);
+    Sentry.logger[level](mainMessage, extraData);
+  }
+});
+
+// Create PowerSync instance
+export const powerSync = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'example.db'
+  },
+  logger: logger // Pass the logger to PowerSync
+});
+
+// Register a listener to monitor PowerSync status changes and log upload/download errors that are not handled directly by the SDK
+powerSync.registerListener({
+  statusChanged: (status) => {
+    // Check for download errors and log them with context
+    if(status.dataFlowStatus?.downloadError) {
+      logger.error("PowerSync sync download failed", {
+        userSession: connector.currentSession,    // Current user session for tracking
+        lastSyncAt: status?.lastSyncedAt,        // When the last successful sync occurred
+        connected: status?.connected,            // Network connection status
+        sdkVersion: powerSync.sdkVersion || 'unknown', // PowerSync SDK version for debugging
+        downloadError: status.dataFlowStatus?.downloadError // The actual download error details
+      });
+    }
+
+    // Check for upload errors and log them with context
+    if(status.dataFlowStatus?.uploadError) {
+      logger.error("PowerSync sync upload failed", {
+        userSession: connector.currentSession,    // Current user session for tracking
+        lastSyncAt: status?.lastSyncedAt,        // When the last successful sync occurred
+        connected: status?.connected,            // Network connection status
+        sdkVersion: powerSync.sdkVersion || 'unknown', // PowerSync SDK version for debugging
+        uploadError: status.dataFlowStatus?.uploadError   // The actual upload error details
+      });
+    }
+  }
+});
+
+// Usage with additional context
+logger.error('PowerSync sync failed', {
+              userId: userID,
+              lastSyncAt: status?.lastSyncedAt,
+              connected: status?.connected,
+              sdkVersion: powerSync.sdkVersion || 'unknown',
+            });
+```
+
+### Best Practices
+
+- **Log Level Management:** Use appropriate log levels `(WARN/ERROR)` in production
+- **Structured Logging:** Include relevant context like user IDs, operation types, timestamps
+- **Offline Resilience:** Always have a local fallback for critical logs
+- **Performance:** Be mindful of log volume to avoid performance impacts
+- **Privacy:** Ensure sensitive data is not logged or is properly sanitized
+- **Retention:** Implement log rotation/cleanup for local storage to manage device storage (if applicable)
 
 # Issue Alerts
 

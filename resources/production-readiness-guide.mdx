@@ -45,61 +45,12 @@ If you're interested in learning more about the internal PowerSync SQLite schema
 
 ## Client logging
 
-Implementing logging in your client application is essential for diagnosing issues that end users may encounter. Collecting details such as `user_id`, `timestamp`, `log_level`, `message`, `sdk_version`, and `raw_log_message` can provide valuable context when troubleshooting problems. There are several approaches to enabling client-side logging.
+### Using `Sentry logging` for Log Aggregation
 
-### Option 1: Using an `insertOnly` Table
-
-<Warning>Important Warning: When using insertOnly tables for logging, do not set the log level to `DEBUG` in production. Debug-level logging generates an enormous volume of logs that would be extremely resource-intensive to upload and could overwhelm your backend API and/or client. Stick to `WARN` or `ERROR` levels for production logging.</Warning>
+<Info>This is just an example of how to implement Sentry logging. The actual implementation is up to you as the developer. You don't have to use `Sentry logging`, but we recommend using some sort of log aggregation service in production.</Info>
 
 ```typescript
-// AppSchema.ts
-const log = new Table({
-  message: column.text,
-  level: column.text,
-  timestamp: column.text,
-  raw: column.text,
-}, 
-{ insertOnly: true });
-```
-
-```typescript
-// System.ts
-
-import { createBaseLogger, LogLevel } from '@powersync/web';
-
-const logger = createBaseLogger();
-logger.useDefaults();
-// Use WARN or higher in production to avoid excessive log volume
-logger.setLevel(LogLevel.WARN);
-
-logger.setHandler((messages, context) => {
-  if (!context) return;
-
-  const level = context.level.name;
-  const message = messages.join(' ');
-  
-  powerSync.execute(
-    `INSERT INTO log (id, message, level, timestamp, raw) VALUES (uuid(), ?, ?, date(), ?)`, 
-    [
-      message,
-      level,
-      JSON.stringify({ messages, context }),
-    ]
-  );
-});
-
-// Usage examples
-logger.warn('PowerSync connection failed', { userId: user.id, error: error.message });
-logger.error('Critical sync error', { 
-  operation: 'sync', 
-  errorCode: error.code,
-  timestamp: Date.now()
-});
-```
-### Option 2: Using something like `Sentry` for Log Aggregation (Recommended)
-
-```typescript
-//main.tsx or entry point of your app
+// main.tsx or entry point of your app
 
 createRoot(document.getElementById("root")!, 
 {
@@ -131,7 +82,8 @@ Sentry.init({
   sendDefaultPii: true,
   replaysSessionSampleRate: 0.1,
   replaysOnErrorSampleRate: 1,
-  transport: Sentry.makeBrowserOfflineTransport(Sentry.makeFetchTransport) // Handle offline scenarios
+  transport: Sentry.makeBrowserOfflineTransport(Sentry.makeFetchTransport), // Handle offline scenarios
+  enableLogs: true // Enable Sentry logging
 });
 
 const logger = createBaseLogger();
@@ -139,57 +91,81 @@ logger.useDefaults();
 logger.setLevel(LogLevel.WARN);
 
 logger.setHandler((messages: any, context) => {
-  if (!context) return;
+  // This functions implementation is up to you as the developer. 
+  // The following is just an example of how to implement it.
+  if (!context) {
+    console.warn('Logger context is missing');
+    return;
+  }
 
-  // Normalize messages into an array first
-  const msgs: any[] = Array.isArray(messages) ? messages : [messages];
+  // Convert Arguments object to real array
+  const messagesArray: unknown[] = Array.from(messages);
 
-  // Convert all items to strings
-  const message = msgs
-    .filter(m => m != null)
-    .map((m) => {
-      if (typeof m === "string") return m;
-      if (m instanceof Error) return m.stack ?? m.message;
-      try {
-        return JSON.stringify(m);
-      } catch {
-        return String(m);
+  // Handle different message formats
+  let mainMessage = '';
+  let sentryContext: Record<string, any> = {};
+
+  if (messagesArray.length === 0) {
+    console.warn('Empty messages array received');
+    return;
+  }
+
+  // First item is the main message
+  mainMessage = String(messagesArray[0] || '');
+
+  // Combine all additional items into context
+  if (messagesArray.length > 1) {
+    sentryContext = messagesArray.slice(1).reduce((acc: Record<string, any>, curr: unknown) => {
+      if (curr && typeof curr === 'object' && !Array.isArray(curr) && curr !== null) {
+        // Type assertion since we've checked it's a non-null object
+        return { ...acc, ...(curr as Record<string, any>) };
       }
-    })
-    .join(" ");
+      // Handle non-object values by adding them as contextData
+      return { ...acc, additionalData: curr };
+    }, {});
+  }
 
-  const level = context.level?.name ?? "UNKNOWN";
+  // Ensure we have a message
+  if (!mainMessage.trim()) {
+    mainMessage = 'Empty log message';
+  }
 
-  const logData = {
-    timestamp: new Date().toUTCString(),
-    level,
-    message,
-    raw_context: context,
-  };
+  // Add debug info if context is empty
+  if (Object.keys(sentryContext).length === 0) {
+    sentryContext = {
+      debugInfo: 'No additional context provided',
+      originalMessagesLength: messagesArray.length,
+      allMessages: messagesArray // This will help you see what was actually passed
+    };
+  }
 
-  switch (context.level?.value) {
-    case LogLevel.ERROR.value:
-      Sentry.captureException(new Error(message), {
-        level: "error",
-        tags: { component: "powersync" },
-        extra: logData,
-      });
+  Sentry.addBreadcrumb({
+    message: mainMessage,
+    level: (context.level?.name?.toLowerCase() || 'info') as Sentry.SeverityLevel,
+    data: sentryContext,
+    timestamp: Date.now(),
+  });
+
+  // Get log level safely
+  const logLevel = context.level?.value ?? LogLevel.INFO.value;
+
+  // Use Sentry.logger methods for specific levels
+  switch (logLevel) {
+    case LogLevel.TRACE.value:
+    case LogLevel.DEBUG.value:
+    case LogLevel.INFO.value:
       break;
-
     case LogLevel.WARN.value:
-      Sentry.captureMessage(message, {
-        level: "warning",
-        tags: { component: "powersync" },
-        extra: logData,
-      });
+      console.warn("PowerSync WARN:", mainMessage, sentryContext);
+      Sentry.logger.warn(mainMessage, sentryContext);
       break;
-
+    case LogLevel.ERROR.value:
+      console.error("PowerSync ERROR:", mainMessage, sentryContext);
+      Sentry.logger.error(mainMessage, sentryContext);
+      break;
     default:
-      Sentry.addBreadcrumb({
-        message,
-        level: "info",
-        data: logData,
-      });
+      console.error("PowerSync UNKNOWN LEVEL:", mainMessage, sentryContext);
+      Sentry.logger.error(mainMessage, sentryContext);
       break;
   }
 });

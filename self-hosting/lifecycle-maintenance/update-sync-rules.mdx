@@ -1,0 +1,86 @@
+---
+title: "Update Sync Rules"
+description: "How to update sync rules in a self-hosted PowerSync deployment"
+---
+
+## Overview
+
+PowerSync provides a HTTP endpoint `/api/sync-rules/v1/deploy` to update sync rules without redeploying the service.  
+This is useful for making quick adjustments or experimenting with synchronization logic at runtime.
+
+<Warning>
+This endpoint only works when no sync rules are defined in your `powersync.yaml` config file. Config file rules always take precedence over API-deployed rules.
+</Warning>
+
+## Usage
+
+### 1. Configure API token
+
+Add an API token to your `powersync.yaml`:
+
+```yaml powersync.yaml
+api:
+  tokens:
+    - !env PS_API_TOKEN
+```
+
+Restart the service to apply the configuration change.
+
+### 2. Deploy Sync Rules
+
+You can deploy sync rules either from a file: 
+
+```shell
+curl -X POST http://<your-powersync-host>:<port>/api/sync-rules/v1/deploy \
+     -H "Content-Type: application/yaml" \
+     -H "Authorization: Bearer ${PS_API_TOKEN}" \
+     -d @path/to/your/sync-rules.yaml
+```
+
+Or directly in the request body:
+
+```shell
+curl -X POST http://<your-powersync-host>:<port>/api/sync-rules/v1/deploy \
+     -H "Content-Type: application/yaml" \
+     -H "Authorization: Bearer ${PS_API_TOKEN}" \
+     -d 'bucket_definitions:
+            global:
+              data:
+                - SELECT * FROM public.users'
+```
+
+A successful request returns a `200 OK` response with the following body.
+The `slot_name` identifies the newly created [logical replication slot](/usage/lifecycle-maintenance/postgres-maintenance.mdx#logical-replication-slots).
+
+```json
+{ 
+  "data": {
+     "slot_name": "powersync_2_c1d3" 
+  }
+}
+```
+
+## Troubleshooting
+
+If you get the following error - this indicates that sync rules are already defined in your `powersync.yaml` file.
+
+```json
+{
+  "error": {
+    "status":422,
+    "code":"PSYNC_S4105",
+    "description":"Sync rules API disabled"
+  }
+}
+```
+
+To **resolve** this, simply remove sync rules from your config file and restart the service.
+
+If you get a `401 Unauthorized` error, double-check that your API token is correct and matches the token in your config file.
+
+## Notes
+<Info>
+Some important points to remember:
+- Sync rules deployed via the API get overwritten if sync rules are later added to `powersync.yaml` and the service is restarted.
+- Keep your API token secure. Store it in an environment variable or a secure vault.
+</Info>

@@ -1,0 +1,102 @@
+---
+title: "SQLDelight (Beta)"
+mode: wide
+---
+
+PowerSync supports the SQLDelight library to safely build and run SQL statements on all platforms.
+
+<Note>
+SQLDelight support is currently in beta.
+
+There are some limitations to be aware of:
+
+1. PowerSync migrates all databases to `user_version` 1 when created (it will never downgrade a database). If you want to use SQLDelight's schema versioning, start from version `2`.
+2. `CREATE TABLE` statements in `.sq` files are only used at build time to verify queries. At runtime, PowerSync creates tables as views from your schema and ignores those statements. If you want SQLDelight to manage the schema, configure PowerSync to use [raw tables](/usage/use-case-examples/raw-tables).
+3. Functions and tables provided by the PowerSync core SQLite extension are not visible to `.sq` files currently. We may revisit this with a custom dialect in the future.
+</Note>
+
+
+<Card
+  title="Maven: com.powersync:integration-sqldelight"
+  icon="/logo/maven.svg"
+  href="https://central.sonatype.com/artifact/com.powersync/integration-sqldelight"
+  horizontal
+/>
+
+## Features
+
+When adopting SQLDelight with PowerSync, you can safely define your SQL statements and let
+the SQLDelight compiler generate code to map rows into typed classes.
+All `Flow`s from SQLDelight will automatically update for PowerSync writes (including those from
+sync).
+
+## Installation
+
+This guide assumes that you already have a PowerSync database for Kotlin. See the [general documentation](/client-sdk-references/kotlin-multiplatform) for notes on getting started with PowerSync.
+
+To use SQLDelight, you can generally follow [SQLDelight](https://sqldelight.github.io/sqldelight/2.1.0/multiplatform_sqlite/) documentation. A few steps are different though, and these are highlighted here.
+
+In addition to SQLDelight, add a dependency on `com.powersync:integration-sqldelight`, using the same version you use for the
+PowerSync Kotlin SDK.
+
+When defining your schema, note that the `CREATE TABLE` statements don't actually run. PowerSync creates views
+for the schema passed to the `PowerSyncDatabase` factory instead. This also means that triggers, views and indexes
+defined in `.sq` files are ignored.
+To ensure your defined queries are valid, the `CREATE TABLE` syntax should still mirror your PowerSync schema.
+
+Next, ensure that SQLDelight is not linking `sqlite3` (the PowerSync SDK takes care of that,
+and you don't want to link it twice). Also, ensure the async generator is active because the
+PowerSync driver does not support synchronous reads:
+
+```Kotlin
+sqldelight {
+    databases {
+        linkSqlite.set(false)
+
+        create("YourDatabase") {
+            generateAsync.set(true)
+            deriveSchemaFromMigrations.set(false)
+
+            dialect("app.cash.sqldelight:sqlite-3-38-dialect")
+        }
+    }
+}
+```
+
+## Usage
+
+
+Open a PowerSync database [in the usual way](https://docs.powersync.com/client-sdk-references/kotlin-multiplatform#getting-started)
+and finally pass it to the constructor of your generated SQLDelight database:
+
+```kotlin
+val powersync = PowerSyncDatabase(...)
+val sqldelight = Yourdatabase(PowerSyncDriver(powersync))
+```
+
+That's it! The `PowerSyncDriver` will automatically keep the two databases in sync and update SQLDelight flows
+for all writes, regardless of whether they've been issued against the `sqldelight` database or against the source `powersync` connection.
+
+### Example
+
+```sql
+CREATE TABLE todo_items (
+    id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    author_id TEXT NOT NULL  
+);
+
+all:
+SELECT * FROM todo_items;
+
+create:
+INSERT INTO todo_items (id, title, author_id) VALUES (uuid(), ?, ?);
+```
+
+```Kotlin
+sqldelight.todosQueries.create("my title", "my content")
+
+sqldelight.todosQueries.all().asFlow().mapToList(Dispatchers.IO).collect {
+    println("This flow emits events for writes from SQLDelight and synced data from PowerSync")
+}
+```

@@ -1,0 +1,167 @@
+---
+title: "Room (Alpha)"
+mode: wide
+---
+
+<Warning>
+Room support is currently in alpha.
+
+While we don't expect any major changes and the library is tested on multiple platforms, it depends on raw tables,
+an unstable PowerSync feature.
+</Warning>
+
+PowerSync supports the Room database library for Kotlin (Multiplatform).
+
+<Card
+  title="Maven: com.powersync:integration-room"
+  icon="/logo/maven.svg"
+  href="https://central.sonatype.com/artifact/com.powersync/integration-room"
+  horizontal
+/>
+
+## Features
+
+When adopting the Room integration for PowerSync:
+
+- PowerSync will use the connection pool of the Room database for efficient queries (avoiding e.g. "database is locked" errors).
+- Local writes from Room will update watched PowerSync queries, and they will trigger a CRUD upload.
+- Writes from PowerSync (including those made by the sync client) will immediately update your Room flows.
+
+## Installation
+
+PowerSync acts as an addon to your existing Room database, which means that (unlike with most other PowerSync SDKs)
+you are still responsible for schema management.
+Room requires [raw tables](/usage/use-case-examples/raw-tables), as the views managed by PowerSync are incompatible with
+the schema verification when Room opens the database.
+
+To add PowerSync to your Room database,
+
+1. Add a dependency on `com.powersync:core` and `com.powersync:integration-room`.
+2. Add a dependency on `androidx.sqlite:sqlite-bundled`: Since PowerSync uses a SQLite extension (which are unsupported on
+   the platform SQLite libraries on both Android and iOS), you need to bundle a SQLite with your app.
+   On the `RoomDatabase.Builder`, call `setDriver()` with a PowerSync-enabled driver:
+    ```Kotlin
+    val driver = BundledSQLiteDriver().also {
+        it.loadPowerSyncExtension() // Extension method by PowerSync
+    }
+    
+    Room.databaseBuilder(...).setDriver(driver).build()
+    ```
+
+## Setup
+
+Because PowerSync syncs into tables that you've created with Room, it needs to know which SQL statements to run for
+inserts, updates and deletes.
+
+Let's say you had a table like the following:
+
+```Kotlin
+@Entity(tableName = "todos")
+data class TodoItem(
+    // Note that PowerSync uses textual ids (usually randomly-generated UUIDs)
+    @PrimaryKey val id: String
+    val description: String
+    @ColumnInfo(name="created_by") val authorId: String
+)
+```
+
+To inform PowerSync about that table, include it as a `RawTable` in the schema:
+
+```Kotlin
+val schema = Schema(
+    RawTable(
+        name = "todos",
+        put =
+            PendingStatement(
+                "INSERT OR REPLACE INTO todos (id, description, created_by) VALUES (?, ?, ?)",
+                listOf(
+                    PendingStatementParameter.Id,
+                    PendingStatementParameter.Column("description"),
+                    PendingStatementParameter.Column("created_by"),
+                ),
+            ),
+        delete =
+            PendingStatement(
+                "DELETE FROM todos WHERE id = ?",
+                listOf(PendingStatementParameter.Id),
+            ),
+    ),
+)
+```
+
+Here:
+
+- The SQL statements must match the schema created by Room.
+- The `RawTable.name` and `PendingStatementParameter.Column` values must match the table and column names of the synced
+  table from the PowerSync service, derived from your sync rules.
+
+For more details, see [raw tables](/usage/use-case-examples/raw-tables).
+
+After these steps, you can open your Room database like you normally would. Then, you can use the
+following method to obtain  a `PowerSyncDatabase` instance which is backed by Room:
+
+```Kotlin
+val schema = Schema(...)
+val pool = RoomConnectionPool(yourRoomDatabase, schema)
+val powersync = PowerSyncDatabase.opened(
+    pool = pool,
+    scope = this,
+    schema = schema,
+    identifier = "databaseName", // Prefer to use the same path/name as your Room database
+    logger = Logger,
+)
+```
+
+The returned `PowerSyncDatabase` behaves just like a regular PowerSync database, meaning that you can call
+`connect` to establish a sync connection:
+
+```Kotlin
+powersync.connect(
+    YourBackendConnector(),
+    options = SyncOptions(
+        // Raw tables require the new client implementation.
+        newClientImplementation = true
+    )
+)
+```
+
+## Usage
+
+To run queries, you can keep defining Room DAOs in the usual way:
+
+```Kotlin
+@Dao
+interface TodoItemsDao {
+    @Insert
+    suspend fun create(item: TodoItem)
+
+    @Query("SELECT * FROM todo_item")
+    fun watchAll(): Flow<List<TodoItem>>
+}
+
+// ...
+
+todoItemsDao.create(TodoItem(
+    id = Uuid.random()toHexDashString(),
+    title = "My first todo item",
+    authorId = currentUserId
+))
+
+todoItemsDao.watchAll().collect { items ->
+    println("This flow emits events for writes from Room and synced data from PowerSync")
+}
+```
+
+## Local writes
+
+To transfer local writes from Room to PowerSync:
+
+1. Create triggers on your Room tables to insert rows into `ps_crud`. See [raw tables](/usage/use-case-examples/raw-tables#capture-local-writes-with-triggers) for details.
+2. Ensure the `RoomConnectionPool` is constructed with your `schema` (as shown above). When the schema is provided, the pool will notify PowerSync about writes to every raw table referenced in the schema.
+3. Alternatively, after performing writes through Room, invoke:
+
+```Kotlin
+pool.transferPendingRoomUpdatesToPowerSync()
+```
+
+This explicitly transfers any pending Room updates to PowerSync if you prefer to control the timing.

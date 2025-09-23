@@ -1,0 +1,101 @@
+---
+title: "Compatibility"
+description: "Opt in to backwards-incompatible sync changes."
+---
+
+To ensure consistency, it is really important that the PowerSync Service does not interpret the same source
+row in different ways after updating to a new version.
+At the same time, we want to fix bugs or other inaccuracies that have accumulated during the development of
+the Service.
+
+For maximum backwards-compatibility, we keep these issues on by default when fixing them. An option that
+can be defined in your Sync Rules can be used to opt in to these fixes.
+
+## Overview
+
+To control how PowerSync interprets rows, use the `config` block at the end of a sync rules definition:
+
+```yaml
+bucket_definitions:
+  # ...
+
+config:
+  edition: 1
+  timestamps_iso8601: true
+```
+
+Fixes can be enabled in two ways:
+
+1. Setting `edition: x` enables all fixes for that compatibility edition. This is the recommended approach.
+2. If you need some fixes but aren't ready to update to a new compatibility edition, use `name_of_fix: true`.
+
+## Supported fixes
+
+This table lists all fixes currently supported:
+
+| Name                       | Explanation                        | Added in     | Fixed in edition |
+|----------------------------|------------------------------------|--------------|------------------|
+| `timestamps_iso8601`       | [Link](#timestamps-iso8601)        | 1.15.0       | 2                |
+| `versioned_bucket_ids`     | [Link](#versioned-bucket-ids)      | 1.15.0       | 2                |
+| `fixed_json_extract`       | [Link](#fixed-json-extract)        | 1.15.0       | 2                |
+| `custom_postgres_types`    | [Link](#custom-postgres-types).    | 1.15.3       | 2                |
+
+### `timestamps_iso8601`
+
+PowerSync is supposed to encode timestamps according to the ISO-8601 standard.
+Without this fix, the service encoded timestamps from MongoDB and Postgres source databases incorrectly.
+To ensure time values from Postgres compare lexicographically, they're also padded to six digits of accuracy when encoded.
+Since MongoDB only stores values with an accuracy of milliseconds, only three digits of accuracy are used.
+
+For instance, the value `2025-09-22T14:29:30` would be encoded as follows:
+
+- For Postgres: `2025-09-22 14:29:30` without the fix, `2025-09-22T14:29:30.000000` with the fix applied.
+- For MongoDB: `2025-09-22 14:29:30.000` without the fix, `2025-09-22T14:29:30.000` with the fix applied.
+
+Note that MySQL has never been affected by this issue, and thus behaves the same regardless of the option used.
+
+### `versioned_bucket_ids`
+
+Sync Rules define buckets, which rows to sync are then assigned to. When you run a full defragmentation or
+redeploy Sync Rules, the same bucket identifiers are re-used when processing data again.
+
+Because the second iteration uses different checksums for the same bucket ids, clients may sync data
+twice before realizing that something is off and starting from scratch.
+
+Applying this fix improves client-side progress estimation and is more efficient, since data would not get
+downloaded twice.
+
+### `fixed_json_extract`
+
+This fixes the `json_extract` functions as well as the `->` and `->>` operators in sync rules to behave similar
+to recent SQLite versions: We only split on `.` if the path starts with `$.`.
+
+For instance, `'json_extract({"foo.bar": "baz"}', 'foo.bar')` would evaluate to:
+
+1. `baz` with the option enabled.
+2. `null` with the option disabled.
+
+### `custom_postgres_types`
+
+If you have custom Postgres types in your backend database schema, older versions of the PowerSync Service
+would not recognize these values and sync them with the textual wire representation used by Postgres.
+This is especially noticeable when defining `DOMAIN` types with e.g. a `REAL` inner type: The wrapped
+`DOMAIN` type should get synced as a real value as well, but it would actually get synced as a string.
+
+With this fix applied:
+
+- `DOMAIN TYPE`s are synced as their inner type.
+- Array types of custom types get parsed correctly, and sync as a JSON array.
+- Custom types get parsed and synced as a JSON object containing their members.
+- Ranges sync as a JSON object corresponding to the following TypeScript definition:
+  ```TypeScript
+  export type Range<T> =
+    | {
+        lower: T | null;
+        upper: T | null;
+        lower_exclusive: boolean;
+        upper_exclusive: boolean;
+        }
+    | 'empty';
+  ```
+- Multi-ranges sync as an array of ranges.

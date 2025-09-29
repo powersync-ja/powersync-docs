@@ -3,7 +3,13 @@ title: "FAQ & Troubleshooting"
 description: "Usage and billing FAQs and troubleshooting strategies."
 ---
 
-# Usage Metrics FAQs
+<Note>
+  We have simplified our Cloud pricing plans and billing. Learn more in the [blog post](https://www.powersync.com/blog/simplified-cloud-pricing-based-on-data-synced).
+
+  We are continuously improving the reporting and tools to help you troubleshoot usage. Please [reach out](/resources/contact-us) if you have any feedback or need help understanding or managing your usage.
+</Note>
+
+# Usage / Billing Metrics FAQs
 
 <AccordionGroup>
   <Accordion title="Where can I review my PowerSync Service usage?">
@@ -22,33 +28,60 @@ description: "Usage and billing FAQs and troubleshooting strategies."
     - New clients need to download this entire history when they first sync
     - Existing clients only download new operations since their last sync
 
-    As a result, sync operation counts may significantly exceed the number of actual data mutations, especially for frequently updated rows. This is normal behavior, but you can manage it through:
+    As a result, sync operation counts may significantly exceed the number of actual data mutations, especially for frequently updated rows. This is normal behavior.
+
+    You can manage operations history through:
 
     - Daily automatic compacting (built into PowerSync Cloud)
     - Regular defragmentation (recommended for frequently updated data)
 
     See the [Usage Troubleshooting](#usage-troubleshooting) section for more details on managing operations history.
+
+    **Billing note:** Sync operations are not billed under the [updated Cloud pricing model](https://www.powersync.com/blog/simplified-cloud-pricing-based-on-data-synced). Data throughput billing is based on "data synced" instead. You can still use sync operation counts for diagnostics.
   </Accordion>
   <Accordion title="What are concurrent connections?">
     A concurrent connection represents one client actively connected to the PowerSync Service. When a user device runs an app using PowerSync and calls `.connect()`, it establishes one long-lived connection for streaming real-time updates.
 
     Some key points about concurrent connections:
 
-    - Billing is based on peak concurrent connections (highest number of simultaneous connections) during the billing cycle
+    - Billing is based on peak concurrent connections (highest number of simultaneous connections) during the billing cycle.
+    - **Billing (Pro/Team)**: 1,000 included, then $30 per 1,000 over the included amount
     - The PowerSync Cloud Pro plan is limited to 3,000 concurrent connections, and the PowerSync Cloud Team plan is limited to 10,000 concurrent connections by default
     - PowerSync Cloud Free plans are limited to 50 peak concurrent connections
     - When connection limits are reached, new connection attempts receive a 429 HTTP response while existing connections continue syncing. The client will continuously retry failed connection attempts, after a delay. Clients should eventually be connected once connection capacity is available.
   </Accordion>
-  <Accordion title="What comprises data processing?">
-    Data processing is calculated as the total uncompressed size of:
+  <Accordion title="What is data synced?">
+    Data synced is now the only metric we use to measure data throughput for billing in our [updated Cloud pricing model](https://www.powersync.com/blog/simplified-cloud-pricing-based-on-data-synced).
+
+    It measures the total uncompressed size of data synced from PowerSync Service instances to client devices. If the same data is synced by multiple users, each transfer counts toward the total volume.
+    
+    **Billing (Pro/Team)**: 30 GB included, then $1.00 per GB over the included amount.
+  </Accordion>
+  <Accordion title="What is data hosted?">
+    The PowerSync Service hosts:
+
+    1. A current copy of the data, which should be roughly equal to the subset of your source data that is covered by your sync rules configuration;
+    2. A history of all operations on data in buckets. This can be bigger than the source, since it includes the history, and one row can be in multiple buckets; and
+    3. Data for parameter lookups. This should be fairly small in most cases.
+
+    Because of this structure, your hosted data size may be larger than your source database size.
+
+    **Billing (Pro/Team)**: 10 GB included, then $1.00 per GB over the included amount.
+  </Accordion>
+  <Accordion title="What comprises data processing (legacy)?">
+    **Note** that the data processing billing metric has been removed in our [updated Cloud pricing model](https://www.powersync.com/blog/simplified-cloud-pricing-based-on-data-synced).
+
+    Data processing was calculated as the total uncompressed size of:
 
     - Data replicated from your source database(s) to PowerSync Service instances
     - Data synced from PowerSync Service instances to user devices
 
     These values are available in your [Usage metrics](/usage/tools/monitoring-and-alerting#usage-metrics) as "Data replicated per day/hour" and "Data synced per day/hour".
   </Accordion>
-  <Accordion title="What is the difference between data/operations replicated vs synced?">
-    Data/operations replicated refers to activity from your backend database (Postgres/MongoDB or MySQL database) to the PowerSync Service, whereas data/operations synced refer to activity from the PowerSync Service to client devices.
+  <Accordion title="What is the difference between data replicated vs data synced?">
+    Data replicated refers to activity from your backend database (Postgres/MongoDB or MySQL database) to the PowerSync Service — this is not billed.
+
+    Data synced refers to data streamed from the PowerSync Service to client devices — this is used for billing.
   </Accordion>
 </AccordionGroup>
 
@@ -62,7 +95,22 @@ description: "Usage and billing FAQs and troubleshooting strategies."
     You can update your billing details in the **Billing** tab of the [Admin Portal](https://accounts.journeyapps.com/portal/admin/).
   </Accordion>
   <Accordion title="Can I view my historic invoices?">
-    We are planning to surface these in the Admin Portal, but this is not yet available. In the meantime, you can review your historic invoices directly in the Stripe Customer Portal, by signing in with your billing email [here](https://billing.stripe.com/p/login/7sI6pU48L42cguc7ss).
+    You can review your historic invoices directly in the Stripe Customer Portal, by signing in with your billing email [here](https://billing.stripe.com/p/login/7sI6pU48L42cguc7ss). We may surface these in the Admin Portal in the future.
+  </Accordion>
+  <Accordion title="Which usage metrics are billed under the new pricing model?">
+    Under the updated pricing for Pro and Team plans:
+
+    - Data synced: 30 GB included, then $1.00 per GB
+    - Peak concurrent connections: 1,000 included, then $30 per 1,000
+    - Data hosted: 10 GB included, then $1.00 per GB (unchanged)
+
+    Not billed:
+
+    - Replication operations (count)
+    - Data replicated (per GB)
+    - Sync operations (count)
+
+    See the blog post for details: [Simplified Cloud Pricing Based On Data Synced](https://www.powersync.com/blog/simplified-cloud-pricing-based-on-data-synced). For plan specifics, see [our Pricing](https://www.powersync.com/pricing).
   </Accordion>
 </AccordionGroup>
 
@@ -75,6 +123,8 @@ If you're seeing unexpected spikes in your usage metrics, here's how to diagnose
 The most common cause of seeing excessive concurrent connections is opening multiple copies of `PowerSyncDatabase`, and calling `.connect()` on each. Debug your connection handling by reviewing your code and [Instance logs](/usage/tools/monitoring-and-alerting#instance-logs). Make sure you're only opening one connection per user/session.
 
 ## Sync operations
+
+Sync operations are not billed in our updated pricing model. They can still be useful to diagnose spikes in data synced and to understand how your data mutations affect usage.
 
 While sync operations typically correspond to data mutations on synced rows (those in your Sync Rules), there are several scenarios that can affect your operation count:
 
@@ -100,21 +150,41 @@ While sync operations typically correspond to data mutations on synced rows (tho
 
    While selectively syncing columns helps with data access control and reducing data transfer size, it doesn't reduce the number of sync operations.
 
+
+## Data synced
+
+Data synced measures the total uncompressed bytes streamed from the PowerSync Service to clients. Spikes typically come from either lots of operations (high churn) or large rows (wide payloads), and can also occur during first-time syncs, defragmentation, or Sync Rule changes.
+
+### Diagnose High Data Synced
+
+1. Pinpoint when it spiked
+   - Use [Usage Metrics](/usage/tools/monitoring-and-alerting#usage-metrics) to find the exact hour/day of the spike.
+2. Inspect instance logs for size
+   - In [Instance Logs](/usage/tools/monitoring-and-alerting#instance-logs), enable Metadata and search for "Sync stream complete" to see the size of data transferred and operations synced per stream.
+    <Frame caption="Example of 'Sync stream complete' logs">
+      ![](/images/resources/instance-logs-sync-stream-complete.png)
+    </Frame>
+1. Compare operations vs row sizes
+   - If operations are high and size scales with it, you likely have tables that are being updated frequently.
+     - Alternatively, a large operations history built up in your database. See our [defragmenting guide](/usage/lifecycle-maintenance/compacting-buckets#defragmenting).
+   - If operations are moderate but size is large, your rows are likely wide (e.g. large big JSON columns).
+2. Identify large payloads in your DB
+   - Check typical row sizes for frequently updated tables and look for large columns (e.g. long TEXT/JSON fields, embedded files).
+3. Consider recent maintenance and app changes
+   - Defragmentation and Sync Rule deploys cause existing clients to re-sync content, temporarily increasing data synced.
+   - New app installs trigger initial full sync; expect higher usage when onboarding new of users.
+
 ## Data hosted
 
-The PowerSync Service hosts:
+Your hosted data size may be larger than your source database size, because it also includes the history of all operations on data in buckets. This can be bigger than the source, since it includes the history, and one row can be in multiple buckets.
 
-1. A current copy of the data, which should be roughly equal to the subset of your source data that is covered by your sync rules configuration;
-2. A history of all operations on data in buckets. This can be bigger than the source, since it includes the history, and one row can be in multiple buckets; and
-3. Data for parameter lookups. This should be fairly small in most cases.
-
-Because of this structure, your hosted data size may be larger than your source database size.
+Data hosted can temporarily spike during Sync Rule deployments and defragmentation, because buckets are reprocessed. During this window, both the previous and new bucket data may exist concurrently.
 
 # Troubleshooting Strategies
 
-1. **Identify Timing**
+## 1. **Identify Timing**
    - Use [Usage Metrics](/usage/tools/monitoring-and-alerting#usage-metrics) to pinpoint usage spikes.
-2. **Review Logs**
+## 2. **Review Logs**
    - Use [Instance Logs](/usage/tools/monitoring-and-alerting#instance-logs) to review sync service logs during the spike(s).
    - Enable the **Metadata** option.
    - Search for "Sync stream complete" entries (use your browser's search function) to review:
@@ -125,9 +195,9 @@ Because of this structure, your hosted data size may be larger than your source 
      <Frame caption="Example of 'Sync stream complete' logs">
        ![](/images/resources/instance-logs-sync-stream-complete.png)
      </Frame>
-3. **Compare Metrics**
+## 3. **Compare Metrics**
    Use the [Diagnostics app](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to compare total rows vs. operations synced to the user device. If you are seeing a much higher number of operations, you might benefit from [defragmentation](/usage/lifecycle-maintenance/compacting-buckets#defragmenting).
-4. **Detailed Sync Operations**
+## 4. **Detailed Sync Operations**
    - Use the [test-client](https://github.com/powersync-ja/powersync-service/blob/main/test-client/src/bin.ts)'s `fetch-operations` command with the `--raw` flag:
 
      ```bash

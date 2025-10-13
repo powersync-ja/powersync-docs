@@ -5,90 +5,44 @@ description: "Client-side full-text search (FTS) is available using the [SQLite 
 
 This requires creating a separate FTS5 table(s) to index the data, and updating the table(s) using SQLite triggers.
 
-<Note>
-  Note that the availability of FTS is dependent on the underlying `sqlite` package used, as it is an extension that must first be enabled in the package.
-</Note>
+Full-text search has been demonstrated in the following SDKs:
 
-Full-text search is currently available in the following client SDKs, and we plan to extend support to all SDKs in the near future:
+- [**Flutter SDK**](/client-sdk-references/flutter): Uses the [sqlite_async](https://pub.dev/documentation/sqlite_async/latest/) package for migrations
+- [**JavaScript Web SDK**](/client-sdk-references/javascript-web): Requires version 0.5.0 or greater (including [wa-sqlite](https://github.com/powersync-ja/wa-sqlite) 0.2.0+)
+- [**React Native SDK**](/client-sdk-references/react-native-and-expo): Requires version 1.16.0 or greater (including [@powersync/react-native-quick-sqlite](https://github.com/powersync-ja/react-native-quick-sqlite) 2.2.1+)
+- [**Swift SDK**](/client-sdk-references/swift)
 
-* [**Flutter SDK**](/client-sdk-references/flutter): Uses the [sqlite_async](https://pub.dev/documentation/sqlite_async/latest/) package for migrations
-* [**JavaScript Web SDK**](/client-sdk-references/javascript-web): Requires version 0.5.0 or greater (including [wa-sqlite](https://github.com/powersync-ja/wa-sqlite) 0.2.0+)
-* [**React Native SDK**](/client-sdk-references/react-native-and-expo): Requires version 1.16.0 or greater (including [@powersync/react-native-quick-sqlite](https://github.com/powersync-ja/react-native-quick-sqlite) 2.2.1+)
-* [**Swift SDK**](/client-sdk-references/swift): Demonstrated in the To-Do List demo app (see below)
+Note that the availability of FTS in our SDKs is dependent on the underlying `sqlite` package used. It may be supported in our other SDKs, especially if the `FTS5` extension is available, but would be untested. Check with us on [Discord](https://discord.gg/powersync) if you have a use case and need help getting started.
 
 ## Example Implementations
 
 FTS is implemented in the following demo apps:
 
-* [Flutter To-Do List App](https://github.com/powersync-ja/powersync.dart/tree/master/demos/supabase-todolist)
-* [React To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist)
-* [React Native To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist)
-* [Swift To-Do List App](https://github.com/powersync-ja/powersync-swift/tree/main/Demo)
+- [Flutter To-Do List App](https://github.com/powersync-ja/powersync.dart/tree/master/demos/supabase-todolist)
+- [React To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist)
+- [React Native To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist)
+- [Swift To-Do List App](https://github.com/powersync-ja/powersync-swift/tree/main/Demo)
 
-We explain these implementations in more detail below. Example code is shown mainly in Dart, but references to the React, React Native and Swift equivalents are included where relevant, so you should be able to cross-reference.
+We explain the Flutter/Dart implementation in more detail below. Example code is shown mainly in Dart, but references to the React, React Native and Swift equivalents are included where relevant, so you should be able to cross-reference.
 
-## Walkthrough: Full-text search in the To-Do List Demo App
+## Walkthrough (Dart): Full-text search in the To-Do List Demo App
 
 ### Setup
 
-FTS tables are created when instantiating the client-side PowerSync database (DB).
-
-<Tabs>
-<Tab title="Dart">
-  ```dart
-  // https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/powersync.dart#L186
-
-  Future<void> openDatabase() async {
-    ...
-    await configureFts(db);
-  }
-  ```
-</Tab>
-<Tab title="React">
-  ```ts
-  // https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/providers/SystemProvider.tsx#L41
-
-  SystemProvider = ({ children }: { children: React.ReactNode }) => {
-    ...
-    React.useEffect(() => {
-    ...
-        configureFts();
-    })
-  }
-  ```
-</Tab>
-<Tab title="React Native">
-  ```ts
-  // https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/system.ts#L75
-
-  export class System {
-    ...
-    powersync: PowerSyncDatabase;
-    ...
-    async init() {
-      ...
-      await configureFts(this.powersync);
-    }
-  }
-  ```
-</Tab>
-<Tab title="Swift">
-  
-See  https://github.com/powersync-ja/powersync-swift/blob/main/Demo/PowerSyncExample/PowerSync/SystemManager.swift#L89
-
-</Tab>
-</Tabs>
-
-
 First, we need to set up the FTS tables to match the `lists` and `todos` tables already created in this demo app. Don't worry if you already have data in the tables, as it will be copied into the new FTS tables.
 
-To simplify implementation these examples make use of SQLite migrations. The migrations are run in [migrations/fts\_setup.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/migrations/fts_setup.dart) in the Flutter implementation. Here we use the [sqlite\_async](https://pub.dev/documentation/sqlite_async/latest/) Dart package to generate the migrations.
+FTS tables are created when instantiating the client-side PowerSync database.
 
-<Note>
-Note: The Web and React Native implementations do not use migrations. It creates the FTS tables separately, see for example [utils/fts\_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_setup.ts) (Web) and [library/fts/fts\_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/fts/fts_setup.ts) (React Native).
-</Note>
+```dart
+    // https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/powersync.dart#L186
+    
+    Future<void> openDatabase() async {
+      ...
+      await configureFts(db);
+    }
+```
 
-**Dart example:**
+To simplify implementation these examples make use of SQLite migrations. The migrations are run in [migrations/fts_setup.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/migrations/fts_setup.dart) in the Flutter implementation. Here we use the [sqlite_async](https://pub.dev/documentation/sqlite_async/latest/) Dart package to generate the migrations.
 
 ```dart
 // migrations/fts_setup.dart
@@ -174,36 +128,34 @@ SqliteMigration createFtsMigration(
 ```
 
 After this is run, you should have the following tables and triggers in your SQLite DB:
+
 <Frame caption="FTS tables and migrations">
-  <img src="/images/usage-4.png"/>
+  ![](/images/usage-4.png)
 </Frame>
 
 <Frame caption="FTS triggers">
-  <img src="/images/usage-5.png"/>
+  ![](/images/usage-5.png)
 </Frame>
-
 
 ### FTS Search Delegate
 
 To show off this new functionality, we have incorporated FTS into the search button at the top of the screen in the To-Do List demo app:
 
 <Frame>
-  <img src="/images/usage-6.avif"/>
+  ![](/images/usage-6.avif)
 </Frame>
 
 Clicking on the search icon will open a search bar which will allow you to search for `lists` or `todos` that you have generated.
 
 <Frame caption="Example of searching">
-  <img src="/images/usage-7.png"/>
+  ![](/images/usage-7.png)
 </Frame>
 
-It uses a custom search delegate widget found in [widgets/fts\_search\_delegate.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/widgets/fts_search_delegate.dart) (Flutter) and [widgets/SearchBarWidget.tsx](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/widgets/SearchBarWidget.tsx) (Web) to display the search results.
+It uses a custom search delegate widget found in [widgets/fts_search_delegate.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/widgets/fts_search_delegate.dart) (Flutter) and [widgets/SearchBarWidget.tsx](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/widgets/SearchBarWidget.tsx) (Web) to display the search results.
 
 ### FTS Helper
 
-We added a helper in [lib/fts\_helpers.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/fts_helpers.dart) (Flutter) and [utils/fts\_helpers](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_helpers.ts)[.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_helpers.ts) (Web) that allows you to add additional search functionality which can be found in the [SQLite FTS5 extension](https://www.sqlite.org/fts5.html) documentation.
-
-**Dart example:**
+We added a helper in [lib/fts_helpers.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/fts_helpers.dart) (Flutter) and [utils/fts_helpers.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_helpers.ts) (Web) that allows you to add additional search functionality which can be found in the [SQLite FTS5 extension](https://www.sqlite.org/fts5.html) documentation.
 
 ```dart
 // lib/fts_helpers.dart
@@ -225,3 +177,48 @@ Future<List> search(String searchTerm, String tableName) async {
       [searchTermWithOptions]);
 }
 ```
+
+## Implementations in other SDKs
+
+* The React, React Native and Swift implementations do not use migrations to create the FTS tables. They create the FTS tables separately, see for example:
+  * [utils/fts_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_setup.ts) (React)
+  * [library/fts/fts_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/fts/fts_setup.ts) (React Native)
+  * [PowerSync/FtsSetup](https://github.com/powersync-ja/powersync-swift/blob/11def989bfbdc4f6ffe192192cd076abe17743c0/Demo/PowerSyncExample/PowerSync/FtsSetup.swift#L121) (Swift) 
+* See below for relevant snippets in the demo implementations.
+
+<Tabs>
+  <Tab title="React">
+    ```ts
+    // See https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/providers/SystemProvider.tsx#L41
+    
+    SystemProvider = ({ children }: { children: React.ReactNode }) => {
+      ...
+      React.useEffect(() => {
+      ...
+          configureFts();
+      })
+    }
+    ```
+    
+  </Tab>
+  <Tab title="React Native">
+    ```ts
+    // See https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/system.ts#L75
+    
+    export class System {
+      ...
+      powersync: PowerSyncDatabase;
+      ...
+      async init() {
+        ...
+        await configureFts(this.powersync);
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Swift">
+    ```swift
+    // See  https://github.com/powersync-ja/powersync-swift/blob/main/Demo/PowerSyncExample/PowerSync/SystemManager.swift#L89
+    ```
+  </Tab>
+</Tabs>

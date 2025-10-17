@@ -8,6 +8,7 @@ Here are the recommended items you should implement as part of supporting PowerS
 1. Client SDK Diagnostics - Implement a sync diagnostics screen/view in your client application that provides critical sync information.
 2. Client logging - Implement logging in your client application to capture sync events and errors.
 3. Issue Alerts - Trigger notifications when the PowerSync replicator runs into errors.
+4. Database - Making sure yor database is ready for production when integrated with PowerSync
 
 # Client specific
 ## SDK Diagnostics
@@ -49,10 +50,8 @@ If you're interested in learning more about the internal PowerSync SQLite schema
 
 <Info>This is just an example of how to implement Sentry logging. The actual implementation is up to you as the developer. You don't have to use `Sentry logging`, but we recommend using some sort of log aggregation service in production.</Info>
 
-```typescript
-// main.tsx or entry point of your app
-
-createRoot(document.getElementById("root")!, 
+```typescript App Entry Point
+createRoot(document.getElementById("root")!,
 {
   onUncaughtError: Sentry.reactErrorHandler((error, errorInfo) => {
     console.warn('Uncaught error', error, errorInfo.componentStack);
@@ -70,9 +69,7 @@ createRoot(document.getElementById("root")!,
 );
 ```
 
-```typescript
-// System.ts
-
+```typescript System.ts
 import * as Sentry from '@sentry/react';
 import { createBaseLogger, LogLevel } from '@powersync/react-native';;
 
@@ -89,12 +86,12 @@ logger.setLevel(LogLevel.WARN);
 
 logger.setHandler((messages, context) => {
   if (!context?.level) return;
-  
+
   // Get the main message and combine any additional data
   const messageArray = Array.from(messages);
   const mainMessage = String(messageArray[0] || 'Empty log message');
   const extraData = messageArray.slice(1).reduce((acc, curr) => ({ ...acc, ...curr }), {});
-  
+
   const level = context.level.name.toLowerCase();
 
   // Addbreadcrumb: creates a trail of events leading up to errors
@@ -108,7 +105,7 @@ logger.setHandler((messages, context) => {
     data: extraData,
     timestamp: Date.now()
   });
-  
+
   // Only send warnings and errors to Sentry
   if (level == 'warn' || level == 'error') {
     console[level](`PowerSync ${level.toUpperCase()}:`, mainMessage, extraData);
@@ -154,11 +151,11 @@ powerSync.registerListener({
 
 // Usage with additional context
 logger.error('PowerSync sync failed', {
-              userId: userID,
-              lastSyncAt: status?.lastSyncedAt,
-              connected: status?.connected,
-              sdkVersion: powerSync.sdkVersion || 'unknown',
-            });
+  userId: userID,
+  lastSyncAt: status?.lastSyncedAt,
+  connected: status?.connected,
+  sdkVersion: powerSync.sdkVersion || 'unknown',
+});
 ```
 
 ### Best Practices
@@ -251,3 +248,41 @@ Once enabled, send a request to the Diagnostics API to see the current status. T
 ```
 
 The easiest way to check for replication issues is to look at the Diagnostics endpoint on intervals and keep an eye on the errors arrays, this will populate errors as they arise on the service.
+
+# Database Best Practices
+
+## Postgres
+
+### `max_slot_wal_keep_size`
+
+This Postgres [configuration parameter](https://www.postgresql.org/docs/current/runtime-config-replication.html#GUC-MAX-SLOT-WAL-KEEP-SIZE) limits the size of the Write-Ahead Log (WAL) files that replication slots can
+hold. Because PowerSync uses logical replication it's important to consider the size of the `max_slot_wal_keep_size` and monitoring lag of replication slots used by PowerSync in a production environment to ensure lag of replication slots do not exceed the `max_slot_wal_keep_size`.
+
+The growth of the WAL rate is only expected to excessively grow during initial replication of large datasets i.e. when you start a new PowerSync Service instance or when new Sync Rules are deployed. During normal operation (after Sync Rules are deployed) the WAL growth rate is much smaller than the initial replication period, since
+the PowerSync service can replicate ~5k operations per second, meaning the WAL lag is typically in the MB range as opposed to the GB range. Whereas larger datasets with millions of rows of data could cause excessive growth of the WAL.
+
+When deciding what to set the `max_slot_wal_keep_size` configuration parameter the following should be taken in account:
+1. Database size - This impacts the time it takes to complete the initial replication from the source Postgres database.
+2. Sync Rules complexity - This also impacts the time it takes to complete the initial replication.
+3. Postgres update frequency - The frequency of updates (of tables included in the publication you create for PowerSync) during initial replication. The WAL growth rate is directly proportional to this.
+
+To view the current replication slots that are being used by PowerSync you can run the following query:
+
+```
+SELECT slot_name,
+       plugin,
+       slot_type,
+       active,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS replication_lag
+FROM pg_replication_slots;
+```
+
+To view the current configured value of the `max_slot_wal_keep_size` you can run the following query:
+```
+SELECT setting as max_slot_wal_keep_size
+FROM pg_settings
+WHERE name = 'max_slot_wal_keep_size'
+```
+
+It's recommended to check the current replication slot lag and `max_slot_wal_keep_size` when deploying Sync Rules changes to your PowerSync Service instance, especially when you're working with large database volumes.
+If you notice that the replication lag is greater than the current `max_slot_wal_keep_size` it's recommended to increase value of the `max_slot_wal_keep_size` on the connected source Postgres database to accommodate for the lag and to ensure the PowerSync Service can complete initial replication without further delays.

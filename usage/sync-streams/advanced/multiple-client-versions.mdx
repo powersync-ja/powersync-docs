@@ -1,0 +1,257 @@
+---
+title: "Multiple Client Versions"
+description: "In some cases, different client versions may need different output schemas."
+---
+
+When schema changes are additive, old clients would just ignore the new tables and columns, and no special handling is required. However, in some cases, the schema changes may be more drastic and may need separate Sync Streams based on the client version.
+
+To distinguish between client versions, we can pass in an additional [connection parameter](/usage/sync-streams/reference/query-syntax#connection-parameters) from the client to the PowerSync Service instance. These parameters could be used to implement different logic based on the client version, similar to [Client Parameters](/usage/sync-rules/advanced-topics/client-parameters) in Sync Rules.
+
+Example to use different table names based on the client's `schema_version`:
+
+```yaml
+# Client passes in: "params": {"schema_version": <version>}
+streams:
+  assets_v1:
+    query: SELECT * FROM assets AS assets_v1 
+    WHERE user_id = auth.user_id()
+    AND connection.parameter('schema_version') = '1'
+
+  assets_v2:
+    query: SELECT * FROM assets AS assets_v2 
+    WHERE user_id = auth.user_id()
+    AND connection.parameter('schema_version') = '2'
+```
+
+## Setting Connection Parameters
+
+Connection parameters are set when connecting to PowerSync:
+
+```js
+// JavaScript
+await powerSync.connect(connector, {
+  params: { schema_version: '2' }
+});
+```
+
+```dart
+// Dart
+await database.connect(
+  connector: YourConnector(),
+  options: const SyncOptions(
+    params: {'schema_version': '2'},
+  ),
+);
+```
+
+```kotlin
+// Kotlin
+database.connect(MyConnector(), options = SyncOptions(
+    params = mapOf("schema_version" to JsonParam.String("2"))
+))
+```
+
+## Advanced Versioning Examples
+
+### Different Column Names
+
+```yaml
+streams:
+  user_profile_v1:
+    query: SELECT 
+      id,
+      name,
+      email,
+      created_at
+    FROM users 
+    WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '1'
+
+  user_profile_v2:
+    query: SELECT 
+      id,
+      first_name,
+      last_name,
+      email_address,
+      created_timestamp
+    FROM users 
+    WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '2'
+```
+
+### Different Table Structures
+
+```yaml
+streams:
+  tasks_v1:
+    query: SELECT 
+      id,
+      title,
+      description,
+      status,
+      created_at
+    FROM tasks 
+    WHERE user_id = auth.user_id()
+    AND connection.parameter('schema_version') = '1'
+
+  tasks_v2:
+    query: SELECT 
+      id,
+      title,
+      description,
+      status,
+      priority,
+      due_date,
+      created_at,
+      updated_at
+    FROM tasks 
+    WHERE user_id = auth.user_id()
+    AND connection.parameter('schema_version') = '2'
+```
+
+### Feature Flags
+
+```yaml
+streams:
+  basic_todos:
+    query: SELECT id, title, completed FROM todos
+    WHERE user_id = auth.user_id()
+
+  todos_with_attachments:
+    query: SELECT 
+      id, 
+      title, 
+      completed,
+      attachment_count,
+      attachment_urls
+    FROM todos 
+    WHERE user_id = auth.user_id()
+    AND connection.parameter('enable_attachments') = 'true'
+```
+
+### Gradual Rollout
+
+```yaml
+streams:
+  stable_features:
+    query: SELECT * FROM stable_data
+    WHERE user_id = auth.user_id()
+
+  beta_features:
+    query: SELECT * FROM beta_data
+    WHERE user_id = auth.user_id()
+    AND connection.parameter('beta_enabled') = 'true'
+    AND connection.parameter('user_tier') IN ('premium', 'enterprise')
+```
+
+<Warning>
+  Handle queries based on parameters set by the client with care. The client can send any value for these parameters, so it's not a good place to do authorization. If the parameter must be authenticated, use parameters from the JWT instead. Read more: [Security consideration](/usage/sync-rules/advanced-topics/client-parameters#security-consideration)
+</Warning>
+
+## Migration Strategy
+
+### Phase 1: Add New Streams
+
+Add new streams for the new schema version while keeping the old ones:
+
+```yaml
+streams:
+  # Existing streams for v1
+  user_data_v1:
+    query: SELECT * FROM users WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '1'
+
+  # New streams for v2
+  user_data_v2:
+    query: SELECT * FROM users WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '2'
+```
+
+### Phase 2: Update Clients Gradually
+
+Update clients to use the new schema version:
+
+```js
+// Update client to use new schema version
+await powerSync.connect(connector, {
+  params: { schema_version: '2' }
+});
+```
+
+### Phase 3: Remove Old Streams
+
+Once all clients are migrated, remove the old streams:
+
+```yaml
+streams:
+  # Only keep v2 streams
+  user_data:
+    query: SELECT * FROM users WHERE id = auth.user_id()
+```
+
+## Best Practices
+
+### Use Semantic Versioning
+
+Use semantic versioning for schema versions:
+
+```yaml
+streams:
+  user_data_v1_0:
+    query: SELECT * FROM users WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '1.0'
+
+  user_data_v1_1:
+    query: SELECT * FROM users WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '1.1'
+```
+
+### Document Breaking Changes
+
+Clearly document what changes between versions:
+
+```yaml
+# v1.0: Basic user data
+# v1.1: Added profile picture and bio
+# v2.0: Renamed fields and added preferences
+streams:
+  user_data_v1_0:
+    query: SELECT id, name, email FROM users WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '1.0'
+
+  user_data_v1_1:
+    query: SELECT id, name, email, profile_picture, bio FROM users WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '1.1'
+
+  user_data_v2_0:
+    query: SELECT 
+      id, 
+      first_name, 
+      last_name, 
+      email_address, 
+      avatar_url, 
+      description,
+      preferences
+    FROM users WHERE id = auth.user_id()
+    AND connection.parameter('schema_version') = '2.0'
+```
+
+### Test Both Versions
+
+Ensure your backend can handle both old and new schema versions during the transition period.
+
+### Monitor Usage
+
+Track which schema versions are being used to plan your migration timeline:
+
+```yaml
+streams:
+  # Add a stream to track schema version usage
+  schema_version_usage:
+    query: SELECT 
+      connection.parameter('schema_version') as version,
+      auth.user_id() as user_id,
+      '2024-01-01 00:00:00' as timestamp
+    FROM users
+    WHERE auth.user_id() IS NOT NULL
+```

@@ -1,0 +1,114 @@
+---
+title: "Many-to-Many and Join Tables"
+description: "Strategies for handling many-to-many relationships and join tables in Sync Streams."
+---
+
+Join tables are often used to implement many-to-many relationships between tables. While Sync Streams support limited subqueries, they don't support full JOIN operations. This guide contains recommended strategies for handling these relationships.
+
+## Example Schema
+
+As an example, consider a social media application. The app has message boards. Each user can subscribe to boards, make posts, and comment on posts. Posts may also have one or more topics.
+
+<Frame>
+  <img src="/images/usage-11.avif"/>
+</Frame>
+
+<Accordion
+  title="Full schema (for Postgres)"
+>
+```sql
+create table users (
+    id uuid not null default gen_random_uuid (),
+    name text not null,
+    last_activity timestamp with time zone,
+    constraint users_pkey primary key (id)
+);
+
+create table boards (
+    id uuid not null default gen_random_uuid (),
+    name text not null,
+    constraint boards_pkey primary key (id)
+  );
+
+create table posts (
+    id uuid not null default gen_random_uuid (),
+    board_id uuid not null,
+    created_at timestamp with time zone not null default now(),
+    author_id uuid not null,
+    title text not null,
+    body text not null,
+    constraint posts_pkey primary key (id),
+    constraint posts_author_id_fkey foreign key (author_id) references users (id),
+    constraint posts_board_id_fkey foreign key (board_id) references boards (id)
+  );
+
+create table comments (
+    id uuid not null default gen_random_uuid (),
+    post_id uuid not null,
+    created_at timestamp with time zone not null,
+    author_id uuid not null,
+    body text not null,
+    constraint comments_pkey primary key (id),
+    constraint comments_author_id_fkey foreign key (author_id) references users (id),
+    constraint comments_post_id_fkey foreign key (post_id) references posts (id)
+  );
+
+create table board_subscriptions (
+    id uuid not null default gen_random_uuid (),
+    user_id uuid not null,
+    board_id uuid not null,
+    constraint board_subscriptions_pkey primary key (id),
+    constraint board_subscriptions_board_id_fkey foreign key (board_id) references boards (id),
+    constraint board_subscriptions_user_id_fkey foreign key (user_id) references users (id)
+  );
+
+create table topics (
+    id uuid not null default gen_random_uuid (),
+    label text not null
+  );
+
+create table post_topics (
+    id uuid not null default gen_random_uuid (),
+    board_id uuid not null,
+    post_id uuid not null,
+    topic_id uuid not null,
+    constraint post_topics_pkey primary key (id),
+    constraint post_topics_board_id_fkey foreign key (board_id) references boards (id),
+    constraint post_topics_post_id_fkey foreign key (post_id) references posts (id),
+    constraint post_topics_topic_id_fkey foreign key (topic_id) references topics (id)
+  );
+```
+</Accordion>
+
+## Strategy 1: Using Subqueries (Recommended for Sync Streams)
+
+Sync Streams support limited subqueries using `IN (subquery)` syntax, which provides the most flexible approach to handling many-to-many relationships.
+
+### User's Subscribed Boards
+
+For this app, we generally want to sync all posts in boards that users have subscribed to. To simplify these examples, we assume a user has to be subscribed to a board to post.
+
+Boards make a nice grouping of data for Sync Streams: We sync the boards that a user has subscribed to, and the same board data is synced to all users subscribed to that board.
+
+The relationship between users and boards is a many-to-many, specified via the `board_subscriptions` table.
+
+```yaml
+streams:
+  # Get boards the user is subscribed to
+  user_boards:
+    query: SELECT * FROM boards WHERE id IN (
+      SELECT board_id FROM board_subscriptions WHERE user_id = auth.user_id()
+    )  # Syncs all boards the user is subscribed to when they connect
+    auto_subscribe: true
+  
+  # Get posts from user's subscribed boards
+  user_board_posts:
+    query: SELECT * FROM posts WHERE board_id IN (
+      SELECT board_id FROM board_subscriptions WHERE user_id = auth.user_id()
+    )  # Syncs all posts from boards the user is subscribed to when they connect
+    auto_subscribe: true
+```
+
+### Board Comments
+
+todo

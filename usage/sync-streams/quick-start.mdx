@@ -1,0 +1,228 @@
+---
+title: "Quick Start"
+description: "Sync Streams enable partial sync: sync only the data users need, when they need it. Learn how to use Sync Streams in this guide."
+---
+
+## Introduction
+
+In typical cloud-first apps, your backend database holds all your data, which is made available to users via an API. This approach requires data to be _fetched_ by client apps through API calls.
+
+By contrast, a sync engine like PowerSync _syncs_ all data relevant to a specific user to a local database embedded in the client-side app, allowing queries to run locally on the user's device. Data is synced through the [PowerSync Service](/architecture/powersync-service), a backend service that client apps connect to.
+
+Users are typically only authorized to access certain data in the backend database, and on top of that, there is typically too much data to sync to every user's device. Therefore, it's necessary to control which data is synced to users. Sync Streams enable **partial sync** - the ability to control which data gets synced to which users.
+
+For a deeper understanding of how partial sync works, see the [Under the Hood](/usage/sync-streams/under-the-hood) page.
+
+## Sync Streams vs Sync Rules
+
+PowerSync originally used **[Sync Rules](/usage/sync-rules)** for partial sync, but we've introduced **Sync Streams** as a more flexible and developer-friendly approach.
+
+<AccordionGroup>
+  <Accordion title="Why We Introduced Sync Streams">
+    **Sync Rules** were designed for offline-first mobile apps where you want to "sync everything upfront" when the client connects, so that data is available locally if a user goes offline at any point. This approach works well for mobile apps where users expect to work offline and need all their data available immediately.
+
+    However, many developers are building web apps where users are mostly online and you don't want to make users wait to sync a lot of data upfront. In these cases, it's more suited to sync data on-demand as users navigate through your application. 
+
+    Sync engines like PowerSync are still great for these online web app use cases, because they provide you with real-time updates, simplified state management, and ease of working with data locally.
+
+    Client Parameters in the current Sync Rules system support on-demand syncing across different browser tabs to some extent: For example, using a `project_ids` array as a Client Parameter to sync only specific projects. However, manually managing these arrays across different browser tabs becomes quite painful, especially when you need to coordinate which projects are being viewed in which tabs.
+
+    We are introducing **Sync Streams** to provide the best of both worlds: support for dynamic on-demand syncing, as well as "syncing everything upfront".
+
+    **Key improvements in Sync Streams over Sync Rules include:**
+
+    1. **On-demand syncing**: You define Sync Streams on the PowerSync Service, and a client can then subscribe to them one or more times with different parameters. This means you can load data exactly when you need it, rather than syncing everything upfront.
+
+    2. **Temporary caching-like behavior**: Each subscription includes a configurable TTL that keeps data active after your app unsubscribes, acting as a warm cache for recently accessed data. This gives you the performance benefits of local data without the complexity of managing what's synced.
+
+    3. **Simpler developer experience**: Simplified syntax and mental model, and capabilities such as your UI components automatically managing subscriptions (for example, React hooks). This reduces the cognitive load of understanding when and how data gets synced.
+
+    If you want "sync everything upfront" behavior (like the current Sync Rules system), that's easy too: you can configure any of your Sync Streams to be auto-subscribed by the client on connecting.
+
+  </Accordion>
+  <Accordion title="Concept Mapping">
+    If you're familiar with Sync Rules, here's how the key concepts map to Sync Streams:
+
+    | Sync Rules Concept | Sync Streams Equivalent |
+    |-------------------|------------------------|
+    | [Bucket definitions](/usage/sync-rules) | Stream definitions |
+    | [Parameter queries + Data queries](/usage/sync-rules/parameter-queries) | Single unified `query` with subqueries |
+    | `request.user_id()` | `auth.user_id()` |
+    | `request.jwt()` | `auth.parameters()` |
+    | [`request.parameters()` (client params)](/usage/sync-rules/advanced-topics/client-parameters) | `connection.parameters()` (global) or `subscription.parameters()` (per-subscription) |
+    | Global buckets | todo |
+    | `bucket.param` | todo |
+  </Accordion>
+  <Accordion title="Migration Path">
+    todo
+  </Accordion>
+</AccordionGroup>
+
+
+## Requirements
+
+- v1.15.0 of the PowerSync Service (Cloud instances are already on this version)
+- Minimum SDK versions:
+  * JS:
+    * Web: v1.27.0
+    * React Native: v1.25.0
+    * React hooks: v1.8.0
+  * Dart: v1.16.0
+  * Kotlin: v1.7.0
+    * Swift: Coming soon.
+- Use of the [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks)
+- Sync Stream definitions with `edition: 2` [configuration](/usage/sync-streams/advanced/compatibility). These are located in `sync_streams.yaml` (PowerSync Cloud) or `config.yaml` (Open Edition/self-hosted). To enable Sync Streams, add the following configuration:
+
+```yaml sync_streams.yaml
+config:
+  # see https://docs.powersync.com/usage/sync-rules/compatibility
+  # this edition also deploys several backwards-incompatible fixes
+  # see the docs for details
+  edition: 2
+
+streams:
+  ... # see 'Stream Definition Syntax' section below
+```
+## Stream Definition Syntax
+
+You specify **stream definitions** in your `sync_streams.yaml` file. Clients then subscribe to the defined streams one or more times, with different parameters.
+
+```yaml sync_streams.yaml
+config:
+  edition: 2
+
+streams:
+  <stream_name>:
+    query: string # SQL-like query with subquery support
+    auto_subscribe: boolean # true to subscribe by default (like Sync Rules), false (default) for on-demand
+    priority: number # sync priority
+    accept_potentially_dangerous_queries: boolean # silence warnings on dangerous queries
+```
+
+Basic example:
+
+```yaml sync_streams.yaml
+config:
+  edition: 2
+
+streams:
+  issue: # Syncs a specific issue by ID when requested
+    query: select * from issues where id = subscription.parameters() ->> 'id' 
+  issue_comments: # Syncs all comments for a specific issue when requested
+    query: select * from comments where issue_id = subscription.parameters() ->> 'id'
+```
+
+### Real-World Examples
+
+#### Global Data vs User-Specific Data
+
+**Global data** (synced to all users by default):
+```yaml
+streams:
+  all_categories:
+    query: SELECT * FROM categories
+    auto_subscribe: true  # Syncs all categories to every user when they connect
+```
+
+**User-specific data** (synced based on user ID):
+```yaml
+streams:
+  user_todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+    auto_subscribe: true  # Syncs all todos owned by the current user when they connect
+```
+
+#### Todolist App
+
+```yaml
+streams:
+  # Global categories
+  categories:
+    query: SELECT * FROM categories
+    auto_subscribe: true  # Syncs all categories to every user when they connect
+  
+  # User's lists
+  user_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+    auto_subscribe: true  # Syncs all lists owned by the current user when they connect
+  
+  # Todos for a specific list (on-demand)
+  list_todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')  # Syncs todos for a specific list when requested
+```
+
+#### Chat App
+
+```yaml
+streams:
+  # todo
+```
+
+#### Social Feed
+
+```yaml
+streams:
+  # todo
+```
+
+#### Workout Tracker
+
+```yaml
+streams:
+  # todo
+```
+
+#### Issue Tracker (Web)
+
+```yaml
+streams:
+  # todo
+```
+
+## Using Parameters
+
+Sync Streams support three types of parameters:
+
+- **Subscription parameters**: `subscription.parameter('key')` - per-subscription, recommended for on-demand data
+- **Auth parameters**: `auth.user_id()` and `auth.parameters()` - from JWT token
+- **Connection parameters**: `connection.parameter('key')` - global client parameters
+
+For detailed information on parameters, see the [Query Syntax](/usage/sync-streams/reference/query-syntax) reference.
+
+## Using Streams on the Client
+
+Each SDK lets you:
+
+* Use `db.syncStream(name, [subscription-params])` to get a `SyncStream` instance.
+* Call `subscribe()` on a `SyncStream` to get a `SyncStreamSubscription`.
+* Inspect `SyncStatus` for download progress and subscription information.
+* Configure TTL (time-to-live) for caching behavior after unsubscribe.
+
+For specific SDK details and examples, see the [Client SDK References](/client-sdk-references/introduction).
+
+## Developer Notes
+
+### Troubleshooting
+Use the [Sync Diagnostics Client](/usage/tools/diagnostic-app) to troubleshoot sync issues. 
+
+### SQL Limitations
+Sync Streams use SQL-like syntax, but not all SQL is supported. See the [Operators and Functions](/usage/sync-streams/reference/operators-and-functions) page for details.
+
+### Joins
+Joins are not fully supported. See the [Many-to-Many and Join Tables](/usage/sync-streams/reference/joins) guide for workarounds.
+
+### Type Conversion
+Most database types are converted to text on the client. See the [Types](/usage/sync-streams/reference/types) page for the complete mapping.
+
+### Primary Key Requirements
+For each table, PowerSync requires a single primary key column called `id`, of type `text`. MongoDB uses `_id`. See the [Client Primary Key](/usage/sync-streams/reference/client-primary-key) page for details.
+
+### Case Sensitivity
+We recommend using only lower case identifiers for all table/collection and column/field names. If you need to use a different case, see the [Case Sensitivity](/usage/sync-streams/reference/case-sensitivity) page.
+
+### Bucket Limit
+Sync Streams use sync buckets under the hood, and there's a 1,000 bucket limit. See the [Under the Hood](/usage/sync-streams/under-the-hood) page for details on how to estimate your bucket usage.
+
+## Next Steps
+- Learn how to write more advanced stream definitions using the [Query Syntax](/usage/sync-streams/reference/query-syntax) reference
+- Check out the [Client SDK References](/client-sdk-references/introduction) for your platform to use Sync Streams in your client app

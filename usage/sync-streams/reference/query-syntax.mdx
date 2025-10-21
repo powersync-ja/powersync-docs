@@ -1,0 +1,291 @@
+---
+title: "Query Syntax"
+description: "Guide to writing Sync Stream queries with parameters, subqueries, and data transformations."
+---
+
+## Parameters Overview
+
+Sync Streams support three types of parameters for filtering and grouping data:
+
+### Subscription Parameters
+
+**Subscription parameters** are passed from the client when it subscribes to a Sync Stream. These are the most flexible and recommended approach for on-demand syncing. 
+Clients can subscribe to the same stream multiple times with different parameters.
+
+```yaml
+# Stream definition
+streams:
+  issue_details:
+    query: SELECT * FROM issues WHERE id = subscription.parameter('id')  # Syncs a specific issue by ID when requested
+```
+
+```js
+// Client usage
+const sub = await powerSync.syncStream('issue_details', {id: 'issue-123'}).subscribe();
+```
+
+**Accessing subscription parameters:**
+- `subscription.parameters()` - all parameters for the subscription, as JSON
+- `subscription.parameter('key')` - shorthand for getting a single specific parameter
+
+### Auth Parameters
+
+**Auth parameters** come from the JWT authentication token. These are trusted and can be used for access control.
+
+```yaml
+streams:
+  user_todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()  # Syncs all todos owned by the current user
+```
+
+**Accessing auth parameters:**
+- `auth.parameters()` - entire JWT payload as JSON
+- `auth.parameter('key')` - shorthand for getting a single specific token payload parameter
+- `auth.user_id()` - shorthand for JWT subject (`auth.parameter(`sub`)`)
+
+### Connection Parameters
+
+**Connection parameters** are specified globally on the connection level. These are equivalent to [Client Parameters](/usage/sync-rules/advanced-topics/client-parameters) in Sync Rules.
+
+```yaml
+streams:
+  project_issues:
+    query: SELECT * FROM issues WHERE project_id = connection.parameter('project_id')  # Syncs all issues for a specific project
+```
+
+**Accessing connection parameters:**
+- `connection.parameters()` - all parameters for the connection, as JSON
+- `connection.parameter('key')` - shorthand for getting a single specific parameter
+
+## Grouping and Filtering Data
+
+### User-Specific Data
+
+Filter data based on the authenticated user:
+
+```yaml
+streams:
+  user_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()  # Syncs all lists owned by the current user
+  
+  user_todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()  # Syncs all todos owned by the current user
+```
+
+### Organization-Based Data
+
+Filter data based on user's organization:
+
+```yaml
+streams:
+  org_projects:
+    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')  # Syncs all projects in the user's organization
+  
+  org_members:
+    query: SELECT * FROM users WHERE org_id = auth.parameter('org_id')  # Syncs all users in the user's organization
+```
+
+### Permission-Based Data
+
+Filter data based on user permissions:
+
+```yaml
+streams:
+  accessible_boards:
+    query: SELECT * FROM boards WHERE id IN (
+      SELECT board_id FROM board_permissions 
+      WHERE user_id = auth.user_id()
+    )  # Syncs all boards the user has permission to access
+```
+
+### Dynamic Filtering
+
+Use subscription parameters for dynamic filtering:
+
+```yaml
+streams:
+  posts_by_category:
+    query: SELECT * FROM posts 
+    WHERE category = subscription.parameter('category')  # Syncs all posts for a specific category when requested
+```
+
+### Simple Filtering
+
+Use only supported operators (`=`, `!=`, `IN`, `IS NULL`, `IS NOT NULL`) for filtering:
+
+```yaml
+streams:
+  user_todos:
+    query: SELECT * FROM todos 
+    WHERE user_id = auth.user_id()  # Syncs all todos for the current user
+```
+
+**Note:** Date range filtering (like `created_at > subscription.parameter('since_date')`) is not supported. For date-based filtering, consider:
+
+todo
+
+## Subqueries
+
+**Subqueries** are queries within queries that let you filter data based on related information from other tables. Think of them as a way to "sync all X where X is related to Y that meets some condition."
+
+### Basic Subquery Syntax
+
+Sync Streams support limited subqueries using `IN (subquery)` syntax:
+
+```yaml
+streams:
+  user_tasks:
+    query: SELECT * FROM tasks 
+    WHERE project_id IN (
+      SELECT id FROM projects WHERE owner_id = auth.user_id()
+    )  # Syncs only tasks from projects owned by the current user
+```
+
+**How this works:**
+1. The inner query or subquery (`SELECT id FROM projects WHERE owner_id = auth.user_id()`) finds all project IDs owned by the current user
+2. The outer query (`SELECT * FROM tasks WHERE project_id IN (...)`) gets all tasks that belong to those projects
+3. Result: Users only sync tasks from projects they own
+
+### Basic Subqueries
+
+```yaml
+streams:
+  user_posts:
+    query: SELECT * FROM posts WHERE author_id = auth.user_id()  # Syncs all posts by the current user
+  
+  user_post_comments:
+    query: SELECT * FROM comments WHERE post_id IN (
+      SELECT id FROM posts WHERE author_id = auth.user_id()
+    )  # Syncs all comments on posts by the current user
+```
+
+### Subqueries with Multiple Conditions
+
+```yaml
+streams:
+  # todo
+```
+
+## Selecting Columns
+
+### Select All Columns
+
+```yaml
+streams:
+  all_todos:
+    query: SELECT * FROM todos  # Syncs all todos with all columns
+```
+
+### Select Specific Columns
+
+```yaml
+streams:
+  todo_summary:
+    query: SELECT id, title, completed, created_at FROM todos  # Syncs only specific columns from all todos
+```
+
+## Renaming Columns
+
+Use column aliases to rename columns in the output:
+
+```yaml
+streams:
+  todos:
+    query: SELECT 
+      id,
+      title,
+      completed as is_done,
+      created_timestamp AS created_at,
+      updated_timestamp AS updated_at
+    FROM todos  # Syncs todos with renamed columns for better client-side usage
+```
+
+## Transforming Columns
+
+### Type Casting
+
+```yaml
+streams:
+  todos:
+    query: SELECT 
+      id,
+      title,
+      completed::text as completed_text,
+      CAST(priority as TEXT) as priority_text,
+      item_number::text AS item_number
+    FROM todos  # Syncs todos with type-cast columns for consistent client-side data types
+```
+
+### JSON Field Extraction
+
+```yaml
+streams:
+  todos_with_metadata:
+    query: SELECT 
+      id,
+      title,
+      metadata_json ->> 'description' AS description,
+      metadata_json ->> 'tags' AS tags,
+      settings_json ->> 'notifications' AS notifications_enabled
+    FROM todos  # Syncs todos with extracted JSON fields as separate columns
+```
+
+### Binary Data Conversion
+
+```yaml
+streams:
+  todos_with_images:
+    query: SELECT 
+      id,
+      title,
+      base64(thumbnail) AS thumbnail_base64,
+      hex(image_data) AS image_hex
+    FROM todos  # Syncs todos with binary data converted to text format
+```
+
+### Date/Time Conversions
+
+```yaml
+streams:
+  todos_with_timestamps:
+    query: SELECT 
+      id,
+      title,
+      unixepoch(created_at) AS created_timestamp,
+      datetime(updated_at, 'unixepoch') AS updated_datetime
+    FROM todos  # Syncs todos with converted date/time formats for client compatibility
+```
+
+### String Operations
+
+```yaml
+streams:
+  todos_formatted:
+    query: SELECT 
+      id,
+      upper(title) AS title_upper,
+      lower(description) AS description_lower,
+      substring(created_at, 1, 10) AS created_date
+    FROM todos  # Syncs todos with string transformations applied
+```
+
+## Best Practices
+
+### Combine Auth and Subscription Parameters
+
+You can combine different parameter types in a single query for more sophisticated access control:
+
+```yaml
+streams:
+  user_project_tasks:
+    query: SELECT * FROM tasks 
+    WHERE project_id = subscription.parameter('project_id')
+    AND project_id IN (
+      SELECT id FROM projects WHERE owner_id = auth.user_id()
+    )  # Syncs tasks from a specific project, but only if the user owns that project
+```
+
+This example demonstrates:
+- **Subscription parameter**: `project_id` passed by the client when subscribing
+- **Auth parameter**: `auth.user_id()` from the JWT to verify ownership
+- **Security**: The subquery ensures users can only access tasks from projects they own

@@ -1,0 +1,107 @@
+---
+title: "Types"
+description: "Sync Streams use the [SQLite type system](https://www.sqlite.org/datatype3.html)."
+---
+
+The supported client-side SQLite types are:
+
+1. `null`
+2. `integer`: a 64-bit signed integer
+3. `real`: a 64-bit floating point number
+4. `text`: An UTF-8 text string
+5. `blob`: Binary data
+
+## <Icon icon="elephant" iconType="solid" size={32}/> Postgres Type Mapping
+
+Binary data in Postgres can be accessed in Sync Streams, but cannot be synced directly to clients (it needs to be converted to hex or base64 first — see below).
+
+Postgres values are mapped according to this table:
+
+| Postgres Data Type | PowerSync / SQLite Column Type | Notes                                                                                                                                                                                                                                   |
+|--------------------|--------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| text, varchar      | text                           |                                                                                                                                                                                                                                         |
+| int2, int4, int8   | integer                        |                                                                                                                                                                                                                                         |
+| numeric / decimal  | text                           | These types have arbitrary precision in Postgres, so can only be represented accurately as text in SQLite                                                                                                                               |
+| bool               | integer                        | 1 for true, 0 for false                                                                                                                                                                                                                 |
+| float4, float8     | real                           |                                                                                                                                                                                                                                         |
+| enum               | text                           |                                                                                                                                                                                                                                         |
+| uuid               | text                           |                                                                                                                                                                                                                                         |
+| timestamptz        | text                           | Format: `YYYY-MM-DD hh:mm:ss.sssZ`. This is compatible with ISO8601 and SQLite's functions. Precision matches the precision used in Postgres. `-infinity` becomes `0000-01-01 00:00:00Z` and `infinity` becomes `9999-12-31 23:59:59Z`. |
+| timestamp          | text                           | Format: `YYYY-MM-DD hh:mm:ss.sss`. In most cases, timestamptz should be used instead. `-infinity` becomes `0000-01-01 00:00:00` and `infinity` becomes `9999-12-31 23:59:59`.                                                           |
+| date, time         | text                           |                                                                                                                                                                                                                                         |
+| json, jsonb        | text                           | There is no dedicated JSON type — JSON functions operate directly on text values.                                                                                                                                                       |
+| interval           | text                           |                                                                                                                                                                                                                                         |
+| macaddr            | text                           |                                                                                                                                                                                                                                         |
+| inet               | text                           |                                                                                                                                                                                                                                         |
+| bytea              | blob                           | Cannot sync directly to client — convert to hex or base64 first. See [Operators & Functions](/usage/sync-streams/reference/operators-and-functions).                                                                                                |
+| geometry (PostGIS) | text                           | hex string of the binary data Use the [ST functions](/usage/sync-streams/reference/operators-and-functions#functions) to convert to other formats                                                                                                   |
+| Arrays             | text                           | JSON array.                                                                                                                                                                                                                             |
+| `DOMAIN` types     | text / depends                 | Depending on [compatibility options](/usage/sync-streams/advanced/compatibility#custom-postgres-types), inner type or raw wire representation (legacy).                                                                                            |
+| Custom types       | text                           | Dependig on [compatibility options](/usage/sync-streams/advanced/compatibility#custom-postgres-types), JSON object or raw wire representation (legacy).                                                                                            |
+| (Multi-)ranges     | text                           | Depending on [compatibility options](/usage/sync-streams/advanced/compatibility#custom-postgres-types), JSON object (array for multi-ranges) or raw wire representation (legacy).                                                                  |
+
+There is no dedicated boolean data type. Boolean values are represented as `1` (true) or `0` (false).
+
+`json` and `jsonb` values are treated as `text` values in their serialized representation. JSON functions and operators operate directly on these `text` values.
+
+## <Icon icon="leaf" iconType="solid" size={32}/> MongoDB Type Mapping
+
+| BSON Type          | PowerSync / SQLite Column Type | Notes |
+| ------------------ | ------------------------------ | ----- |
+| String             | text                           |  |
+| Int, Long          | integer                        |  |
+| Double             | real                           |  |
+| Decimal128         | text                           |  |
+| Object             | text                           | Converted to a JSON string |
+| Array              | text                           | Converted to a JSON string |
+| ObjectId           | text                           | Lower-case hex string |
+| UUID               | text                           | Lower-case hex string |
+| Boolean            | integer                        | 1 for true, 0 for false |
+| Date               | text                           | Format: `YYYY-MM-DD hh:mm:ss.sssZ` |
+| Null               | null                           |  |
+| Binary             | blob                           | Cannot sync directly to client — convert to hex or base64 first. See [Operators & Functions](/usage/sync-streams/reference/operators-and-functions). |
+| Regular Expression | text                           | JSON text in the format `{"pattern":"...","options":"..."}`                                                                              |
+| Timestamp          | integer                        | Converted to a 64-bit integer                                                                                                            |
+| Undefined          | null                           |                                                                                                                                          |
+| DBPointer          | text                           | JSON text in the format `{"collection":"...","oid":"...","db":"...","fields":...}`                                                       |
+| JavaScript         | text                           | JSON text in the format `{"code": "...", "scope": ...}`                                                                                  |
+| Symbol             | text                           |                                                                                                                                          |
+| MinKey, MaxKey     | null                           |                                                                                                                                          |
+
+* Data is converted to a flat list of columns, one column per top-level field in the MongoDB document.
+* Special BSON types are converted to plain SQLite alternatives.
+* For example, `ObjectId`, `Date`, `UUID` are all converted to a plain `TEXT` column.
+* Nested objects and arrays are converted to JSON arrays, and JSON operators can be used to query them (in the Sync Streams and/or on the client-side).
+* Binary data nested in objects or arrays is not supported.
+
+## <Icon icon="dolphin" iconType="solid" size={32}/> MySQL (Beta) Type Mapping
+
+MySQL values are mapped according to this table:
+
+| MySQL Data Type                                    | PowerSync / SQLite Column Type | Notes                                                                             |
+|----------------------------------------------------|--------------------------------|-----------------------------------------------------------------------------------|
+| tinyint, smallint, mediumint, bigint, integer, int | integer                        |                                                                                   |
+| numeric, decimal                                   | text                           |                                                                                   |
+| bool, boolean                                      | integer                        | 1 for true, 0 for false                                                           |
+| float, double, real                                | real                           |                                                                                   |
+| bit                                                | integer                        |                                                                                   |
+| enum                                               | text                           |                                                                                   |
+| set                                                | text                           | Converted to JSON array                                                           |
+| char, varchar                                      | text                           |                                                                                   |
+| tinytext, text, mediumtext, longtext               | text                           |                                                                                   |
+| timestamp                                          | text                           | ISO 8061 format: `YYYY-MM-DDTHH:mm:ss.sssZ`                                       |
+| date                                               | text                           | Format: `YYYY-MM-DD`                                                              |
+| time, datetime                                     | text                           | ISO 8061 format: `YYYY-MM-DDTHH:mm:ss.sssZ`                                       |
+| year                                               | text                           |                                                                                   |
+| json                                               | text                           | There is no dedicated JSON type — JSON functions operate directly on text values. |
+| binary, varbinary                                  | blob                           | See note below regarding binary types                                             |
+| blob, tinyblob, mediumblob, longblob               | blob                           |                                                                                   |
+| geometry, geometrycollection                       | blob                           |                                                                                   |
+| point, multipoint                                  | blob                           |                                                                                   |
+| linestring, multilinestring                        | blob                           |                                                                                   |
+| polygon, multipolygon                              | blob                           |                                                                                   |
+
+<Info>
+    Binary data can be accessed in the Sync Streams, but before it can be synced directly to clients it needs to be converted to hex or base64 first.
+    See [Operators & Functions](/usage/sync-streams/reference/operators-and-functions)
+</Info>

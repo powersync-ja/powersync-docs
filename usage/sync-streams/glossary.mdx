@@ -1,0 +1,158 @@
+---
+title: "Glossary"
+description: "Key terms and concepts used in Sync Streams."
+---
+
+## Sync Stream / Stream Definition
+
+A **Sync Stream** is a way of defining a subset of data that you'd like to sync. A Sync Stream is defined with a Query that determines what data from the backend database will be synced. The Query can reference Parameters:
+f `request` in the syntax)
+- **Subscription Parameters**: These are passed from the client when the Sync Stream Subscription is created.
+  - Use `subscription.parameters()` and `subscription.parameter('name')`
+- **Connection Parameters**: Specified on the connection-level. Legacy Client Parameters will be migrated to become Connection Parameters.
+  - Use `connection.parameters()` and `connection.parameter('name')`
+- **Auth Parameters**: Claims from the JWT.
+  - Use `auth.parameter('name')`, `auth.user_id()` and `auth.jwt()` in the syntax
+
+Sync Streams can define a Priority. This maps to the sync priorities in the legacy Sync Rules system.
+
+```yaml
+streams:
+  user_todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+    auto_subscribe: true
+    priority: 1
+```
+
+## Sync Stream Subscription
+
+The client app **Subscribes** to Sync Streams, resulting in **Sync Stream Subscriptions** being created. A client can Subscribe to the same Sync Stream multiple times with different Parameters.
+
+- When `auto_subscribe: true` is set on the Sync Stream definition, all clients will be automatically subscribed to those Sync Streams (this will be used as a migration path for legacy Sync Rules to Sync Streams).
+- When subscribing, the client can specify a TTL for the subscription, to achieve temporary caching-like behavior.
+- The client can also explicitly Unsubscribe from Sync Streams that were subscribed to.
+
+```js
+// Subscribe to a stream with parameters
+const sub = await powerSync.syncStream('project_issues', {project_id: 'proj1'}).subscribe();
+
+// Subscribe with TTL for caching behavior
+const subWithTTL = await powerSync.syncStream('issues', {id: 'issue-123'})
+  .subscribe({ttl: 3600});
+
+// Unsubscribe when done
+sub.unsubscribe();
+```
+
+## Subscription Parameters
+
+**Subscription Parameters** are passed from the client when the Sync Stream Subscription is created. Use `subscription.parameters()` and `subscription.parameter('name')` in your queries.
+
+```yaml
+streams:
+  project_issues:
+    query: SELECT * FROM issues WHERE project_id = subscription.parameter('project_id')
+```
+
+## Auth Parameters
+
+**Auth Parameters** are claims from the JWT. Use `auth.parameter('name')`, `auth.user_id()` and `auth.jwt()` in the syntax.
+
+```yaml
+streams:
+  user_todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+```
+
+## Connection Parameters
+
+**Connection Parameters** are specified on the connection-level. Legacy Client Parameters will be migrated to become Connection Parameters. Use `connection.parameters()` and `connection.parameter('name')`.
+
+```yaml
+streams:
+  org_data:
+    query: SELECT * FROM projects WHERE org_id = connection.parameter('org_id')
+```
+
+## Auto-Subscribe
+
+**Auto-subscribe** streams are automatically subscribed to when a client connects, similar to how Sync Rules work. This means the data syncs upfront when the client connects. This is used as a migration path for legacy Sync Rules to Sync Streams.
+
+```yaml
+streams:
+  # Global data - synced to all users upfront
+  global_categories:
+    query: SELECT * FROM categories
+    auto_subscribe: true
+    
+  # User-specific data - synced upfront for each user
+  user_todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+    auto_subscribe: true
+```
+
+## Priority
+
+**Priority** maps to the sync priorities in the legacy Sync Rules system. Higher priority streams are synced before lower priority ones.
+
+```yaml
+streams:
+  critical_data:
+    query: SELECT * FROM critical_table
+    priority: 1  # High priority
+    
+  background_data:
+    query: SELECT * FROM background_table
+    priority: 10  # Lower priority
+```
+
+## TTL (Time-to-Live)
+
+**TTL** determines how long data remains cached after a client unsubscribes from a stream. When subscribing, the client can specify a TTL for the subscription, to achieve temporary caching-like behavior for recently accessed data.
+
+```js
+// Subscribe with 1 hour TTL
+const sub = await powerSync.syncStream('issues', {id: 'issue-123'})
+  .subscribe({ttl: 3600});
+```
+
+## Bucket
+
+A **bucket** is a collection of rows from one or more tables that are grouped together for syncing. Each bucket has a unique identifier and contains all rows that match its parameters.
+
+<Note>
+  Buckets are an implementation detail of how Sync Streams work internally. You don't need to think about buckets when using Sync Streams, but understanding them can help with performance optimization.
+</Note>
+
+## Bucket Parameters
+
+**Bucket parameters** are the set of values that uniquely identify a bucket. In Sync Streams, these come from subscription parameters, auth parameters, or connection parameters.
+
+## Subqueries
+
+**Subqueries** are queries within queries, using `IN (subquery)` syntax. Sync Streams support limited subqueries, in the form of `WHERE <id> IN (SELECT …)`.
+
+```yaml
+streams:
+  user_post_comments:
+    query: SELECT * FROM comments WHERE post_id IN (
+      SELECT id FROM posts WHERE author_id = auth.user_id()
+    )
+```
+
+## Global Data
+
+**Global data** is data that should be synced to all users, such as categories, settings, or reference data. In Sync Streams, this is achieved using queries that don't filter by user (no `auth.user_id()` clause). You can use `auto_subscribe: true` to sync global data upfront, or subscribe to it on-demand.
+
+## User-Specific Data
+
+**User-specific data** is data that should only be synced to the user who owns it. This is typically achieved using `auth.user_id()` in the stream query.
+
+## On-Demand Data
+
+**On-demand data** is data that is only synced when specifically requested by the client, typically using subscription parameters.
+
+## Bucket Limit
+
+The **bucket limit** is a constraint of 1,000 buckets per user. This limit exists to ensure good performance and should be considered when designing your streams.
+

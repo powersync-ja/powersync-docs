@@ -205,3 +205,95 @@ logger.setLevel(LogLevel.DEBUG);
 ## Supported Platforms
 
 See [Supported Platforms -> Node.js SDK](/resources/supported-platforms#node-js-sdk).
+
+## Encryption and custom SQLite drivers
+
+The SDK has an optional dependency on `better-sqlite3` which is used as the default SQLite
+driver for that package.
+Because that dependency is optional, it can be replaced or removed to customize how SQLite
+gets loaded. This section lists common options.
+
+### Encryption
+
+To encrypt databases managed by the PowerSync SDK for Node.js, replace the `better-sqlite3`
+dependency with the [`better-sqlite3-multiple-ciphers`](https://www.npmjs.com/package/better-sqlite3-multiple-ciphers) fork.
+That package has the same API as `better-sqlite3` while bundling [SQLite3MultipleCiphers](https://github.com/utelle/SQLite3MultipleCiphers)
+instead of upstream SQLite.
+
+<Tip>
+The [node example](https://github.com/powersync-ja/powersync-js/tree/main/demos/example-node) in the PowerSync
+repository can use both `better-sqlite3` and `better-sqlite3-multiple-ciphers` and may be a useful example here.
+</Tip>
+
+Because PowerSync attempts to dynamically load `better-sqlite3` at runtime, using a different package
+requires patching the database worker. To do that, create a file (say `database.worker.js`) with the following
+contents:
+
+```Typescript
+// This worker uses bindings to sqlite3 multiple ciphers instead of the original better-sqlite3 worker.
+import Database from 'better-sqlite3-multiple-ciphers';
+
+import { startPowerSyncWorker } from '@powersync/node/worker.js';
+
+async function resolveBetterSqlite3() {
+  return Database;
+}
+
+startPowerSyncWorker({ loadBetterSqlite3: resolveBetterSqlite3 });
+```
+
+When opening the database, instruct PowerSync to use the custom worker.
+Also use the `initializeConnection` option to install an ecryption key:
+
+```Typescript
+const encryptionKey = 'todo: generate encryption key and store it safely';
+
+const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'app.db',
+    openWorker: (_, options) => {
+      return new Worker(new URL('./database.worker.js', import.meta.url), options);
+    },
+    initializeConnection: async (db) => {
+      if (encryptionKey.length) {
+        const escapedKey = encryptionKey.replace("'", "''");
+        await db.execute(`pragma key = '${escapedKey}'`);
+      }
+
+      // Make sure the database is readable, this fails early if the key is wrong.
+      await db.execute('pragma user_version');
+    }
+  },
+  logger
+});
+```
+
+<Note>
+If you're using a custom compilation toolchain, for instance because you're compiling from TypeScript
+or are applying a bundler to your project, loading workers may require additional configuration on that
+toolchain.
+</Note>
+
+### `node:sqlite`
+
+Recent versions of Node.js contain an [experimental SQLite API](https://nodejs.org/api/sqlite.html).
+Using the builtin SQLite API can reduce code size and external native dependencies. To enable it,
+remove your dependency on `better-sqlite3` and configure PowerSync to use the builtin APIs:
+
+```JavaScript
+const database = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'app.db',
+    dbLocation: directory,
+    // Use node:sqlite instead of better-sqlite3
+    implementation: { type: 'node:sqlite' }
+  }
+});
+```
+
+<Danger>
+There are stability issues when using PowerSync with this API, and it's not recommended outside of
+testing purposes at the moment.
+</Danger>

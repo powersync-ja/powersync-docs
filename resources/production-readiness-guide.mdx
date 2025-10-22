@@ -253,9 +253,9 @@ The easiest way to check for replication issues is to look at the Diagnostics en
 
 ## Postgres
 
-### `max_slot_wal_keep_size`
+### Managing & Monitoring Replication Lag
 
-This Postgres [configuration parameter](https://www.postgresql.org/docs/current/runtime-config-replication.html#GUC-MAX-SLOT-WAL-KEEP-SIZE) limits the size of the Write-Ahead Log (WAL) files that replication slots can hold.
+The `max_slot_wal_keep_size` Postgres [configuration parameter](https://www.postgresql.org/docs/current/runtime-config-replication.html#GUC-MAX-SLOT-WAL-KEEP-SIZE) limits the size of the Write-Ahead Log (WAL) files that replication slots can hold.
 Because PowerSync uses logical replication it's important to consider the size of the `max_slot_wal_keep_size` and monitoring lag of replication slots used by PowerSync in a production environment to ensure lag of replication slots do not exceed the `max_slot_wal_keep_size`.
 
 The WAL growth rate is expected to increase substantially during the initial replication of large datasets with high update frequency, particularly for tables included in the PowerSync publication.
@@ -271,10 +271,10 @@ To view the current replication slots that are being used by PowerSync you can r
 
 ```
 SELECT slot_name,
-       plugin,
-       slot_type,
-       active,
-       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS replication_lag
+    plugin,
+    slot_type,
+    active,
+    pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS replication_lag
 FROM pg_replication_slots;
 ```
 
@@ -287,3 +287,32 @@ WHERE name = 'max_slot_wal_keep_size'
 
 It's recommended to check the current replication slot lag and `max_slot_wal_keep_size` when deploying Sync Rules changes to your PowerSync Service instance, especially when you're working with large database volumes.
 If you notice that the replication lag is greater than the current `max_slot_wal_keep_size` it's recommended to increase value of the `max_slot_wal_keep_size` on the connected source Postgres database to accommodate for the lag and to ensure the PowerSync Service can complete initial replication without further delays.
+
+### Managing Replication Slots
+
+Under normal operating conditions when new Sync Rules are deployed to a PowerSync Service instance, a new replication slot will also be created and used for replication. The old replication slot from the previous version of the Sync Rules will still remain, until Sync Rules reprocessing is completed, at which point the old replication slot will be removed by the PowerSync Service.
+However, in some cases, a replication slot may remain without being used. Usually this happens when a PowerSync Service instance is de-provisioned or stopped intentionally or due to unexpected errors. This results in excessive disk usage due to the continued growth of the WAL.
+
+To check which replication slots used by a PowerSync Service are no longer active, the following query can be executed against the source Postgres database:
+```
+SELECT slot_name,
+    pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS replication_lag
+FROM pg_replication_slots WHERE active = false;
+```
+
+If you have inactive replication slots that need to be cleaned up, you can drop them using the following query:
+```
+SELECT slot_name,
+    pg_drop_replication_slot(slot_name)
+FROM pg_replication_slots where active = false;
+```
+
+The alternative to manually checking for inactive replication slots would be to configure the `idle_replication_slot_timeout` configuration parameter on the source Postgres database.
+
+<Note>The `idle_replication_slot_timeout` [configuration parameter](https://www.postgresql.org/docs/current/runtime-config-replication.html#GUC-IDLE-REPLICATION-SLOT-TIMEOUT) is only available from PostgresSQL 18 and above.</Note>
+
+The `idle_replication_slot_timeout` will invalidate replication slots that have remained inactive for longer than the value set for the `idle_replication_slot_timeout` parameter.
+
+It's recommended to configure this parameter for source Postgres databases as this will prevent runaway WAL growth for replication slots that are no longer active or used by the PowerSync Service.
+
+

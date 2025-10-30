@@ -5,40 +5,62 @@ description: "Deploy PowerSync Service with a custom backend on Railway, includi
 
 Railway is an attractive alternative to managed solutions like Supabase, giving you more control without the complexity of full IaaS management.
 
-## Deploying to Railway
-
 ### Step 1: Deploy on Railway
 
 Find the PowerSync template on the Railway Marketplace, or click the button below to get started:
 
 <Card
-   title="Deploy on Railway"
-   icon="train"
-   href="todo"
-   horizontal
+  title="Deploy on Railway"
+  icon="train"
+  href="todo"
+  horizontal
 />
 
 <Note>
-This template automatically creates `lists` and `todos` tables in your Postgres database. The default sync rules are configured to sync these tables to your clients.
+  This template automatically creates `lists` and `todos` tables in your Postgres database. The default sync rules are configured to sync these tables to your clients.
+  
+  The `Execute Scripts` service creates the **powersync** publication for these tables. We recommend limiting the publication to only the tables you want clients to download.
 </Note>
 
-<Info>
-The `Execute Scripts` service creates the **powersync** publication for the lists and todos tables. We recommend limiting the publication to only the tables you want clients to download.
-</Info>
-
 <Accordion title="Want to add more tables?">
-If you need to add additional tables beyond `lists` and `todos`:
+  Once you're up and running with the default `lists` and `todos` tables, you can add more tables at any time using either of these approaches:
 
-1. Edit the **Execute Scripts** service to include your table creation statements and publications
-2. Redeploy the Execute Scripts service
-3. Update the sync rules in your YAML config (Step 2) to include the new tables
-4. Re-encode the YAML to base64 and update the `POWERSYNC_CONFIG_B64` variable
+  **Option 1: Use your existing Postgres tools**
+
+  Manage your database schema as you normally would. For example, using `psql`:
+
+  ```shell
+  psql $POSTGRES_URL <<'SQL'
+
+  CREATE TABLE notes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    list_id UUID REFERENCES lists(id) ON DELETE CASCADE,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT now()
+  );
+
+  CREATE PUBLICATION powersync FOR TABLE notes;
+
+  SQL
+  ```
+
+  **Option 2: Use the Execute Scripts service**
+
+  The Execute Scripts service can also be used as a general-purpose tool to apply schema changes to your PowerSync Postgres instance:
+
+  1. Add your new table creation statements and publication updates to the Execute Scripts code
+  2. Redeploy the Execute Scripts service
+
+  **After adding tables with either option:**
+
+  1. Update the sync rules in your YAML config (Step 2) to include the new tables
+  2. Re-encode the YAML to base64 and update the `POWERSYNC_CONFIG_B64` environment variable
 </Accordion>
 
 ### Step 2: Configure PowerSync Service
 
 <Warning>
-You'll notice the PowerSync service deployment crashes initially. This is expected, the `POWERSYNC_CONFIG_B64` environment variable isn't set yet.
+  You'll notice the PowerSync service deployment crashes initially. This is expected, the `POWERSYNC_CONFIG_B64` environment variable isn't set yet.
 </Warning>
 
 Let's fix this by generating the config, setting the variable, and restarting the service.
@@ -46,7 +68,8 @@ Let's fix this by generating the config, setting the variable, and restarting th
 <Steps>
   <Step title="Copy the YAML config">
     Start with the configuration below and update the sync rules to match your schema:
-```yaml
+    
+    ```yaml
     replication:
       connections:
         - type: postgresql
@@ -69,44 +92,47 @@ Let's fix this by generating the config, setting the variable, and restarting th
               - SELECT * FROM todos
 
     client_auth:
-      jwks_uri: https://${BACKEND_URL}/api/auth/keys
+      jwks_uri: https://${BACKEND_PUBLIC_URL}/api/auth/keys
       audience:
-        - https://${POWERSYNC_URL}
-```
+        - https://${POWERSYNC_PUBLIC_URL}
+    ```
   </Step>
 
   <Step title="Replace the placeholders">
-  Replace each placeholder with the corresponding values from Railway:
+    Replace each placeholder with the corresponding values from Railway:
 
-   <AccordionGroup>
+    <AccordionGroup>
       <Accordion title="${POSTGRES_SOURCE_URL}">
-         Click on **Postgres Source Data** → *Variables* → copy `DATABASE_URL`
+        Click on **Postgres Source Data** → *Variables* → copy `DATABASE_URL`
       </Accordion>
-
       <Accordion title="${POSTGRES_BUCKET_URL}">
-         Click on **Postgres (PowerSync Bucket Storage)** → *Variables* → copy `DATABASE_URL`
+        Click on **Postgres (PowerSync Bucket Storage)** → *Variables* → copy `DATABASE_URL`
       </Accordion>
-
-      <Accordion title="${BACKEND_URL}">
-         Click on **Node Backend** → *Settings* → *Networking* → copy the URL
+      <Accordion title="${BACKEND_PUBLIC_URL}">
+        Click on **Node Backend** → *Settings* → *Networking* → copy the URL
       </Accordion>
-
-      <Accordion title="${POWERSYNC_URL}">
-         Click on **PowerSync Service** → *Settings* → *Networking* → copy the URL
+      <Accordion title="${POWERSYNC_PUBLIC_URL}">
+        Click on **PowerSync Service** → *Settings* → *Networking* → copy the URL
       </Accordion>
-   </AccordionGroup>
-   </Step>
+    </AccordionGroup>
+  </Step>
 
   <Step title="Encode and deploy">
     Once you've replaced all placeholders:
     
-    1. Use a base64 encoding tool like [this one](https://fusionauth.io/dev-tools/base64-encoder-decoder) to encode the YAML file
+    1. Use a base64 encoding tool to encode the YAML file
     2. Copy the encoded string to the `POWERSYNC_CONFIG_B64` environment variable in the **PowerSync Service**
     3. Redeploy when prompted
   </Step>
 </Steps>
 
-### Step 3: Connect Your Client
+### Step 3: Test with the diagnostics app
+
+1. [Generate a development token](https://docs.powersync.com/tutorials/self-host/generate-dev-token)
+2. Open the PowerSync diagnostics app
+3. Paste your token to authenticate and test your connection
+
+### Step 4: Connect Your Client
 
 <Card
   title="Client-Side Setup"

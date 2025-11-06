@@ -6,19 +6,21 @@ description: "Guide for analyzing and understanding the local SQLite database"
 ## Get the SQLite file
 
 <Note>
-A SQLite database file can use any extension - .db, .sqlite, .sqlite3, etc. The extension doesn’t affect functionality; all contain the same SQLite format.
+A SQLite database file can use any extension - .db, .sqlite, .sqlite3, etc. The extension doesn’t affect functionality; all contain the same SQLite format. We also recommend pulling the associated [Write-Ahead Log (WAL)](https://www.sqlite.org/wal.html) file (with the same name as the database plus the suffix `-wal`) to ensure no recent changes are lost.
 </Note>
 
 <Tabs>
   <Tab title="Android">
-    Ensure your emulator is running, then replace `com.package-name` with your application's package name, `your-db-name.sqlite` with your database file name, and `~/Desktop/your-db-name.sqlite` with your desired download path.
+    Ensure your emulator is running, then replace `com.package-name` with your application's package name and `your-db-name.sqlite` with your database file name.
+
 ```shell
-adb exec-out run-as com.package-name cat databases/your-db-name.sqlite > ~/Desktop/your-db-name.sqlite
+adb exec-out run-as com.package-name cat databases/your-db-name.sqlite > "your/path/your-db-name.sqlite"
+adb exec-out run-as com.package-name cat databases/your-db-name.sqlite-wal > "your/path/your-db-name.sqlite-wal"
 ```
 
     **Common database locations:**
-    - [React Native Quick SQLite](/client-sdk-references/react-native-and-expo#react-native-quick-sqlite-2): `/data/com.package-name/files/*.sqlite`
-    - [OP-SQLite](/client-sdk-references/react-native-and-expo#op-sqlite): `/data/com.package-name/databases/*.sqlite`
+    - [React Native Quick SQLite](/client-sdk-references/react-native-and-expo#react-native-quick-sqlite-2): `/data/data/com.package-name/files/`
+    - [OP-SQLite](/client-sdk-references/react-native-and-expo#op-sqlite): `/data/data/com.package-name/databases/`
     
     **Note:** If the database is in a different location, first find it with:
 ```shell
@@ -29,15 +31,21 @@ adb shell run-as com.package-name find /data/data/com.package-name -name "your-d
     Replace `your-db-name.sqlite` with your database file name and extension.
 ```shell
 find ~/Library/Developer/CoreSimulator/Devices -type f -name 'your-db-name.sqlite'
+find ~/Library/Developer/CoreSimulator/Devices -type f -name 'your-db-name.sqlite-wal'
 ```
 
     **Common database location:**
     - App sandbox: `Library/Application Support/`
   </Tab>
     <Tab title="Web">
-      Web applications use browser-based storage APIs. Database files are managed by the browser and not directly accessible via filesystem paths.
 
-     **Storage options:**
+<Warning>
+Write-Ahead Log (WAL) file is not used in web environments. Browser-based SQLite implementations handle transactions differently.
+</Warning>
+
+    Web applications use browser-based storage APIs. Database files are managed by the browser and not directly accessible via filesystem paths.
+
+    **Storage options:**
       - **OPFS (Origin Private File System)**: Native filesystem API with better performance (Chrome 102+, Firefox 111+, Safari 17.2+)
       - **IndexedDB**: A key-value storage API. Unlike OPFS, IndexedDB doesn't store complete database files - it stores data in a structured format that cannot be directly downloaded as a SQLite file.
 
@@ -83,7 +91,7 @@ sqlite3 your-db-name.sqlite
 
 ### 2. Merge the WAL file
 
-The [Write Ahead Logging (WAL)](https://www.sqlite.org/wal.html) file stores temporary changes in a separate `.wal` file. Merge it back into the main database to get accurate size measurements:
+Temporary changes are stored in a separate [Write-Ahead Log (WAL)](https://www.sqlite.org/wal.html) `.wal` file. To measure the database size accurately, merge these changes into the main database:
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
 ```
@@ -139,6 +147,10 @@ The `VACUUM` command requires enough free disk space to create a temporary copy 
 </Warning>
 
 ### Increase page size
+
+<Warning>
+This may cause issues when using `IndexedDB` on web - it is not supported there, and could corrupt the database.
+</Warning>
 
 Increasing the page size from the default **4KB** to **16KB** can reduce storage overhead significantly.
 

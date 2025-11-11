@@ -1,0 +1,182 @@
+---
+title: "Understanding The SQLite Database"
+description: "Guide for analyzing and understanding the local SQLite database"
+---
+
+## Get the SQLite file
+
+<Note>
+A SQLite database file can use any extension - .db, .sqlite, .sqlite3, etc. The extension doesn’t affect functionality; all contain the same SQLite format. To ensure no recent changes are lost, you can either: Pull the associated [Write-Ahead Log (WAL)](https://www.sqlite.org/wal.html) file (with the same name as the database plus the suffix `-wal`). Or alternatively, run the command `PRAGMA wal_checkpoint(TRUNCATE);` on the database before pulling it, which will merge the WAL file's changes into the main database file. 
+</Note>
+
+<Tabs>
+  <Tab title="Android">
+    Ensure your emulator is running, then replace `com.package-name` with your application's package name and `your-db-name.sqlite` with your database file name.
+
+<Warning>
+This method may not work on Windows. Alternatively, you can copy the database to `/sdcard/` then use `adb pull`, though this may encounter permission issues on some devices.
+</Warning>
+
+```shell
+adb exec-out run-as com.package-name cat databases/your-db-name.sqlite > "your/local/path/your-db-name.sqlite"
+adb exec-out run-as com.package-name cat databases/your-db-name.sqlite-wal > "your/local/path/your-db-name.sqlite-wal"
+```
+
+    **Common database locations:**
+    - [React Native Quick SQLite](/client-sdk-references/react-native-and-expo#react-native-quick-sqlite-2): `/data/data/com.package-name/files/`
+    - [OP-SQLite](/client-sdk-references/react-native-and-expo#op-sqlite): `/data/data/com.package-name/databases/`
+    
+    **Note:** If the database is in a different location, first find it with:
+```shell
+adb shell run-as com.package-name find /data/data/com.package-name -name "your-db-name.sqlite"
+```
+  </Tab>
+  <Tab title="iOS">
+    Replace `your-db-name.sqlite` with your database file name and extension.
+```shell
+find ~/Library/Developer/CoreSimulator/Devices -type f -name 'your-db-name.sqlite'
+find ~/Library/Developer/CoreSimulator/Devices -type f -name 'your-db-name.sqlite-wal'
+```
+
+    **Common database location:**
+    - App sandbox: `Library/Application Support/`
+  </Tab>
+    <Tab title="Web">
+
+<Warning>
+Write-Ahead Log (WAL) file is not used in web environments. Browser-based SQLite implementations handle transactions differently.
+</Warning>
+
+    Web applications use browser-based storage APIs. Database files are managed by the browser and not directly accessible via filesystem paths.
+
+    **Storage options:**
+      - **OPFS (Origin Private File System)**: Native filesystem API with better performance (Chrome 102+, Firefox 111+, Safari 17.2+)
+      - **IndexedDB**: A key-value storage API. Unlike OPFS, IndexedDB doesn't store complete database files - it stores data in a structured format that cannot be directly downloaded as a SQLite file.
+
+<Note>
+Run the JavaScript code in your browser's console (F12 → Console) while on your application's page.
+</Note>
+
+      **Export database to your computer (OPFS only):**
+```javascript
+// For OPFS
+async function downloadDatabase() {
+const root = await navigator.storage.getDirectory();
+const fileHandle = await root.getFileHandle('your-db-name.sqlite');
+const file = await fileHandle.getFile();
+
+// Download the file
+const url = URL.createObjectURL(file);
+const a = document.createElement('a');
+a.href = url;
+a.download = 'your-db-name.sqlite';
+a.click();
+URL.revokeObjectURL(url);
+}
+
+downloadDatabase();
+```
+
+      **Browser DevTools (inspect only):**
+      - Chrome/Edge: `F12` → Application → Storage → IndexedDB or OPFS
+      - Firefox: `F12` → Storage → IndexedDB
+      - Safari: Develop → Show Web Inspector → Storage
+    </Tab>
+</Tabs>
+
+## Inspecting the SQLite file
+
+### 1. Open your SQLite file
+
+Use the `sqlite3` command-line tool or a GUI tool like [DB Browser for SQLite](https://sqlitebrowser.org/) to open your database file:
+```shell
+sqlite3 your-db-name.sqlite
+```
+
+### 2. Merge the WAL file
+
+Temporary changes are stored in a separate [Write-Ahead Log (WAL)](https://www.sqlite.org/wal.html) `.wal` file. To measure the database size accurately, merge these changes into the main database:
+```sql
+PRAGMA wal_checkpoint(TRUNCATE);
+```
+
+### 3. Get storage statistics
+
+Query the built-in `dbstat` virtual table to see how much space each table uses on disk:
+```sql    
+SELECT name, pgsize AS storage_size, payload AS data_size 
+FROM dbstat 
+WHERE aggregate = true;
+```
+
+This returns:
+- `name`: Table name
+- `storage_size`: Total storage used on disk (in bytes, including SQLite overhead)
+- `payload`: Actual data size (in bytes)
+
+<Note>
+The `dbstat` table is automatically available in SQLite and provides low-level information about physical storage. Values represent on-disk usage including SQLite's internal structures (page headers, B-trees, indexes, free space), which is why they're larger than your logical data size.
+</Note>
+
+## Understanding the size breakdown
+
+PowerSync databases contain more data than just your application tables to support the sync functionality:
+
+1. **Application data**: Your synced data in `ps_data__<table>` tables
+2. **Operation log (`ps_oplog`)**: A complete copy of all synced data required for offline conflict resolution and sync
+3. **Indexes**: For efficient queries and lookups
+4. **PowerSync metadata**: System tables and views for managing sync state (see [Client Architecture](https://docs.powersync.com/architecture/client-architecture#schema))
+5. **SQLite overhead**: Page structure, alignment, fragmentation, and internal bookkeeping
+
+The difference between `storage_size` and `payload` in the `dbstat` results shows SQLite's storage overhead. The `ps_oplog` table will typically be one of the largest tables since it maintains a full copy of your synced data.
+
+To see just the JSON data size in `ps_oplog` (excluding SQLite overhead), run:
+```sql
+SELECT sum(length(data)) / 1024.0 / 1024.0 AS size_mb FROM ps_oplog;
+```
+This measures only the raw JSON payloads, which will be smaller than the on-disk storage reported by `dbstat`.
+
+## Reducing SQLite file size
+
+<Note>
+Both methods of reducing the size of the SQLite file can be executed within the client using `powerSync.execute()`.
+</Note>
+
+Consider these optimizations if your app's database is growing larger than expected or you're working with high data volumes in production.
+
+### VACUUM Command
+
+The `VACUUM` command reclaims unused space in the database:
+
+```sql
+VACUUM;
+```
+
+<Warning>
+The `VACUUM` command has important constraints:
+- **Disk space**: Requires enough free disk space to create a temporary copy of the entire database
+- **Database locking**: Locks the database during execution, which may affect app responsiveness
+- Ensure sufficient space is available and run during low-activity periods
+</Warning>
+
+### Increase page size
+
+Increasing the page size from the default **4KB** (4096 bytes) to **16KB** (16384 bytes) can reduce storage overhead significantly.
+
+<Warning>
+**IndexedDB Compatibility Issue**: Changing the page size is *not* supported when using `IndexedDB` on web platforms and could corrupt the database. Only use this optimization for native SQLite implementations.
+</Warning>
+
+**Additional caveats:**
+- May increase overhead for many small writes.
+- Best suited for apps with larger data records
+
+The page size must be set before any tables are created and before running `VACUUM`. It should be one of the first **PRAGMA** statements after opening a new database:
+
+```sql
+PRAGMA page_size = 16384;
+```
+
+<Note>
+If you're changing the page size on an existing database, you must run `VACUUM` immediately after setting it to apply the change. For optimal results, set the page size when first creating the database.
+</Note>

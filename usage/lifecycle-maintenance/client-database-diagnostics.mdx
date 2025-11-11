@@ -6,12 +6,16 @@ description: "Guide for analyzing and understanding the local SQLite database"
 ## Get the SQLite file
 
 <Note>
-A SQLite database file can use any extension - .db, .sqlite, .sqlite3, etc. The extension doesn’t affect functionality; all contain the same SQLite format. We also recommend pulling the associated [Write-Ahead Log (WAL)](https://www.sqlite.org/wal.html) file (with the same name as the database plus the suffix `-wal`) to ensure no recent changes are lost.
+A SQLite database file can use any extension - .db, .sqlite, .sqlite3, etc. The extension doesn’t affect functionality; all contain the same SQLite format. To ensure no recent changes are lost, you can either: Pull the associated [Write-Ahead Log (WAL)](https://www.sqlite.org/wal.html) file (with the same name as the database plus the suffix `-wal`). Or alternatively, run the command `PRAGMA wal_checkpoint(TRUNCATE);` on the database before pulling it, which will merge the WAL file's changes into the main database file. 
 </Note>
 
 <Tabs>
   <Tab title="Android">
     Ensure your emulator is running, then replace `com.package-name` with your application's package name and `your-db-name.sqlite` with your database file name.
+
+<Warning>
+This method may not work on Windows. Alternatively, you can copy the database to `/sdcard/` then use `adb pull`, though this may encounter permission issues on some devices.
+</Warning>
 
 ```shell
 adb exec-out run-as com.package-name cat databases/your-db-name.sqlite > "your/local/path/your-db-name.sqlite"
@@ -134,6 +138,12 @@ This measures only the raw JSON payloads, which will be smaller than the on-disk
 
 ## Reducing SQLite file size
 
+<Note>
+Both methods of reducing the size of the SQLite file can be executed within the client using `powerSync.execute()`.
+</Note>
+
+Consider these optimizations if your app's database is growing larger than expected or you're working with high data volumes in production.
+
 ### VACUUM Command
 
 The `VACUUM` command reclaims unused space in the database:
@@ -143,19 +153,30 @@ VACUUM;
 ```
 
 <Warning>
-The `VACUUM` command requires enough free disk space to create a temporary copy of the database. Ensure sufficient space is available before running.
+The `VACUUM` command has important constraints:
+- **Disk space**: Requires enough free disk space to create a temporary copy of the entire database
+- **Database locking**: Locks the database during execution, which may affect app responsiveness
+- Ensure sufficient space is available and run during low-activity periods
 </Warning>
 
 ### Increase page size
 
-Increasing the page size from the default **4KB** to **16KB** can reduce storage overhead significantly.
+Increasing the page size from the default **4KB** (4096 bytes) to **16KB** (16384 bytes) can reduce storage overhead significantly.
 
-**Caveats:**
+<Warning>
+**IndexedDB Compatibility Issue**: Changing the page size is *not* supported when using `IndexedDB` on web platforms and could corrupt the database. Only use this optimization for native SQLite implementations.
+</Warning>
+
+**Additional caveats:**
 - May increase overhead for many small writes.
-- This may cause issues when using `IndexedDB` on web - it is not supported there, and could corrupt the database.
+- Best suited for apps with larger data records
 
-The page size must be set as one of the first `PRAGMA` statements after opening the database:
+The page size must be set before any tables are created and before running `VACUUM`. It should be one of the first **PRAGMA** statements after opening a new database:
 
 ```sql
 PRAGMA page_size = 16384;
 ```
+
+<Note>
+If you're changing the page size on an existing database, you must run `VACUUM` immediately after setting it to apply the change. For optimal results, set the page size when first creating the database.
+</Note>

@@ -1,62 +1,143 @@
 ---
 title: "Railway + PowerSync"
-description: "Integration guide for deploying a Postgres database and custom backend using Railway for Postgres and Node.js hosting."
-sidebarTitle: "Railway"
+description: "Deploy PowerSync Service with a custom backend on Railway, including Postgres source database, bucket storage, and diagnostics app."
 ---
 
-Railway is an attractive alternative to managed solutions such as Supabase, well suited to users looking for more control without going the full IaaS route.
-
-## Deploying to Railway
+Railway is an attractive alternative to managed solutions like Supabase, giving you more control without the complexity of full IaaS management.
 
 ### Step 1: Deploy on Railway
 
-Find the PowerSync template on the Railway Marketplace, or click below:
+Find the PowerSync template on the Railway Marketplace, or click the button below to get started:
 
 <Card
-   title="Deploy on Railway"
-   icon="train"
-   href="https://railway.app/template/RfZi6y?referralCode=2vw_V9"
-   horizontal
+  title="Deploy on Railway"
+  icon="train"
+  href="https://railway.com/deploy/powersync-starter-postgres"
+  horizontal
 />
 
-### Step 2: Configure Your Database
+<Note>
+  This template automatically creates `lists` and `todos` tables in your Postgres database. The default sync rules are configured to sync these tables to your clients.
+  
+  The `Execute Scripts` service creates the **powersync** publication for these tables. We recommend limiting the publication to only the tables you want clients to download.
+</Note>
 
-* Create a `powersync` publication as described in the [Source Database Setup](/installation/database-setup) section.
-   * Optionally filter the publication table list to only include tables that you want clients to download
-* \[Optional\] Create a Postgres user for PowerSync to use as described in the [Source Database Setup](/installation/database-setup) section.
+<Accordion title="Want to add more tables?">
+  Once you're up and running with the default `lists` and `todos` tables, you can add more tables at any time using either of these approaches:
 
-### Step 3: Configure Railway and PowerSync
+  **Option 1: Use your existing Postgres tools**
 
-* Once your project is deployed, clone the repo that Railway created and follow the instructions to generate the JWT config for these environment variables:
-   * `POWERSYNC_JWT_PRIVATEKEY`
-   * `POWERSYNC_JWT_PUBLICKEY`
-* Sign up for a [PowerSync](https://www.powersync.com/) account
-* Follow the steps to create a PowerSync instance as documented here: [Database Connection](/installation/database-connection)
-   * Generate a server certificate (in PEM format) via the following command:
-`echo | openssl s_client -showcerts -starttls postgres -connect <host>:<port> -servername <host> 2>/dev/null | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' | awk '/BEGIN/{i++}i==2' > railway.pem`
-   * Replacing `<host>` and `<port>` values with your own.
-   * In your Dashboard's connection details form, select "**verify-ca**" as the SSL mode, and upload the "railway.pem" file into the "Server Certificate" field.
-* Once your instance has been provisioned, copy its instance URL (find the copy icon in the Project tree).
-* Set this as the `POWERSYNC_URL` environment variable in Railway
+  Manage your database schema as you normally would. For example, using `psql`:
 
-### Step 4: Build Out Your Database
+  ```shell
+  psql $POSTGRES_URL <<'SQL'
 
-This typically consists of the below activities:
+  CREATE TABLE notes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    list_id UUID REFERENCES lists(id) ON DELETE CASCADE,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT now()
+  );
 
-* Create your schema
-* Add any new tables to the `powersync` publication previously created
-* Load some test data
+  CREATE PUBLICATION powersync FOR TABLE notes;
 
-### Step 5: Build Out Your Backend
+  SQL
+  ```
 
-See the Node.js backend app for instructions:
+  **Option 2: Use the Execute Scripts service**
 
-[https://github.com/powersync-ja/powersync-railway-nodejs-template](https://github.com/powersync-ja/powersync-railway-nodejs-template)
+  The Execute Scripts service can also be used as a general-purpose tool to apply schema changes to your PowerSync Postgres instance:
 
-An example implementation using Firebase for auth is available here:
+  1. Add your new table creation statements and publication updates to the Execute Scripts code
+  2. Redeploy the Execute Scripts service
 
-[https://github.com/powersync-ja/powersync-nodejs-firebase-backend-todolist-demo](https://github.com/powersync-ja/powersync-nodejs-firebase-backend-todolist-demo)
+  **After adding tables with either option:**
 
-### Step 6: Connect Your Client
+  1. Update the sync rules in your YAML config (Step 2) to include the new tables
+  2. Re-encode the YAML to base64 and update the `POWERSYNC_CONFIG_B64` environment variable
+</Accordion>
 
-See these docs for instructions to connect your app to your backend and PowerSync: [Client-Side Setup](/installation/client-side-setup)
+### Step 2: Configure PowerSync Service
+
+<Warning>
+  You'll notice the PowerSync service deployment crashes initially. This is expected, the `POWERSYNC_CONFIG_B64` environment variable isn't set yet.
+</Warning>
+
+Let's fix this by generating the config, setting the variable, and restarting the service.
+
+<Steps>
+  <Step title="Copy the YAML config">
+    Start with the configuration below and update the sync rules to match your schema:
+    
+    ```yaml
+    replication:
+      connections:
+        - type: postgresql
+          uri: ${POSTGRES_SOURCE_URL}
+          sslmode: disable
+
+    storage:
+      type: postgresql
+      uri: ${POSTGRES_BUCKET_URL}
+      sslmode: disable
+
+    port: 80
+
+    sync_rules:
+      content: |
+        bucket_definitions:
+          global:
+            data:
+              - SELECT * FROM lists
+              - SELECT * FROM todos
+
+    client_auth:
+      jwks_uri: https://${BACKEND_PUBLIC_URL}/api/auth/keys
+      audience:
+        - https://${POWERSYNC_PUBLIC_URL}
+    ```
+  </Step>
+
+  <Step title="Replace the placeholders">
+    Replace each placeholder with the corresponding values from Railway:
+
+    <AccordionGroup>
+      <Accordion title="${POSTGRES_SOURCE_URL}">
+        Click on **Postgres Source Data** → *Variables* → copy `DATABASE_URL`
+      </Accordion>
+      <Accordion title="${POSTGRES_BUCKET_URL}">
+        Click on **Postgres (PowerSync Bucket Storage)** → *Variables* → copy `DATABASE_URL`
+      </Accordion>
+      <Accordion title="${BACKEND_PUBLIC_URL}">
+        Click on **Node Backend** → *Settings* → *Networking* → copy the URL
+      </Accordion>
+      <Accordion title="${POWERSYNC_PUBLIC_URL}">
+        Click on **PowerSync Service** → *Settings* → *Networking* → copy the URL
+      </Accordion>
+    </AccordionGroup>
+  </Step>
+
+  <Step title="Encode and deploy">
+    Once you've replaced all placeholders:
+    
+    1. Use a base64 encoding tool to encode the YAML file
+    2. Copy the encoded string to the `POWERSYNC_CONFIG_B64` environment variable in the **PowerSync Service**
+    3. Redeploy when prompted
+  </Step>
+</Steps>
+
+### Step 3: Test with the diagnostics app
+
+1. [Generate a development token](https://docs.powersync.com/tutorials/self-host/generate-dev-token)
+2. Open the PowerSync Diagnostics App service
+3. Paste your token to test your connection and sync rules
+
+### Step 4: Connect Your Client
+
+<Card
+  title="Client-Side Setup"
+  icon="plug"
+  href="/installation/client-side-setup"
+>
+  Follow our guide to connect your app to your backend and PowerSync instance
+</Card>

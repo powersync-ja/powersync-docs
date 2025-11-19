@@ -1,24 +1,672 @@
 ---
 title: "Attachments / Files"
-description: Syncing large attachments/files directly using PowerSync is not recommended.
+description: Keep files out of your database and handle attachments in an entirely storage-agnostic way. PowerSync syncs minimal metadata while an offline-first queue automatically handles uploads, downloads, and retries.
 mode: wide
 ---
 
-Smaller files can be stored as base64-encoded data, but syncing many larger files using database rows may cause performance degradation.
+## Introduction
 
-On the other hand, PowerSync works well for syncing the attachment metadata, which could include the file path, name, size, and type. The client may then download the file from the storage provider, such as Supabase Storage or AWS S3.
+While PowerSync excels at syncing structured data, storing large files (images, videos, PDFs) directly in SQLite is not recommended. Embedding files as base64-encoded data or binary blobs in database rows can lead to many issues.
 
-### Helper Packages
+Instead, PowerSync uses a **metadata + storage provider pattern**: sync small metadata records through PowerSync while storing actual files in purpose-built storage systems (S3, Supabase Storage, Cloudflare R2, etc.). This approach provides:
 
-We currently have these helper packages available to manage attachments:
+- **Optimal performance** - Database stays small and fast
+- **Automatic queue management** - Background uploads/downloads with retry logic
+- **Offline-first support** - Local files available immediately, sync happens in background
+- **Cache management** - Automatic cleanup of unused files
+- **Platform flexibility** - Works across web, mobile, and desktop
 
-| SDK                           | Attachments Helper Package                                                                  | Example Implementation                                                                                                |
-| ----------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **React Native / JavaScript** | [powersync/attachments](https://www.npmjs.com/package/@powersync/attachments)               | [To-Do List demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) |
-| **Flutter**                   | [powersync\_attachments\_helper](https://pub.dev/packages/powersync_attachments_helper) (legacy) and [`powersync_core` attachments](https://pub.dev/documentation/powersync_core/latest/topics/attachments-topic.html) | [To-Do List demo app](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist)          |
-| **Kotlin**                    | [attachments](https://github.com/powersync-ja/powersync-kotlin/tree/main/core/src/commonMain/kotlin/com/powersync/attachments) | [To-Do List demo app](https://github.com/powersync-ja/powersync-kotlin/tree/main/demos/android-supabase-todolist) |
-| **Swift**                     | [attachments](https://github.com/powersync-ja/powersync-swift/blob/main/Sources/PowerSync/attachments/README.md) | [To-Do List demo app](https://github.com/powersync-ja/powersync-swift/tree/main/Demo) |
+## How It Works
 
-The example implementations above use [Supabase Storage](https://supabase.com/docs/guides/storage) as storage provider. 
-* For more information on the use of Supabase as the storage provider, refer to [Handling Attachments](/integration-guides/supabase-+-powersync/handling-attachments)
-* To learn how to adapt the implementations to use AWS S3 as the storage provider, see [this tutorial](/tutorials/client/attachments-and-files/aws-s3-storage-adapter)
+PowerSync attachments follow this architecture:
+
+// WIP
+
+### Workflow
+
+1. **Save file** - Your app calls `saveFile()` with file data and an `updateHook` to handle linking the attachment to your data model
+2. **Queue for upload** - File is saved locally and a record is created in the attachments table with state `QUEUED_UPLOAD`
+3. **Background upload** - The attachment queue automatically uploads file to remote storage (S3/Supabase/etc.)
+4. **Remote storage** - File is stored in remote storage with the attachment ID
+5. **State update** - The `updateHook` runs, updating your data model with the attachment ID and marking the file locally as `SYNCED`
+6. **Cross-device sync** - PowerSync syncs the data model changes to other clients
+7. **Data model updated** - Other clients receive the updated data model with the new attachment reference (e.g., `user.photo_id = "id-123"`)
+8. **Watch detects attachment** - Other clients' `watchAttachments()` callback detects the new attachment reference and creates a record in the attachments table with state `QUEUED_DOWNLOAD`
+9. **File download** - The attachment queue automatically downloads the file from remote storage
+10. **Local storage** - File is saved to local storage on the other client
+11. **State update** - File is marked locally as `SYNCED` and ready for use
+
+### Attachment States
+
+| State | Description |
+|-------|-------------|
+| `QUEUED_UPLOAD` | File saved locally, waiting to upload to remote storage |
+| `QUEUED_DOWNLOAD` | Data model synced from another device, file needs to be downloaded |
+| `SYNCED` | File exists both locally and in remote storage, fully synchronized |
+| `QUEUED_DELETE` | Marked for deletion from both local and remote storage |
+| `ARCHIVED` | No longer referenced in your data model, candidate for cleanup |
+
+## Core Components
+
+### Attachment Table
+
+The **Attachment Table** is a local-only table that stores metadata about each file. It's not synced through PowerSync's sync rules - instead, it's managed entirely by the attachment queue on each device.
+
+**Metadata stored:**
+- `id` - Unique attachment identifier (UUID)
+- `filename` - File name with extension (e.g., `photo-123.jpg`)
+- `localUri` - Path to file in local storage
+- `size` - File size in bytes
+- `mediaType` - MIME type (e.g., `image/jpeg`)
+- `state` - Current sync state (see states above)
+- `hasSynced` - Boolean indicating if file has ever been uploaded
+- `timestamp` - Last update time
+- `metaData` - Optional JSON string for custom data
+
+**Key characteristics:**
+- **Local-only** - Each device maintains its own attachment table
+- **Automatic management** - Queue handles all inserts/updates
+- **Cross-client coordination** - Your data model (e.g., `users.photo_id`) tells each client which files it needs
+
+### Remote Storage Adapter
+
+The **Remote Storage Adapter** is an interface you implement to connect PowerSync with your cloud storage provider. It's completely platform-agnostic - use S3, Supabase Storage, Cloudflare R2, Azure Blob, or even IPFS.
+
+**Interface methods:**
+- `uploadFile(fileData, attachment)` - Upload file to cloud storage
+- `downloadFile(attachment)` - Download file from cloud storage
+- `deleteFile(attachment)` - Delete file from cloud storage
+
+**Common pattern:**
+For security reasons client side implementations should use **signed URLs**
+1. Request a signed upload/download URL from your backend
+2. Your backend validates permissions and generates a temporary URL
+3. Client uploads/downloads directly to storage using the signed URL
+4. Never expose storage credentials to clients
+
+### Local Storage Adapter
+
+The **Local Storage Adapter** handles file persistence on the device. PowerSync provides implementations for common platforms and allows you to create custom adapters.
+
+**Interface methods:**
+- `initialize()` - Set up storage (create directories, etc.)
+- `saveFile(path, data)` - Write file to storage
+- `readFile(path)` - Read file from storage
+- `deleteFile(path)` - Remove file from storage
+- `fileExists(path)` - Check if file exists
+- `getLocalUri(filename)` - Get full path for a filename
+
+**Built-in adapters:**
+- **IndexedDB** - For web browsers (`IndexDBFileSystemStorageAdapter`)
+- **Node.js Filesystem** - For Node/Electron (`NodeFileSystemAdapter`)
+- **Expo FileSystem** - For React Native with Expo
+- **Native mobile storage** - For Flutter, Kotlin, Swift
+
+### Attachment Queue
+
+The **Attachment Queue** is the orchestrator that manages the entire attachment lifecycle. It:
+
+- **Watches your data model** - You provide a `watchAttachments` callback that monitors which files your app references
+- **Manages state transitions** - Automatically moves files through states (upload/download → synced → archive → delete)
+- **Handles retries** - Failed operations are retried on the next sync interval
+- **Performs cleanup** - Removes archived files that are no longer needed
+- **Verifies integrity** - Checks local files exist and repairs inconsistencies
+
+**Watched Attachments pattern:**
+The queue needs to know which attachments exist in your data model. For example, if users have profile photos, the following query can be used by the queue to operate on these attachments:
+
+```sql
+SELECT photo_id FROM users WHERE photo_id IS NOT NULL
+```
+
+The queue compares this list with its internal attachment table to determine:
+- **New attachments** - Download them
+- **Missing attachments** - Upload them  
+- **Removed attachments** - Archive them
+
+## Implementation Guide
+
+### Installation
+
+<CodeGroup>
+
+```bash JavaScript/TypeScript
+npm install @powersync/attachments
+# or
+yarn add @powersync/attachments
+# or
+pnpm add @powersync/attachments
+```
+
+```bash Flutter
+comes with flutter SDK, check SDK installation guide
+```
+
+```swift Swift
+comes with swift SDK, check SDK installation guide
+```
+
+```kotlin Kotlin
+comes with Kotlin SDK, check SDK installation guide
+```
+
+</CodeGroup>
+
+### Setup: Add Attachment Table to Schema
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+import { Schema, Table, column } from '@powersync/web';
+import { AttachmentTable } from '@powersync/attachments';
+
+const appSchema = new Schema({
+  users: new Table({
+    name: column.text,
+    email: column.text,
+    photo_id: column.text  // References attachment ID
+  }),
+  // Add the attachment table
+  attachments: new AttachmentTable()
+});
+```
+
+```dart Flutter
+final schema = Schema([
+  Table('users', [
+    Column.text('name'),
+    Column.text('email'),
+    Column.text('photo_id')
+  ]),
+  AttachmentsQueueTable(),
+]);
+```
+
+```swift Swift
+let users = Table(
+    name: "users",
+    columns: [
+        Column.text("name"),
+        Column.integer("email"),
+        Column.text("photo_id"),
+    ]
+)
+
+let schema = Schema(
+    tables: [
+        users,
+        // Add the local-only table which stores attachment states
+        createAttachmentTable(name: "attachments")
+    ]
+)
+```
+
+```kotlin Kotlin
+import com.powersync.attachments.createAttachmentsTable
+import com.powersync.db.schema.Column
+import com.powersync.db.schema.Schema
+import com.powersync.db.schema.Table
+
+val users = Table(
+    name = "users",
+    columns = listOf(
+        Column.text("name"),
+        Column.text("email"),
+        Column.text("photo_id")
+    )
+)
+
+val schema = Schema(
+    users,
+    // Add the local-only table which stores attachment states
+    createAttachmentsTable("attachments")
+)
+```
+
+</CodeGroup>
+
+### Configure Storage Adapters
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+import { 
+  IndexDBFileSystemStorageAdapter,
+  NodeFileSystemAdapter 
+} from '@powersync/attachments';
+
+// For web browsers (IndexedDB)
+const localStorage = new IndexDBFileSystemStorageAdapter('my-app-files');
+
+// For Node.js/Electron (filesystem)
+// const localStorage = new NodeFileSystemAdapter('./user-attachments');
+
+// Remote storage adapter (example with signed URLs)
+const remoteStorage = {
+  async uploadFile(fileData: ArrayBuffer, attachment: AttachmentRecord) {
+    // Request signed upload URL from your backend
+    const { uploadUrl } = await fetch('/api/attachments/upload-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        filename: attachment.filename,
+        contentType: attachment.mediaType 
+      })
+    }).then(r => r.json());
+    
+    // Upload to cloud storage using signed URL
+    await fetch(uploadUrl, {
+      method: 'PUT',
+      body: fileData,
+      headers: { 
+        'Content-Type': attachment.mediaType || 'application/octet-stream' 
+      }
+    });
+  },
+  
+  async downloadFile(attachment: AttachmentRecord): Promise<ArrayBuffer> {
+    // Request signed download URL from your backend
+    const { downloadUrl } = await fetch(
+      `/api/attachments/${attachment.id}/download-url`
+    ).then(r => r.json());
+    
+    // Download from cloud storage
+    const response = await fetch(downloadUrl);
+    return response.arrayBuffer();
+  },
+  
+  async deleteFile(attachment: AttachmentRecord) {
+    // Delete via your backend
+    await fetch(`/api/attachments/${attachment.id}`, {
+      method: 'DELETE'
+    });
+  }
+};
+```
+
+```dart Flutter
+// Flutter TODO
+```
+
+```kotlin Kotlin
+// Kotlin TODO
+```
+
+```swift Swift
+// Swift TODO
+```
+
+</CodeGroup>
+
+<Warning>
+**Security Best Practice:** Always use your backend to generate signed URLs and validate permissions. Never expose storage credentials directly to clients.
+</Warning>
+
+### Initialize Attachment Queue
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+import { AttachmentQueue } from '@powersync/attachments';
+
+const attachmentQueue = new AttachmentQueue({
+  db: db,  // PowerSync database instance
+  localStorage,
+  remoteStorage,
+  
+  // Define which attachments exist in your data model
+  watchAttachments: (onUpdate) => {
+    db.watch(
+      `SELECT photo_id FROM users WHERE photo_id IS NOT NULL`,
+      [],
+      {
+        onResult: async (result) => {
+          const attachments = result.rows?._array.map(row => ({
+            id: row.photo_id,
+            fileExtension: 'jpg'  // or use full filename
+          })) ?? [];
+          await onUpdate(attachments);
+        }
+      }
+    );
+  },
+  
+  // Optional configuration
+  syncIntervalMs: 30000,      // Sync every 30 seconds
+  downloadAttachments: true,  // Auto-download referenced files
+  archivedCacheLimit: 100     // Keep 100 archived files before cleanup
+});
+
+// Start the sync process
+await attachmentQueue.startSync();
+```
+
+```dart Flutter
+// Flutter TODO
+```
+
+```kotlin Kotlin
+// Kotlin TODO
+```
+
+```swift Swift
+// Swift TODO
+```
+
+</CodeGroup>
+
+<Info>
+The `watchAttachments` callback is crucial - it tells the queue which files your app needs based on your data model. The queue uses this to automatically download, upload, or archive files.
+</Info>
+
+### Upload an Attachment
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+async function uploadProfilePhoto(imageBlob: Blob, userId: string) {
+  const arrayBuffer = await imageBlob.arrayBuffer();
+  
+  const attachment = await attachmentQueue.saveFile({
+    data: arrayBuffer,
+    fileExtension: 'jpg',
+    mediaType: 'image/jpeg',
+    
+    // updateHook runs in same transaction, ensuring atomicity
+    updateHook: async (tx, attachment) => {
+      await tx.execute(
+        'UPDATE users SET photo_id = ? WHERE id = ?',
+        [attachment.id, userId]
+      );
+    }
+  });
+  
+  return attachment;
+}
+
+// The queue will:
+// 1. Save file locally immediately
+// 2. Create attachment record with state QUEUED_UPLOAD
+// 3. Update user record in same transaction
+// 4. Automatically upload file in background
+// 5. Update state to SYNCED when complete
+```
+
+```dart Flutter
+// Flutter TODO
+```
+
+```kotlin Kotlin
+// Kotlin TODO
+```
+
+```swift Swift
+// Swift TODO
+```
+
+</CodeGroup>
+
+<Info>
+The `updateHook` parameter is the recommended way to link attachments to your data model. It runs in the same database transaction, ensuring data consistency.
+</Info>
+
+### Download/Access an Attachment
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+// Downloads happen automatically when watchAttachments references a file
+
+async function getProfilePhotoUri(userId: string): Promise<string | null> {
+  const user = await db.get(
+    'SELECT photo_id FROM users WHERE id = ?',
+    [userId]
+  );
+  
+  if (!user?.photo_id) {
+    return null;
+  }
+  
+  const attachment = await db.get(
+    'SELECT * FROM attachments WHERE id = ?',
+    [user.photo_id]
+  );
+  
+  if (!attachment) {
+    return null;
+  }
+  
+  if (attachment.state === 'SYNCED' && attachment.local_uri) {
+    return attachment.local_uri;
+  }
+  
+  return null;
+}
+
+// Example: Display image in React with watch query
+function ProfilePhoto({ userId }: { userId: string }) {
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  
+  useEffect(() => {
+    const watch = db.watch(
+      `SELECT a.local_uri, a.state 
+       FROM users u 
+       LEFT JOIN attachments a ON a.id = u.photo_id 
+       WHERE u.id = ?`,
+      [userId],
+      {
+        onResult: (result) => {
+          const row = result.rows?._array[0];
+          if (row?.state === 'SYNCED' && row?.local_uri) {
+            setPhotoUri(row.local_uri);
+          }
+        }
+      }
+    );
+    
+    return () => watch.close();
+  }, [userId]);
+  
+  if (!photoUri) {
+    return <div>Loading photo...</div>;
+  }
+  
+  return <img src={photoUri} alt="Profile" />;
+}
+```
+
+```dart Flutter
+// Flutter TODO
+```
+
+```kotlin Kotlin
+// Kotlin TODO
+```
+
+```swift Swift
+// Swift TODO
+```
+
+</CodeGroup>
+
+### Delete an Attachment
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+async function deleteProfilePhoto(userId: string, photoId: string) {
+  await attachmentQueue.deleteFile({
+    id: photoId,
+    
+    // updateHook ensures atomic deletion
+    updateHook: async (tx, attachment) => {
+      await tx.execute(
+        'UPDATE users SET photo_id = NULL WHERE id = ?',
+        [userId]
+      );
+    }
+  });
+  
+  console.log('Photo queued for deletion');
+  // The queue will:
+  // 1. Delete from remote storage
+  // 2. Delete local file
+  // 3. Remove attachment record
+}
+
+// Alternative: Remove reference and let queue archive it automatically
+async function removePhotoReference(userId: string) {
+  await db.execute(
+    'UPDATE users SET photo_id = NULL WHERE id = ?',
+    [userId]
+  );
+  
+  // The watchAttachments callback will detect this change
+  // The queue will automatically archive the unreferenced attachment
+  // After reaching archivedCacheLimit, it will be deleted
+}
+```
+
+```dart Flutter
+// Flutter TODO
+```
+
+```kotlin Kotlin
+// Kotlin TODO
+```
+
+```swift Swift
+// Swift TODO
+```
+
+</CodeGroup>
+
+## Advanced Topics
+
+### Error Handling
+
+Implement custom error handling to control retry behavior:
+
+```typescript
+import { AttachmentErrorHandler } from '@powersync/attachments';
+
+const errorHandler: AttachmentErrorHandler = {
+  async onDownloadError(attachment, error) {
+    console.error(`Download failed: ${attachment.filename}`, error);
+    
+    // Return true to retry, false to archive
+    if (error.message.includes('404')) {
+      return false; // File doesn't exist, don't retry
+    }
+    return true; // Retry on network errors
+  },
+  
+  async onUploadError(attachment, error) {
+    console.error(`Upload failed: ${attachment.filename}`, error);
+    return true; // Always retry uploads
+  },
+  
+  async onDeleteError(attachment, error) {
+    console.error(`Delete failed: ${attachment.filename}`, error);
+    return true; // Retry deletes
+  }
+};
+
+const queue = new AttachmentQueue({
+  // ... other options
+  errorHandler
+});
+```
+
+### Custom Storage Adapters
+
+Create adapters for other storage systems:
+
+```typescript
+import { LocalStorageAdapter, RemoteStorageAdapter } from '@powersync/attachments';
+
+// Example: IPFS remote storage
+class IPFSStorageAdapter implements RemoteStorageAdapter {
+  async uploadFile(fileData: ArrayBuffer, attachment: AttachmentRecord) {
+    // Upload to IPFS
+    const cid = await ipfs.add(fileData);
+    // Store CID in your backend for retrieval
+    await fetch('/api/ipfs-cids', {
+      method: 'POST',
+      body: JSON.stringify({ attachmentId: attachment.id, cid })
+    });
+  }
+  
+  async downloadFile(attachment: AttachmentRecord): Promise<ArrayBuffer> {
+    // Retrieve CID from backend
+    const { cid } = await fetch(`/api/ipfs-cids/${attachment.id}`)
+      .then(r => r.json());
+    // Download from IPFS
+    return ipfs.cat(cid);
+  }
+  
+  async deleteFile(attachment: AttachmentRecord) {
+    // IPFS is immutable, but you can unpin and remove from backend
+    await fetch(`/api/ipfs-cids/${attachment.id}`, { method: 'DELETE' });
+  }
+}
+```
+
+### Verification and Recovery
+
+Verify attachment integrity and repair issues:
+
+```typescript
+await attachmentQueue.verifyAttachments();
+
+// This checks:
+// - Local files exist at expected paths
+// - Repairs broken localUri references
+// - Archives attachments with missing files
+// - Requeues downloads for synced files with missing local copies
+```
+
+### Cache Management
+
+Control archived file retention:
+
+```typescript
+const queue = new AttachmentQueue({
+  // ... other options
+  archivedCacheLimit: 200  // Keep 200 archived files; oldest deleted when limit reached
+});
+
+```
+
+### Offline-First Considerations
+
+The attachment queue is designed for offline-first apps:
+
+- **Local-first operations** - Files are saved locally immediately, synced later
+- **Automatic retry** - Failed uploads/downloads retry when connection returns
+- **Queue persistence** - Queue state survives app restarts
+- **Conflict-free** - Files are immutable, identified by UUID
+- **Bandwidth efficient** - Only syncs when needed, respects network conditions
+
+## SDK & Demo Reference
+
+We provide attachment helpers for multiple platforms:
+
+| SDK | Package | Demo Application |
+|-----|---------|------------------|
+| **JavaScript/TypeScript** | [@powersync/attachments](https://www.npmjs.com/package/@powersync/attachments) | [React Native Todo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) · [React Web Todo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist) |
+| **Flutter** | [Built-in](https://pub.dev/documentation/powersync_core/latest/topics/attachments-topic.html) | [Flutter Todo](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist) |
+| **Kotlin** | [Built-in attachments](https://github.com/powersync-ja/powersync-kotlin/tree/main/core/src/commonMain/kotlin/com/powersync/attachments) | [Android Todo](https://github.com/powersync-ja/powersync-kotlin/tree/main/demos/android-supabase-todolist) |
+| **Swift** | [Built-in attachments](https://github.com/powersync-ja/powersync-swift/blob/main/Sources/PowerSync/attachments/README.md) | [iOS Demo](https://github.com/powersync-ja/powersync-swift/tree/main/Demo) |
+
+<Note>
+Most demo applications use Supabase Storage as the storage provider, but the patterns are adaptable to any storage system.
+</Note>
+
+## Related Resources
+
+- **[Supabase Storage Integration](/integration-guides/supabase-+-powersync/handling-attachments)** - Detailed guide for using Supabase Storage
+- **[AWS S3 Storage Adapter Tutorial](/tutorials/client/attachments-and-files/aws-s3-storage-adapter)** - How to implement an S3 adapter
+- **[JavaScript SDK Documentation](https://www.npmjs.com/package/@powersync/attachments)** - Complete API reference
+
+---

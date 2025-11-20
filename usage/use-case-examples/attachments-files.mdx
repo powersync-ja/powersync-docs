@@ -181,12 +181,14 @@ final schema = Schema([
 ```
 
 ```swift Swift
+import PowerSync
+
 let users = Table(
     name: "users",
     columns: [
         Column.text("name"),
-        Column.integer("email"),
-        Column.text("photo_id"),
+        Column.text("email"),
+        Column.text("photo_id"),  // References attachment ID
     ]
 )
 
@@ -358,7 +360,85 @@ class SignedUrlStorageAdapter implements RemoteStorage {
 ```
 
 ```swift Swift
-// Swift TODO
+import Foundation
+import PowerSync
+
+// For iOS/macOS (FileManager)
+func getAttachmentsDirectoryPath() throws -> String {
+    guard let documentsURL = FileManager.default.urls(
+        for: .documentDirectory,
+        in: .userDomainMask
+    ).first else {
+        throw PowerSyncAttachmentError.attachmentError("Could not determine attachments directory path")
+    }
+    return documentsURL.appendingPathComponent("attachments").path
+}
+
+let localStorage = FileManagerStorageAdapter()
+
+// Remote storage adapter (example with signed URLs)
+class SignedUrlStorageAdapter: RemoteStorageAdapter {
+    func uploadFile(fileData: Data, attachment: Attachment) async throws {
+        // Request signed upload URL from your backend
+        struct UploadUrlResponse: Codable {
+            let uploadUrl: String
+        }
+        
+        let requestBody = [
+            "filename": attachment.filename,
+            "contentType": attachment.mediaType ?? "application/octet-stream"
+        ]
+        
+        var request = URLRequest(url: URL(string: "/api/attachments/upload-url")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(UploadUrlResponse.self, from: data)
+        
+        // Upload to cloud storage using signed URL
+        var uploadRequest = URLRequest(url: URL(string: response.uploadUrl)!)
+        uploadRequest.httpMethod = "PUT"
+        uploadRequest.setValue(attachment.mediaType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
+        uploadRequest.httpBody = fileData
+        
+        let (_, uploadResponse) = try await URLSession.shared.data(for: uploadRequest)
+        guard let httpResponse = uploadResponse as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw PowerSyncAttachmentError.generalError("Upload failed")
+        }
+    }
+    
+    func downloadFile(attachment: Attachment) async throws -> Data {
+        // Request signed download URL from your backend
+        struct DownloadUrlResponse: Codable {
+            let downloadUrl: String
+        }
+        
+        let request = URLRequest(url: URL(string: "/api/attachments/\(attachment.id)/download-url")!)
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(DownloadUrlResponse.self, from: data)
+        
+        // Download from cloud storage
+        let downloadRequest = URLRequest(url: URL(string: response.downloadUrl)!)
+        let (fileData, _) = try await URLSession.shared.data(for: downloadRequest)
+        return fileData
+    }
+    
+    func deleteFile(attachment: Attachment) async throws {
+        // Delete via your backend
+        var request = URLRequest(url: URL(string: "/api/attachments/\(attachment.id)")!)
+        request.httpMethod = "DELETE"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw PowerSyncAttachmentError.generalError("Delete failed")
+        }
+    }
+}
+
+let remoteStorage = SignedUrlStorageAdapter()
 ```
 
 ```kotlin Kotlin
@@ -497,7 +577,37 @@ Future<void> initializeAttachmentQueue(PowerSyncDatabase db) async {
 ```
 
 ```swift Swift
-// Swift TODO
+let attachmentQueue = AttachmentQueue(
+    db: db,  // PowerSync database instance
+    remoteStorage: remoteStorage,
+    attachmentsDirectory: try getAttachmentsDirectoryPath(),
+    
+    // Define which attachments exist in your data model
+    watchAttachments: {
+        try db.watch(
+            sql: """
+                SELECT photo_id 
+                FROM users 
+                WHERE photo_id IS NOT NULL
+            """,
+            parameters: [],
+            mapper: { cursor in
+                try WatchedAttachmentItem(
+                    id: cursor.getString(name: "photo_id"),
+                    fileExtension: "jpg"  // or use full filename
+                )
+            }
+        )
+    },
+    
+    // Optional configuration
+    syncInterval: 30.0,      // Sync every 30 seconds
+    downloadAttachments: true,  // Auto-download referenced files
+    archivedCacheLimit: 100     // Keep 100 archived files before cleanup
+)
+
+// Start the sync process
+try await attachmentQueue.startSync()
 ```
 
 ```kotlin Kotlin
@@ -616,7 +726,30 @@ Future<Attachment> uploadProfilePhoto(
 ```
 
 ```swift Swift
-// Swift TODO
+func uploadProfilePhoto(imageData: Data, userId: String) async throws -> Attachment {
+    let attachment = try await attachmentQueue.saveFile(
+        data: imageData,
+        mediaType: "image/jpeg",
+        fileExtension: "jpg",
+        
+        // updateHook runs in same transaction, ensuring atomicity
+        updateHook: { tx, attachment in
+            try tx.execute(
+                sql: "UPDATE users SET photo_id = ? WHERE id = ?",
+                parameters: [attachment.id, userId]
+            )
+        }
+    )
+    
+    return attachment
+}
+
+// The queue will:
+// 1. Save file locally immediately
+// 2. Create attachment record with state QUEUED_UPLOAD
+// 3. Update user record in same transaction
+// 4. Automatically upload file in background
+// 5. Update state to SYNCED when complete
 ```
 
 ```kotlin Kotlin
@@ -786,7 +919,81 @@ StreamBuilder<List<Map<String, dynamic>>>(
 ```
 
 ```swift Swift
-// Swift TODO
+// Downloads happen automatically when watchAttachments references a file
+func getProfilePhotoUri(userId: String) async throws -> String? {
+    guard let user = try await db.getOptional(
+        sql: "SELECT photo_id FROM users WHERE id = ?",
+        parameters: [userId],
+        mapper: { cursor in
+            try cursor.getStringOptional(name: "photo_id")
+        }
+    ), let photoId = user else {
+        return nil
+    }
+    
+    guard let attachment = try await db.getOptional(
+        sql: "SELECT * FROM attachments WHERE id = ?",
+        parameters: [photoId],
+        mapper: { cursor in
+            try Attachment.fromCursor(cursor)
+        }
+    ) else {
+        return nil
+    }
+    
+    if attachment.state == .synced, let localUri = attachment.localUri {
+        return localUri
+    }
+    
+    return nil
+}
+
+// Example: Display image in SwiftUI with watch query
+struct ProfilePhotoView: View {
+    let userId: String
+    @State private var photoUri: String?
+    
+    var body: some View {
+        Group {
+            if let photoUri = photoUri {
+                AsyncImage(url: URL(fileURLWithPath: photoUri)) { image in
+                    image.resizable()
+                } placeholder: {
+                    ProgressView()
+                }
+            } else {
+                Text("Loading photo...")
+            }
+        }
+        .task {
+            do {
+                for try await results in try db.watch(
+                    sql: """
+                        SELECT a.local_uri, a.state 
+                        FROM users u 
+                        LEFT JOIN attachments a ON a.id = u.photo_id 
+                        WHERE u.id = ?
+                    """,
+                    parameters: [userId],
+                    mapper: { cursor in
+                        (
+                            state: try AttachmentState.from(cursor.getInt(name: "state")),
+                            localUri: try cursor.getStringOptional(name: "local_uri")
+                        )
+                    }
+                ) {
+                    if let first = results.first,
+                       first.state == .synced,
+                       let localUri = first.localUri {
+                        photoUri = localUri
+                    }
+                }
+            } catch {
+                print("Error watching photo: \(error)")
+            }
+        }
+    }
+}
 ```
 
 ```kotlin Kotlin
@@ -931,7 +1138,37 @@ Future<void> removePhotoReference(
 ```
 
 ```swift Swift
-// Swift TODO
+func deleteProfilePhoto(userId: String, photoId: String) async throws {
+    try await attachmentQueue.deleteFile(
+        attachmentId: photoId,
+        
+        // updateHook ensures atomic deletion
+        updateHook: { tx, attachment in
+            try tx.execute(
+                sql: "UPDATE users SET photo_id = NULL WHERE id = ?",
+                parameters: [userId]
+            )
+        }
+    )
+    
+    print("Photo queued for deletion")
+    // The queue will:
+    // 1. Delete from remote storage
+    // 2. Delete local file
+    // 3. Remove attachment record
+}
+
+// Alternative: Remove reference and let queue archive it automatically
+func removePhotoReference(userId: String) async throws {
+    try await db.execute(
+        sql: "UPDATE users SET photo_id = NULL WHERE id = ?",
+        parameters: [userId]
+    )
+    
+    // The watchAttachments callback will detect this change
+    // The queue will automatically archive the unreferenced attachment
+    // After reaching archivedCacheLimit, it will be deleted
+}
 ```
 
 ```kotlin Kotlin
@@ -1045,6 +1282,35 @@ final queue = AttachmentQueue(
 ```
 
 ```swift Swift
+class CustomErrorHandler: SyncErrorHandler {
+    func onDownloadError(attachment: Attachment, error: Error) async -> Bool {
+        print("Download failed: \(attachment.filename), error: \(error)")
+        
+        // Return true to retry, false to archive
+        if let urlError = error as? URLError, urlError.code == .badServerResponse {
+            return false  // File doesn't exist (404), don't retry
+        }
+        return true  // Retry on network errors
+    }
+    
+    func onUploadError(attachment: Attachment, error: Error) async -> Bool {
+        print("Upload failed: \(attachment.filename), error: \(error)")
+        return true  // Always retry uploads
+    }
+    
+    func onDeleteError(attachment: Attachment, error: Error) async -> Bool {
+        print("Delete failed: \(attachment.filename), error: \(error)")
+        return true  // Retry deletes
+    }
+}
+
+let queue = AttachmentQueue(
+    db: db,
+    remoteStorage: remoteStorage,
+    attachmentsDirectory: try getAttachmentsDirectoryPath(),
+    watchAttachments: watchAttachments,
+    errorHandler: CustomErrorHandler()
+)
 ```
 
 ```kotlin Kotlin
@@ -1175,6 +1441,50 @@ class IPFSStorageAdapter implements RemoteStorage {
 ```
 
 ```swift Swift
+// Example: IPFS remote storage
+class IPFSStorageAdapter: RemoteStorageAdapter {
+    func uploadFile(fileData: Data, attachment: Attachment) async throws {
+        // Upload to IPFS
+        // let cid = try await ipfs.add(fileData)
+        
+        // Store CID in your backend for retrieval
+        struct CIDRequest: Codable {
+            let attachmentId: String
+            let cid: String
+        }
+        
+        let requestBody = CIDRequest(attachmentId: attachment.id, cid: "your-cid-here")
+        var request = URLRequest(url: URL(string: "/api/ipfs-cids")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(requestBody)
+        
+        _ = try await URLSession.shared.data(for: request)
+    }
+    
+    func downloadFile(attachment: Attachment) async throws -> Data {
+        // Retrieve CID from backend
+        struct CIDResponse: Codable {
+            let cid: String
+        }
+        
+        let request = URLRequest(url: URL(string: "/api/ipfs-cids/\(attachment.id)")!)
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(CIDResponse.self, from: data)
+        
+        // Download from IPFS
+        // let fileData = try await ipfs.cat(response.cid)
+        // return fileData
+        return Data()  // Replace with actual IPFS download
+    }
+    
+    func deleteFile(attachment: Attachment) async throws {
+        // IPFS is immutable, but you can unpin and remove from backend
+        var request = URLRequest(url: URL(string: "/api/ipfs-cids/\(attachment.id)")!)
+        request.httpMethod = "DELETE"
+        _ = try await URLSession.shared.data(for: request)
+    }
+}
 ```
 
 ```kotlin Kotlin
@@ -1233,6 +1543,16 @@ await attachmentQueue.verifyAttachments();
 ```
 
 ```swift Swift
+// verifyAttachments is called internally during startSync()
+// If you need to manually verify, you can wait for initialization:
+
+try await attachmentQueue.waitForInit()
+
+// This checks:
+// - Local files exist at expected paths
+// - Repairs broken localUri references
+// - Archives attachments with missing files
+// - Requeues downloads for synced files with missing local copies
 ```
 
 ```kotlin Kotlin
@@ -1284,6 +1604,17 @@ await queue.expireCache();
 ```
 
 ```swift Swift
+let queue = AttachmentQueue(
+    db: db,
+    remoteStorage: remoteStorage,
+    attachmentsDirectory: try getAttachmentsDirectoryPath(),
+    watchAttachments: watchAttachments,
+    // ... other options
+    archivedCacheLimit: 200  // Keep 200 archived files; oldest deleted when limit reached
+)
+
+// For manually expiring the cache
+try await queue.expireCache()
 ```
 
 ```kotlin Kotlin

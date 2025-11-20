@@ -207,7 +207,7 @@ val users = Table(
     columns = listOf(
         Column.text("name"),
         Column.text("email"),
-        Column.text("photo_id")
+        Column.text("photo_id")  // References attachment ID
     )
 )
 
@@ -284,12 +284,57 @@ const remoteStorage = {
 // Flutter TODO
 ```
 
-```kotlin Kotlin
-// Kotlin TODO
-```
-
 ```swift Swift
 // Swift TODO
+```
+
+```kotlin Kotlin
+import com.powersync.attachments.LocalStorage
+import com.powersync.attachments.RemoteStorage
+import com.powersync.attachments.Attachment
+import com.powersync.attachments.storage.IOLocalStorageAdapter
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.io.files.Path
+
+// For local storage (uses IOLocalStorageAdapter by default)
+// On Android: "${applicationContext.filesDir.canonicalPath}/attachments"
+val attachmentsDirectory = Path("attachments").toString()
+val localStorage: LocalStorage = IOLocalStorageAdapter()
+
+// Remote storage adapter (example with signed URLs)
+val remoteStorage = object : RemoteStorage {
+    override suspend fun uploadFile(
+        fileData: Flow<ByteArray>,
+        attachment: Attachment
+    ) {
+        // Request signed upload URL from your backend
+        val uploadUrl = // ... fetch from your API
+        
+        // Upload to cloud storage using signed URL
+        // Collect the flow and upload
+        val bytes = mutableListOf<ByteArray>()
+        fileData.collect { bytes.add(it) }
+        val allBytes = bytes.flatMap { it.toList() }.toByteArray()
+        
+        // Upload allBytes to uploadUrl
+        // ... your HTTP upload implementation
+    }
+    
+    override suspend fun downloadFile(attachment: Attachment): Flow<ByteArray> {
+        // Request signed download URL from your backend
+        val downloadUrl = // ... fetch from your API
+        
+        // Download from cloud storage
+        val response = // ... your HTTP download implementation
+        return flowOf(response) // or convert your ByteArray to Flow
+    }
+    
+    override suspend fun deleteFile(attachment: Attachment) {
+        // Delete via your backend
+        // ... your HTTP delete implementation
+    }
+}
 ```
 
 </CodeGroup>
@@ -341,12 +386,48 @@ await attachmentQueue.startSync();
 // Flutter TODO
 ```
 
-```kotlin Kotlin
-// Kotlin TODO
-```
-
 ```swift Swift
 // Swift TODO
+```
+
+```kotlin Kotlin
+import com.powersync.attachments.AttachmentQueue
+import com.powersync.attachments.WatchedAttachmentItem
+import com.powersync.db.getString
+import kotlinx.coroutines.flow.Flow
+import kotlin.time.Duration.Companion.seconds
+
+val attachmentQueue = AttachmentQueue(
+    db = db,  // PowerSync database instance
+    remoteStorage = remoteStorage,
+    attachmentsDirectory = attachmentsDirectory,
+    localStorage = localStorage,  // Optional, defaults to IOLocalStorageAdapter()
+    
+    // Define which attachments exist in your data model
+    watchAttachments = {
+        db.watch(
+            sql = """
+                SELECT photo_id 
+                FROM users 
+                WHERE photo_id IS NOT NULL
+            """,
+            parameters = null
+        ) { cursor ->
+            WatchedAttachmentItem(
+                id = cursor.getString("photo_id"),
+                fileExtension = "jpg"  // or use full filename
+            )
+        }
+    },
+    
+    // Optional configuration
+    syncInterval = 30.seconds,      // Sync every 30 seconds
+    downloadAttachments = true,      // Auto-download referenced files
+    archivedCacheLimit = 100        // Keep 100 archived files before cleanup
+)
+
+// Start the sync process
+attachmentQueue.startSync()
 ```
 
 </CodeGroup>
@@ -392,12 +473,37 @@ async function uploadProfilePhoto(imageBlob: Blob, userId: string) {
 // Flutter TODO
 ```
 
-```kotlin Kotlin
-// Kotlin TODO
-```
-
 ```swift Swift
 // Swift TODO
+```
+
+```kotlin Kotlin
+import kotlinx.coroutines.flow.flowOf
+
+suspend fun uploadProfilePhoto(imageBytes: ByteArray, userId: String) {
+    val attachment = attachmentQueue.saveFile(
+        data = flowOf(imageBytes),
+        mediaType = "image/jpeg",
+        fileExtension = "jpg",
+        
+        // updateHook runs in same transaction, ensuring atomicity
+        updateHook = { tx, attachment ->
+            tx.execute(
+                "UPDATE users SET photo_id = ? WHERE id = ?",
+                listOf(attachment.id, userId)
+            )
+        }
+    )
+    
+    return attachment
+}
+
+// The queue will:
+// 1. Save file locally immediately
+// 2. Create attachment record with state QUEUED_UPLOAD
+// 3. Update user record in same transaction
+// 4. Automatically upload file in background
+// 5. Update state to SYNCED when complete
 ```
 
 </CodeGroup>
@@ -475,12 +581,69 @@ function ProfilePhoto({ userId }: { userId: string }) {
 // Flutter TODO
 ```
 
-```kotlin Kotlin
-// Kotlin TODO
-```
-
 ```swift Swift
 // Swift TODO
+```
+
+```kotlin Kotlin
+import com.powersync.attachments.AttachmentState
+import com.powersync.db.getString
+import com.powersync.db.getStringOptional
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+// Downloads happen automatically when watchAttachments references a file
+suspend fun getProfilePhotoUri(userId: String): String? {
+    val user = db.get(
+        "SELECT photo_id FROM users WHERE id = ?",
+        listOf(userId)
+    ) { cursor ->
+        cursor.getStringOptional("photo_id")
+    }
+    
+    if (user == null) {
+        return null
+    }
+    
+    val attachment = db.get(
+        "SELECT * FROM attachments WHERE id = ?",
+        listOf(user)
+    ) { cursor ->
+        com.powersync.attachments.Attachment.fromCursor(cursor)
+    }
+    
+    if (attachment == null) {
+        return null
+    }
+    
+    if (attachment.state == AttachmentState.SYNCED && attachment.localUri != null) {
+        return attachment.localUri
+    }
+    
+    return null
+}
+
+// Example: Watch attachment state in Compose/UI
+fun watchProfilePhoto(userId: String): Flow<String?> {
+    return db.watch(
+        sql = """
+            SELECT a.local_uri, a.state 
+            FROM users u 
+            LEFT JOIN attachments a ON a.id = u.photo_id 
+            WHERE u.id = ?
+        """,
+        parameters = listOf(userId)
+    ) { cursor ->
+        val state = AttachmentState.fromLong(cursor.getLong("state"))
+        val localUri = cursor.getStringOptional("local_uri")
+        
+        if (state == AttachmentState.SYNCED && localUri != null) {
+            localUri
+        } else {
+            null
+        }
+    }.map { results -> results.firstOrNull() }
+}
 ```
 
 </CodeGroup>
@@ -527,12 +690,43 @@ async function removePhotoReference(userId: string) {
 // Flutter TODO
 ```
 
-```kotlin Kotlin
-// Kotlin TODO
-```
-
 ```swift Swift
 // Swift TODO
+```
+
+```kotlin Kotlin
+suspend fun deleteProfilePhoto(userId: String, photoId: String) {
+    attachmentQueue.deleteFile(
+        attachmentId = photoId,
+        
+        // updateHook ensures atomic deletion
+        updateHook = { tx, attachment ->
+            tx.execute(
+                "UPDATE users SET photo_id = NULL WHERE id = ?",
+                listOf(userId)
+            )
+        }
+    )
+    
+    // The queue will:
+    // 1. Delete from remote storage
+    // 2. Delete local file
+    // 3. Remove attachment record
+}
+
+// Alternative: Remove reference and let queue archive it automatically
+suspend fun removePhotoReference(userId: String) {
+    db.writeTransaction { tx ->
+        tx.execute(
+            "UPDATE users SET photo_id = NULL WHERE id = ?",
+            listOf(userId)
+        )
+    }
+    
+    // The watchAttachments callback will detect this change
+    // The queue will automatically archive the unreferenced attachment
+    // After reaching archivedCacheLimit, it will be deleted
+}
 ```
 
 </CodeGroup>
@@ -583,6 +777,43 @@ const queue = new AttachmentQueue({
 ```
 
 ```kotlin Kotlin
+import com.powersync.attachments.SyncErrorHandler
+
+val errorHandler = object : SyncErrorHandler {
+    override suspend fun onDownloadError(
+        attachment: Attachment,
+        exception: Exception
+    ): Boolean {
+        println("Download failed: ${attachment.filename}", exception)
+        
+        // Return true to retry, false to archive
+        if (exception.message?.contains("404") == true) {
+            return false  // File doesn't exist, don't retry
+        }
+        return true  // Retry on network errors
+    }
+    
+    override suspend fun onUploadError(
+        attachment: Attachment,
+        exception: Exception
+    ): Boolean {
+        println("Upload failed: ${attachment.filename}", exception)
+        return true  // Always retry uploads
+    }
+    
+    override suspend fun onDeleteError(
+        attachment: Attachment,
+        exception: Exception
+    ): Boolean {
+        println("Delete failed: ${attachment.filename}", exception)
+        return true  // Retry deletes
+    }
+}
+
+val queue = AttachmentQueue(
+    // ... other options
+    errorHandler = errorHandler
+)
 ```
 </CodeGroup>
 
@@ -590,7 +821,9 @@ const queue = new AttachmentQueue({
 
 Create adapters for other storage systems:
 
-```typescript
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
 import { LocalStorageAdapter, RemoteStorageAdapter } from '@powersync/web';
 
 // Example: IPFS remote storage
@@ -620,11 +853,55 @@ class IPFSStorageAdapter implements RemoteStorageAdapter {
 }
 ```
 
+```dart Flutter
+```
+
+```swift Swift
+```
+
+```kotlin Kotlin
+// Example: IPFS remote storage
+class IPFSStorageAdapter : RemoteStorage {
+    override suspend fun uploadFile(
+        fileData: Flow<ByteArray>,
+        attachment: Attachment
+    ) {
+        // Collect the flow
+        val bytes = mutableListOf<ByteArray>()
+        fileData.collect { bytes.add(it) }
+        val allBytes = bytes.flatMap { it.toList() }.toByteArray()
+        
+        // Upload to IPFS
+        val cid = // ... upload to IPFS
+        
+        // Store CID in your backend for retrieval
+        // ... your HTTP POST to store CID
+    }
+    
+    override suspend fun downloadFile(attachment: Attachment): Flow<ByteArray> {
+        // Retrieve CID from backend
+        val cid = // ... fetch CID from your API
+        
+        // Download from IPFS
+        val data = // ... download from IPFS
+        return flowOf(data)
+    }
+    
+    override suspend fun deleteFile(attachment: Attachment) {
+        // IPFS is immutable, but you can unpin and remove from backend
+        // ... your HTTP DELETE implementation
+    }
+}
+```
+
+</CodeGroup>
+
 ### Verification and Recovery
 
-Verify attachment integrity and repair issues:
+verifyAttachments is called internally during `startSync()`. If you need to manually verify, you can access the internal method or implement your own verification logic by checking attachment records and their local files
 
-```typescript
+<CodeGroup>
+```typescript Javascript/Typescript
 await attachmentQueue.verifyAttachments();
 
 // This checks:
@@ -634,17 +911,67 @@ await attachmentQueue.verifyAttachments();
 // - Requeues downloads for synced files with missing local copies
 ```
 
+```dart Flutter
+```
+
+```swift Swift
+```
+
+```kotlin Kotlin
+// The verify attachment method is currently private in Kotlin SDK
+
+// Example: Manual verification
+suspend fun verifyAttachments() {
+    attachmentQueue.attachmentsService.withContext { context ->
+        val attachments = context.getAttachments()
+        attachments.forEach { attachment ->
+            if (attachment.localUri != null) {
+                val exists = attachmentQueue.localStorage.fileExists(attachment.localUri)
+                if (!exists && attachment.state == AttachmentState.SYNCED) {
+                    // Handle missing file
+                }
+            }
+        }
+    }
+}
+```
+
+</CodeGroup>
+
 ### Cache Management
 
 Control archived file retention:
 
-```typescript
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
 const queue = new AttachmentQueue({
   // ... other options
   archivedCacheLimit: 200  // Keep 200 archived files; oldest deleted when limit reached
 });
 
+// For manually expiring the cache
+queue.expireCache()
+
 ```
+
+```dart Flutter
+```
+
+```swift Swift
+```
+
+```kotlin Kotlin
+val queue = AttachmentQueue(
+    // ... other options
+    archivedCacheLimit = 200  // Keep 200 archived files; oldest deleted when limit reached
+)
+
+// For manually expiring the cache
+queue.expireCache()
+```
+
+</CodeGroup>
 
 ### Offline-First Considerations
 

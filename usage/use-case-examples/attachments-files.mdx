@@ -167,11 +167,14 @@ const appSchema = new Schema({
 ```
 
 ```dart Flutter
+import 'package:powersync/powersync.dart';
+import 'package:powersync_core/attachments/attachments.dart';
+
 final schema = Schema([
   Table('users', [
     Column.text('name'),
     Column.text('email'),
-    Column.text('photo_id')
+    Column.text('photo_id'),  // References attachment ID
   ]),
   AttachmentsQueueTable(),
 ]);
@@ -281,7 +284,77 @@ const remoteStorage = {
 ```
 
 ```dart Flutter
-// Flutter TODO
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:path_provider/path_provider.dart';
+import 'package:powersync_core/attachments/attachments.dart';
+import 'package:powersync_core/attachments/io.dart';
+import 'package:http/http.dart' as http;
+
+// For Flutter (native platforms)
+Future<LocalStorage> getLocalStorage() async {
+  final appDocDir = await getApplicationDocumentsDirectory();
+  final attachmentsDir = Directory('${appDocDir.path}/attachments');
+  return IOLocalStorage(attachmentsDir);
+}
+
+// Remote storage adapter (example with signed URLs)
+class SignedUrlStorageAdapter implements RemoteStorage {
+  @override
+  Future<void> uploadFile(
+    Stream<List<int>> fileData,
+    Attachment attachment,
+  ) async {
+    // Request signed upload URL from your backend
+    final response = await http.post(
+      Uri.parse('/api/attachments/upload-url'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'filename': attachment.filename,
+        'contentType': attachment.mediaType,
+      }),
+    );
+    
+    final uploadUrl = jsonDecode(response.body)['uploadUrl'] as String;
+    
+    // Collect stream data
+    final bytes = <int>[];
+    await for (final chunk in fileData) {
+      bytes.addAll(chunk);
+    }
+    
+    // Upload to cloud storage using signed URL
+    await http.put(
+      Uri.parse(uploadUrl),
+      body: Uint8List.fromList(bytes),
+      headers: {
+        'Content-Type': attachment.mediaType ?? 'application/octet-stream',
+      },
+    );
+  }
+  
+  @override
+  Future<Stream<List<int>>> downloadFile(Attachment attachment) async {
+    // Request signed download URL from your backend
+    final response = await http.get(
+      Uri.parse('/api/attachments/${attachment.id}/download-url'),
+    );
+    
+    final downloadUrl = jsonDecode(response.body)['downloadUrl'] as String;
+    
+    // Download from cloud storage
+    final httpResponse = await http.get(Uri.parse(downloadUrl));
+    return Stream.value(httpResponse.bodyBytes);
+  }
+  
+  @override
+  Future<void> deleteFile(Attachment attachment) async {
+    // Delete via your backend
+    await http.delete(
+      Uri.parse('/api/attachments/${attachment.id}'),
+    );
+  }
+}
 ```
 
 ```swift Swift
@@ -383,7 +456,44 @@ await attachmentQueue.startSync();
 ```
 
 ```dart Flutter
-// Flutter TODO
+import 'package:logging/logging.dart';
+import 'package:powersync/powersync.dart';
+import 'package:powersync_core/attachments/attachments.dart';
+
+final logger = Logger('AttachmentQueue');
+late AttachmentQueue attachmentQueue;
+
+Future<void> initializeAttachmentQueue(PowerSyncDatabase db) async {
+  attachmentQueue = AttachmentQueue(
+    db: db,
+    remoteStorage: SignedUrlStorageAdapter(),
+    localStorage: await getLocalStorage(),
+    
+    // Define which attachments exist in your data model
+    watchAttachments: () => db.watch('''
+      SELECT photo_id as id 
+      FROM users 
+      WHERE photo_id IS NOT NULL
+    ''').map(
+      (results) => [
+        for (final row in results)
+          WatchedAttachmentItem(
+            id: row['id'] as String,
+            fileExtension: 'jpg',  // or use full filename
+          )
+      ],
+    ),
+    
+    // Optional configuration
+    syncInterval: const Duration(seconds: 30),  // Sync every 30 seconds
+    downloadAttachments: true,  // Auto-download referenced files
+    archivedCacheLimit: 100,  // Keep 100 archived files before cleanup
+    logger: logger,
+  );
+  
+  // Start the sync process
+  await attachmentQueue.startSync();
+}
 ```
 
 ```swift Swift
@@ -470,7 +580,39 @@ async function uploadProfilePhoto(imageBlob: Blob, userId: string) {
 ```
 
 ```dart Flutter
-// Flutter TODO
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:powersync_core/attachments/attachments.dart';
+
+Future<Attachment> uploadProfilePhoto(
+  File imageFile,
+  String userId,
+) async {
+  final imageBytes = await imageFile.readAsBytes();
+  
+  final attachment = await attachmentQueue.saveFile(
+    data: Stream.value(imageBytes),
+    mediaType: 'image/jpeg',
+    fileExtension: 'jpg',
+    
+    // updateHook runs in same transaction, ensuring atomicity
+    updateHook: (context, attachment) async {
+      await context.execute(
+        'UPDATE users SET photo_id = ? WHERE id = ?',
+        [attachment.id, userId],
+      );
+    },
+  );
+  
+  return attachment;
+}
+
+// The queue will:
+// 1. Save file locally immediately
+// 2. Create attachment record with state QUEUED_UPLOAD
+// 3. Update user record in same transaction
+// 4. Automatically upload file in background
+// 5. Update state to SYNCED when complete
 ```
 
 ```swift Swift
@@ -578,7 +720,69 @@ function ProfilePhoto({ userId }: { userId: string }) {
 ```
 
 ```dart Flutter
-// Flutter TODO
+import 'package:powersync/powersync.dart';
+import 'package:powersync_core/attachments/attachments.dart';
+
+// Downloads happen automatically when watchAttachments references a file
+Future<String?> getProfilePhotoUri(
+  PowerSyncDatabase db,
+  String userId,
+) async {
+  final user = await db.get(
+    'SELECT photo_id FROM users WHERE id = ?',
+    [userId],
+  );
+  
+  if (user == null || user['photo_id'] == null) {
+    return null;
+  }
+  
+  final attachment = await db.get(
+    'SELECT * FROM attachments_queue WHERE id = ?',
+    [user['photo_id']],
+  );
+  
+  if (attachment == null) {
+    return null;
+  }
+  
+  final state = AttachmentState.fromInt(attachment['state'] as int);
+  final localUri = attachment['local_uri'] as String?;
+  
+  if (state == AttachmentState.synced && localUri != null) {
+    // Resolve full path from local storage
+    final appDocDir = await getApplicationDocumentsDirectory();
+    return '${appDocDir.path}/attachments/$localUri';
+  }
+  
+  return null;
+}
+
+// Example: Display image in Flutter with StreamBuilder
+StreamBuilder<List<Map<String, dynamic>>>(
+  stream: db.watch('''
+    SELECT a.local_uri, a.state 
+    FROM users u 
+    LEFT JOIN attachments_queue a ON a.id = u.photo_id 
+    WHERE u.id = ?
+  ''').map((results) => results.toList()),
+  builder: (context, snapshot) {
+    if (!snapshot.hasData || snapshot.data!.isEmpty) {
+      return const CircularProgressIndicator();
+    }
+    
+    final row = snapshot.data!.first;
+    final state = AttachmentState.fromInt(row['state'] as int);
+    final localUri = row['local_uri'] as String?;
+    
+    if (state == AttachmentState.synced && localUri != null) {
+      // Load and display image
+      return Image.file(File(localUri));
+    }
+    
+    return const Text('Loading photo...');
+  },
+)
 ```
 
 ```swift Swift
@@ -687,7 +891,43 @@ async function removePhotoReference(userId: string) {
 ```
 
 ```dart Flutter
-// Flutter TODO
+Future<void> deleteProfilePhoto(
+  String userId,
+  String photoId,
+) async {
+  await attachmentQueue.deleteFile(
+    attachmentId: photoId,
+    
+    // updateHook ensures atomic deletion
+    updateHook: (context, attachment) async {
+      await context.execute(
+        'UPDATE users SET photo_id = NULL WHERE id = ?',
+        [userId],
+      );
+    },
+  );
+  
+  print('Photo queued for deletion');
+  // The queue will:
+  // 1. Delete from remote storage
+  // 2. Delete local file
+  // 3. Remove attachment record
+}
+
+// Alternative: Remove reference and let queue archive it automatically
+Future<void> removePhotoReference(
+  PowerSyncDatabase db,
+  String userId,
+) async {
+  await db.execute(
+    'UPDATE users SET photo_id = NULL WHERE id = ?',
+    [userId],
+  );
+  
+  // The watchAttachments callback will detect this change
+  // The queue will automatically archive the unreferenced attachment
+  // After reaching archivedCacheLimit, it will be deleted
+}
 ```
 
 ```swift Swift
@@ -771,6 +1011,37 @@ const queue = new AttachmentQueue({
 ```
 
 ```dart Flutter
+import 'package:powersync_core/attachments/attachments.dart';
+
+final errorHandler = AttachmentErrorHandler(
+  onDownloadError: (attachment, exception, stackTrace) async {
+    print('Download failed: ${attachment.filename}');
+    print('Error: $exception');
+    
+    // Return true to retry, false to archive
+    if (exception.toString().contains('404')) {
+      return false; // File doesn't exist, don't retry
+    }
+    return true; // Retry on network errors
+  },
+  
+  onUploadError: (attachment, exception, stackTrace) async {
+    print('Upload failed: ${attachment.filename}');
+    print('Error: $exception');
+    return true; // Always retry uploads
+  },
+  
+  onDeleteError: (attachment, exception, stackTrace) async {
+    print('Delete failed: ${attachment.filename}');
+    print('Error: $exception');
+    return true; // Retry deletes
+  },
+);
+
+final queue = AttachmentQueue(
+  // ... other options
+  errorHandler: errorHandler,
+);
 ```
 
 ```swift Swift
@@ -854,6 +1125,53 @@ class IPFSStorageAdapter implements RemoteStorageAdapter {
 ```
 
 ```dart Flutter
+// Example: IPFS remote storage
+class IPFSStorageAdapter implements RemoteStorage {
+  @override
+  Future<void> uploadFile(
+    Stream<List<int>> fileData,
+    Attachment attachment,
+  ) async {
+    // Collect the stream
+    final bytes = <int>[];
+    await for (final chunk in fileData) {
+      bytes.addAll(chunk);
+    }
+    
+    // Upload to IPFS
+    final cid = await ipfs.add(Uint8List.fromList(bytes));
+    
+    // Store CID in your backend for retrieval
+    await http.post(
+      Uri.parse('/api/ipfs-cids'),
+      body: jsonEncode({
+        'attachmentId': attachment.id,
+        'cid': cid,
+      }),
+    );
+  }
+  
+  @override
+  Future<Stream<List<int>>> downloadFile(Attachment attachment) async {
+    // Retrieve CID from backend
+    final response = await http.get(
+      Uri.parse('/api/ipfs-cids/${attachment.id}'),
+    );
+    final cid = jsonDecode(response.body)['cid'] as String;
+    
+    // Download from IPFS
+    final data = await ipfs.cat(cid);
+    return Stream.value(data);
+  }
+  
+  @override
+  Future<void> deleteFile(Attachment attachment) async {
+    // IPFS is immutable, but you can unpin and remove from backend
+    await http.delete(
+      Uri.parse('/api/ipfs-cids/${attachment.id}'),
+    );
+  }
+}
 ```
 
 ```swift Swift
@@ -956,6 +1274,13 @@ queue.expireCache()
 ```
 
 ```dart Flutter
+final queue = AttachmentQueue(
+  // ... other options
+  archivedCacheLimit: 200,  // Keep 200 archived files; oldest deleted when limit reached
+);
+
+// For manually expiring the cache
+await queue.expireCache();
 ```
 
 ```swift Swift

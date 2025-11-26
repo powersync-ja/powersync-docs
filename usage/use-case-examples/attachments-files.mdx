@@ -117,16 +117,60 @@ The **Attachment Queue** is the orchestrator that manages the entire attachment 
 - **Verifies integrity** - Checks local files exist and repairs inconsistencies
 
 **Watched Attachments pattern:**
-The queue needs to know which attachments exist in your data model. For example, if users have profile photos, the following query can be used by the queue to operate on these attachments:
+The queue needs to know which attachments exist in your data model. The `watchAttachments` function you provide monitors your data model and returns a list of attachment IDs that your app references. The queue compares this list with its internal attachment table to determine:
+- **New attachments** - Download them
+- **Missing attachments** - Upload them  
+- **Removed attachments** - Archive them
+
+The `watchAttachments` queries are reactive and execute whenever the watched tables change, keeping the attachment queue synchronized with your data model.
+
+There are a few scenarios you might encounter:
+
+**Single Attachment Type**
+
+For a single attachment type, you watch one table. For example, if users have profile photos:
 
 ```sql
 SELECT photo_id FROM users WHERE photo_id IS NOT NULL
 ```
 
-The queue compares this list with its internal attachment table to determine:
-- **New attachments** - Download them
-- **Missing attachments** - Upload them  
-- **Removed attachments** - Archive them
+**Multiple Attachment Types - Single Queue**
+
+You can watch multiple attachment types using a single queue by combining queries with SQL `UNION` or `UNION ALL`. This allows you to monitor attachments across different tables (e.g., `users.photo_id`, `documents.document_id`, `videos.video_id`) in one queue. Each attachment type may have different file extensions, which can be handled in the query by selecting the extension from your data model or using type-specific defaults.
+
+For example:
+
+```sql
+SELECT photo_id as id, photo_file_extension as file_extension
+FROM users 
+WHERE photo_id IS NOT NULL
+
+UNION ALL
+
+SELECT document_id as id, document_file_extension as file_extension
+FROM documents 
+WHERE document_id IS NOT NULL
+
+UNION ALL
+
+SELECT video_id as id, video_file_extension as file_extension
+FROM videos 
+WHERE video_id IS NOT NULL
+```
+
+Use `UNION ALL` when you want to include all rows (including duplicates), or `UNION` when you want to automatically deduplicate results. For attachment watching, `UNION ALL` is typically preferred since attachment IDs should already be unique.
+
+<Note>
+The UNION query executes whenever any of the watched tables change, which may have higher database overhead compared to watching a single table. Implementation examples are shown in the [Initialize Attachment Queue](#initialize-attachment-queue) section below.
+</Note>
+
+**Multiple Attachment Types - Multiple Queues**
+
+Alternatively, you can create separate queues for different attachment types. Each queue watches its own specific table(s) with simpler queries, allowing for independent configuration and management.
+
+<Note>
+Multiple queues may use more memory, but each queue watches simpler queries. Implementation examples are shown in the [Initialize Attachment Queue](#initialize-attachment-queue) section below.
+</Note>
 
 ## Implementation Guide
 
@@ -659,6 +703,388 @@ attachmentQueue.startSync()
 <Info>
 The `watchAttachments` callback is crucial - it tells the queue which files your app needs based on your data model. The queue uses this to automatically download, upload, or archive files.
 </Info>
+
+#### Watching Multiple Attachment Types
+
+When watching multiple attachment types, you need to provide the `fileExtension` (or `filename`) for each attachment. You can store this in your data model tables or derive it from other fields. Here are examples for both patterns:
+
+**Pattern 2: Single Queue with UNION**
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+// Example: Watching users.photo_id, documents.document_id, and videos.video_id
+// Assuming your tables store file extensions
+const attachmentQueue = new AttachmentQueue({
+  db: db,
+  localStorage,
+  remoteStorage,
+  
+  watchAttachments: (onUpdate) => {
+    db.watch(
+      `SELECT photo_id as id, photo_file_extension as file_extension
+       FROM users 
+       WHERE photo_id IS NOT NULL
+       
+       UNION ALL
+       
+       SELECT document_id as id, document_file_extension as file_extension
+       FROM documents 
+       WHERE document_id IS NOT NULL
+       
+       UNION ALL
+       
+       SELECT video_id as id, video_file_extension as file_extension
+       FROM videos 
+       WHERE video_id IS NOT NULL`,
+      [],
+      {
+        onResult: async (result) => {
+          const attachments = result.rows?._array.map(row => ({
+            id: row.id,
+            fileExtension: row.file_extension
+          })) ?? [];
+          await onUpdate(attachments);
+        }
+      }
+    );
+  },
+  
+  // ... other options
+});
+
+await attachmentQueue.startSync();
+```
+
+```dart Flutter
+// Example: Watching users.photo_id, documents.document_id, and videos.video_id
+// Assuming your tables store file extensions
+attachmentQueue = AttachmentQueue(
+  db: db,
+  remoteStorage: SignedUrlStorageAdapter(),
+  localStorage: await getLocalStorage(),
+  
+  watchAttachments: () => db.watch('''
+    SELECT photo_id as id, photo_file_extension as file_extension
+    FROM users 
+    WHERE photo_id IS NOT NULL
+    
+    UNION ALL
+    
+    SELECT document_id as id, document_file_extension as file_extension
+    FROM documents 
+    WHERE document_id IS NOT NULL
+    
+    UNION ALL
+    
+    SELECT video_id as id, video_file_extension as file_extension
+    FROM videos 
+    WHERE video_id IS NOT NULL
+  ''').map(
+    (results) => [
+      for (final row in results)
+        WatchedAttachmentItem(
+          id: row['id'] as String,
+          fileExtension: row['file_extension'] as String,
+        )
+    ],
+  ),
+  
+  // ... other options
+);
+
+await attachmentQueue.startSync();
+```
+
+```swift Swift
+// Example: Watching users.photo_id, documents.document_id, and videos.video_id
+// Assuming your tables store file extensions
+let attachmentQueue = AttachmentQueue(
+    db: db,
+    remoteStorage: remoteStorage,
+    attachmentsDirectory: try getAttachmentsDirectoryPath(),
+    
+    watchAttachments: {
+        try db.watch(
+            sql: """
+                SELECT photo_id as id, photo_file_extension as file_extension
+                FROM users 
+                WHERE photo_id IS NOT NULL
+                
+                UNION ALL
+                
+                SELECT document_id as id, document_file_extension as file_extension
+                FROM documents 
+                WHERE document_id IS NOT NULL
+                
+                UNION ALL
+                
+                SELECT video_id as id, video_file_extension as file_extension
+                FROM videos 
+                WHERE video_id IS NOT NULL
+            """,
+            parameters: [],
+            mapper: { cursor in
+                try WatchedAttachmentItem(
+                    id: cursor.getString(name: "id"),
+                    fileExtension: cursor.getString(name: "file_extension")
+                )
+            }
+        )
+    },
+    
+    // ... other options
+)
+
+try await attachmentQueue.startSync()
+```
+
+```kotlin Kotlin
+// Example: Watching users.photo_id, documents.document_id, and videos.video_id
+// Assuming your tables store file extensions
+val attachmentQueue = AttachmentQueue(
+    db = db,
+    remoteStorage = remoteStorage,
+    attachmentsDirectory = attachmentsDirectory,
+    localStorage = localStorage,
+    
+    watchAttachments = {
+        db.watch(
+            sql = """
+                SELECT photo_id as id, photo_file_extension as file_extension
+                FROM users 
+                WHERE photo_id IS NOT NULL
+                
+                UNION ALL
+                
+                SELECT document_id as id, document_file_extension as file_extension
+                FROM documents 
+                WHERE document_id IS NOT NULL
+                
+                UNION ALL
+                
+                SELECT video_id as id, video_file_extension as file_extension
+                FROM videos 
+                WHERE video_id IS NOT NULL
+            """,
+            parameters = null
+        ) { cursor ->
+            WatchedAttachmentItem(
+                id = cursor.getString("id"),
+                fileExtension = cursor.getString("file_extension")
+            )
+        }
+    },
+    
+    // ... other options
+)
+
+attachmentQueue.startSync()
+```
+
+</CodeGroup>
+
+**Pattern 3: Multiple Queues**
+
+<CodeGroup>
+
+```typescript JavaScript/TypeScript
+// Create separate queues for different attachment types
+const photoQueue = new AttachmentQueue({
+  db: db,
+  localStorage,
+  remoteStorage,
+  watchAttachments: (onUpdate) => {
+    db.watch(
+      `SELECT photo_id FROM users WHERE photo_id IS NOT NULL`,
+      [],
+      {
+        onResult: async (result) => {
+          const attachments = result.rows?._array.map(row => ({
+            id: row.photo_id,
+            fileExtension: 'jpg'
+          })) ?? [];
+          await onUpdate(attachments);
+        }
+      }
+    );
+  },
+});
+
+const documentQueue = new AttachmentQueue({
+  db: db,
+  localStorage,
+  remoteStorage,
+  watchAttachments: (onUpdate) => {
+    db.watch(
+      `SELECT document_id FROM documents WHERE document_id IS NOT NULL`,
+      [],
+      {
+        onResult: async (result) => {
+          const attachments = result.rows?._array.map(row => ({
+            id: row.document_id,
+            fileExtension: 'pdf'
+          })) ?? [];
+          await onUpdate(attachments);
+        }
+      }
+    );
+  },
+});
+
+await Promise.all([
+  photoQueue.startSync(),
+  documentQueue.startSync()
+]);
+```
+
+```dart Flutter
+// Create separate queues for different attachment types
+final photoQueue = AttachmentQueue(
+  db: db,
+  remoteStorage: SignedUrlStorageAdapter(),
+  localStorage: await getLocalStorage(),
+  watchAttachments: () => db.watch('''
+    SELECT photo_id as id 
+    FROM users 
+    WHERE photo_id IS NOT NULL
+  ''').map(
+    (results) => [
+      for (final row in results)
+        WatchedAttachmentItem(
+          id: row['id'] as String,
+          fileExtension: 'jpg',
+        )
+    ],
+  ),
+);
+
+final documentQueue = AttachmentQueue(
+  db: db,
+  remoteStorage: SignedUrlStorageAdapter(),
+  localStorage: await getLocalStorage(),
+  watchAttachments: () => db.watch('''
+    SELECT document_id as id 
+    FROM documents 
+    WHERE document_id IS NOT NULL
+  ''').map(
+    (results) => [
+      for (final row in results)
+        WatchedAttachmentItem(
+          id: row['id'] as String,
+          fileExtension: 'pdf',
+        )
+    ],
+  ),
+);
+
+await Future.wait([
+  photoQueue.startSync(),
+  documentQueue.startSync(),
+]);
+```
+
+```swift Swift
+// Create separate queues for different attachment types
+let photoQueue = AttachmentQueue(
+    db: db,
+    remoteStorage: remoteStorage,
+    attachmentsDirectory: try getAttachmentsDirectoryPath(),
+    watchAttachments: {
+        try db.watch(
+            sql: """
+                SELECT photo_id 
+                FROM users 
+                WHERE photo_id IS NOT NULL
+            """,
+            parameters: [],
+            mapper: { cursor in
+                try WatchedAttachmentItem(
+                    id: cursor.getString(name: "photo_id"),
+                    fileExtension: "jpg"
+                )
+            }
+        )
+    }
+)
+
+let documentQueue = AttachmentQueue(
+    db: db,
+    remoteStorage: remoteStorage,
+    attachmentsDirectory: try getAttachmentsDirectoryPath(),
+    watchAttachments: {
+        try db.watch(
+            sql: """
+                SELECT document_id 
+                FROM documents 
+                WHERE document_id IS NOT NULL
+            """,
+            parameters: [],
+            mapper: { cursor in
+                try WatchedAttachmentItem(
+                    id: cursor.getString(name: "document_id"),
+                    fileExtension: "pdf"
+                )
+            }
+        )
+    }
+)
+
+try await photoQueue.startSync()
+try await documentQueue.startSync()
+```
+
+```kotlin Kotlin
+// Create separate queues for different attachment types
+val photoQueue = AttachmentQueue(
+    db = db,
+    remoteStorage = remoteStorage,
+    attachmentsDirectory = attachmentsDirectory,
+    localStorage = localStorage,
+    watchAttachments = {
+        db.watch(
+            sql = """
+                SELECT photo_id 
+                FROM users 
+                WHERE photo_id IS NOT NULL
+            """,
+            parameters = null
+        ) { cursor ->
+            WatchedAttachmentItem(
+                id = cursor.getString("photo_id"),
+                fileExtension = "jpg"
+            )
+        }
+    }
+)
+
+val documentQueue = AttachmentQueue(
+    db = db,
+    remoteStorage = remoteStorage,
+    attachmentsDirectory = attachmentsDirectory,
+    localStorage = localStorage,
+    watchAttachments = {
+        db.watch(
+            sql = """
+                SELECT document_id 
+                FROM documents 
+                WHERE document_id IS NOT NULL
+            """,
+            parameters = null
+        ) { cursor ->
+            WatchedAttachmentItem(
+                id = cursor.getString("document_id"),
+                fileExtension = "pdf"
+            )
+        }
+    }
+)
+
+photoQueue.startSync()
+documentQueue.startSync()
+```
+
+</CodeGroup>
 
 ### Upload an Attachment
 

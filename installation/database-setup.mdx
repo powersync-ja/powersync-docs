@@ -4,7 +4,7 @@ description: "Configure your backend database for PowerSync, including permissio
 sidebarTitle: "Overview"
 ---
 
-Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql-beta)
+Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql-beta) | [SQL Server](#sql-server-alpha)
 
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
@@ -398,6 +398,112 @@ binlog-do-db=invoices_db
 # Row events for tables in the user_db will be ignored. Events for any other database will be logged.
 binlog-ignore-db=user_db
 ```
+
+## <Icon icon="server" iconType="solid" size={32} /> SQL Server (Alpha)
+
+<Check>
+  **Version compatibility**: PowerSync requires SQL Server 2022+ or Azure SQL Database.
+</Check>
+
+PowerSync replicates data from SQL Server using Change Data Capture (CDC). This process builds up change tables based on changes to tracked tables. The change tables are populated by reading from the SQL Server transaction log on a fixed interval. PowerSync then polls these CDC tables for changes using built-in stored procedures.
+
+### Supported Editions/Versions
+
+| Database | Edition | Version | Min Service Tier |
+|----------|---------|---------|------------------|
+| SQL Server 2022+ | Standard, Enterprise, Developer, Evaluation | 16.0+ | N/A |
+| Azure SQL* | Database, Managed instance | N/A | Any service tier on Vcore subscription model. S3 tier and up on DTU purchasing model. |
+
+\* Azure SQL Database is always running on the latest version of the SQL Server DB Engine
+
+### Database Setup Requirements
+
+#### 1. Enable CDC on the Database
+
+Change Data Capture (CDC) needs to be enabled on the database:
+
+```sql
+-- Enable CDC on the database
+EXEC sys.sp_cdc_enable_db;
+```
+
+#### 2. Enable CDC on Tables
+
+CDC must be enabled for the specific tables that need to be replicated:
+
+```sql
+-- Enable CDC on a specific table
+EXEC sys.sp_cdc_enable_table
+    @source_schema = N'dbo',
+    @source_name = N'your_table_name',
+    @role_name = N'cdc_reader',
+    @supports_net_changes = 1;
+```
+
+Repeat this for each table you want to replicate.
+
+#### 3. Create Database User
+
+Create a database user that has:
+- Read access to the replicated tables (`db_datareader` role)
+- Read access to the CDC tables (`cdc_reader` role)
+
+```sql
+-- Create a user for PowerSync
+CREATE USER powersync_user WITH PASSWORD = 'your_secure_password';
+
+-- Grant read access to replicated tables
+ALTER ROLE db_datareader ADD MEMBER powersync_user;
+
+-- Grant access to CDC tables
+ALTER ROLE cdc_reader ADD MEMBER powersync_user;
+```
+
+Alternatively, you can grant more granular permissions:
+
+```sql
+-- Grant SELECT on specific tables
+GRANT SELECT ON dbo.your_table_name TO powersync_user;
+
+-- Grant access to CDC schema
+GRANT SELECT ON SCHEMA::cdc TO powersync_user;
+```
+
+### CDC Management
+
+Management of CDC is up to the developer, though there are some settings of interest to PowerSync:
+
+#### Retention Period
+
+The retention period before data is expired from the CDC tables. Default is 3 days. You can check and modify this:
+
+```sql
+-- Check current retention period (in minutes)
+EXEC sys.sp_cdc_help_jobs;
+
+-- Change retention period (in minutes, e.g., 4320 = 3 days)
+EXEC sys.sp_cdc_change_job
+    @job_type = N'cleanup',
+    @retention = 4320;
+```
+
+#### Polling Interval
+
+The polling interval of the CDC capture job determines how often the capture job reads changes from the transaction log. Default is every 5 seconds. Can be set to 0 so that there is zero downtime between scans, but this can impact DB performance.
+
+```sql
+-- Check current polling interval
+EXEC sys.sp_cdc_help_jobs;
+
+-- Change polling interval (in seconds, 0 = continuous scanning)
+EXEC sys.sp_cdc_change_job
+    @job_type = N'capture',
+    @pollinginterval = 5;
+```
+
+<Warning>
+  Setting the polling interval to 0 (continuous scanning) can impact database performance. Monitor your database performance when adjusting this setting.
+</Warning>
 
 ## Next Step
 

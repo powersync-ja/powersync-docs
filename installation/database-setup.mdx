@@ -4,7 +4,7 @@ description: "Configure your backend database for PowerSync, including permissio
 sidebarTitle: "Overview"
 ---
 
-Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql-beta)
+Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql-beta) | [SQL Server](#sql-server-alpha)
 
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
@@ -398,6 +398,190 @@ binlog-do-db=invoices_db
 # Row events for tables in the user_db will be ignored. Events for any other database will be logged.
 binlog-ignore-db=user_db
 ```
+
+## <Icon icon="server" iconType="solid" size={32} /> SQL Server (Alpha)
+
+<Check>
+  **Version compatibility**: PowerSync requires SQL Server 2022+ or Azure SQL Database.
+</Check>
+
+PowerSync replicates data from SQL Server using Change Data Capture (CDC). This process builds up change tables based on changes to tracked tables. The change tables are populated by reading from the SQL Server transaction log on a fixed interval. PowerSync then polls these CDC tables for changes using built-in stored procedures.
+
+For more information about CDC, see:
+- [Change Data Capture (SQL Server)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server) - for SQL Server
+- [Change Data Capture (Azure SQL Database)](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql) - for Azure SQL Database
+
+### Supported Editions/Versions
+
+| Database         | Edition                                     | Version | Min Service Tier                                                                      |
+|------------------|---------------------------------------------|---------|---------------------------------------------------------------------------------------|
+| SQL Server 2022+ | Standard, Enterprise, Developer, Evaluation | 16.0+   | N/A                                                                                   |
+| Azure SQL*       | Database, Managed instance                  | N/A     | Any service tier on Vcore subscription model. S3 tier and up on DTU purchasing model. |
+
+\* Azure SQL Database is always running on the latest version of the SQL Server DB Engine
+
+### Database Setup Requirements
+
+#### 1. Enable CDC on the Database
+
+Change Data Capture (CDC) needs to be enabled on the database:
+
+```sql
+-- Enable CDC on the database if not already enabled
+USE <YOUR_DATABASE_NAME>;
+IF (SELECT is_cdc_enabled FROM sys.databases WHERE name = '<YOUR_DATABASE_NAME>') = 0
+BEGIN
+    EXEC sys.sp_cdc_enable_db;
+END
+GO
+```
+
+#### 2. Create the PowerSync Checkpoints Table
+
+PowerSync requires a `_powersync_checkpoints` table to generate regular checkpoints. CDC must be enabled for this table:
+
+```sql
+-- Create the PowerSync checkpoints table in your schema
+IF OBJECT_ID('<YOUR_SCHEMA>._powersync_checkpoints', 'U') IS NULL
+BEGIN
+CREATE TABLE <YOUR_SCHEMA>._powersync_checkpoints (
+    id INT IDENTITY PRIMARY KEY,
+    last_updated DATETIME NOT NULL DEFAULT GETUTCDATE()
+);
+END
+
+-- Enable CDC for the powersync checkpoints table if not already enabled
+-- Note: the cdc_reader role created the first time CDC is enabled on a table
+IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'<YOUR_SCHEMA>._powersync_checkpoints'))
+BEGIN
+    EXEC sys.sp_cdc_enable_table
+        @source_schema = N'<YOUR_SCHEMA>',
+        @source_name   = N'_powersync_checkpoints',
+        @role_name     = N'cdc_reader',
+        @supports_net_changes = 0;
+END
+GO
+```
+
+#### 3. Enable CDC on Tables
+
+CDC must be enabled for all tables that need to be replicated:
+
+```sql
+-- Enable CDC for specific tables in your schema if not already enabled
+IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'<YOUR_SCHEMA>.<YOUR_TABLE_NAME>'))
+BEGIN
+    EXEC sys.sp_cdc_enable_table
+        @source_schema = N'<YOUR_SCHEMA>',
+        @source_name   = N'<YOUR_TABLE_NAME>',
+        @role_name     = N'cdc_reader',
+        @supports_net_changes = 0;
+END
+GO
+```
+
+Repeat this for each table you want to replicate. Note that PowerSync does not currently use the net changes functionality so `@supports_net_changes` can be set to `0`.
+
+#### 4. Create Database User
+
+Create a database user for PowerSync with the following permissions:
+
+**Required permissions:**
+- Read/Write permissions on the `_powersync_checkpoints` table
+- Read permissions on the replicated tables
+- `cdc_reader` role (grants access to CDC tables and functions)
+- `VIEW DATABASE PERFORMANCE STATE` (SQL Server and Azure SQL)
+- `VIEW SERVER PERFORMANCE STATE` (SQL Server only)
+
+```sql
+-- Create a SQL login for the powersync_user if missing. Note SQL Logins are created at the server level.
+USE [master];
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '<YOUR_DB_USER>')
+BEGIN
+    CREATE LOGIN [<YOUR_DB_USER>] WITH PASSWORD = 'YOUR_DB_USER_PASSWORD', CHECK_POLICY = ON;
+END
+GO
+
+-- Create a DB user for PowerSync if missing. Note DB users are created at the database level.
+USE [<YOUR_DATABASE_NAME>];
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '<YOUR_DB_USER>')
+BEGIN
+    CREATE USER [<YOUR_DB_USER>] FOR LOGIN [<YOUR_DB_USER>];
+END
+GO
+
+-- Grant read/write access to the PowerSync checkpoints table
+GRANT SELECT, INSERT, UPDATE ON <YOUR_SCHEMA>._powersync_checkpoints TO [<YOUR_DB_USER>];
+GO
+
+-- Grant read access to all tables in the database using the db_datareader role (Less restrictive)
+IF IS_ROLEMEMBER('db_datareader', '<YOUR_DB_USER>') = 0
+BEGIN
+    ALTER ROLE db_datareader ADD MEMBER <YOUR_DB_USER>;
+END
+GO
+
+-- Grant access to CDC tables and functions using the cdc_reader role
+IF IS_ROLEMEMBER('cdc_reader', '<YOUR_DB_USER>') = 0
+BEGIN
+    ALTER ROLE cdc_reader ADD MEMBER <YOUR_DB_USER>;
+END
+GO
+
+-- Grant performance state permissions
+
+-- Note: For Azure SQL, only VIEW DATABASE PERFORMANCE STATE is required. Granted at the database level.
+-- PowerSync uses this to access the sys.dm_db_log_stats DMV and the sys.dm_db_partition_stats DMV
+USE [<YOUR_DATABASE_NAME>];
+GRANT VIEW DATABASE PERFORMANCE STATE TO [<YOUR_DB_USER>];
+GO
+
+-- VIEW SERVER PERFORMANCE STATE is only available on SQL Server (not Azure SQL). Granted at the server level.
+-- PowerSync requires this permission to access the sys.dm_db_log_stats DMV on SQL Server.
+USE [master];
+IF SERVERPROPERTY('EngineEdition') != 5  -- 5 = Azure SQL Database
+BEGIN
+    GRANT VIEW SERVER PERFORMANCE STATE TO [<YOUR_DB_USER>];
+END
+GO
+```
+
+Alternatively, you can grant more granular permissions on specific tables:
+
+```sql
+-- Grant SELECT on the specific replicated tables (recommended for more restrictive access)
+GRANT SELECT ON <YOUR_SCHEMA>.<YOUR_TABLE_NAME> TO [<YOUR_DB_USER>];
+```
+
+<Info>
+  For Azure SQL Database, the `VIEW SERVER PERFORMANCE STATE` permission is not available and not required. Only `VIEW DATABASE PERFORMANCE STATE` is needed.
+</Info>
+
+### CDC Management
+
+Management and performance turning of CDC is left to the developer and is primarily done by modifying the change capture jobs. See [Change Data Capture Jobs (SQL Server)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/administer-and-monitor-change-data-capture-sql-server?view=sql-server-ver17) for more details.
+Capture Job settings of interest to PowerSync:
+- Polling interval: The frequency at which the capture job reads changes from the transaction log. Default is every 5 seconds. Can be set to 0 so that there is zero downtime between scans, but this will impact database performance.
+- Max Trans: The maximum number of transactions that are processed per scan. Default is 500.
+- Max Scans: The maximum number of scans that are performed per capture job scan cycle. Default is 10.
+
+Cleanup Job settings of interest to PowerSync:
+- Retention: The retention period before data is expired from the CDC tables. Default is 3 days. If your PowerSync instance is offline for longer than this period, data will need to be fully re-synced. Specified in minutes.
+
+Recommended Capture Job settings:
+| Parameter | Recommended Value |
+|-------------------------|-------------------|
+| maxtrans | 5000 |
+| maxscans | 10 |
+| pollinginterval| 1 second |
+
+### Limitations
+
+- For Azure SQL Database, the CDC capture and cleanup jobs are managed automatically. Manual configuration is greatly limited.
+See: [Azure CDC Customization Limitations](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql#cdc-customization)
+The main limitation is that the capture job polling interval cannot be modified and is fixed at 20 seconds. It is, however, still possible to [manually trigger](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql#manual-cdc-control) the capture job on demand.
+- CDC can only be enabled on Azure SQL Databases on the vCore purchasing model, OR for database on the DTU purchasing model, only on the S3 tier and above.
+See: [Azure SQL Database compute requirements](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql#azure-sql-database-compute-requirements)
 
 ## Next Step
 

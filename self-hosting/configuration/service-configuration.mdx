@@ -1,21 +1,15 @@
 ---
-title: "PowerSync Service Setup"
-description: "Configuration details for connecting the PowerSync Service to your database"
+title: "Service Configuration"
+description: "Configure the PowerSync Service with database connection details and sync rules"
 ---
 
-After configuring your source database for PowerSync, you'll need to setup your [PowerSync Service](/architecture/powersync-service).
+After configuring your source database for PowerSync and setting up [sync bucket storage](/self-hosting/configuration/sync-bucket-storage), you'll need to configure your [PowerSync Service](/architecture/powersync-service).
 
 This entails:
 
-1. Configuring sync bucket storage
-
-2. Defining your PowerSync config
-
-   1. Defining connections to your source database, and sync bucket storage database
-
-   2. Defining your [Sync Rules](/usage/sync-rules)
-
-   3. Defining your auth method
+1. Defining connections to your source database and sync bucket storage database
+2. Defining your [Sync Rules](/usage/sync-rules)
+3. Defining your auth method
 
 Examples of the above can be found in our demo application [here](https://github.com/powersync-ja/self-host-demo/tree/main/config). Below we go through these in more detail.
 
@@ -23,68 +17,7 @@ Examples of the above can be found in our demo application [here](https://github
   **Deploy PowerSync on Coolify:** See our [integration guide](/integration-guides/coolify) for deploying the PowerSync Service on Coolify. This can simplify the setup and management of the deployment.
 </Tip>
 
-## Configure Sync Bucket Storage
-
-The PowerSync Service requires a storage backend for sync buckets. You can use either MongoDB or Postgres for this purpose. The storage backend is separate from your source database.
-
-### MongoDB Storage
-
-MongoDB requires at least one replica set node. A single node is fine for development/staging environments, but a 3-node replica set is recommended [for production](/self-hosting/lifecycle-maintenance).
-
-[MongoDB Atlas](https://www.mongodb.com/products/platform/atlas-database) enables replica sets by default for new clusters.
-
-However, if you're using your own environment you can enable this manually by running:
-
-```bash
-mongosh "mongodb+srv://powersync.abcdef.mongodb.net/" --apiVersion 1 --username myuser --eval 'try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'
-```
-
-If you are rolling your own Docker environment, you can include this init script in your docker-compose file to configure a replica set as once-off operation:
-
-```yaml
-  # Initializes the MongoDB replica set. This service will not usually be actively running
-  mongo-rs-init:
-    image: mongo:7.0
-    depends_on:
-      - mongo
-    restart: "no"
-    entrypoint:
-      - bash
-      - -c
-      - 'sleep 10 && mongosh --host mongo:27017 --eval ''try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'''
-```
-
-### Postgres Storage
-
-Available since version 1.3.8 of [`journeyapps/powersync-service`](https://hub.docker.com/r/journeyapps/powersync-service), you can use Postgres as an alternative storage backend for sync buckets.
-
-#### Database Setup
-
-You'll need to create a dedicated user and schema for PowerSync storage. You can either:
-
-1. Let PowerSync create the schema (recommended):
-
-```sql
-CREATE USER powersync_storage_user WITH PASSWORD 'secure_password';
--- The user should only have access to the schema it created
-GRANT CREATE ON DATABASE postgres TO powersync_storage_user;
-```
-
-2. Or manually create the schema:
-
-```sql
-CREATE USER powersync_storage_user WITH PASSWORD 'secure_password';
-CREATE SCHEMA IF NOT EXISTS powersync AUTHORIZATION powersync_storage_user;
-GRANT CONNECT ON DATABASE postgres TO powersync_storage_user;
-GRANT USAGE ON SCHEMA powersync TO powersync_storage_user;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA powersync TO powersync_storage_user;
-```
-
-<Tip>
-**Demo app:** A demo app with Postgres bucket storage is available [here](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-postgres-bucket-storage).
-</Tip>
-
-## PowerSync Configuration
+## Configuration Methods
 
 The PowerSync Service is configured using key/value pairs in a config file, and supports the following configuration methods:
 
@@ -103,6 +36,8 @@ A detailed `config.yaml` example with additional comments can be found here:
 The config file schema is also available here:
 
 <Card title="@powersync/service-schema" icon="github" href="https://unpkg.com/@powersync/service-schema@latest/json-schema/powersync-config.json" horizontal />
+
+## Configuration File Structure
 
 Below is a skeleton config file you can copy and paste to edit locally:
 
@@ -168,10 +103,11 @@ client_auth:
   telemetry:
     # Opt out of reporting anonymized usage metrics to PowerSync telemetry service
     disable_telemetry_sharing: false
-
 ```
 
-Specify the connection to Postgres in the `replication` section. For details on connecting to your database, see the [Connect PowerSync to your Database](/installation/quickstart-guide#connect-powersync-to-your-database) section in the Quickstart Guide.
+## Database Connections
+
+Specify the connection to your source database in the `replication` section. For details on connecting to your database, see the [Connect PowerSync to your Database](/installation/quickstart-guide#connect-powersync-to-your-database) section in the Quickstart Guide.
 
 <Info>
   If you are using hosted Supabase, you will need to enable IPv6 for Docker as per [https://docs.docker.com/config/daemon/ipv6/](https://docs.docker.com/config/daemon/ipv6/)
@@ -181,18 +117,9 @@ Specify the connection to Postgres in the `replication` section. For details on 
   This is because Supabase only allows direct database connections over IPv6 — PowerSync cannot connect using the connection pooler.
 </Info>
 
-Specify the connection to your sync bucket storage provider (Postgres or MongoDB) in the `storage` section.
+For sync bucket storage configuration, see [Sync Bucket Storage](/self-hosting/configuration/sync-bucket-storage).
 
-### Postgres Storage
-
-Separate Postgres servers are required for replication connections and sync bucket storage **if using Postgres versions below 14**.
-
-| Postgres Version | Server configuration                                                                                                                                                                                                     |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Below 14           | Separate servers are required for the source and sync bucket storage. Replication will be blocked if the same server is detected.                                                                                        |
-| 14 and above       | The source database and sync bucket storage database can be on the same server. Using the same database (with separate schemas) is supported but may lead to higher CPU usage. Using separate servers remains an option. |
-
-### Environment Variables
+## Environment Variables
 
 The config file uses custom tags for environment variable substitution.
 
@@ -202,11 +129,11 @@ Only environment variables with names starting with `PS_` can be substituted.
 
 See examples here:
 
-<Card title="self-host-demo/config/powersync.yaml at main · powersync-ja/self-host-demoGitHub" icon="github" href="https://github.com/powersync-ja/self-host-demo/blob/main/config/powersync.yaml" horizontal />
+<Card title="self-host-demo/config/powersync.yaml at main · powersync-ja/self-host-demo" icon="github" href="https://github.com/powersync-ja/self-host-demo/blob/main/config/powersync.yaml" horizontal />
 
-### Sync Rules
+## Sync Rules
 
-Your project's [sync rules](/self-hosting/installation/powersync-service-setup#sync-rules) can either be specified within your configuration file directly, or in a separate file that is referenced.
+Your project's [sync rules](/usage/sync-rules) can either be specified within your configuration file directly, or in a separate file that is referenced.
 
 ```yaml config.yaml
 # Define sync rules:
@@ -252,3 +179,8 @@ For more information about sync rules see:
   docker exec -it self-host-demo-mongo-1 mongosh "mongodb://localhost:27017/powersync_demo" --eval "db.bucket_data.find().pretty()"
   ```
 </Info>
+
+## Client Authentication
+
+For configuring client authentication, see [Client Authentication](/self-hosting/configuration/client-side-setup).
+

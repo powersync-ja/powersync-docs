@@ -2,30 +2,94 @@
 title: "Development Tokens"
 ---
 
-PowerSync allows generating temporary development tokens for authentication. This is useful for developers who want to get up and running quickly, without a full custom auth implementation. This may also be used to generate a token for a specific user to debug issues.
+PowerSync allows generating temporary development tokens for authentication. 
 
-## Generating a Development Token:
+This is useful for developers who want to get up and running quickly, without a full custom auth implementation. 
+This may also be used to generate a token for a specific user to debug issues.
 
-### PowerSync Cloud - Dashboard:
+## Generating a Development Token
 
-1. **Enable setting**: The "Enable development tokens" setting must be set on the PowerSync instance. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, go to the **Client Auth** view, and enable the "Enable development tokens" setting.
-2. Next, click the **Connect** button in the top bar, and follow the instructions to generate a development token.
-3. Enter the token subject / user ID: This is the ID of the user you want to authenticate and is used in [Sync Rules](/usage/sync-rules) as `request.user_id()`.
-4. Click **Generate Token**. Copy the generated token. Note that these tokens expire after 12 hours.
+<Tabs>
+  <Tab title="PowerSync Cloud">
+    1. **Enable setting**: The "Enable development tokens" setting must be set on the PowerSync instance. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, go to the **Client Auth** view, and enable the "Enable development tokens" setting.
+    2. Next, click the **Connect** button in the top bar, and follow the instructions to generate a development token.
+    3. Enter the token subject / user ID: This is the ID of the user you want to authenticate and is used in [Sync Rules](/usage/sync-rules) as `request.user_id()`.
+    4. Click **Generate Token**. Copy the generated token. Note that these tokens expire after 12 hours.
+  </Tab>
 
-### Self-hosted Setup / Local Development
+  <Tab title="Self-Hosted">
+    For self-hosted [local development](/self-hosting/local-development), you can generate development tokens using the [powersync-service test client](https://github.com/powersync-ja/powersync-service/tree/main/test-client).
 
-For self-hosted [local development](/self-hosting/local-development), the [powersync-service test client](https://github.com/powersync-ja/powersync-service/tree/main/test-client) contains a script to generate a development token, given a .yaml config file with an HS256 key. Run the following command:
+    #### Step 1: Generate a SharedSecret
 
-```bash
-node dist/bin.js generate-token --config path/to/powersync.yaml --sub test-user
-```
+    To generate a SharedSecret, you can use this [Online JWS key generator](https://8gwifi.org/jwsgen.jsp):
 
-For more information on generating development tokens, see the [Generate development tokens tutorial](/tutorials/self-host/generate-dev-token)
+    <Note>
+      You don't need to edit the default payload in the [Online JWS key generator](https://8gwifi.org/jwsgen.jsp).
+      You simply need to obtain the generated `SharedSecret` value.
+    </Note>
+
+    1. Click `Generate JWS Keys`
+    2. Copy the `SharedSecret` value
+
+    <Warning>
+      Using an online key generator for secrets in a production environment is not recommended.
+    </Warning>
+
+    #### Step 2: Update powersync.yaml
+
+    Update the `k` value in the jwks keys in your `powersync.yaml` config file with the `SharedSecret` value copied in the previous step:
+
+    ```yaml powersync.yaml
+    # Client (application end user) authentication settings
+    client_auth:
+        # JWKS URIs can be specified here
+        jwks_uri: !env PS_JWKS_URL
+        jwks:
+            keys:
+                - kty: 'oct'
+                  k: 'YOUR_GENERATED_SHARED_SECRET'
+                  alg: 'HS256'
+    ```
+
+    #### Step 3: Generate a development token
+
+    1. If you have not done so already, clone the [powersync-service repo](https://github.com/powersync-ja/powersync-service/tree/main)
+    2. Install the dependencies
+       - In the project root, run the following commands:
+         ```bash
+         pnpm install
+         pnpm build:packages
+         ```
+       - In the `test-client` directory, run the following commands:
+         ```bash
+         pnpm build
+         ```
+    3. Generate a new token by running the following command in the `test-client` directory with your updated `powersync.yaml` config file:
+       ```bash
+       node dist/bin.js generate-token --config path/to/powersync.yaml --sub test-user
+       ```
+       
+       Replace `test-user` with the user ID you want to authenticate. This user ID is used in [Sync Rules](/usage/sync-rules) as `request.user_id()`.
+  </Tab>
+</Tabs>
 
 ## Usage
 
-To use the temporary development token, update the `fetchCredentials()` function in your backend connector to return the generated token (see [Integrate with your Backend](/installation/client-side-setup/integrating-with-your-backend) for more information).
+Development tokens can be used either with the [Sync Diagnostics Client](https://diagnostics-app.powersync.com) or the [test-client](https://github.com/powersync-ja/powersync-service/tree/main/test-client).
+
+### Using with Sync Diagnostics Client
+
+The [Sync Diagnostics Client](https://diagnostics-app.powersync.com) allows you to quickly inspect a user's local database and verify that your PowerSync Service configuration and Sync Rules behave as expected.
+
+1. Open the [Sync Diagnostics Client](https://diagnostics-app.powersync.com)
+2. Enter your PowerSync Service endpoint
+3. Enter the generated development token
+4. Inspect the synced data in SQLite
+
+### Using with Your Application
+
+To use the temporary development token in your application, update the `fetchCredentials()` function in your backend connector to return the generated token (see [Integrate with your Backend](/installation/client-side-setup/integrating-with-your-backend) for more information).
 
 Example:
 

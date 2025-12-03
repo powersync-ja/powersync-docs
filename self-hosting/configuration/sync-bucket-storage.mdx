@@ -1,0 +1,96 @@
+---
+title: "Sync Bucket Storage"
+description: "Configure MongoDB or Postgres storage for sync buckets"
+---
+
+The PowerSync Service requires a storage backend for sync buckets. You can use either MongoDB or Postgres for this purpose. The storage backend is separate from your source database.
+
+## MongoDB Storage
+
+MongoDB requires at least one replica set node. A single node is fine for development/staging environments, but a 3-node replica set is recommended [for production](/self-hosting/advanced/production-setup) deployments.
+
+[MongoDB Atlas](https://www.mongodb.com/products/platform/atlas-database) enables replica sets by default for new clusters.
+
+However, if you're using your own environment you can enable this manually by running:
+
+```bash
+mongosh "mongodb+srv://powersync.abcdef.mongodb.net/" --apiVersion 1 --username myuser --eval 'try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'
+```
+
+If you are rolling your own Docker environment, you can include this init script in your docker-compose file to configure a replica set as once-off operation:
+
+```yaml
+  # Initializes the MongoDB replica set. This service will not usually be actively running
+  mongo-rs-init:
+    image: mongo:7.0
+    depends_on:
+      - mongo
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - 'sleep 10 && mongosh --host mongo:27017 --eval ''try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'''
+```
+
+## Postgres Storage
+
+Available since version 1.3.8 of [`journeyapps/powersync-service`](https://hub.docker.com/r/journeyapps/powersync-service), you can use Postgres as an alternative storage backend for sync buckets.
+
+### Database Setup
+
+You'll need to create a dedicated user and schema for PowerSync storage. You can either:
+
+1. Let PowerSync create the schema (recommended):
+
+```sql
+CREATE USER powersync_storage_user WITH PASSWORD 'secure_password';
+-- The user should only have access to the schema it created
+GRANT CREATE ON DATABASE postgres TO powersync_storage_user;
+```
+
+2. Or manually create the schema:
+
+```sql
+CREATE USER powersync_storage_user WITH PASSWORD 'secure_password';
+CREATE SCHEMA IF NOT EXISTS powersync AUTHORIZATION powersync_storage_user;
+GRANT CONNECT ON DATABASE postgres TO powersync_storage_user;
+GRANT USAGE ON SCHEMA powersync TO powersync_storage_user;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA powersync TO powersync_storage_user;
+```
+
+<Tip>
+**Demo app:** A demo app with Postgres bucket storage is available [here](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-postgres-bucket-storage).
+</Tip>
+
+### Postgres Version Requirements
+
+Separate Postgres servers are required for replication connections and sync bucket storage **if using Postgres versions below 14**.
+
+| Postgres Version | Server configuration                                                                                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Below 14           | Separate servers are required for the source and sync bucket storage. Replication will be blocked if the same server is detected.                                                                                        |
+| 14 and above       | The source database and sync bucket storage database can be on the same server. Using the same database (with separate schemas) is supported but may lead to higher CPU usage. Using separate servers remains an option. |
+
+## Configuring Storage in Your Config File
+
+Specify the connection to your sync bucket storage provider (Postgres or MongoDB) in the `storage` section of your `config.yaml`:
+
+```yaml config.yaml
+# Connection settings for sync bucket storage (MongoDB and Postgres are supported)
+storage:
+  # Option 1: MongoDB Storage
+  type: mongodb
+  uri: mongodb://mongo:27017/powersync_demo
+  # Use these if authentication is required. The user should have `readWrite` and `dbAdmin` roles
+  # username: myuser
+  # password: mypassword
+
+  # Option 2: Postgres Storage
+  # type: postgresql
+  # This accepts the same parameters as a Postgres replication source connection
+  # uri: postgresql://powersync_storage_user:secure_password@storage-db:5432/postgres
+  # sslmode: disable
+```
+
+For more details on the complete configuration file, see [Service Configuration](/self-hosting/configuration/service-configuration).
+

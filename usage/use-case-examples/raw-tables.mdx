@@ -39,7 +39,7 @@ Consider raw tables when you need:
 - **To manually create tables** - Sometimes you need full control over table creation, for example when implementing custom triggers
   
 <Warning>
-**Advanced SQLite features** like `FOREIGN KEY` and `ON DELETE CASCADE` constraints may need special handling. If your use case requires these features, please reach out to us for guidance and potential workarounds.
+**Advanced SQLite features** like `FOREIGN KEY` and `ON DELETE CASCADE` constraints need [special consideration](#using-foreign-keys).
 </Warning>
 
 ## How Raw Tables Work
@@ -274,6 +274,17 @@ CREATE TRIGGER todo_lists_delete
       INSERT INTO powersync_crud (op, id, type) VALUES ('DELETE', OLD.id, 'todo_lists');
    END;
 ```
+
+#### Using foreign keys
+
+Raw tables support advanced table constraints including foreign keys. When enabling foreign keys however, you need to be aware of the following:
+
+1. While PowerSync will always apply synced data in a transaction, there is no way to control the order in which rows get applied.
+   For this reason, foreign keys need to be configured with `DEFERRABLE INITIALLY DEFERRED`.
+2. When using [stream priorities](/usage/use-case-examples/prioritized-sync), you need to ensure you don't have foreign keys from high-priority
+   rows to lower-priority data. PowerSync applies data in one transaction per priority, so these foreign keys would not work.
+3. As usual when using foreign keys, note that they need to be explicitly enabled with `pragma foreign_keys = on`.
+
 ## Migrations
 
 In PowerSync's [JSON-based view system](/architecture/client-architecture#schema) the client-side schema is applied to the schemaless data, meaning no migrations are required. Raw tables however are excluded from this, so it is the developers responsibility to manage migrations for these tables.
@@ -315,5 +326,6 @@ To ensure the column values are accurate, you'd have to delete all data after a 
 
 ## Deleting data and raw tables
 
-APIs that clear an entire PowerSync database, like e.g. `disconnectAndClear()`, don't affect raw tables.
-This should be kept in mind when you're using those methods - data from raw tables needs to be deleted explicitly.
+APIs that clear an entire PowerSync database, like e.g. `disconnectAndClear()`, don't affect raw tables by default.
+You can use the `clear` parameter on the `RawTable` constructor to set an SQL statement to run when clearing the database.
+Typically, something like `DELETE FROM $tableName` would be a reasonable statement to run.

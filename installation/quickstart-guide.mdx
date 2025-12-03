@@ -123,9 +123,9 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, or MySQL)
           ```
         </CodeGroup>
 
-        <Info>
+        <Note>
           **Version compatibility**: PowerSync requires Postgres version 11 or greater.
-        </Info>
+        </Note>
       </Tab>
 
       <Tab title="MongoDB">
@@ -142,9 +142,9 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, or MySQL)
         dbAdmin@<your_database>
         ```
 
-        <Info>
+        <Note>
           **Version compatibility**: PowerSync requires MongoDB version 6.0 or greater.
-        </Info>
+        </Note>
       </Tab>
 
       <Tab title="MySQL">
@@ -169,11 +169,15 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, or MySQL)
           ```
         </CodeGroup>
 
-        <Info>
+        <Note>
           **Version compatibility**: PowerSync requires MySQL version 5.7 or greater.
-        </Info>
+        </Note>
       </Tab>
     </Tabs>
+
+<Note>
+  For more details on database setup, including provider-specific guides (Supabase, AWS RDS, etc.), see [Source Database Setup](/installation/database-setup).
+</Note>
 
 ## Connect PowerSync to your Database
 
@@ -221,6 +225,10 @@ Connect your PowerSync instance to your source database.
       </Tab>
     </Tabs>
 
+<Note>
+  For more details on database connections, including provider-specific connection details (Supabase, AWS RDS, MongoDB Atlas, etc.), see [Database Connection](/installation/database-connection).
+</Note>
+
 ## Define Basic Sync Rules
 
 Sync Rules control which data gets synced to which users/devices. They consist of SQL-like queries organized into "buckets" (groupings of data). Each PowerSync Service instance has a Sync Rules definition in YAML format.
@@ -256,7 +264,7 @@ We recommend starting with a simple **global bucket** that syncs data to all use
       ```
     </CodeGroup>
 
-### Editing Sync Rules
+### Deploying Sync Rules
 
 <Tabs>
       <Tab title="PowerSync Cloud">
@@ -282,112 +290,69 @@ We recommend starting with a simple **global bucket** that syncs data to all use
       </Tab>
     </Tabs>
 
-<Info>
+<Note>
   **Note**: Table names within Sync Rules must match the names defined in your client-side schema (defined in a later step).
-</Info>
+</Note>
 
 For more advanced use cases like user-specific data, see the [Sync Rules documentation](/usage/sync-rules).
 
-## [Optional] Generate a Development Token
+## Generate a Development Token
 
-For quick development and testing, you can generate a temporary development token instead of implementing full authentication. These tokens expire after 12 hours.
+For quick development and testing, you can generate a temporary development token instead of implementing full authentication.
 
-<Tabs>
-      <Tab title="PowerSync Cloud">
-        1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance
-        2. Go to the **Client Auth** view
-        3. Enable the "Enable development tokens" setting
-        4. Click the **Connect** button in the top bar
-        5. Enter a user ID (this will be used as `request.user_id()` in Sync Rules)
-        6. Click **Generate Token** and copy the token
-      </Tab>
+You'll use this token for two purposes:
+- **Testing with the Sync Diagnostics Client** (in the next step) to verify your setup and sync rules
+- **Connecting your app** (in a later step) to test the client SDK integration
 
-      <Tab title="Self-Hosted">
-        The recommended approach is to initially use a short-lived development token and then wire up production auth at a later stage.
+import GenerateDevelopmentToken from '/snippets/generate-development-token.mdx';
 
-        1. **Generate a temporary private/public key-pair (RS256) or shared key (HS256)** for JWT signing and verification.
+<GenerateDevelopmentToken />
 
-        2. **Add the key to your PowerSync Service configuration file:**
-
-        ```yaml config.yaml
-        client_auth:
-          # static collection of public keys for JWT verification
-          jwks:
-            keys:
-              - kty: oct
-                alg: 'HS256'
-                kid: 'powersync-dev'
-                k: '[secret]'
-        ```
-
-        3. **Generate a signed JWT.** You have two options:
-
-           **Option A:** If you have a `.yaml` configuration file and HS256 key, use the `generate-token` script from the Test Client in the [powersync-service repo](https://github.com/powersync-ja/powersync-service/tree/main/test-client), as described in [Development Tokens](/installation/authentication-setup/development-tokens#self-hosted-setup-local-development). You need to clone this repo to use this option.
-
-           ```bash
-           node dist/bin.js generate-token --config path/to/powersync.yaml --sub test-user
-           ```
-
-           **Option B:** Generate a JWT programmatically. Save the private key into a `.env` file, then generate a JWT with a user UUID:
-
-           ```js
-           import * as jose from 'jose';
-
-           // get this from .env
-           const powerSyncPrivateKey = {
-             alg: 'RS256',
-             k: '[secret]',
-             ...
-           };
-
-           const powerSyncKey = (await jose.importJWK(powerSyncPrivateKey)) as jose.KeyLike;
-
-           const token = await new jose.SignJWT({})
-             .setProtectedHeader({
-               alg: powerSyncPrivateKey.alg!,
-               kid: powerSyncPrivateKey.kid
-             })
-             .setSubject('b29a2678-91c3-406a-9109-2cb99bcc6a01') // set user id
-             .setIssuedAt()
-             .setAudience('powersync-dev')
-             .setExpirationTime('12h')
-             .sign(powerSyncKey);
-
-           console.log(token);
-           ```
-      </Tab>
-    </Tabs>
-
-You'll use this token in your client-side connector in a later step.
+<Note>
+  Save this token — you'll need it for both the Sync Diagnostics Client and your app connector.
+</Note>
 
 ## [Optional] Test Sync with the Sync Diagnostics Client
 
-Before implementing PowerSync in your app, you can validate that your backend database is syncing correctly using our [Sync Diagnostics Client](https://diagnostics-app.powersync.com).
+Before implementing PowerSync in your app, you can validate that your backend database is syncing correctly using our [Sync Diagnostics Client](https://diagnostics-app.powersync.com). The hosted app works with both PowerSync Cloud and self-hosted setups.
+
+Use the development token you generated in the [previous step](#optional-generate-a-development-token) to connect and verify your setup.
 
 <Tabs>
       <Tab title="PowerSync Cloud">
-        The hosted [Sync Diagnostics Client](https://diagnostics-app.powersync.com) allows you to:
-        - Connect to your PowerSync instance
-        - View the synced data in SQLite
-        - Verify that your Sync Rules are working as expected
+        **To test your setup:**
+
+        1. Go to [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com)
+        2. Enter your development token (from the [Generate a Development Token](#optional-generate-a-development-token) step above)
+        3. Enter your PowerSync instance endpoint (found in your [PowerSync Dashboard](https://dashboard.powersync.com/) under your instance settings)
+        4. Click **Connect**
+
+        The app will connect to your PowerSync instance and display:
+        - todo explain what the user should look out for
 
         This is especially useful for debugging sync issues before integrating the client SDK into your app.
       </Tab>
 
       <Tab title="Self-Hosted">
-        With the [Sync Diagnostics Client](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) you can quickly inspect a user's local database. By using this you can confirm that the PowerSync Service configuration and Sync Rules behave as expected without needing to set up authentication or app UI.
+        **To test your setup:**
 
-        The app is available at [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com/) or can be run as a local standalone web app — see the [README](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) for instructions on running it locally.
+        1. Go to [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com)
+        2. Enter your development token (from the [Generate a Development Token](#optional-generate-a-development-token) step above)
+        3. Enter your PowerSync Service endpoint (the URL where your self-hosted service is running, e.g. `http://localhost:8080` if running locally)
+        4. Click **Connect**
 
-        **To sign into the app:**
-        1. Enter the generated development token into the app's sign in screen
-        2. Enter your PowerSync Service endpoint (see the port number specified in your config file, e.g. `http://localhost:8080`)
+        The app will connect to your PowerSync Service and display:
+        - TODO explain what the user should look out for
 
-        <Info>
+        <Note>
           **Checkpoint:**
 
-          Inspect your global bucket and synced table (from the [Service Configuration](/self-hosting/configuration/service-configuration) section) in the Sync Diagnostics Client — these should match the sync rules you [defined previously](/self-hosting/configuration/service-configuration#sync-rules).
-        </Info>
+          Inspect your global bucket and synced tables in the Sync Diagnostics Client — these should match the sync rules you [defined previously](#define-basic-sync-rules). This confirms your setup is working correctly before integrating the client SDK into your app.
+        </Note>
+
+        <Note>
+          The app can also be run as a local standalone web app — see the [README](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) for instructions.
+        </Note>
       </Tab>
     </Tabs>
 
@@ -580,9 +545,9 @@ Here's an example schema for a simple `todos` table:
       ```
     </CodeGroup>
 
-<Info>
+<Note>
   **Note**: The schema does not explicitly specify an `id` column, since PowerSync automatically creates an `id` column of type `text`.
-</Info>
+</Note>
 
 ## Instantiate the PowerSync Database
 
@@ -668,7 +633,7 @@ Now that you have your schema defined, instantiate the PowerSync database in you
 
 Connect your PowerSync database to the PowerSync Service by implementing a backend connector. The connector handles authentication and uploading writes to your backend.
 
-For development, you can use a development token (from the [Generate a Development Token](#optional-generate-a-development-token) section above). For production, you'll implement proper JWT authentication.
+For development, you can use the development token you generated in the [Generate a Development Token](#optional-generate-a-development-token) step above. For production, you'll implement proper JWT authentication.
 
     <CodeGroup>
       ```typescript TypeScript - React Native
@@ -995,9 +960,9 @@ Write data using SQL INSERT, UPDATE, or DELETE statements. PowerSync automatical
       ```
     </CodeGroup>
 
-<Info>
+<Note>
   **Best practice**: Use UUIDs when inserting new rows on the client side. UUIDs can be generated offline/locally, allowing for unique identification of records created in the client database before they are synced to the server.
-</Info>
+</Note>
 
 ## Next Steps
 

@@ -62,7 +62,7 @@ interface CrudEntry {
   opData?: Record<string, any>;          // Changed column values (optional)
   transactionId?: number;                // Groups ops from same transaction
   metadata?: string;                     // Custom metadata (trackMetadata)
-  previousValues?: Record<string, any>;  // Previous values (trackPreviousValues)
+  trackPrevious?: Record<string, any>;  // Previous values (trackPrevious)
 }
 ```
 
@@ -511,12 +511,10 @@ CREATE TABLE write_conflicts (
 bucket_definitions:
   user_data:
     parameters:
-      - user_id
+      - SELECT request.user_id() as user_id
     data:
-      - SELECT * FROM tasks WHERE user_id = request.user_id()
-      - SELECT * FROM write_conflicts 
-        WHERE user_id = request.user_id()
-        AND resolved = FALSE
+      - SELECT * FROM tasks WHERE user_id = bucket.user_id
+      - SELECT * FROM write_conflicts WHERE user_id = bucket.user_id AND resolved = FALSE
 ```
 
 ### Step 3: Record Conflicts in Backend
@@ -577,10 +575,9 @@ async function handleUpdateWithConflictRecording(operation, userId) {
 
 ```typescript
 import { useQuery } from '@powersync/react';
-import { usePowerSync } from './db'
+import { powerSync } from './db'
 
 function ConflictResolver() {
-  const powerSync = usePowerSync();
   const { data: conflicts } = useQuery(
     'SELECT * FROM write_conflicts WHERE resolved = FALSE'
   );
@@ -703,9 +700,9 @@ CREATE TABLE field_changes (
 async function updateTaskField(
   taskId: string,
   field: string,
-  newValue: any
+  newValue: any,
+  powerSync: PowerSyncDatabase
 ) {
-  const powerSync = usePowerSync();
   
   await powerSync.writeTransaction(async (tx) => {
     // Optimistic update to main table

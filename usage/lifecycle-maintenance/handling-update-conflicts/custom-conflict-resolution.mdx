@@ -1,9 +1,9 @@
 ---
 title: "Custom Conflict Resolution"
-description: "Learn how to implement custom conflict resolution strategies in PowerSync to handle concurrent updates from multiple clients."
+description: "How to implement custom conflict resolution strategies in PowerSync to handle concurrent updates from multiple clients."
 ---
 
-The default behavior is essentially "last write wins" because the server processes operations in order received, with later updates overwriting earlier ones. For many apps, this works fine. But some scenarios demand smarter handling.
+The default behavior is essentially "last write wins" because the server processes operations in order received, with later updates overwriting earlier ones. For many apps, this works fine. But some scenarios demand more business logic to resolve conflicts.
 
 ## When You Might Need Custom Conflict Resolution
 
@@ -839,6 +839,132 @@ function TaskEditor({ taskId }: { taskId: string }) {
   );
 }
 ```
+
+## Strategy 7: Cumulative Operations (Inventory)
+
+For scenarios like inventory management, simply replacing values causes data loss. When two clerks simultaneously sell the same item while offline, both sales must be honored. The solution is to treat certain fields as **deltas** rather than absolute values, you subtract incoming quantities from the current stock rather than replacing the count.
+
+This requires your backend to recognize which operations should be cumulative. For inventory quantity changes, you apply the delta (e.g., `-3 units`) to the current value rather than setting it directly. This ensures all concurrent sales are properly recorded without overwriting each other.
+
+### Database Schema
+
+**Source database (Postgres):**
+
+```sql
+CREATE TABLE inventory (
+  id UUID PRIMARY KEY,
+  product_id UUID NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 0,
+  last_updated TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Prevent negative inventory
+ALTER TABLE inventory ADD CONSTRAINT positive_quantity CHECK (quantity >= 0);
+```
+
+### Backend: Delta Detection and Application
+
+The key is detecting when an operation should be treated as a delta versus an absolute value. You can identify this through table/field combinations, metadata flags, or operation patterns.
+
+**Backend API (Node.js):**
+
+```javascript
+async function handleInventoryOperation(db, operation) {
+  const { table, id, op, opData } = operation;
+  
+  // Identify cumulative fields for specific tables
+  if (table === 'inventory' && 'quantity' in opData) {
+    return await applyInventoryDelta(db, operation);
+  }
+  
+  // Default handling for other fields/tables
+  return await handleGenericOperation(db, operation);
+}
+
+async function applyInventoryDelta(db, operation) {
+  const { id, opData } = operation;
+  const quantityChange = opData.quantity; // This is the delta, not absolute value
+  
+  // Get current inventory
+  const result = await db.query(
+    'SELECT quantity FROM inventory WHERE id = $1',
+    [id]
+  );
+  
+  if (!result.rows[0]) {
+    return { 
+      conflict: 'inventory_not_found',
+      message: `Inventory ${id} does not exist`
+    };
+  }
+  
+  const currentQuantity = result.rows[0].quantity;
+  const newQuantity = currentQuantity + quantityChange;
+  
+  // Validate: prevent negative inventory
+  if (newQuantity < 0) {
+    console.warn(`Insufficient stock: ${id} has ${currentQuantity}, attempted change: ${quantityChange}`);
+    
+    return {
+      conflict: 'insufficient_stock',
+      message: `Cannot reduce inventory by ${Math.abs(quantityChange)}. Only ${currentQuantity} available.`,
+      currentQuantity
+    };
+  }
+  
+  // Apply the delta atomically
+  await db.query(
+    `UPDATE inventory 
+     SET quantity = quantity + $1, 
+         last_updated = NOW()
+     WHERE id = $2`,
+    [quantityChange, id]
+  );
+  
+  return { 
+    success: true,
+    newQuantity,
+    previousQuantity: currentQuantity
+  };
+}
+```
+
+### Client Implementation
+
+On the client side, you need to ensure updates are sent as deltas, not absolute values. When a sale occurs, send the change amount:
+
+**Client code:**
+
+```typescript
+// When selling 3 units
+await powerSync.execute(
+  'UPDATE inventory SET quantity = quantity - ? WHERE id = ?',
+  [3, inventoryId] // Send -3 as the delta
+);
+```
+
+The backend receives this as a PATCH operation where `opData.quantity = -3`, which it then adds to the current quantity rather than replacing it.
+
+### Alternative Approaches
+
+**1. Metadata Flags**: Include operation type in metadata to signal delta operations:
+
+```typescript
+await powerSync.execute(
+  'UPDATE inventory SET quantity = ?, _metadata = ? WHERE id = ?',
+  [
+    -3,
+    JSON.stringify({ operation_type: 'delta' }),
+    inventoryId
+  ]
+);
+```
+
+Backend checks metadata and applies accordingly.
+
+**2. Separate Transactions Table**: Track each quantity change as its own row, then aggregate them. This provides full audit history but requires syncing an additional table.
+
+**3. Operation-Based Detection**: Infer cumulative operations from the pattern. Negative values likely indicate sales (deltas), while large positive values might be absolute restocks requiring different handling.
 
 ---
 

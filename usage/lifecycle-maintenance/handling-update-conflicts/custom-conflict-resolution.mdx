@@ -1,29 +1,1171 @@
 ---
 title: "Custom Conflict Resolution"
-description: "You can build custom conflict resolution into your app. "
+description: "How to implement custom conflict resolution strategies in PowerSync to handle concurrent updates from multiple clients."
 ---
 
-If you would like to allow for manual conflict resolution by a user, typically this would be implemented separately for each table where manual conflict resolution is required, since the UI to resolve the conflicts would be custom for each.
+The default behavior is essentially "last write wins" because the server processes operations in order received, with later updates overwriting earlier ones. For many apps, this works fine. But some scenarios demand more business logic to resolve conflicts.
 
-## Option 1: Record write conflicts server-side
+## When You Might Need Custom Conflict Resolution
 
-* Create a table to record write conflicts.
-* When the server encounters a conflict, write it to this table, and use appropriate sync rules to sync the data back to the client app.
-* The client app can then display these conflicts to the user, and provide an option to resolve the conflicts.
+**Retail inventory**: Two clerks ring up the same item while offline. You need to subtract both quantities, not replace one count with the other.
 
-## Option 2: Record changes as individual rows client-side
+**Healthcare records**: A doctor updates diagnosis while a nurse updates vitals on the same patient record. Both changes matter, you can't lose either.
 
-* Create a separate table that records individual changes to rows.
-* The client updates the original table optimistically, in addition to creating a new change row.
-* The server ignores updates to the original table, and only processes the change rows. Each can be marked as "pending" / "processed" / "failed", with this status being synced back to the client. The client can then display this status for each change to the user if desired, with appropriate logic to manually resolve failed updates.
+**Order workflows**: Once an order ships, it should lock. Status must progress logically (pending → processing → shipped), not jump around randomly.
 
-## Using CRDTs to Merge Updates Automatically
+**Collaborative documents**: Multiple people edit different paragraphs simultaneously. Automatic merging prevents losing anyone's work.
 
-CRDT data structures such as [Yjs](https://github.com/yjs/yjs) can be stored and synced using PowerSync, allowing you to build collaborative apps that merge users' updates automatically.
+## How Data Flows Through PowerSync
 
-See the [CRDTs](/usage/use-case-examples/crdts) section for more detail.
+Understanding the data flow helps you decide where to implement conflict resolution.
 
-## See Also
+### Client to Backend
 
-* [Consistency → Validation and conflict handling](/architecture/consistency#validation-and-conflict-handling)
-* [CRDTs](/usage/use-case-examples/crdts)
+When a user updates data in your app:
+
+1. **Client writes to local SQLite** - Changes happen instantly, even offline
+2. **PowerSync queues the operation** - Stored in the upload queue
+3. **Client sends operation(s) to your backend** - Your `uploadData` function processes it
+4. **Backend writes to source database** - Postgres, MySQL, MongoDB etc.
+
+### Backend to Client
+
+When data changes on the server:
+
+1. **Source database updates** - Direct writes or changes from other clients
+2. **PowerSync Service detects changes** - Through replication stream
+3. **Clients download updates** - Based on their sync rules
+4. **Local SQLite updates** - Changes merge into the client's database
+
+**Conflicts arise when**: Multiple clients modify the same row before syncing, or when a client's changes conflict with server-side rules.
+
+---
+
+## Understanding Operations & `CrudEntry`
+
+PowerSync tracks three operation types:
+
+- **PUT** - Creates new row or replaces entire row (includes all non-null columns)
+- **PATCH** - Updates specific fields only (includes ID + changed columns)
+- **DELETE** - Removes row (includes only ID)
+
+### `CrudEntry` Structure
+
+When your `uploadData` receives transactions, each one has this structure:
+
+```typescript
+interface CrudEntry {
+  clientId: number;                      // Auto-incrementing client ID
+  id: string;                            // ID of the changed row
+  op: UpdateType;                        // 'PUT' | 'PATCH' | 'DELETE'
+  table: string;                         // Table name
+  opData?: Record<string, any>;          // Changed column values (optional)
+  transactionId?: number;                // Groups ops from same transaction
+  metadata?: string;                     // Custom metadata (trackMetadata)
+  trackPrevious?: Record<string, any>;  // Previous values (trackPrevious)
+}
+```
+
+### What Your Backend Receives
+
+**Client-side connector sends:**
+
+```javascript
+// uploadData in your client connector
+async uploadData(database) {
+  const transaction = await database.getNextCrudTransaction();
+  if (!transaction) return;
+  
+  // Send to your backend API
+  await fetch('https://yourapi.com/data', {
+    method: 'POST',
+    body: JSON.stringify({
+      batch: transaction.crud  // Array of CrudEntry objects
+    })
+  });
+  
+  await transaction.complete();
+}
+```
+
+<Warning>
+The following structure is only received by the backend if the transactions are not mutated in your clients `uploadData` function
+</Warning>
+
+**Backend API receives:**
+
+```json
+{
+  "batch": [
+    {
+      "op": "PATCH",
+      "table": "todos",
+      "id": "44f21466-d031-11f0-94bd-62f5a66ac26c",
+      "opData": {
+        "completed": 1,
+        "completed_at": "2025-12-03T10:20:04.658Z",
+        "completed_by": "c7b8cc68-41dd-4643-b559-66664ab6c7c5"
+      }
+    }
+  ]
+}
+```
+
+<Tip>
+Operations are **idempotent** - your backend may receive the same operation multiple times. Use `clientId` and the operation's ID to detect and skip duplicates.
+</Tip>
+
+---
+
+## Implementation Examples
+
+The following examples demonstrate the core logic and patterns for implementing conflict resolution strategies. All client-side code is written for React/Web applications, backend examples use Node.js, and database queries target PostgreSQL. While these examples should work as-is, they're intended as reference implementations, focus on understanding the underlying patterns and adapt them to your specific stack and requirements.
+
+---
+
+## Strategy 1: Timestamp-Based Detection
+
+The idea is simple: add a `modified_at` timestamp to each row. When a client updates a row, compare their timestamp to the one in the database. If theirs is older, someone else changed the row while they were offline, so you treat it as a conflict.
+
+This is great for quick staleness checks. You are not merging changes, just stopping outdated writes, similar to noticing a Google Doc changed while you were editing a local copy.
+
+The only real catch is **clock drift**. If server and client clocks are out of sync, you can get false conflicts. And if clients generate timestamps themselves, make sure they all use the same timezone.
+
+### Database Schema
+
+**Source database (Postgres):**
+
+```sql
+CREATE TABLE tasks (
+  id UUID PRIMARY KEY,
+  title TEXT,
+  status TEXT,
+  modified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Auto-update timestamp on every change
+CREATE OR REPLACE FUNCTION update_modified_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.modified_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tasks_modified_at
+  BEFORE UPDATE ON tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION update_modified_at();
+```
+
+### Backend Conflict Detection
+
+**Backend API (Node.js):**
+
+```javascript
+async function handleUpdate(operation, userId) {
+  const { id, opData } = operation;
+  const clientModifiedAt = opData.modified_at;
+  
+  // Get current server state
+  const result = await db.query(
+    'SELECT * FROM tasks WHERE id = $1',
+    [id]
+  );
+  
+  if (!result.rows[0]) {
+    // Row was deleted by another client
+    console.log(`Conflict: Row ${id} deleted`);
+    return { conflict: 'row_deleted' };
+  }
+  
+  const serverModifiedAt = result.rows[0].modified_at;
+  
+  // Client's version is older than server's
+  if (new Date(clientModifiedAt) < new Date(serverModifiedAt)) {
+    console.log(`Conflict: Stale update for ${id}`);
+    return {
+      conflict: 'stale_update',
+      serverVersion: result.rows[0],
+      clientVersion: opData
+    };
+  }
+  
+  // No conflict - apply update
+  await db.query(
+    'UPDATE tasks SET title = $1, status = $2 WHERE id = $3',
+    [opData.title, opData.status, id]
+  );
+  
+  return { success: true };
+}
+```
+
+<Warning>
+Timestamps can be unreliable if servers have **clock skew**. Additionally, if clients are writing timestamps (rather than letting the database generate them), ensure all clients use the same timezone/localization as the server. For critical data, use sequence numbers instead.
+</Warning>
+
+---
+
+## Strategy 2: Sequence Number Versioning
+
+Instead of timestamps, you can use a `version` number that increments on every change. It works like a counter on the row. Each time someone updates it, the version increases by one. When a client sends an update, they include the version they last saw. If it doesn’t match the current version in the database, another update happened and you reject the write.
+
+This avoids **clock drift** entirely because the database manages the counter, so clients can’t get out of sync.
+
+The tradeoff is that it’s all or nothing. You can’t merge simultaneous edits to different fields. You only know that the row changed, so the update is rejected. Use this when you want strong conflict detection and are fine asking users to refresh and redo their edits rather than risking corrupted data.
+
+### Database Schema
+
+**Source database (Postgres):**
+
+```sql
+CREATE TABLE documents (
+  id UUID PRIMARY KEY,
+  content TEXT,
+  version BIGSERIAL NOT NULL
+);
+```
+
+### Backend Conflict Detection
+
+**Backend API (Node.js):**
+
+```javascript
+async function handleUpdateWithVersion(operation) {
+  const { id, opData } = operation;
+  const clientVersion = opData.version;
+  
+  const result = await db.query(
+    'SELECT version FROM documents WHERE id = $1',
+    [id]
+  );
+  
+  if (!result.rows[0]) {
+    return { conflict: 'row_deleted' };
+  }
+  
+  const serverVersion = result.rows[0].version;
+  
+  // Client's version doesn't match server
+  if (clientVersion !== serverVersion) {
+    return {
+      conflict: 'version_mismatch',
+      expected: serverVersion,
+      received: clientVersion
+    };
+  }
+  
+  // Update and increment version atomically
+  await db.query(
+    'UPDATE documents SET content = $1, version = version + 1 WHERE id = $2',
+    [opData.content, id]
+  );
+  
+  return { success: true };
+}
+```
+
+---
+
+## Strategy 3: Field-Level Last Write Wins
+
+Here things get more fine-grained. Instead of tracking changes for the whole row, you track them per field. If one user updates the title and another updates the status, both changes can succeed because they touched different fields.
+
+You store a timestamp for each field you care about. When an update comes in, you compare the client’s timestamp for each field to what’s in the database and only apply the fields that are newer. This allows concurrent edits to coexist as long as they are not modifying the same field.
+
+The downside is extra complexity. You end up with more timestamp columns, and your backend has to compare fields one by one. But for apps like task managers or form builders, where different parts of a record are often edited independently, this avoids a lot of unnecessary conflicts.
+
+### Database Schema
+
+**Source database (Postgres):**
+
+```sql
+CREATE TABLE tasks (
+  id UUID PRIMARY KEY,
+  title TEXT,
+  title_modified_at TIMESTAMPTZ,
+  status TEXT,
+  status_modified_at TIMESTAMPTZ,
+  assignee TEXT,
+  assignee_modified_at TIMESTAMPTZ
+);
+```
+
+### Client Schema with Metadata
+
+**Client schema:**
+
+```typescript
+const tasks = new Table(
+  {
+    title: column.text,
+    status: column.text,
+    assignee: column.text,
+    // Store per-field timestamps in metadata
+  },
+  {
+    trackMetadata: true  // Enables _metadata column
+  }
+);
+```
+
+### Client Updates with Timestamps
+
+**Client code:**
+
+```typescript
+await powerSync.execute(
+  'UPDATE tasks SET title = ?, _metadata = ? WHERE id = ?',
+  [
+    'Updated title',
+    JSON.stringify({
+      title_modified_at: new Date().toISOString(),
+      status_modified_at: existingTask.status_modified_at // Keep existing
+    }),
+    taskId
+  ]
+);
+```
+
+### Backend Field-Level Resolution
+
+**Backend API (Node.js):**
+
+```javascript
+async function fieldLevelLWW(operation) {
+  const { id, opData, metadata } = operation;
+  const timestamps = metadata ? JSON.parse(metadata) : {};
+  
+  // Get current field timestamps from database
+  const result = await db.query(
+    'SELECT title_modified_at, status_modified_at, assignee_modified_at FROM tasks WHERE id = $1',
+    [id]
+  );
+  
+  if (!result.rows[0]) {
+    return { conflict: 'row_deleted' };
+  }
+  
+  const currentTimestamps = result.rows[0];
+  const updates = [];
+  const values = [];
+  let paramCount = 1;
+  
+  // Check each field that was updated
+  for (const [field, value] of Object.entries(opData)) {
+    if (field === 'id') continue;
+    
+    const clientTimestamp = timestamps[`${field}_modified_at`];
+    const serverTimestamp = currentTimestamps[`${field}_modified_at`];
+    
+    // Only update if client's version is newer (or server has no timestamp)
+    if (!serverTimestamp || 
+        (clientTimestamp && new Date(clientTimestamp) > new Date(serverTimestamp))) {
+      updates.push(`${field} = $${paramCount}`);
+      updates.push(`${field}_modified_at = $${paramCount + 1}`);
+      values.push(value, clientTimestamp);
+      paramCount += 2;
+    }
+  }
+  
+  if (updates.length > 0) {
+    values.push(id);
+    await db.query(
+      `UPDATE tasks SET ${updates.join(', ')} WHERE id = $${paramCount}`,
+      values
+    );
+  }
+  
+  return { success: true };
+}
+```
+
+---
+
+## Strategy 4: Business Rule Validation
+
+Sometimes conflicts aren’t about timing at all, they’re about your business rules. Maybe an order that has shipped can’t be edited, or a status can’t jump from `pending` to `completed` without hitting `processing` or **prices** can only change with manager approval.
+
+This approach isn’t about catching concurrent edits. It’s about enforcing valid state transitions. You look at the current state in the database, compare it to what the client wants, and decide whether that move is allowed.
+
+This is where your domain rules live. The logic becomes the gatekeeper that blocks changes that don’t make sense. You can also layer it with other methods: check timestamps first, then validate your business rules, and only then apply the update.
+
+### Backend with Business Rules
+
+**Backend API (Node.js):**
+
+```javascript
+async function validateOrderUpdate(operation) {
+  const { id, opData } = operation;
+  
+  const result = await db.query(
+    'SELECT * FROM orders WHERE id = $1',
+    [id]
+  );
+  
+  if (!result.rows[0]) {
+    return { conflict: 'row_deleted' };
+  }
+  
+  const serverOrder = result.rows[0];
+  
+  // Rule 1: Shipped orders are immutable
+  if (serverOrder.status === 'shipped' || serverOrder.status === 'completed') {
+    return {
+      conflict: 'order_locked',
+      message: 'Cannot modify shipped or completed orders'
+    };
+  }
+  
+  // Rule 2: Validate status transitions
+  const validTransitions = {
+    'pending': ['processing', 'cancelled'],
+    'processing': ['shipped', 'cancelled'],
+    'shipped': ['completed'],
+    'completed': [],
+    'cancelled': []
+  };
+  
+  if (opData.status && 
+      !validTransitions[serverOrder.status]?.includes(opData.status)) {
+    return {
+      conflict: 'invalid_transition',
+      message: `Cannot change status from ${serverOrder.status} to ${opData.status}`
+    };
+  }
+  
+  // Rule 3: Price changes need approval flag
+  if (opData.price !== undefined && 
+      opData.price !== serverOrder.price && 
+      !opData.manager_approved) {
+    return {
+      conflict: 'approval_required',
+      message: 'Price changes require manager approval'
+    };
+  }
+  
+  // Rule 4: Stock level must be positive
+  if (opData.quantity !== undefined && opData.quantity < 0) {
+    return {
+      conflict: 'invalid_quantity',
+      message: 'Quantity cannot be negative'
+    };
+  }
+  
+  // All validations passed
+  const updateFields = [];
+  const updateValues = [];
+  let paramCount = 1;
+  
+  for (const [field, value] of Object.entries(opData)) {
+    if (field === 'id') continue;
+    updateFields.push(`${field} = $${paramCount}`);
+    updateValues.push(value);
+    paramCount++;
+  }
+  
+  updateValues.push(id);
+  await db.query(
+    `UPDATE orders SET ${updateFields.join(', ')} WHERE id = $${paramCount}`,
+    updateValues
+  );
+  
+  return { success: true };
+}
+```
+
+---
+
+## Strategy 5: Server-Side Conflict Recording
+
+Sometimes you can’t automatically fix a conflict. Both versions might be valid, and you need a human to choose. In those cases you record the conflict instead of picking a winner. You save both versions in a write_conflicts table and sync that back to the client so the user can decide.
+
+The flow is simple: detect the conflict, store the client and server versions, surface it in the UI, and let the user choose or merge. After they resolve it, you mark the conflict as handled.
+
+This is the safest option for high-stakes data where losing either version isn’t acceptable, like medical records, legal documents, or financial entries. The tradeoff is extra UI work and shifting the final decision to the user.
+
+### Step 1: Create Conflicts Table
+
+**Source database (Postgres):**
+
+```sql
+CREATE TABLE write_conflicts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  table_name TEXT NOT NULL,
+  row_id UUID NOT NULL,
+  conflict_type TEXT NOT NULL,
+  client_data JSONB NOT NULL,
+  server_data JSONB NOT NULL,
+  resolved BOOLEAN DEFAULT FALSE,
+  user_id UUID NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### Step 2: Sync Conflicts to Clients
+
+**Sync Rules configuration:**
+
+```yaml
+bucket_definitions:
+  user_data:
+    parameters:
+      - SELECT request.user_id() as user_id
+    data:
+      - SELECT * FROM tasks WHERE user_id = bucket.user_id
+      - SELECT * FROM write_conflicts WHERE user_id = bucket.user_id AND resolved = FALSE
+```
+
+### Step 3: Record Conflicts in Backend
+
+**Backend API (Node.js):**
+
+```javascript
+async function handleUpdateWithConflictRecording(operation, userId) {
+  const { id, opData } = operation;
+  
+  const result = await db.query(
+    'SELECT * FROM tasks WHERE id = $1',
+    [id]
+  );
+  
+  if (!result.rows[0]) {
+    return { conflict: 'row_deleted' };
+  }
+  
+  const serverData = result.rows[0];
+  const clientModifiedAt = opData.modified_at;
+  const serverModifiedAt = serverData.modified_at;
+  
+  // Detect conflict
+  if (new Date(clientModifiedAt) < new Date(serverModifiedAt)) {
+    // Record for manual resolution
+    await db.query(
+      `INSERT INTO write_conflicts 
+       (table_name, row_id, conflict_type, client_data, server_data, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        'tasks',
+        id,
+        'update_conflict',
+        JSON.stringify(opData),
+        JSON.stringify(serverData),
+        userId
+      ]
+    );
+    
+    // Don't apply the update - let user resolve it
+    return { conflict: 'recorded' };
+  }
+  
+  // No conflict - apply update
+  await db.query(
+    'UPDATE tasks SET title = $1, status = $2 WHERE id = $3',
+    [opData.title, opData.status, id]
+  );
+  
+  return { success: true };
+}
+```
+
+### Step 4: Build Resolution UI
+
+**Client UI (React):**
+
+```typescript
+import { useQuery } from '@powersync/react';
+import { powerSync } from './db'
+
+function ConflictResolver() {
+  const { data: conflicts } = useQuery(
+    'SELECT * FROM write_conflicts WHERE resolved = FALSE'
+  );
+  
+  const resolveConflict = async (
+    conflictId: string, 
+    useClientVersion: boolean
+  ) => {
+    const conflict = conflicts.find(c => c.id === conflictId);
+    const clientData = JSON.parse(conflict.client_data);
+    
+    if (useClientVersion) {
+      // Reapply client's changes
+      const fields = Object.keys(clientData).filter(k => k !== 'id');
+      const placeholders = fields.map(() => '?').join(', ');
+      const updates = fields.map(f => `${f} = ?`).join(', ');
+      
+      await powerSync.execute(
+        `UPDATE ${conflict.table_name} SET ${updates} WHERE id = ?`,
+        [...fields.map(f => clientData[f]), conflict.row_id]
+      );
+    }
+    // If using server version, it's already applied
+    
+    // Mark as resolved
+    await powerSync.execute(
+      'UPDATE write_conflicts SET resolved = TRUE WHERE id = ?',
+      [conflictId]
+    );
+  };
+  
+  if (!conflicts || conflicts.length === 0) {
+    return null;
+  }
+  
+  return (
+    <div className="conflict-banner">
+      <h3>⚠️ {conflicts.length} Conflict(s) Need Your Attention</h3>
+      {conflicts.map(conflict => {
+        const clientData = JSON.parse(conflict.client_data);
+        const serverData = JSON.parse(conflict.server_data);
+        
+        return (
+          <div key={conflict.id} className="conflict-card">
+            <p>
+              Conflict in <strong>{conflict.table_name}</strong> 
+              from {new Date(conflict.created_at).toLocaleString()}
+            </p>
+            
+            <div className="conflict-options">
+              <div className="version-option">
+                <h4>Your Changes:</h4>
+                <ul>
+                  {Object.entries(clientData).map(([key, value]) => (
+                    <li key={key}>
+                      <strong>{key}:</strong> {JSON.stringify(value)}
+                    </li>
+                  ))}
+                </ul>
+                <button onClick={() => resolveConflict(conflict.id, true)}>
+                  Keep My Version
+                </button>
+              </div>
+              
+              <div className="version-option">
+                <h4>Server Version:</h4>
+                <ul>
+                  {Object.entries(serverData).map(([key, value]) => (
+                    <li key={key}>
+                      <strong>{key}:</strong> {JSON.stringify(value)}
+                    </li>
+                  ))}
+                </ul>
+                <button onClick={() => resolveConflict(conflict.id, false)}>
+                  Keep Server Version
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+```
+
+---
+
+## Strategy 6: Change-Level Status Tracking
+
+This approach works differently. Instead of merging everything in one atomic update, you log each field change as its own row in a separate table. If a user edits the title of a task, you still apply an optimistic update to the main table, but you also write a row to a `field_changes` table that records who changed what and to which value.
+
+Your backend then processes these changes asynchronously. Each one gets a status like `pending`, `applied`, or `failed`. If a change fails validation, you mark it as `failed` and surface the error in the UI. The user can see exactly which fields succeeded and which didn’t, and retry the failed ones without resubmitting everything.
+
+This gives you excellent visibility. You get a clear history of every change, who made it, and when it happened. The cost is extra writes, since every field update creates an additional log entry. But for compliance-heavy systems or any app that needs detailed auditing, the tradeoff is worth it.
+
+### Step 1: Create Change Log Table
+
+**Source database (Postgres):**
+
+```sql
+CREATE TABLE field_changes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  table_name TEXT NOT NULL,
+  row_id UUID NOT NULL,
+  field_name TEXT NOT NULL,
+  new_value TEXT,
+  status TEXT DEFAULT 'pending', -- 'pending', 'applied', 'failed'
+  error_message TEXT,
+  user_id UUID NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### Step 2: Client Writes to Both Tables
+
+**Client code:**
+
+```typescript
+async function updateTaskField(
+  taskId: string,
+  field: string,
+  newValue: any,
+  powerSync: PowerSyncDatabase
+) {
+  
+  await powerSync.writeTransaction(async (tx) => {
+    // Optimistic update to main table
+    await tx.execute(
+      `UPDATE tasks SET ${field} = ? WHERE id = ?`,
+      [newValue, taskId]
+    );
+    
+    // Log the change for server tracking
+    await tx.execute(
+      `INSERT INTO field_changes 
+       (table_name, row_id, field_name, new_value, user_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      ['tasks', taskId, field, String(newValue), getCurrentUserId()]
+    );
+  });
+}
+```
+
+### Step 3: Backend Processes Changes
+
+**Backend API (Node.js):**
+
+```javascript
+async function processFieldChanges() {
+  const result = await db.query(
+    `SELECT * FROM field_changes 
+     WHERE status = 'pending' 
+     ORDER BY created_at ASC
+     LIMIT 100`
+  );
+  
+  for (const change of result.rows) {
+    try {
+      // Validate the change
+      const isValid = await validateFieldChange(change);
+      
+      if (!isValid.valid) {
+        await db.query(
+          `UPDATE field_changes 
+           SET status = 'failed', error_message = $1 
+           WHERE id = $2`,
+          [isValid.reason, change.id]
+        );
+        continue;
+      }
+      
+      // Apply to main table
+      await db.query(
+        `UPDATE ${change.table_name} 
+         SET ${change.field_name} = $1 
+         WHERE id = $2`,
+        [change.new_value, change.row_id]
+      );
+      
+      // Mark as applied
+      await db.query(
+        `UPDATE field_changes SET status = 'applied' WHERE id = $1`,
+        [change.id]
+      );
+      
+    } catch (error) {
+      await db.query(
+        `UPDATE field_changes 
+         SET status = 'failed', error_message = $1 
+         WHERE id = $2`,
+        [error.message, change.id]
+      );
+    }
+  }
+}
+
+async function validateFieldChange(change) {
+  // Example validation
+  if (change.field_name === 'price' && parseFloat(change.new_value) < 0) {
+    return { valid: false, reason: 'Price cannot be negative' };
+  }
+  
+  return { valid: true };
+}
+```
+
+### Step 4: Display Change Status
+
+**Client UI (React):**
+
+```typescript
+function TaskEditor({ taskId }: { taskId: string }) {
+  const { data: pendingChanges } = useQuery(
+    `SELECT * FROM field_changes 
+     WHERE row_id = ? 
+     AND table_name = 'tasks'
+     AND status IN ('pending', 'failed')
+     ORDER BY created_at DESC`,
+    [taskId]
+  );
+  
+  const retryChange = async (changeId: string) => {
+    await powerSync.execute(
+      'UPDATE field_changes SET status = ? WHERE id = ?',
+      ['pending', changeId]
+    );
+  };
+  
+  return (
+    <div>
+      {/* Your task editing form */}
+      
+      {pendingChanges && pendingChanges.length > 0 && (
+        <div className="sync-status">
+          {pendingChanges.map(change => (
+            <div key={change.id} className={`status-${change.status}`}>
+              {change.status === 'pending' && (
+                <span>⏳ Syncing {change.field_name}...</span>
+              )}
+              {change.status === 'failed' && (
+                <div>
+                  <span>
+                    ❌ Failed to update {change.field_name}: {change.error_message}
+                  </span>
+                  <button onClick={() => retryChange(change.id)}>
+                    Retry
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Strategy 7: Cumulative Operations (Inventory)
+
+For scenarios like inventory management, simply replacing values causes data loss. When two clerks simultaneously sell the same item while offline, both sales must be honored. The solution is to treat certain fields as **deltas** rather than absolute values, you subtract incoming quantities from the current stock rather than replacing the count.
+
+This requires your backend to recognize which operations should be cumulative. For inventory quantity changes, you apply the delta (e.g., `-3 units`) to the current value rather than setting it directly. This ensures all concurrent sales are properly recorded without overwriting each other.
+
+### Database Schema
+
+**Source database (Postgres):**
+
+```sql
+CREATE TABLE inventory (
+  id UUID PRIMARY KEY,
+  product_id UUID NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 0,
+  last_updated TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Prevent negative inventory
+ALTER TABLE inventory ADD CONSTRAINT positive_quantity CHECK (quantity >= 0);
+```
+
+### Backend: Delta Detection and Application
+
+The key is detecting when an operation should be treated as a delta versus an absolute value. You can identify this through table/field combinations, metadata flags, or operation patterns.
+
+**Backend API (Node.js):**
+
+```javascript
+async function handleInventoryOperation(db, operation) {
+  const { table, id, op, opData } = operation;
+  
+  // Identify cumulative fields for specific tables
+  if (table === 'inventory' && 'quantity' in opData) {
+    return await applyInventoryDelta(db, operation);
+  }
+  
+  // Default handling for other fields/tables
+  return await handleGenericOperation(db, operation);
+}
+
+async function applyInventoryDelta(db, operation) {
+  const { id, opData } = operation;
+  const quantityChange = opData.quantity; // This is the delta, not absolute value
+  
+  // Get current inventory
+  const result = await db.query(
+    'SELECT quantity FROM inventory WHERE id = $1',
+    [id]
+  );
+  
+  if (!result.rows[0]) {
+    return { 
+      conflict: 'inventory_not_found',
+      message: `Inventory ${id} does not exist`
+    };
+  }
+  
+  const currentQuantity = result.rows[0].quantity;
+  const newQuantity = currentQuantity + quantityChange;
+  
+  // Validate: prevent negative inventory
+  if (newQuantity < 0) {
+    console.warn(`Insufficient stock: ${id} has ${currentQuantity}, attempted change: ${quantityChange}`);
+    
+    return {
+      conflict: 'insufficient_stock',
+      message: `Cannot reduce inventory by ${Math.abs(quantityChange)}. Only ${currentQuantity} available.`,
+      currentQuantity
+    };
+  }
+  
+  // Apply the delta atomically
+  await db.query(
+    `UPDATE inventory 
+     SET quantity = quantity + $1, 
+         last_updated = NOW()
+     WHERE id = $2`,
+    [quantityChange, id]
+  );
+  
+  return { 
+    success: true,
+    newQuantity,
+    previousQuantity: currentQuantity
+  };
+}
+```
+
+### Client Implementation
+
+On the client side, you need to ensure updates are sent as deltas, not absolute values. When a sale occurs, send the change amount:
+
+**Client code:**
+
+```typescript
+// When selling 3 units
+await powerSync.execute(
+  'UPDATE inventory SET quantity = quantity - ? WHERE id = ?',
+  [3, inventoryId] // Send -3 as the delta
+);
+```
+
+The backend receives this as a PATCH operation where `opData.quantity = -3`, which it then adds to the current quantity rather than replacing it.
+
+### Alternative Approaches
+
+**1. Metadata Flags**: Include operation type in metadata to signal delta operations:
+
+```typescript
+await powerSync.execute(
+  'UPDATE inventory SET quantity = ?, _metadata = ? WHERE id = ?',
+  [
+    -3,
+    JSON.stringify({ operation_type: 'delta' }),
+    inventoryId
+  ]
+);
+```
+
+Backend checks metadata and applies accordingly.
+
+**2. Separate Transactions Table**: Track each quantity change as its own row, then aggregate them. This provides full audit history but requires syncing an additional table.
+
+**3. Operation-Based Detection**: Infer cumulative operations from the pattern. Negative values likely indicate sales (deltas), while large positive values might be absolute restocks requiring different handling.
+
+---
+
+## Using Custom Metadata
+
+Track additional context about operations using the `_metadata` column.
+
+### Enable in Schema
+
+**Client schema:**
+
+```typescript
+const tasks = new Table(
+  {
+    title: column.text,
+    status: column.text,
+  },
+  {
+    trackMetadata: true  // Enables _metadata column
+  }
+);
+```
+
+### Write Metadata
+
+**Client code:**
+
+```typescript
+await powerSync.execute(
+  'UPDATE tasks SET title = ?, _metadata = ? WHERE id = ?',
+  [
+    'New title',
+    JSON.stringify({ 
+      source: 'mobile_app',
+      device: 'iPhone 12',
+      priority: 'high',
+      reason: 'customer_request'
+    }),
+    taskId
+  ]
+);
+```
+
+### Access in Backend
+
+**Backend API (Node.js):**
+
+```javascript
+async function processOperation(operation) {
+  const metadata = operation.metadata ? JSON.parse(operation.metadata) : {};
+  
+  // Route high-priority operations differently
+  if (metadata.priority === 'high') {
+    await processHighPriority(operation);
+    return;
+  }
+  
+  // Track which device made the change
+  console.log(`Change from: ${metadata.device || 'unknown'}`);
+  
+  // Custom conflict resolution based on metadata
+  if (metadata.reason === 'customer_request') {
+    // Customer requests might override other updates
+    await forceApplyOperation(operation);
+  } else {
+    await standardProcessing(operation);
+  }
+}
+```
+
+**Common use cases:**
+- Track which device/app version made the change
+- Flag operations requiring special handling
+- Store user context (role, department)
+- Implement source-based conflict resolution (mobile trumps web)
+- Pass approval flags or business context
+
+---
+
+## Complete Backend Example
+
+Here's how to tie it all together in a Node.js backend with Postgres.
+
+**Backend API (Node.js + Express):**
+
+```javascript
+import express from 'express';
+import { Pool } from 'pg';
+
+const app = express();
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL
+});
+
+app.post('/api/data', async (req, res) => {
+  const { batch } = req.body;
+  const userId = req.user.id; // From auth middleware
+  
+  const db = await pool.connect();
+  
+  try {
+    await db.query('BEGIN');
+    
+    for (const operation of batch) {
+      // Choose strategy based on table
+      if (operation.table === 'orders') {
+        await handleOrderOperation(db, operation, userId);
+      } else if (operation.table === 'tasks') {
+        await handleTaskOperation(db, operation, userId);
+      } else {
+        // Default handling
+        await handleGenericOperation(db, operation);
+      }
+    }
+    
+    await db.query('COMMIT');
+    res.json({ success: true });
+    
+  } catch (error) {
+    await db.query('ROLLBACK');
+    console.error('Operation failed:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    db.release();
+  }
+});
+
+async function handleOrderOperation(db, op, userId) {
+  if (op.op === 'PUT') {
+    // Use business rule validation (Strategy 4)
+    const result = await validateOrderUpdate(db, op);
+    if (result.conflict) {
+      throw new Error(result.message);
+    }
+  } else if (op.op === 'PATCH') {
+    await handleOrderPatch(db, op, userId);
+  } else if (op.op === 'DELETE') {
+    await handleOrderDelete(db, op);
+  }
+}
+
+async function handleTaskOperation(db, op, userId) {
+  if (op.op === 'PUT' || op.op === 'PATCH') {
+    // Use timestamp detection with conflict recording (Strategy 1 + 5)
+    const result = await handleUpdateWithConflictRecording(db, op, userId);
+    if (result.conflict && result.conflict !== 'recorded') {
+      console.warn('Conflict detected:', result);
+    }
+  } else if (op.op === 'DELETE') {
+    await db.query('DELETE FROM tasks WHERE id = $1', [op.id]);
+  }
+}
+
+async function handleGenericOperation(db, op) {
+  // Default last-write-wins
+  if (op.op === 'PUT') {
+    const fields = Object.keys(op.opData);
+    const values = Object.values(op.opData);
+    const placeholders = fields.map((_, i) => `$${i + 1}`).join(', ');
+    const updates = fields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+    
+    await db.query(
+      `INSERT INTO ${op.table} (id, ${fields.join(', ')})
+       VALUES ($${fields.length + 1}, ${placeholders})
+       ON CONFLICT (id) DO UPDATE SET ${updates}`,
+      [...values, op.id]
+    );
+  } else if (op.op === 'PATCH') {
+    const fields = Object.keys(op.opData);
+    const values = Object.values(op.opData);
+    const updates = fields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+    
+    await db.query(
+      `UPDATE ${op.table} SET ${updates} WHERE id = $${fields.length + 1}`,
+      [...values, op.id]
+    );
+  } else if (op.op === 'DELETE') {
+    await db.query(`DELETE FROM ${op.table} WHERE id = $1`, [op.id]);
+  }
+}
+
+app.listen(3000, () => {
+  console.log('Backend listening on port 3000');
+});
+```
+
+---
+
+## Best Practices
+
+**Design for idempotency:**
+Operations arrive multiple times. Check for existing records before inserting, use upserts, or track operation IDs to skip duplicates.
+
+**Test offline scenarios:**
+Simulate two clients going offline, making conflicting changes, then syncing. Does your resolution strategy behave as expected?
+
+**Provide clear UI feedback:**
+Show sync status prominently. Users should know when their changes are pending, synced, or conflicted.
+
+**Consider partial failures:**
+If batch processing fails midway, how do you recover? Use database transactions and mark progress carefully.
+
+**Log conflicts for analysis:**
+Track how often conflicts occur and why. This data helps you improve UX or adjust resolution strategies.
+
+**Leverage CRDTs for collaborative docs:**
+For scenarios with real-time collaboration, consider CRDTs to automatically handle concurrent edits. For information on CRDTs, see [separate guide](/usage/use-case-examples/crdts).

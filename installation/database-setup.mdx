@@ -472,7 +472,6 @@ IF (SELECT is_cdc_enabled FROM sys.databases WHERE name = '<YOUR_DATABASE_NAME>'
 BEGIN
     EXEC sys.sp_cdc_enable_db;
 END
-GO
 ```
 
 #### 2. Create the PowerSync Database User
@@ -497,7 +496,6 @@ IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'powersync_user'
 BEGIN
     CREATE LOGIN [powersync_user] WITH PASSWORD = 'YOUR_DB_USER_PASSWORD', CHECK_POLICY = ON;
 END
-GO
 ```
 
 Create the database user next. This is done on the specific database level.
@@ -509,21 +507,19 @@ IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'powersync_use
 BEGIN
     CREATE USER [powersync_user] FOR LOGIN [powersync_user];
 END
-GO
 ```
 
 Grant the necessary permissions for the user:
 
 ```sql
 -- Grant SELECT on the specific replicated tables
-GRANT SELECT ON <YOUR_SCHEMA>.<YOUR_TABLE_NAME> TO [powersync_user];
+GRANT SELECT ON dbo.<YOUR_TABLE_NAME> TO [powersync_user];
 
 -- Grant access to CDC tables and functions using the cdc_reader role
 IF IS_ROLEMEMBER('cdc_reader', 'powersync_user') = 0
 BEGIN
     ALTER ROLE cdc_reader ADD MEMBER powersync_user;
 END
-GO
 
 -- Grant select on the CDC schema
 GRANT SELECT ON SCHEMA::cdc TO [powersync_user];
@@ -533,7 +529,6 @@ GRANT SELECT ON SCHEMA::cdc TO [powersync_user];
 -- Note: For Azure SQL, only VIEW DATABASE PERFORMANCE STATE is required. Granted at the database level.
 -- PowerSync uses this to access the sys.dm_db_log_stats DMV and the sys.dm_db_partition_stats DMV
 GRANT VIEW DATABASE PERFORMANCE STATE TO [powersync_user];
-GO
 
 -- VIEW SERVER PERFORMANCE STATE is only necessary on SQL Server (not Azure SQL). Granted at the server/master database level.
 -- PowerSync requires this permission to access the sys.dm_db_log_stats DMV on SQL Server.
@@ -541,7 +536,6 @@ USE [master];
 BEGIN
     GRANT VIEW SERVER PERFORMANCE STATE TO [powersync_user];
 END
-GO
 ```
 
 <Info>
@@ -555,9 +549,9 @@ PowerSync requires a `_powersync_checkpoints` table to generate regular checkpoi
 
 ```sql
 -- Create the PowerSync checkpoints table in your schema
-IF OBJECT_ID('<YOUR_SCHEMA>._powersync_checkpoints', 'U') IS NULL
+IF OBJECT_ID('dbo._powersync_checkpoints', 'U') IS NULL
 BEGIN
-CREATE TABLE <YOUR_SCHEMA>._powersync_checkpoints (
+CREATE TABLE dbo._powersync_checkpoints (
     id INT IDENTITY PRIMARY KEY,
     last_updated DATETIME NOT NULL DEFAULT GETUTCDATE()
 );
@@ -565,22 +559,20 @@ END
 
 -- Enable CDC for the powersync checkpoints table if not already enabled
 -- Note: the cdc_reader role created the first time CDC is enabled on a table
-IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'<YOUR_SCHEMA>._powersync_checkpoints'))
+IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'dbo._powersync_checkpoints'))
 BEGIN
     EXEC sys.sp_cdc_enable_table
-        @source_schema = N'<YOUR_SCHEMA>',
+        @source_schema = N'dbo',
         @source_name   = N'_powersync_checkpoints',
         @role_name     = N'cdc_reader',
         @supports_net_changes = 0;
 END
-GO
 ```
 
 Grant read/write access to the table for the powersync_user:
 
 ```sql
-GRANT SELECT, INSERT, UPDATE ON <YOUR_SCHEMA>._powersync_checkpoints TO [powersync_user];
-GO
+GRANT SELECT, INSERT, UPDATE ON dbo._powersync_checkpoints TO [powersync_user];
 ```
 
 #### 4. Enable CDC on Tables
@@ -589,22 +581,14 @@ CDC must be enabled for all tables that need to be replicated:
 
 ```sql
 -- Enable CDC for specific tables in your schema if not already enabled
-IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'<YOUR_SCHEMA>.<YOUR_TABLE_NAME>'))
+IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'dbo.<YOUR_TABLE_NAME>'))
 BEGIN
     EXEC sys.sp_cdc_enable_table
-        @source_schema = N'<YOUR_SCHEMA>',
+        @source_schema = N'dbo',
         @source_name   = N'<YOUR_TABLE_NAME>',
         @role_name     = N'cdc_reader',
         @supports_net_changes = 0;
 END
-GO
-```
-
-Grant read access to the table for the powersync_user:
-
-```sql
-GRANT SELECT ON <YOUR_SCHEMA>.<YOUR_TABLE_NAME> TO [powersync_user];
-GO
 ```
 
 Repeat this for each table you want to replicate. Note that PowerSync does not currently use the net changes functionality so `@supports_net_changes` can be set to `0`.

@@ -9,12 +9,13 @@ When syncing data from your source backend database to PowerSync, JSON columns (
 
 ## Understanding JSON Storage in PowerSync
 
-Your backend database might store structured data in various ways:
-- **MongoDB**: Documents with nested documents and arrays
-- **PostgreSQL**: JSONB or JSON column types
-- **MySQL**: JSON column type
+Your backend database might store structured data as JSON in various ways:
+- **MongoDB**: Nested documents and arrays
+- **PostgreSQL**: JSONB, JSON, array, or custom types
+- **MySQL**: JSON columns
+- **SQL Server**: JSON columns
 
-Regardless of the source, PowerSync syncs these JSON structures to SQLite as text columns. On the client side, you can query this data using SQLite's built-in JSON functions without needing to parse it yourself. Learn more about [how PowerSync handles JSON, arrays, and custom types](/usage/use-case-examples/custom-types-arrays-and-json#javascript).
+Regardless of the source, PowerSync syncs these JSON structures to SQLite as `TEXT` columns. On the client side, you can query this data using SQLite's built-in JSON functions without needing to parse it yourself. Learn more about [how PowerSync handles JSON, arrays, and custom types](/usage/use-case-examples/custom-types-arrays-and-json#javascript).
 
 ## Example Data Structure
 
@@ -80,7 +81,7 @@ FROM tasks;
 
 **The difference between [-> and ->>](https://sqlite.org/json1.html#jptr):**
 - `->` returns JSON (preserves type information, quotes strings)
-- `->>` returns TEXT (unquoted, for final values)
+- `->>` extracts the value unquoted (strings as TEXT, numbers/booleans as their native types)
 ```sql
 -- Using -> (returns JSON)
 SELECT metadata -> '$.priority' FROM tasks;
@@ -147,7 +148,7 @@ SELECT
   assignee.value -> '$.hours_allocated' AS hours
 FROM tasks t,
      json_each(t.assignees) AS assignee
-WHERE assignee.value ->> '$.role' = 'developer';
+WHERE (assignee.value ->> '$.role') = 'developer';
 ```
 
 **Key points:**
@@ -167,13 +168,9 @@ SELECT DISTINCT
   t.metadata ->> '$.priority' AS priority
 FROM tasks t,
      json_each(t.assignees) AS assignee
-WHERE assignee.value ->> '$.user_id' = 'user_001'
-ORDER BY CAST(t.metadata -> '$.priority' AS INTEGER);
+WHERE (assignee.value ->> '$.user_id') = 'user_001'
+ORDER BY t.metadata ->> '$.priority';
 ```
-
-<Info>
-**Note the CAST**: JSON numbers are extracted as text. When doing numeric comparisons or sorting, cast to the appropriate type.
-</Info>
 
 ### Example 2: Calculating Total Hours by Role
 
@@ -181,7 +178,7 @@ ORDER BY CAST(t.metadata -> '$.priority' AS INTEGER);
 ```sql
 SELECT 
   assignee.value ->> '$.role' AS role,
-  SUM(CAST(assignee.value -> '$.hours_allocated' AS INTEGER)) AS total_hours,
+  SUM(assignee.value ->> '$.hours_allocated') AS total_hours,
   COUNT(DISTINCT t.id) AS task_count
 FROM tasks t,
      json_each(t.assignees) AS assignee
@@ -260,7 +257,7 @@ WHERE instr(
 **Avoid `LIKE` for delimited strings:**
 ```sql
 -- ❌ WRONG - can match partial values
-WHERE metadata ->> '$.approved_by' LIKE '%user_001%'
+WHERE (metadata ->> '$.approved_by') LIKE '%user_001%'
 -- This would incorrectly match "user_0011" or "user_001_archive"
 
 -- ✅ CORRECT - exact delimiter match
@@ -279,7 +276,7 @@ WITH task_assignees AS (
     t.title,
     assignee.value ->> '$.user_id' AS user_id,
     assignee.value ->> '$.role' AS role,
-    CAST(assignee.value -> '$.hours_allocated' AS INTEGER) AS hours
+    assignee.value ->> '$.hours_allocated' AS hours
   FROM tasks t,
        json_each(t.assignees) AS assignee
 )
@@ -351,24 +348,7 @@ const tasks = new Table(
 
 2. **Minimize `json_each()` usage**: Each `json_each()` call expands rows. For a table with 10,000 tasks averaging 5 assignees each, you're processing 50,000 rows.
 
-3. **Filter before expanding**: Apply non-JSON filters first:
-```sql
--- ✅ GOOD - Filter by title first, then expand JSON
-SELECT t.*, assignee.value
-FROM tasks t,
-     json_each(t.assignees) AS assignee
-WHERE t.title LIKE '%homepage%'
-  AND assignee.value ->> '$.role' = 'developer';
-
--- ❌ LESS EFFICIENT - Expands all rows first
-SELECT t.*, assignee.value  
-FROM tasks t,
-     json_each(t.assignees) AS assignee
-WHERE assignee.value ->> '$.role' = 'developer'
-  AND t.title LIKE '%homepage%';
-```
-
-4. **Use EXISTS for membership checks**: More efficient than joining:
+3. **Use EXISTS for membership checks**: More efficient than joining:
 ```sql
 -- ✅ BETTER for large datasets
 SELECT * FROM tasks t
@@ -379,17 +359,24 @@ WHERE EXISTS (
 -- vs joining which creates all row combinations
 ```
 
-5. **Cache extracted values in CTEs**: Extract once, use multiple times:
+4. **Cache extracted values in CTEs**: Extract once, use multiple times:
 ```sql
-WITH enriched_tasks AS (
+WITH task_metrics AS (
   SELECT 
-    *,
-    metadata ->> '$.sprint' AS sprint,
-    CAST(metadata -> '$.priority' AS INTEGER) AS priority_num
-  FROM tasks
+    t.id,
+    t.title,
+    t.metadata,
+    COUNT(assignee.value) AS assignee_count,
+    SUM(assignee.value ->> '$.hours_allocated') AS total_hours
+  FROM tasks t,
+       json_each(t.assignees) AS assignee
+  GROUP BY t.id, t.title, t.metadata
 )
-SELECT * FROM enriched_tasks
-WHERE sprint = '2024-Q1' AND priority_num < 3;
+SELECT *
+FROM task_metrics
+WHERE metadata ->> '$.sprint' = '2024-Q1' 
+  AND assignee_count > 1
+ORDER BY total_hours DESC;
 ```
 
 ## Useful JSON Functions

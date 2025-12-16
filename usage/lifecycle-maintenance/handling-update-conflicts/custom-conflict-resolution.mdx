@@ -3,7 +3,9 @@ title: "Custom Conflict Resolution"
 description: "How to implement custom conflict resolution strategies in PowerSync to handle concurrent updates from multiple clients."
 ---
 
-The default behavior is essentially "last write wins" because the server processes operations in order received, with later updates overwriting earlier ones. For many apps, this works fine. But some scenarios demand more business logic to resolve conflicts.
+The default behavior is "**last write wins per field**". Updates to different fields on the same record don't conflict with each other. The server processes operations in the order received, so if two users modify the *same* field, the last update to reach the server wins.
+
+For most apps, this works fine. But some scenarios demand more complex conflict resolution strategies.
 
 ## When You Might Need Custom Conflict Resolution
 
@@ -37,7 +39,7 @@ When data changes on the server:
 3. **Clients download updates** - Based on their sync rules
 4. **Local SQLite updates** - Changes merge into the client's database
 
-**Conflicts arise when**: Multiple clients modify the same row before syncing, or when a client's changes conflict with server-side rules.
+**Conflicts arise when**: Multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
 
 ---
 
@@ -672,7 +674,9 @@ This approach works differently. Instead of merging everything in one atomic upd
 
 Your backend then processes these changes asynchronously. Each one gets a status like `pending`, `applied`, or `failed`. If a change fails validation, you mark it as `failed` and surface the error in the UI. The user can see exactly which fields succeeded and which didn’t, and retry the failed ones without resubmitting everything.
 
-This gives you excellent visibility. You get a clear history of every change, who made it, and when it happened. The cost is extra writes, since every field update creates an additional log entry. But for compliance-heavy systems or any app that needs detailed auditing, the tradeoff is worth it.
+This gives you excellent visibility. You get a clear history of every change, who made it, and when it happened. The cost is extra writes, since every field update creates an additional log entry. But for compliance-heavy systems or any app that needs detailed auditing, the tradeoff could be worth it.
+
+The implementation below shows the full version with complete status tracking. If you don't need all that complexity, see the simpler variations at the end of this section.
 
 ### Step 1: Create Change Log Table
 
@@ -836,6 +840,86 @@ function TaskEditor({ taskId }: { taskId: string }) {
   );
 }
 ```
+
+### Other Variations
+The implementation above syncs the `field_changes` table bidirectionally, giving you full visibility into change status on the client. But there are two simpler approaches that reduce overhead when you don't need complete status tracking:
+
+#### Insert-Only (Fire and Forget)
+
+For scenarios where you just need to record changes without tracking their status. For example, logging analytics events or recording simple increment/decrement operations.
+How it works:
+
+- Mark the table as `insertOnly: true` in your client schema
+- Don't include the `field_changes` table in your sync rules
+- Changes are uploaded to the server but never downloaded back to clients
+
+**Client schema:**
+
+```typescript
+const fieldChanges = new Table(
+  {
+    table_name: column.text,
+    row_id: column.text,
+    field_name: column.text,
+    new_value: column.text,
+    user_id: column.text
+  },
+  {
+    insertOnly: true  // Only allows INSERT operations
+  }
+);
+```
+
+**When to use:** Analytics logging, audit trails that don't need client visibility, simple increment/decrement where conflicts are rare.
+
+**Tradeoff:** No status visibility on the client. You can't show pending/failed states or implement retry logic.
+
+#### Pending-Only (Temporary Tracking)
+
+For scenarios where you want to show sync status temporarily but don't need a permanent history on the client.
+How it works:
+
+- Use a normal table on the client (not `insertOnly`)
+- Don't include the `field_changes` table in your sync rules
+- Pending changes stay on the client until they're uploaded and the server processes them
+- Once the server processes a change and PowerSync syncs the next checkpoint, the change automatically disappears from the client
+
+**Client schema:**
+
+```typescript
+const pendingChanges = new Table({
+  table_name: column.text,
+  row_id: column.text,
+  field_name: column.text,
+  new_value: column.text,
+  status: column.text,
+  user_id: column.text
+});
+```
+
+**Show pending indicator:**
+
+```typescript
+function SyncIndicator({ taskId }: { taskId: string }) {
+  const { data: pending } = useQuery(
+    `SELECT COUNT(*) as count FROM pending_changes 
+     WHERE row_id = ? AND status = 'pending'`,
+    [taskId]
+  );
+  
+  if (!pending?.[0]?.count) return null;
+  
+  return (
+    <div className="sync-badge">
+      ⏳ {pending[0].count} change{pending[0].count > 1 ? 's' : ''} syncing...
+    </div>
+  );
+}
+```
+
+**When to use:** Showing "syncing..." indicators, temporary status tracking without long-term storage overhead, cases where you want automatic cleanup after sync.
+
+**Tradeoff:** Can't show detailed server-side error messages (unless the server writes to a separate errors table that *is* in sync rules). No long-term history on the client.
 
 ## Strategy 7: Cumulative Operations (Inventory)
 

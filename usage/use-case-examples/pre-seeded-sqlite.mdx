@@ -58,25 +58,31 @@ async function prepareDatabase (storeId: string) {
     await powersync.disconnect();
 }
 ```
-<Info>
+<Note>
     Some critical points to note:
-    - You will need to wait for the first sync to complete before deleting the `client_id` key and vacuuming the database. This makde sure all of the data is synced to the database before we proceed.
+    - You will need to wait for the first sync to complete before deleting the `client_id` key and vacuuming the database. This makes sure all of the data is synced to the database before we proceed.
     - The `client_id` key is used to identify the client device and is typically set when the client connects to the PowerSync instance. So when pre-seeding the database, we need to delete the `client_id` key to avoid conflicts when the client connects to the PowerSync instance.
-    - It's important to note that you will need to use the [`VACUUM INTO`](https://sqlite.org/lang_vacuum.html) command to create a clean, portable SQLite database file. This will help to reduce the size of the database file and improve the performance of the database.
-    - This example the upload function is using AWS S3, but you can use any blob storage provider that you prefer.
-</Info>
+    - It's important to note that you will need to use the [`VACUUM INTO`](https://sqlite.org/lang_vacuum.html) command to create a clean, portable SQLite database file. This will help to reduce the size of the database file and provide an optimized database file for the client to download.
+    - In this example the upload function is using AWS S3, but you can use any blob storage provider that you prefer.
+</Note>
 
 
 ### Scheduling and Cleaning Up
 
 To enhance the process you can consider doing the following:
 - To keep the pre-seeded SQLite databases fresh, scheudle a CRON jobs for periodic regeneration, ensuring that new clients always download the latest snapshot of the intial syncdata.
-- After each run, perform some environment cleanup to avoid disk bloat. This can be done by deleting the pre-seeded SQLite database files after they have been used.
+- After each run, perform some environment cleanup to avoid disk bloat. This can be done by deleting the pre-seeded SQLite database files after they have been uploaded to the blob storage.
 
 ## Client Side Usage
 
-When the client applicaitons boot, before connecting to the PowerSync instance, check if the pre-seeded SQLite database exists in the blob storage. If it does, download it and use. 
-Once the database is downloaded, insert a new client_id key into the ps_kv table.
+When the client applicaitons boot, before connecting to the PowerSync instance, check if the pre-seeded SQLite database exists in the blob storage. If it does, download it and use when initializing the PowerSyncDatabase class.
+
+<Warning>
+  It's important to note that when the client downloads the pre-seeded SQLite database that it's stored in a permanent location on the device. This means that the database will not be deleted when the app is uninstalled or restarted.
+  Depending on which PowerSync SDK you are using, you may need to use framework specific methods to store the file in a permanent location on the device. For example, in React Native + Expo you can use the [`expo-file-system`](https://docs.expo.dev/versions/latest/sdk/filesystem/) module to store the file in a permanent location on the device.
+</Warning>
+
+Once the database is downloaded, insert a new client_id key into the ps_kv table and connect to the PowerSync instance.
 
 ```typescript
 async function configureDatabase() {
@@ -87,9 +93,11 @@ async function configureDatabase() {
 }
 ```
 
-<Info>
+<Tip>
     It's important that you insert a new client_id key into the ps_kv table to avoid conflicts when the client connects to the PowerSync instance.
-</Info>
+</Tip>
+
+At this point the client should be able to connect to the PowerSync instance and sync the data as normal, bypassing the initial sync process.
 
 
 

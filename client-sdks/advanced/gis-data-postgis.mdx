@@ -1,0 +1,136 @@
+---
+title: "GIS Data: PostGIS"
+description: "For Postgres, PowerSync integrates well with PostGIS and provides tools for working with geo data."
+---
+
+Custom types, arrays and [PostGIS](https://postgis.net/) are frequently presented together since geospatial data is often complex and multidimensional. It's therefore recommend to first quickly scan the content in [Custom Types, Arrays and JSON](/usage/use-case-examples/custom-types-arrays-and-json)
+
+### PostGIS
+
+In Supabase, the PostGIS extension needs to be added to your project to use this type. Run the following command in the SQL editor to include the PostGIS extension:
+
+```sql
+CREATE extension IF NOT EXISTS postgis;
+```
+
+The `geography` and `geometry` types are now available in your Postgres.
+
+## Supabase Configuration Example:
+
+This example builds on the To-Do List demo app in our [Supabase integration guide](/integration-guides/supabase-+-powersync).
+
+### Add custom type, array and PostGIS columns to the `todos` table
+
+```sql
+--SQL command to update the todos table with 3 additional columns:
+
+ALTER TABLE todos
+ADD COLUMN address location_address null,
+ADD COLUMN contact_numbers text [] null,
+ADD COLUMN location geography (point) null
+```
+
+### Insert a row of data into the table
+
+```sql
+-- Grab the id of a list object and a user id and create a new todos
+INSERT INTO public.todos(description, list_id, created_by, address, location, contact_numbers) VALUES ('Bread', 'list_id', 'user_id', '("1000 S Colorado Blvd.","Denver","CO",80211)', st_point(39.742043, -104.991531), '{000-000-0000, 000-000-0000, 000-000-0000}');
+```
+
+Note the following:
+
+**Custom type**: Specify the value for the `address` column by wrapping the value in single quotes and comma separate the different location\_address properties.
+
+* `'("1000 S Colorado Blvd.","Denver","CO",80211)'`
+
+**Array**: Specify the value of the `contact_numbers` column, by surrounding the comma-separated array items in curly braces.
+
+* `'{000-000-0000, 000-000-0000, 000-000-0000}'`
+
+**PostGIS**: Specify the value of the `location` column by using the `st_point` function and pass in the latitude and longitude
+
+* `st_point(39.742043, -104.991531)`
+
+### What this data looks like in Postgres
+
+Postgres' internal binary representation of the PostGIS type is as follows:
+
+| location                                           |
+| -------------------------------------------------- |
+| 0101000020E6100000E59CD843FBDE4340E9818FC18AC052C0 |
+
+
+## On the Client
+
+### AppSchema example
+
+```js
+export const AppSchema = new Schema([
+  new Table({
+    name: 'todos',
+    columns: [
+      new Column({ name: 'list_id', type: ColumnType.TEXT }),
+      new Column({ name: 'created_at', type: ColumnType.TEXT }),
+      new Column({ name: 'completed_at', type: ColumnType.TEXT }),
+      new Column({ name: 'description', type: ColumnType.TEXT }),
+      new Column({ name: 'completed', type: ColumnType.INTEGER }),
+      new Column({ name: 'created_by', type: ColumnType.TEXT }),
+      new Column({ name: 'completed_by', type: ColumnType.TEXT }),
+      new Column({name: 'address', type: ColumnType.TEXT}),
+      new Column({name: 'contact_numbers', type: ColumnType.TEXT})
+      new Column({name: 'location', type: ColumnType.TEXT}),
+    ],
+    indexes: [new Index({ name: 'list', columns: [new IndexedColumn({ name: 'list_id' })] })]
+  }),
+  new Table({
+    name: 'lists',
+    columns: [
+      new Column({ name: 'created_at', type: ColumnType.TEXT }),
+      new Column({ name: 'name', type: ColumnType.TEXT }),
+      new Column({ name: 'owner_id', type: ColumnType.TEXT })
+    ]
+  })
+]);
+```
+
+Note:
+
+* The custom type, array and PostGIS type have been defined as `TEXT` in the AppSchema. The Postgres PostGIS capabilities are not available because the PowerSync SDK uses SQLite, which only has a limited number of types. This means that everything is replicated into the SQLite database as TEXT values.
+* Depending on your application, you may need to implement functions in the client to parse the values and then other functions to write them back to the Postgres database.
+
+### What does the data look like in SQLite?
+
+The data looks exactly how it’s stored in the Postgres database i.e.
+
+1. **Custom Type**: It has the same format as if you inserted it using a SQL statement, i.e.
+   1. `(1000 S Colorado Blvd.,Denver,CO,80211)`
+2. **Array**: Array types act similar in that it shows the data in the same way it was inserted e.g
+   1. `{000-000-0000, 000-000-0000, 000-000-0000}`
+3. **PostGIS**: The `geography` type is transformed into an encoded form of the value.
+   1. If you insert coordinates as `st_point(39.742043, -104.991531)` then it is shown as `0101000020E6100000E59CD843FBDE4340E9818FC18AC052C0`
+
+## Sync Rules
+
+### PostGIS
+
+Example use case: Extract x (long) and y (lat) values from a PostGIS type, to use these values independently in an application.
+
+Currently, PowerSync supports the following functions that can be used when selecting data in your Sync Rules: [Operators and Functions](/usage/sync-rules/operators-and-functions)
+
+1. `ST_AsGeoJSON`
+2. `ST_AsText`
+3. `ST_X`
+4. `ST_Y`
+
+<Note>
+  IMPORTANT NOTE: These functions will only work if your Postgres instance has the PostGIS extension installed and you’re storing values as type `geography` or `geometry`.
+</Note>
+
+```yaml
+# sync-rules.yaml
+bucket_definitions:
+  global:
+    data:
+      - SELECT * FROM lists
+      - SELECT *, st_x(location) as longitude, st_y(location) as latitude from todos
+```

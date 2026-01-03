@@ -1,0 +1,286 @@
+---
+title: "Swift"
+sidebarTitle: "Swift"
+---
+
+import SdkFeatures from '/snippets/sdk-features.mdx';
+import SwiftInstallation from '/snippets/swift/installation.mdx';
+import SwiftWatch from '/snippets/swift/basic-watch-query.mdx';
+import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+
+<CardGroup cols={3}>
+  <Card title="Source Code" icon="github" href="https://github.com/powersync-ja/powersync-swift/">
+  Refer to the `powersync-swift` repo on GitHub
+  </Card>
+  <Card title="API Reference" icon="github" href="https://powersync-ja.github.io/powersync-swift/documentation/powersync">
+  Full API reference for the SDK
+  </Card>
+  <Card title="Example Projects" icon="code" href="/resources/demo-apps-example-projects#swift">
+  Gallery of example projects/demo apps built with PowerSync and Swift
+  </Card>
+  <Card title="Changelog" icon="megaphone" href="https://releases.powersync.com/announcements/powersync-swift-sdk">
+  Changelog for the SDK
+  </Card>
+</CardGroup>
+
+## Kotlin -> Swift SDK
+
+The PowerSync Swift SDK makes use of the [PowerSync Kotlin SDK](https://github.com/powersync-ja/powersync-kotlin) with the API tool [SKIE](https://skie.touchlab.co/) under the hood to help generate and publish a Swift package. The Swift SDK abstracts the Kotlin SDK behind pure Swift Protocols, enabling us to fully leverage Swift's native features and libraries. Our ultimate goal is to deliver a Swift-centric experience for developers.
+
+
+### SDK Features
+<SdkFeatures />
+
+## Installation
+
+<SwiftInstallation />
+
+## Getting Started
+
+Before implementing the PowerSync SDK in your project, make sure you have completed these steps:
+
+* Signed up for a PowerSync Cloud account ([here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs)) or [self-host PowerSync](/self-hosting/introduction).
+
+* [Configured your backend database](/installation/database-setup) and connected it to your PowerSync instance.
+
+* [Installed](/client-sdk-references/swift#installation) the PowerSync SDK.
+
+### 1. Define the Client-Side Schema
+
+The first step is to define the client-side schema, which refers to the schema for the managed SQLite database exposed by the PowerSync Client SDKs, that your app can read from and write to. The client-side schema is typically mainly derived from your backend database schema and [Sync Rules](/usage/sync-rules), but can also include other tables such as local-only tables. Note that schema migrations are not required on the SQLite database due to the schemaless nature of the [PowerSync protocol](/architecture/powersync-protocol): schemaless data is synced to the client-side SQLite database, and the client-side schema is then applied to that data using _SQLite views_ to allow for structured querying of the data. The schema is applied when the local PowerSync database is constructed (as we'll show in the next step).
+
+<GenerateSchemaAutomatically />
+
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/usage/sync-rules). If a value doesn't match, it is cast automatically. For details on how backend database types are mapped to the SQLite types, see [Types](/usage/sync-rules/types).
+
+**Example**:
+
+```swift
+import Foundation
+import PowerSync
+
+let LISTS_TABLE = "lists"
+let TODOS_TABLE = "todos"
+
+let lists = Table(
+    name: LISTS_TABLE,
+    columns: [
+        // ID column is automatically included
+        .text("name"),
+        .text("created_at"),
+        .text("owner_id")
+    ]
+)
+
+let todos = Table(
+    name: TODOS_TABLE,
+    // ID column is automatically included
+    columns: [
+        .text("list_id"),
+        .text("photo_id"),
+        .text("description"),
+        // 0 or 1 to represent false or true
+        .integer("completed"),
+        .text("created_at"),
+        .text("completed_at"),
+        .text("created_by"),
+        .text("completed_by")
+    ],
+    indexes: [
+        Index(
+            name: "list_id",
+            columns: [
+                IndexedColumn.ascending("list_id")
+            ]
+        )
+    ]
+)
+
+let AppSchema = Schema(lists, todos)
+```
+
+<Note>
+  **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Note>
+
+### 2. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend database into the client-side SQLite database, based on your [Sync Rules](/usage/sync-rules). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline. 
+
+**Example**:
+
+```swift
+let schema = AppSchema // Comes from the AppSchema defined above
+let db = PowerSyncDatabase(
+    schema: schema,
+    dbFilename: "powersync-swift.sqlite"
+)
+```
+
+### 3. Integrate with your Backend
+
+Create a connector to integrate with your backend. The PowerSync backend connector provides the connection between your application backend and the PowerSync managed database. It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+
+2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend database) when the user is connected. 
+
+Accordingly, the connector must implement two methods:
+
+1. `PowerSyncBackendConnectorProtocol.fetchCredentials` - This method will be automatically invoked by the PowerSync client SDK every couple of minutes to obtain authentication credentials. See [Authentication Setup](/installation/authentication-setup) for instructions on how the credentials should be generated.
+
+2. `PowerSyncBackendConnectorProtocol.uploadData` - This method will be automatically invoked by the PowerSync client SDK whenever it needs to upload client-side writes to your app backend via your backend API. Therefore, in your implememtation, you need to define how your backend API is called. See [Writing Client Changes](/installation/app-backend-setup/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```swift
+import PowerSync
+
+final class MyConnector: PowerSyncBackendConnectorProtocol {
+    func fetchCredentials() async throws -> PowerSyncCredentials? {
+    // implement fetchCredentials to obtain the necessary credentials to connect to your backend
+    // See an example implementation in https://github.com/powersync-ja/powersync-swift/blob/main/Demo/PowerSyncExample/PowerSync/SupabaseConnector.swift
+
+        return PowerSyncCredentials(
+            endpoint: "Your PowerSync instance URL or self-hosted endpoint",
+            // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens)
+            // to get up and running quickly) to get up and running quickly
+            token: "An authentication token"
+        )
+    }
+
+    func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+        // Implement uploadData to send local changes to your backend service
+        // You can omit this method if you only want to sync data from the server to the client
+        // See an example implementation under Usage Examples (sub-page)
+        // See https://docs.powersync.com/installation/app-backend-setup/writing-client-changes for considerations.
+    }
+}
+
+```
+
+## Using PowerSync: CRUD functions
+
+Once the PowerSync instance is configured you can start using the SQLite DB functions.
+
+The most commonly used CRUD functions to interact with your SQLite data are:
+
+* [PowerSyncDatabase.get](/client-sdk-references/swift#fetching-a-single-item) - get (SELECT) a single row from a table.
+
+* [PowerSyncDatabase.getOptional](/client-sdk-references/swift#fetching-a-single-item) - get (SELECT) a single row from a table and return `null` if not found.
+
+* [PowerSyncDatabase.getAll](/client-sdk-references/swift#querying-items-powersync-getall) - get (SELECT) a set of rows from a table.
+
+* [PowerSyncDatabase.watch](/client-sdk-references/swift#watching-queries-powersync-watch) - execute a read query every time source tables are modified.
+
+* [PowerSyncDatabase.execute](/client-sdk-references/swift#mutations-powersync-execute) - execute a write (INSERT/UPDATE/DELETE) query.
+
+### Fetching a Single Item ( PowerSync.get / PowerSync.getOptional)
+
+The `get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `getOptional` to return a single optional result (returns `null` if no result is found).
+
+```swift
+// Find a list item by ID
+func getList(_ id: String) async throws {
+    try await self.db.getAll(
+        sql: "SELECT * FROM \(LISTS_TABLE) WHERE id = ?",
+        parameters: [id],
+        mapper: { cursor in
+            ListContent(
+                id: try cursor.getString(name: "id")!,
+                name: try cursor.getString(name: "name")!,
+                createdAt: try cursor.getString(name: "created_at")!,
+                ownerId: try cursor.getString(name: "owner_id")!
+            )
+        }
+    )
+}
+```
+
+### Querying Items (PowerSync.getAll)
+
+The `getAll` method executes a read-only (SELECT) query and returns a set of rows.
+
+```swift
+// Get all lists
+func getLists() async throws {
+    try await self.db.getAll(
+        sql: "SELECT * FROM \(LISTS_TABLE)",
+        parameters: [],
+        mapper: { cursor in
+            ListContent(
+                id: try cursor.getString(name: "id")!,
+                name: try cursor.getString(name: "name")!,
+                createdAt: try cursor.getString(name: "created_at")!,
+                ownerId: try cursor.getString(name: "owner_id")!
+            )
+        }
+    )
+}
+```
+
+### Watching Queries (PowerSync.watch)
+
+The `watch` method executes a read query whenever a change to a dependent table is made.
+
+<SwiftWatch />
+
+### Mutations (PowerSync.execute)
+
+The `execute` method executes a write query (INSERT, UPDATE, DELETE) and returns the results (if any).
+
+```swift
+func insertTodo(_ todo: NewTodo, _ listId: String) async throws {
+    try await db.execute(
+        sql: "INSERT INTO \(TODOS_TABLE) (id, created_at, created_by, description, list_id, completed) VALUES (uuid(), datetime(), ?, ?, ?, ?)",
+        parameters: [connector.currentUserID, todo.description, listId, todo.isComplete]
+    )
+}
+
+func updateTodo(_ todo: Todo) async throws {
+    try await db.execute(
+        sql: "UPDATE \(TODOS_TABLE) SET description = ?, completed = ?, completed_at = datetime(), completed_by = ? WHERE id = ?",
+        parameters: [todo.description, todo.isComplete, connector.currentUserID, todo.id]
+    )
+}
+
+func deleteTodo(id: String) async throws {
+    try await db.writeTransaction(callback: { transaction in
+        _ = try transaction.execute(
+                sql: "DELETE FROM \(TODOS_TABLE) WHERE id = ?",
+                parameters: [id]
+            )
+    })
+}
+```
+
+## Configure Logging
+
+You can include your own Logger that must conform to the [LoggerProtocol](https://powersync-ja.github.io/powersync-swift/documentation/powersync/loggerprotocol) as shown here.
+
+```swift
+let logger = DefaultLogger(minSeverity: .debug)
+let db = PowerSyncDatabase(
+    schema: schema,
+    dbFilename: "powersync-swift.sqlite",
+    logger: logger
+)
+```
+
+The `DefaultLogger` supports the following severity levels: `.debug`, `.info`, `.warn`, `.error`. 
+
+## Additional Usage Examples
+
+See [Usage Examples](/client-sdk-references/swift/usage-examples) for further examples of the SDK.
+
+## ORM Support
+
+ORM support is not yet available, we are still investigating options. Please [let us know](/resources/contact-us) what your needs around ORMs are.
+
+## Troubleshooting
+
+See [Troubleshooting](/resources/troubleshooting) for pointers to debug common issues.
+
+## Supported Platforms
+
+See [Supported Platforms -> Swift SDK](/resources/supported-platforms#swift-sdk).

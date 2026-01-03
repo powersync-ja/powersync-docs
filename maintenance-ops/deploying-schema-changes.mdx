@@ -1,0 +1,77 @@
+---
+title: "Deploying Schema Changes"
+sidebarTitle: "Deploying Schema Changes"
+---
+
+The deploy process for schema or [Sync Rule](../sync-rules) updates depends on the type of change.
+
+See the appropriate subsections below for details on the various scenarios.
+
+<AccordionGroup>
+
+  <Accordion title="Additive Changes">
+  Example: Add a new table that a new version of the app depends on, or add a new column to an existing table.
+	1. Apply source schema changes (i.e. in Postgres database) (often as a pre-deploy step as part of 2)
+	2. Deploy backend application changes
+	3. Deploy [Sync Rule](/usage/sync-rules) changes
+	4. Wait for Sync Rule reprocessing to complete
+	5. Publish the app (may be deployed with delayed publishing at any prior point)
+  </Accordion>
+
+  <Accordion title="Renaming a Table on the Server">
+  	The approach here is to have the Sync Rules handle both the old and the new table name during the migration period.
+
+	Using maintenance mode on the backend here for simplicity. Other processes may be used to avoid maintenance mode, but that doesn't affect PowerSync system.
+
+	1. Deploy Sync Rules containing both the old and the new table name, with a mapping (alias) from the new name to the old one (so that both end up with the old name on the client). This will cause validation errors because of a missing table, but PowerSync will still allow the deploy.
+	2. Wait for Sync Rule reprocessing to complete.
+	3. Put the backend in maintenance mode.
+	   1. i.e. Backend needs to be made unavailable to avoid breaking things during migrations.
+	4. Apply the source schema changes (i.e. in Postgres database)
+	5. Deploy backend changes and re-activate backend.
+	6. Remove the old table from Sync Rules, then deploy and activate the Sync Rules.
+  </Accordion>
+
+  <Accordion title="Renaming a Table on the Client">
+  	Pass in a "`schema_version`" or similar parameter from the client, and use this in Sync Rules to use either the old or new table name in the data queries.
+
+		See this section for details:
+
+		[Multiple Client Versions](/usage/sync-rules/advanced-topics/multiple-client-versions)
+  </Accordion>
+
+  <Accordion title="Renaming a Table on Both Server and Client">
+  	Treat this as two separate steps and follow the process for both **Renaming a Table on the Server** and **Renaming a Table on the Client**.
+  </Accordion>
+
+  <Accordion title="Renaming a Column on the Server">
+  	Use the `ifnull` function in Sync Rules to output whichever column is available. This would handle both the old and new schema versions:
+
+  	```sql
+		SELECT IFNULL(description_new, description_old) AS description FROM assets
+		```
+
+		This may produce a validation error because of a missing column, but PowerSync will still allow the deploy.
+
+		Once the changes have been deployed and replicated, the old reference can be removed from the Sync Rules:
+
+		```sql
+		SELECT description_new AS description FROM assets
+		```
+  </Accordion>
+
+  <Accordion title="Renaming a Column on the Client">
+  	Use the same approach as for renaming tables.
+  </Accordion>
+
+  <Accordion title="Changing a Column Type">
+  	If the column types have the same representation in Sync Rules, the type can be changed freely without issues (for example changing between `VARCHAR` and `TEXT`).
+
+  	Other type changes, for example changing between `INT` and `TEXT`, require more care.
+
+	To change the type, it is usually best to create a new column with the new type, then remove the old column once nothing uses it anymore.
+
+	When changing the type of a column without renaming, use a column type mapping to still use the old type for existing client applications.
+  </Accordion>
+
+</AccordionGroup>

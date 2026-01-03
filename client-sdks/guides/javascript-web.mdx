@@ -1,0 +1,609 @@
+---
+title: "JavaScript Web"
+description: "Full SDK reference for using PowerSync in JavaScript Web clients"
+sidebarTitle: "JavaScript Web"
+---
+
+import SdkFeatures from '/snippets/sdk-features.mdx';
+import JavaScriptWebInstallation from '/snippets/javascript-web/installation.mdx';
+import JavaScriptAsyncWatch from '/snippets/basic-watch-query-javascript-async.mdx';
+import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-callback.mdx';
+import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+
+<CardGroup cols={3}>
+  <Card title="PowerSync SDK on NPM" icon="npm" href="https://www.npmjs.com/package/@powersync/web">
+    This SDK is distributed via NPM
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/powersync-ja/powersync-js/tree/main/packages/web">
+    Refer to packages/web in the `powersync-js` repo on GitHub
+  </Card>
+  <Card title="API Reference" icon="book" href="https://powersync-ja.github.io/powersync-js/web-sdk">
+    Full API reference for the SDK
+  </Card>
+  <Card title="Example Projects" icon="code" href="/resources/demo-apps-example-projects">
+    Gallery of example projects/demo apps built with JavaScript Web stacks and PowerSync
+  </Card>
+  <Card title="Changelog" icon="megaphone" href="https://releases.powersync.com/announcements/powersync-js-web-client-sdk">
+    Changelog for the SDK
+  </Card>
+</CardGroup>
+
+### Quickstart
+<iframe
+    className="w-full aspect-video rounded-xl"
+    src="https://www.youtube.com/embed/wAMIeuVxHd0?si=yevqTB7Of4nEYHKT&cc_load_policy=1"
+    title="Quickly set up a PowerSync app using our Vite template"
+    frameBorder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+    allowFullScreen
+></iframe>
+📂 GitHub Repo
+[https://github.com/powersync-community/vite-react-ts-powersync-supabase/](https://github.com/powersync-community/vite-react-ts-powersync-supabase/)
+
+
+### SDK Features
+
+<SdkFeatures />
+
+
+## Single-Page Application (SPA) Frameworks
+
+The PowerSync [JavaScript Web SDK](../javascript-web) is compatible with popular Single-Page Application (SPA) frameworks like React, Vue, Angular, and Svelte. Integration packages are provided specifically for the following:
+
+<CardGroup>
+  <Card title="React Hooks" icon="react" href="/client-sdks/frameworks/react" horizontal>
+    Wrapper package to support reactivity and live queries.
+  </Card>
+  <Card title="Vue Composables" icon="vuejs" href="/client-sdks/frameworks/vue" horizontal>
+    Wrapper package to support reactivity and live queries.
+  </Card>
+  <Card title="TanStack Query & DB" icon="tree-palm" href="/client-sdks/frameworks/tanstack" horizontal>
+    PowerSync integrates with TanStack Query for React and TanStack DB for reactive data management across multiple frameworks.
+  </Card>
+</CardGroup>
+
+<Accordion title="Which package should I choose for queries?">
+  For React or React Native apps:
+
+  * The [`@powersync/react`](#react-hooks) package is best for most basic use cases, especially when you only need reactive queries with loading and error states.
+
+  * For more advanced scenarios, such as query caching and pagination, [TanStack Query](#tanstack-query) is a powerful solution. The [`@powersync/tanstack-react-query`](#tanstack-query) package extends the `useQuery` hook from `@powersync/react` and adds functionality from [TanStack Query](https://tanstack.com/query/latest/docs/framework/react/overview), making it a better fit for advanced use cases or performance-optimized apps.
+
+  * For reactive data management and live query support across multiple frameworks, consider [TanStack DB](#tanstack-db). PowerSync works with all TanStack DB framework adapters (React, Vue, Solid, Svelte, Angular).
+
+  If you have a Vue app, use the Vue-specific package: [`@powersync/vue`](#vue-composables).
+</Accordion>
+
+
+## Installation
+
+<JavaScriptWebInstallation />
+
+## Getting Started
+
+Before implementing the PowerSync SDK in your project, make sure you have completed these steps:
+
+- Signed up for a PowerSync Cloud account ([here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs)) or [self-host PowerSync](/self-hosting/introduction).
+- [Configured your backend database](/installation/database-setup) and connected it to your PowerSync instance.
+- [Installed](/client-sdk-references/javascript-web#installation) the PowerSync Web SDK.
+
+### 1. Define the Client-Side Schema
+
+The first step is to define the client-side schema, which refers to the schema for the managed SQLite database exposed by the PowerSync Client SDKs, that your app can read from and write to. The client-side schema is typically mainly derived from your backend database schema and [Sync Rules](/usage/sync-rules), but can also include other tables such as local-only tables. Note that schema migrations are not required on the SQLite database due to the schemaless nature of the [PowerSync protocol](/architecture/powersync-protocol): schemaless data is synced to the client-side SQLite database, and the client-side schema is then applied to that data using _SQLite views_ to allow for structured querying of the data. The schema is applied when the local PowerSync database is constructed (as we'll show in the next step).
+
+<GenerateSchemaAutomatically />
+
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/usage/sync-rules). If a value doesn't match, it is cast automatically. For details on how backend database types are mapped to the SQLite types, see [Types](/usage/sync-rules/types).
+
+**Example**:
+
+```js
+// AppSchema.ts
+import { column, Schema, Table } from '@powersync/web';
+
+const lists = new Table({
+  created_at: column.text,
+  name: column.text,
+  owner_id: column.text
+});
+
+const todos = new Table(
+  {
+    list_id: column.text,
+    created_at: column.text,
+    completed_at: column.text,
+    description: column.text,
+    created_by: column.text,
+    completed_by: column.text,
+    completed: column.integer
+  },
+  { indexes: { list: ['list_id'] } }
+);
+
+export const AppSchema = new Schema({
+  todos,
+  lists
+});
+
+// For types
+export type Database = (typeof AppSchema)['types'];
+export type TodoRecord = Database['todos'];
+// OR:
+// export type Todo = RowType<typeof todos>;
+export type ListRecord = Database['lists'];
+```
+
+<Note>
+  **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Note>
+
+### 2. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend database into the client-side SQLite database, based on your [Sync Rules](/usage/sync-rules). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline. 
+
+**Example**:
+
+```js
+import { PowerSyncDatabase } from '@powersync/web';
+import { Connector } from './Connector';
+import { AppSchema } from './AppSchema';
+
+export const db = new PowerSyncDatabase({
+  // The schema you defined in the previous step
+  schema: AppSchema,
+  database: {
+    // Filename for the SQLite database — it's important to only instantiate one instance per file.
+    dbFilename: 'powersync.db'
+    // Optional. Directory where the database file is located.'
+    // dbLocation: 'path/to/directory'
+  }
+});
+```
+
+<Note>
+  **SDK versions lower than 1.2.0**
+
+  In SDK versions lower than 1.2.0, you will need to use the deprecated [WASQLitePowerSyncDatabaseOpenFactory](https://powersync-ja.github.io/powersync-js/web-sdk/classes/WASQLitePowerSyncDatabaseOpenFactory) syntax to instantiate the database.
+</Note>
+
+Once you've instantiated your PowerSync database, you will need to call the [connect()](https://powersync-ja.github.io/powersync-js/web-sdk/classes/AbstractPowerSyncDatabase#connect) method to activate it.
+
+```js
+export const setupPowerSync = async () => {
+  // Uses the backend connector that will be created in the next section
+  const connector = new Connector();
+  db.connect(connector);
+};
+```
+
+### 3. Integrate with your Backend
+
+The PowerSync backend connector provides the connection between your application backend and the PowerSync client-side managed SQLite database. It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend database) when the user is connected. 
+
+Accordingly, the connector must implement two methods:
+
+1. [PowerSyncBackendConnector.fetchCredentials](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L16) - This method will be automatically invoked by the PowerSync client SDK every couple of minutes to obtain authentication credentials. See [Authentication Setup](/installation/authentication-setup) for instructions on how the credentials should be generated.
+2. [PowerSyncBackendConnector.uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) - This method will be automatically invoked by the PowerSync client SDK whenever it needs to upload client-side writes to your app backend via your backend API. Therefore, in your implememtation, you need to define how your backend API is called. See [Writing Client Changes](/installation/app-backend-setup/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```js
+import { UpdateType } from '@powersync/web';
+
+export class Connector {
+  async fetchCredentials() {
+    // Implement fetchCredentials to obtain a JWT from your authentication service.
+    // See https://docs.powersync.com/installation/authentication-setup
+    // If you're using Supabase or Firebase, you can re-use the JWT from those clients, see
+    // - https://docs.powersync.com/installation/authentication-setup/supabase-auth
+    // - https://docs.powersync.com/installation/authentication-setup/firebase-auth
+    return {
+        endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+        // Use a development token (see Authentication Setup https://docs.powersync.com/installation/authentication-setup/development-tokens) to get up and running quickly
+        token: 'An authentication token'
+    };
+  }
+
+  async uploadData(database) {
+    // Implement uploadData to send local changes to your backend service.
+    // You can omit this method if you only want to sync data from the database to the client
+
+    // See example implementation here: https://docs.powersync.com/client-sdk-references/javascript-web#3-integrate-with-your-backend
+  }
+}
+```
+
+## Using PowerSync: CRUD functions
+
+Once the PowerSync instance is configured you can start using the SQLite DB functions.
+
+The most commonly used CRUD functions to interact with your SQLite data are:
+
+- [PowerSyncDatabase.get](/client-sdk-references/javascript-web#fetching-a-single-item) - get (SELECT) a single row from a table.
+- [PowerSyncDatabase.getAll](/client-sdk-references/javascript-web#querying-items-powersync.getall) - get (SELECT) a set of rows from a table.
+- [PowerSyncDatabase.watch](/client-sdk-references/javascript-web#watching-queries-powersync.watch) - execute a read query every time source tables are modified.
+- [PowerSyncDatabase.execute](/client-sdk-references/javascript-web#mutations-powersync.execute) - execute a write (INSERT/UPDATE/DELETE) query.
+
+### Fetching a Single Item
+
+The [get](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#get) method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use [getOptional](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#getoptional) to return a single optional result (returns `null` if no result is found).
+
+```js
+// Find a list item by ID
+export const findList = async (id) => {
+  const result = await db.get('SELECT * FROM lists WHERE id = ?', [id]);
+  return result;
+}
+```
+
+### Querying Items (PowerSync.getAll)
+
+The [getAll](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#getall) method returns a set of rows from a table.
+
+```js
+// Get all list IDs
+export const getLists = async () => {
+  const results = await db.getAll('SELECT * FROM lists');
+  return results;
+}
+```
+
+### Watching Queries (PowerSync.watch)
+
+The [watch](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#watch) method executes a read query whenever a change to a dependent table is made.
+
+<Tabs>
+  <Tab title="AsyncIterator approach">
+  <JavaScriptAsyncWatch />
+  </Tab>
+  <Tab title="Callback approach">
+  <JavaScriptCallbackWatch />
+  </Tab>
+</Tabs>
+
+For advanced watch query features like incremental updates and differential results, see [Live Queries / Watch Queries](/usage/use-case-examples/watch-queries).
+
+### Mutations (PowerSync.execute, PowerSync.writeTransaction)
+
+The [execute](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#execute) method can be used for executing single SQLite write statements.
+
+```js
+// Delete a list item by ID
+export const deleteList = async (id) => {
+  const result = await db.execute('DELETE FROM lists WHERE id = ?', [id]);
+  return TodoList.fromRow(results);
+}
+
+// OR: using a transaction
+const deleteList = async (id) => {
+  await db.writeTransaction(async (tx) => {
+    // Delete associated todos
+    await tx.execute(`DELETE FROM ${TODOS_TABLE} WHERE list_id = ?`, [id]);
+    // Delete list record
+    await tx.execute(`DELETE FROM ${LISTS_TABLE} WHERE id = ?`, [id]);
+  });
+};
+```
+
+## Configure Logging
+
+```js
+import { createBaseLogger, LogLevel } from '@powersync/web';
+
+const logger = createBaseLogger();
+
+// Configure the logger to use the default console output
+logger.useDefaults();
+
+// Set the minimum log level to DEBUG to see all log messages
+// Available levels: DEBUG, INFO, WARN, ERROR, TRACE, OFF
+logger.setLevel(LogLevel.DEBUG);
+```
+
+<Tip>
+  Enable verbose output in the developer tools for detailed logs.
+</Tip>
+
+Additionally, the [WASQLiteDBAdapter](https://powersync-ja.github.io/powersync-js/web-sdk/classes/WASQLiteDBAdapter) opens SQLite connections inside a shared web worker. This worker can be inspected in Chrome by accessing:
+
+```
+chrome://inspect/#workers
+```
+
+## Additional Usage Examples
+
+See [Usage Examples](/client-sdk-references/javascript-web/usage-examples) for further examples of the SDK.
+
+## Developer Notes
+
+### Connection Methods
+
+This SDK supports two methods for streaming sync commands:
+
+1. **WebSocket (Default)**
+   - The implementation leverages RSocket for handling reactive socket streams.
+   - Back-pressure is effectively managed through client-controlled command requests.
+   - Sync commands are transmitted efficiently as BSON (binary) documents.
+   - This method is **recommended** since it will support the future [BLOB column support](https://roadmap.powersync.com/c/88-support-for-blob-column-types) feature.
+2. **HTTP Streaming (Legacy)**
+   - This is the original implementation method.
+   - This method will not support the future BLOB column feature.
+
+By default, the `PowerSyncDatabase.connect()` method uses WebSocket. You can optionally specify the `connectionMethod` to override this:
+
+```js
+// WebSocket (default)
+powerSync.connect(connector);
+
+// HTTP Streaming
+powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP });
+```
+
+### SQLite Virtual File Systems
+
+This SDK supports multiple Virtual File Systems (VFS), responsible for storing the local SQLite database:
+
+#### 1. IDBBatchAtomicVFS (Default)
+
+- This system utilizes IndexedDB as its underlying storage mechanism.
+- Multiple tabs are fully supported across most modern browsers.
+- Users may experience stability issues when using Safari. For example, the `RangeError: Maximum call stack size exceeded` error. See [Troubleshooting](/resources/troubleshooting#rangeerror-maximum-call-stack-size-exceeded-on-ios-or-safari) for more details.
+
+#### 2. OPFS-based Alternatives
+
+PowerSync supports two OPFS (Origin Private File System) implementations that generally offer improved performance:
+
+##### OPFSCoopSyncVFS (Recommended)
+
+- This implementation provides comprehensive multi-tab support across all major browsers.
+- It offers the most reliable compatibility with Safari and Safari iOS.
+- Example configuration:
+
+```js
+import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: new WASQLiteOpenFactory({
+    dbFilename: 'exampleVFS.db',
+    vfs: WASQLiteVFS.OPFSCoopSyncVFS,
+    flags: {
+      enableMultiTabs: typeof SharedWorker !== 'undefined'
+    }
+  }),
+  flags: {
+    enableMultiTabs: typeof SharedWorker !== 'undefined'
+  }
+});
+```
+
+##### AccessHandlePoolVFS
+
+- This implementation delivers optimal performance for single-tab applications.
+- The system is not designed to handle multiple tab scenarios.
+- The configuration is similar to `OPFSCoopSyncVFS`, but requires using `WASQLiteVFS.AccessHandlePoolVFS`.
+
+#### VFS Compatibility Matrix
+
+| VFS Type            | Multi-Tab Support (Standard Browsers) | Multi-Tab Support (Safari/iOS) | Notes                                 |
+| ------------------- | ------------------------------------- | ------------------------------ | ------------------------------------- |
+| IDBBatchAtomicVFS   | ✅                                     | ❌                              | Default, some Safari stability issues |
+| OPFSCoopSyncVFS     | ✅                                     | ✅                              | Recommended for multi-tab support     |
+| AccessHandlePoolVFS | ❌                                     | ❌                              | Best for single-tab applications      |
+
+**Note**: There are known issues with OPFS when using Safari's incognito mode.
+
+### Managing OPFS Storage
+
+Unlike IndexedDB, OPFS storage cannot be managed through browser developer tools. The following utility functions can help you manage OPFS storage programmatically:
+
+```js
+// Clear all OPFS storage
+async function purgeVFS() {
+  await powerSync.disconnect();
+  await powerSync.close();
+
+  const root = await navigator.storage.getDirectory();
+  await new Promise(resolve => setTimeout(resolve, 1)); // Allow .db-wal to become deletable
+
+  for await (const [name, entry] of root.entries!()) {
+    try {
+      if (entry.kind === 'file') {
+        await root.removeEntry(name);
+      } else if (entry.kind === 'directory') {
+        await root.removeEntry(name, { recursive: true });
+      }
+    } catch (err) {
+      console.error(`Failed to delete ${entry.kind}: ${name}`, err);
+    }
+  }
+}
+
+// List OPFS entries
+async function listVfsEntries() {
+  const root = await navigator.storage.getDirectory();
+  for await (const [name, entry] of root.entries()) {
+    console.log(`${entry.kind}: ${name}`);
+  }
+}
+```
+
+### Multiple Tab Support
+
+<Warning>
+  * Multiple tab support is not currently available on Android. 
+  * For Safari, use the [`OPFSCoopSyncVFS`](/client-sdk-references/javascript-web#sqlite-virtual-file-systems) virtual file system to ensure stable multi-tab functionality.
+  * If you encounter a `RangeError: Maximum call stack size exceeded` error, see [Troubleshooting](/resources/troubleshooting#rangeerror-maximum-call-stack-size-exceeded-on-ios-or-safari) for solutions.
+</Warning>
+
+Using PowerSync between multiple tabs is supported on some web browsers. Multiple tab support relies on shared web workers for database and sync streaming operations. When enabled, shared web workers named `shared-DB-worker-[dbFileName]` and `shared-sync-[dbFileName]` will be created.
+
+#### `shared-DB-worker-[dbFileName]`
+
+The shared database worker will ensure writes to the database will instantly be available between tabs.
+
+#### `shared-sync-[dbFileName]`
+
+The shared sync worker connects directly to the PowerSync backend instance and applies changes to the database. Note that the shared sync worker will call the `fetchCredentials` and `uploadData` method of the latest opened available tab. Closing a tab will shift the latest tab to the previously opened one.
+
+Currently, using the SDK in multiple tabs without enabling the [enableMultiTabs](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/web/src/db/adapters/web-sql-flags.ts#L23) flag will spawn a standard web worker per tab for DB operations. These workers are safe to operate on the DB concurrently, however changes from one tab may not update watches on other tabs. Only one tab can sync from the PowerSync instance at a time. The sync status will not be shared between tabs, only the oldest tab will connect and display the latest sync status.
+
+Support is enabled by default if available. This can be disabled as below:
+
+```js
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'my_app_db.sqlite'
+  },
+  flags: {
+    /**
+     * Multiple tab support is enabled by default if available.
+     * This can be disabled by setting this flag to false.
+     */
+    enableMultiTabs: false
+  }
+});
+```
+
+### Using PowerSyncDatabase Flags
+
+This guide provides an overview of the customizable flags available for the `PowerSyncDatabase` in the JavaScript Web SDK. These flags allow you to enable or disable specific features to suit your application's requirements.
+
+#### Configuring Flags
+
+You can configure flags during the initialization of the `PowerSyncDatabase`. Flags can be set using the `flags` property, which allows you to enable or disable specific functionalities.
+
+```javascript
+import { PowerSyncDatabase, resolveWebPowerSyncFlags, WebPowerSyncFlags } from '@powersync/web';
+import { AppSchema } from '@/library/powersync/AppSchema';
+
+// Define custom flags
+const customFlags: WebPowerSyncFlags = resolveWebPowerSyncFlags({
+  enableMultiTabs: true,
+  broadcastLogs: true,
+  disableSSRWarning: false,
+  ssrMode: false,
+  useWebWorker: true,
+});
+
+// Create the PowerSync database instance
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'example.db',
+  },
+  flags: customFlags,
+});
+```
+
+#### Available Flags
+<ParamField path="enableMultiTabs">
+    default: `true`
+
+    Enables support for multiple tabs using shared web workers. When enabled, multiple tabs can interact with the same database and sync data seamlessly.
+</ParamField>
+
+<ParamField path="broadcastLogs">
+    default: `false`
+
+    Enables the broadcasting of logs for debugging purposes. This flag helps monitor shared worker logs in a multi-tab environment.
+</ParamField>
+
+<ParamField path="disableSSRWarning">
+    default: `false`
+
+    Disables warnings when running in SSR (Server-Side Rendering) mode.
+</ParamField>
+
+<ParamField path="ssrMode">
+    default: `false`
+
+    Enables SSR mode. In this mode, only empty query results will be returned, and syncing with the backend is disabled.
+</ParamField>
+
+<ParamField path="useWebWorker">
+    default: `true`
+
+    Enables the use of web workers for database operations. Disabling this flag also disables multi-tab support.
+</ParamField>
+
+
+#### Flag Behavior
+
+**Example 1: Multi-Tab Support**
+
+By default, multi-tab support is enabled if supported by the browser. To explicitly disable this feature:
+
+```javascript
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'my_app_db.sqlite',
+  },
+  flags: {
+    enableMultiTabs: false,
+  },
+});
+```
+
+When disabled, each tab will use independent workers, and changes in one tab will not automatically propagate to others.
+
+**Example 2: SSR Mode**
+
+To enable SSR mode and suppress warnings:
+
+```javascript
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'my_app_db.sqlite',
+  },
+  flags: {
+    ssrMode: true,
+    disableSSRWarning: true,
+  },
+});
+```
+
+**Example 3: Verbose Debugging with Broadcast Logs**
+
+To enable detailed logging for debugging:
+
+```javascript
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'my_app_db.sqlite',
+  },
+  flags: {
+    broadcastLogs: true,
+  },
+});
+```
+
+Logs will include detailed insights into database operations and synchronization.
+
+#### Recommendations
+
+1. **Set `enableMultiTabs`** to `true` if your application requires seamless data sharing across multiple tabs.
+2. **Set `useWebWorker`** to `true` for efficient database operations using web workers.
+3. **Set `broadcastLogs`** to `true` during development to troubleshoot and monitor database and sync operations.
+4. **Set `disableSSRWarning`** to `true` when running in SSR mode to avoid unnecessary console warnings.
+5. **Test combinations** of flags to validate their behavior in your application's specific use case.
+
+
+## ORM Support
+
+See [JavaScript ORM Support](/client-sdk-references/javascript-web/javascript-orm/overview) for details.
+
+## Troubleshooting
+
+See [Troubleshooting](/resources/troubleshooting) for pointers to debug common issues.
+
+## Supported Platforms
+
+See [Supported Platforms -> JS/Web SDK](/resources/supported-platforms#js%2Fweb-sdk).

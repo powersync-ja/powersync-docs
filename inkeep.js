@@ -60,79 +60,79 @@ inkeepScript.addEventListener("load", function () {
   });
 
   // Create and add the 'Ask AI' button next to the search bar
-  function addAskAIButton() {
-    // Function to create the Ask AI button
-    function createAskAIButton() {
-      const button = document.createElement("button");
-      button.id = "ask-ai-button";
-      button.innerHTML = "Ask AI";
-      button.className = "ask-ai-button";
+  // function addAskAIButton() {
+  //   // Function to create the Ask AI button
+  //   function createAskAIButton() {
+  //     const button = document.createElement("button");
+  //     button.id = "ask-ai-button";
+  //     button.innerHTML = "Ask AI";
+  //     button.className = "ask-ai-button";
       
-      // Style the button to match the "Get Started" button
-      button.style.backgroundColor = inkeepSettings.baseSettings.primaryBrandColor;
-      button.style.color = "white";
-      button.style.border = "none";
-      button.style.borderRadius = "12px"; // Pill-shaped to match the search bar in the screenshot
-      button.style.padding = "8px 8px"; // Slightly wider padding
-      button.style.marginLeft = "10px";
-      button.style.cursor = "pointer";
-      button.style.fontWeight = "500";
-      button.style.fontSize = "14px";
-      button.style.display = "flex";
-      button.style.alignItems = "center";
-      button.style.justifyContent = "center"; // Center text horizontally
-      button.style.minWidth = "100px"; // Ensure the button has a minimum width
-      button.style.boxShadow = "0 2px 4px rgba(0, 0, 0, 0.1)"; // Subtle shadow for depth
-      button.style.transition = "all 0.2s ease"; // Smooth transition for hover effects
+  //     // Style the button to match the "Get Started" button
+  //     button.style.backgroundColor = inkeepSettings.baseSettings.primaryBrandColor;
+  //     button.style.color = "white";
+  //     button.style.border = "none";
+  //     button.style.borderRadius = "12px"; // Pill-shaped to match the search bar in the screenshot
+  //     button.style.padding = "8px 8px"; // Slightly wider padding
+  //     button.style.marginLeft = "10px";
+  //     button.style.cursor = "pointer";
+  //     button.style.fontWeight = "500";
+  //     button.style.fontSize = "14px";
+  //     button.style.display = "flex";
+  //     button.style.alignItems = "center";
+  //     button.style.justifyContent = "center"; // Center text horizontally
+  //     button.style.minWidth = "100px"; // Ensure the button has a minimum width
+  //     button.style.boxShadow = "0 2px 4px rgba(0, 0, 0, 0.1)"; // Subtle shadow for depth
+  //     button.style.transition = "all 0.2s ease"; // Smooth transition for hover effects
       
-      // Add a subtle hover effect
-      button.onmouseover = function() {
-        this.style.backgroundColor = "#3a78f2"; // Slightly darker shade when hovering
-        this.style.transform = "translateY(-1px)"; // Slight lift effect
-        this.style.boxShadow = "0 4px 8px rgba(0, 0, 0, 0.15)"; // Enhanced shadow on hover
-      };
-      button.onmouseout = function() {
-        this.style.backgroundColor = inkeepSettings.baseSettings.primaryBrandColor;
-        this.style.transform = "translateY(0)"; // Reset position
-        this.style.boxShadow = "0 2px 4px rgba(0, 0, 0, 0.1)"; // Reset shadow
-      };
+  //     // Add a subtle hover effect
+  //     button.onmouseover = function() {
+  //       this.style.backgroundColor = "#3a78f2"; // Slightly darker shade when hovering
+  //       this.style.transform = "translateY(-1px)"; // Slight lift effect
+  //       this.style.boxShadow = "0 4px 8px rgba(0, 0, 0, 0.15)"; // Enhanced shadow on hover
+  //     };
+  //     button.onmouseout = function() {
+  //       this.style.backgroundColor = inkeepSettings.baseSettings.primaryBrandColor;
+  //       this.style.transform = "translateY(0)"; // Reset position
+  //       this.style.boxShadow = "0 2px 4px rgba(0, 0, 0, 0.1)"; // Reset shadow
+  //     };
       
-      return button;
-    }
+  //     return button;
+  //   }
 
-    // Add the button only to the main search bar entry
-    const searchContainer = document.getElementById("search-bar-entry");
-    if (searchContainer) {
-      const buttonContainer = document.createElement("div");
-      buttonContainer.id = "ask-ai-button-container";
-      buttonContainer.style.display = "flex";
-      buttonContainer.style.alignItems = "center";
+  //   // Add the button only to the main search bar entry
+  //   const searchContainer = document.getElementById("search-bar-entry");
+  //   if (searchContainer) {
+  //     const buttonContainer = document.createElement("div");
+  //     buttonContainer.id = "ask-ai-button-container";
+  //     buttonContainer.style.display = "flex";
+  //     buttonContainer.style.alignItems = "center";
       
-      const askAIButton = createAskAIButton();
+  //     const askAIButton = createAskAIButton();
       
-      // Add click event to the button
-      askAIButton.addEventListener("click", () => {
-        modalChat.update({ modalSettings: { isOpen: true } });
-      });
+  //     // Add click event to the button
+  //     askAIButton.addEventListener("click", () => {
+  //       modalChat.update({ modalSettings: { isOpen: true } });
+  //     });
       
-      // Insert the button after the search container
-      buttonContainer.appendChild(askAIButton);
+  //     // Insert the button after the search container
+  //     buttonContainer.appendChild(askAIButton);
       
-      // Insert the button container after the search container
-      searchContainer.parentNode.insertBefore(buttonContainer, searchContainer.nextSibling);
+  //     // Insert the button container after the search container
+  //     searchContainer.parentNode.insertBefore(buttonContainer, searchContainer.nextSibling);
       
-      // Add CSS to hide the button on mobile
-      const style = document.createElement('style');
-      style.textContent = `
-        @media (max-width: 768px) {
-          #ask-ai-button-container {
-            display: none !important;
-          }
-        }
-      `;
-      document.head.appendChild(style);
-    }
-  }
+  //     // Add CSS to hide the button on mobile
+  //     const style = document.createElement('style');
+  //     style.textContent = `
+  //       @media (max-width: 768px) {
+  //         #ask-ai-button-container {
+  //           display: none !important;
+  //         }
+  //       }
+  //     `;
+  //     document.head.appendChild(style);
+  //   }
+  // }
 
   // Instantiate the 'Ask AI' modal chat
   const modalChat = Inkeep.ModalChat({

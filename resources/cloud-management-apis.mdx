@@ -1,86 +1,1153 @@
 ---
-title: "PowerSync Cloud Instance Management APIs"
+title: "PowerSync Cloud Management APIs"
+description: 'Management APIs for PowerSync Cloud that allow programmatic management of your PowerSync Cloud instances.'
 ---
 
-# PowerSync Cloud Instance Management APIs
+<Note>
+    These APIs are subject to change without notice and we'll update this page as we make changes.
+</Note>
 
-The PowerSync Cloud Management APIs allow you to manage your PowerSync Cloud instances using HTTP requests. These APIs are subject to change and we'll update this page as we make changes.
-
+## Base URL
+All API requests should be made to the following base URL:
+```
+https://powersync-api.journeyapps.com
+```
 
 ## Authentication
-The PowerSync Cloud Management APIs are authenticated using a personal access token (PAT). You can generate a JWT token using the PowerSync Cloud dashboard.
+The PowerSync Cloud Management APIs are authenticated using a personal access token (PAT). You can generate a PAT token using the PowerSync Cloud dashboard, by navigating to your account and then selecting the "Access Tokens" tab on the left side navigation bar. Or, by using [this link](https://dashboard.powersync.com/account/access-tokens).
 
-Once you have a JWT token, you can use it to authenticate your requests to the PowerSync Cloud Management APIs by adding the `Authorization` header to your requests e.g. 
+Once you have a PAT, you can use it to authenticate your requests to the PowerSync Cloud Management APIs by adding the `Authorization` header to your requests e.g. 
 
 ``` http request
 {
+  "headers": {
     "Content-Type": "application/json",
     "Authorization": "Bearer <PAT>"
+  }
 }
 ```
 
-
-## API Reference
+## Common Parameters
 
 When using the PowerSync Cloud Instance Management APIs you must provide the following values in the body of your request:
-- `id`: The ID of your PowerSync Cloud instance - This can be found in the instance url e.g. https://<id>.powersync.journeyapps.com.
-- `org_id`: The ID of your organization - This can be found in the PowerSync Project url e.g. https://powersync.journeyapps.com/orgs/<org_id>.
-- `app_id`: The ID of your PowerSync Project - This can be found in the PowerSync Project url e.g. https://powersync.journeyapps.com/orgs/<org_id>/app/<app_id>.
+- `id`: The ID of your PowerSync Cloud instance - This can be found in the instance url e.g. https://your-instance.powersync.journeyapps.com
+- `org_id`: The ID of your organization - This can be found in the PowerSync Project url e.g. https://dashboard.powersync.com/org/your-organization-id
+- `app_id`: The ID of your PowerSync Project - This can be found in the PowerSync Project url e.g. https://dashboard.powersync.com/org/your-organization-id/project/your-app-id
 
 You can get the ID of your PowerSync Cloud instance by clicking on the "Copy instance URL" icon in the PowerSync Cloud dashboard.
 
-### Create PowerSync Cloud instance
+---
 
-Create a new PowerSync Cloud instance.
+## Instance Management Endpoints
 
+### List Instances
+
+Lists all PowerSync instances for an application.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/list`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/list \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id"
+  }'
 ```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "instances": [
+      {
+        "id": "instance123",
+        "name": "Production Instance",
+        "has_config": true,
+        "deployable": true
+      },
+      {
+        "id": "instance456",
+        "name": "Development Instance",
+        "has_config": true,
+        "deployable": true
+      }
+    ]
+  }
+}
+```
+</Accordion>
+
+---
+
+### Create Instance
+
+Creates a new PowerSync Cloud instance.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/create`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `name` | string | Yes | Instance name |
+| `region` | string | No | Deployment region (e.g., "us", "eu") |
+
+<Accordion title="Example Request">
+```bash
 curl --request POST \
   --url https://powersync-api.journeyapps.com/api/v1/instances/create \
   --header 'Authorization: Bearer <PAT>' \
   --header 'Content-Type: application/json' \
-  --data '{"name":"Your Instance Name","org_id":"your_organization_id","app_id":"your_powersync_project_id"}'
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "name": "My New Instance",
+    "region": "us"
+  }'
 ```
+</Accordion>
 
-This will provision a new PowerSync Cloud instance.
-
-### PowerSync Instance Status
-
-Get the status history of your PowerSync Cloud instance.
-
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "id": "instance789"
+  }
+}
 ```
+</Accordion>
+
+---
+
+### Deploy Instance
+
+Deploys or updates a PowerSync instance with configuration. This endpoint is used to configure database connections, authentication settings, and sync rules.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/deploy`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+| `name` | string | No | Instance name |
+| `config` | object | Yes | PowerSync configuration |
+| `sync_rules` | string | No | YAML sync rules content |
+| `program_version` | object | No | Version constraints |
+
+<Accordion title="Example Request: Deploy with PostgreSQL">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/deploy \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id",
+    "config": {
+      "region": "us",
+      "replication": {
+        "connections": [{
+          "type": "postgresql",
+          "tag": "default",
+          "hostname": "db.example.com",
+          "port": 5432,
+          "database": "mydb",
+          "username": "replication_user",
+          "password": {"secret": "mypassword"},
+          "sslmode": "verify-full"
+        }]
+      },
+      "client_auth": {
+        "jwks_uri": "https://auth.example.com/.well-known/jwks.json"
+      }
+    },
+    "sync_rules": "bucket_definitions:\n  global:\n    data:\n      - SELECT * FROM items"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Request: Deploy with MongoDB">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/deploy \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id",
+    "config": {
+      "region": "us",
+      "replication": {
+        "connections": [{
+          "type": "mongodb",
+          "tag": "default",
+          "uri": "mongodb+srv://user:password@cluster.mongodb.net/mydb?retryWrites=true&w=majority",
+          "database": "mydb",
+          "post_images": "auto_configure"
+        }]
+      },
+      "client_auth": {
+        "jwks_uri": "https://auth.example.com/.well-known/jwks.json"
+      }
+    },
+    "sync_rules": "bucket_definitions:\n  global:\n    data:\n      - SELECT * FROM items"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Request: Deploy with MySQL">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/deploy \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id",
+    "config": {
+      "region": "us",
+      "replication": {
+        "connections": [{
+          "type": "mysql",
+          "tag": "default",
+          "hostname": "mysql.example.com",
+          "port": 3306,
+          "database": "mydb",
+          "username": "replication_user",
+          "password": {"secret": "mypassword"}
+        }]
+      },
+      "client_auth": {
+        "jwks_uri": "https://auth.example.com/.well-known/jwks.json"
+      }
+    },
+    "sync_rules": "bucket_definitions:\n  global:\n    data:\n      - SELECT * FROM items"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Request: Deploy with Supabase Authentication">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/deploy \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id",
+    "config": {
+      "region": "us",
+      "replication": {
+        "connections": [{
+          "type": "postgresql",
+          "tag": "default",
+          "hostname": "db.supabase.co",
+          "port": 5432,
+          "database": "postgres",
+          "username": "postgres",
+          "password": {"secret": "mypassword"},
+          "sslmode": "verify-full"
+        }]
+      },
+      "client_auth": {
+        "supabase": true,
+        "supabase_jwt_secret": {"secret": "your-supabase-jwt-secret"}
+      }
+    }
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "id": "instance789",
+    "operation_id": "op-abc123"
+  }
+}
+```
+</Accordion>
+
+---
+
+### Destroy Instance
+
+Permanently destroys a PowerSync instance.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/destroy`
+
+<Warning>This operation is irreversible and will permanently delete the instance and all associated data.</Warning>
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/destroy \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "id": "instance789",
+    "operation_id": "op_def456"
+  }
+}
+```
+</Accordion>
+
+---
+
+### Deactivate Instance
+
+Deactivates a PowerSync instance without destroying it. The instance can be reactivated later.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/deactivate`
+
+<Warning>This will stop the instance and remove the bucket storage associated with the instance. When an instance is deactivated, and you want to re-provision it, you will need to redeploy your sync rules.</Warning>
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/deactivate \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "id": "instance789",
+    "operation_id": "op_ghi789"
+  }
+}
+```
+</Accordion>
+
+---
+
+### Get Instance Config
+
+Retrieves the configuration of a PowerSync instance.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/config`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/config \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "id": "instanceid",
+    "project_id": "projectid",
+    "org_id": "orgid",
+    "name": "Production Instance",
+    "config": {
+      "region": "us",
+      "replication": {
+        "connections": [
+          {
+            "type": "postgresql",
+            "tag": "default",
+            "username": "postgres",
+            "password": {
+              "secret_ref": "default_password"
+            },
+            "database": "postgres",
+            "hostname": "db.xxxxxxxxxxxx.supabase.co",
+            "port": 5432,
+            "sslmode": "verify-full"
+          }
+        ]
+      },
+      "client_auth": {
+        "jwks_uri": "https://auth.example.com/.well-known/jwks.json",
+        "jwks": {
+          "keys": []
+        }
+      },
+      "parameters": {
+        "custom-write-checkpoints": false,
+        "peak-concurrent-connections": 10000
+      }
+    },
+    "sync_rules": "bucket_definitions:\n  global:\n    data:\n      - SELECT * FROM items",
+    "program_version": {
+      "channel": "stable"
+    }
+  }
+}
+```
+</Accordion>
+
+---
+
+### Get Instance Status
+
+Retrieves the provisioning status and operations history of an instance.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/status`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+#### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Instance ID |
+| `provisioned` | boolean | True if instance has been provisioned at least once |
+| `operations` | array | List of deploy operations |
+| `instance_url` | string | URL of the running instance (optional) |
+
+**Operation Object:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Operation ID |
+| `type` | string | `"up"` or `"down"` |
+| `status` | string | `"pending"`, `"running"`, `"failed"`, or `"completed"` |
+| `created_at` | string | ISO8601 timestamp |
+| `started_at` | string | ISO8601 timestamp (optional) |
+| `finished_at` | string | ISO8601 timestamp (optional) |
+| `version` | string | Version being deployed |
+
+<Accordion title="Example Request">
+```bash
 curl --request POST \
   --url https://powersync-api.journeyapps.com/api/v1/instances/status \
   --header 'Authorization: Bearer <PAT>' \
   --header 'Content-Type: application/json' \
-  --data '{"id":"your_powersync_instance_id","org_id":"your_organization_id","app_id":"your_powersync_project_id"}'
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
 ```
+</Accordion>
 
-This will return the status of your PowerSync Cloud instance.
-
-### Deprovision a PowerSync Cloud instance
-
-Deprovision a PowerSync Cloud instance. 
-
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "id": "instance789",
+    "provisioned": true,
+    "operations": [
+      {
+        "id": "op_abc123",
+        "type": "up",
+        "status": "completed",
+        "created_at": "2024-01-15T10:00:00Z",
+        "started_at": "2024-01-15T10:00:05Z",
+        "finished_at": "2024-01-15T10:02:30Z",
+        "version": "1.2.0"
+      }
+    ],
+    "instance_url": "https://instance789.powersync.journeyapps.com"
+  }
+}
 ```
+</Accordion>
+
+---
+
+### Get Instance Diagnostics
+
+Retrieves diagnostics information for a provisioned instance.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/diagnostics`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
 curl --request POST \
-  --url https://powersync-api.journeyapps.com/api/v1/instances/deprovision \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/diagnostics \
   --header 'Authorization: Bearer <PAT>' \
   --header 'Content-Type: application/json' \
-  --data '{"id":"your_powersync_instance_id","org_id":"your_organization_id","app_id":"your_powersync_project_id"}'
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
 ```
+</Accordion>
 
-<Warning>This will stop the instance and remove the bucket storage associated with the instance. When an instance is deprovisioned, and you want to re-provision it, you will need to redeploy your sync rules, by making a whitespace change in the sync-rules.yaml file.</Warning>
+---
 
-### View the Schema of a PowerSync Cloud instance
+### Compact Instance
 
-View the schema of a PowerSync Cloud instance.
+Triggers a compaction operation on the instance to optimize storage.
 
-```
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/compact`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
 curl --request POST \
-  --url https://powersync-api.journeyapps.com/api/v1/instances/schema \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/compact \
   --header 'Authorization: Bearer <PAT>' \
   --header 'Content-Type: application/json' \
-  --data '{"id":"your_powersync_instance_id","org_id":"your_organization_id","app_id":"your_powersync_project_id"}'
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
 ```
+</Accordion>
 
-This will return the schema of your PowerSync Cloud instance.
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "id": "instance789",
+    "operation_id": "op_compact123"
+  }
+}
+```
+</Accordion>
+
+---
+
+## Development & Debug Endpoints
+
+### Test Connection
+
+Tests a database connection without deploying. Useful for validating connection settings before deployment.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/connections/test`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | No | Instance ID |
+| `connection` | object | Yes | Connection configuration |
+
+#### Connection Types
+
+##### PostgreSQL Connection
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | `"postgresql"` |
+| `hostname` | string | Yes* | Database hostname |
+| `port` | number | No | Database port (default: 5432) |
+| `database` | string | Yes | Database name |
+| `username` | string | Yes | Database username |
+| `password` | object | Yes | `{ "secret": "password" }` |
+| `sslmode` | string | No | `"verify-full"` or `"verify-ca"` |
+| `cacert` | string | No | PEM certificate content |
+| `uri` | string | No* | Full connection URI (alternative to hostname) |
+| `debug_api` | boolean | No | Enable execute-sql endpoint |
+
+*Either `hostname` or `uri` is required.
+
+##### MongoDB Connection
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | `"mongodb"` |
+| `uri` | string | Yes | MongoDB connection URI |
+| `database` | string | No | Database name (can be in URI) |
+| `post_images` | string | No | `"off"`, `"auto_configure"`, or `"read_only"` |
+
+##### MySQL Connection
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | `"mysql"` |
+| `hostname` | string | Yes* | Database hostname |
+| `port` | number | No | Database port (default: 3306) |
+| `database` | string | Yes | Database name |
+| `username` | string | Yes | Database username |
+| `password` | object | Yes | `{ "secret": "password" }` |
+| `uri` | string | No* | Full connection URI (alternative to hostname) |
+| `client_certificate` | string | No | PEM certificate for mutual TLS |
+| `client_private_key` | object | No | Private key for mutual TLS |
+| `debug_api` | boolean | No | Enable execute-sql endpoint |
+
+*Either `hostname` or `uri` is required.
+
+<Accordion title="Example Request: PostgreSQL">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/connections/test \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "connection": {
+      "type": "postgresql",
+      "hostname": "db.example.com",
+      "port": 5432,
+      "database": "mydb",
+      "username": "replication_user",
+      "password": {"secret": "mypassword"},
+      "sslmode": "verify-full"
+    }
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Request: MongoDB">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/connections/test \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "connection": {
+      "type": "mongodb",
+      "uri": "mongodb+srv://user:password@cluster.mongodb.net/mydb?retryWrites=true&w=majority",
+      "database": "mydb",
+      "post_images": "auto_configure"
+    }
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Request: MySQL">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/connections/test \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "connection": {
+      "type": "mysql",
+      "hostname": "mysql.example.com",
+      "port": 3306,
+      "database": "mydb",
+      "username": "replication_user",
+      "password": {"secret": "mypassword"}
+    }
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "success": true,
+    "connection": {
+      "success": true,
+      "reachable": true,
+      "tls_valid": true,
+      "authenticated": true
+    },
+    "configuration": {
+      "success": true,
+      "wal_valid": true,
+      "publication_valid": true
+    },
+    "error": null
+  }
+}
+```
+</Accordion>
+
+---
+
+### Get Instance Schema
+
+Retrieves the database schema for a provisioned instance.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/dev/schema`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/dev/schema \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "connections": [
+      {
+        "id": "conn_abc",
+        "tag": "default",
+        "schemas": [
+          {
+            "name": "public",
+            "tables": [
+              {
+                "name": "users",
+                "columns": [
+                  {
+                    "name": "id",
+                    "type": "uuid",
+                    "pg_type": "uuid",
+                    "sqlite_type": "text",
+                    "internal_type": "uuid"
+                  },
+                  {
+                    "name": "email",
+                    "type": "text",
+                    "pg_type": "text",
+                    "sqlite_type": "text",
+                    "internal_type": "text"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "defaultConnectionTag": "default",
+    "defaultSchema": "public"
+  }
+}
+```
+</Accordion>
+
+---
+
+### Validate Sync Rules
+
+Validates sync rules configuration for an instance without deploying.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/dev/validate-sync-rules`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/dev/validate-sync-rules \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
+```
+</Accordion>
+
+---
+
+### Reprocess Sync Rules
+
+Triggers reprocessing of sync rules for an instance. This will re-evaluate all data against the current sync rules.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/instances/dev/reprocess-sync-rules`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/instances/dev/reprocess-sync-rules \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
+```
+</Accordion>
+
+---
+
+## General Endpoints
+
+### List Regions
+
+Returns available regions and their IP addresses for whitelisting in your database firewall.
+
+- **Method:** `GET`
+- **Path:** `/api/v1/regions`
+
+<Accordion title="Example Request">
+```bash
+curl --request GET \
+  --url https://powersync-api.journeyapps.com/api/v1/regions \
+  --header 'Authorization: Bearer <PAT>'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "regions": [
+      {
+        "name": "eu",
+        "deployable": true,
+        "ips": ["79.125.70.43", "18.200.209.88"]
+      },
+      {
+        "name": "us",
+        "deployable": true,
+        "ips": ["50.19.5.255", "34.193.39.149"]
+      }
+      // ... additional regions
+    ]
+  }
+}
+```
+</Accordion>
+
+For a full list of regions and their IP addresses, see [Security & IP Filtering](/installation/database-setup/security-and-ip-filtering).
+
+---
+
+### List Versions
+
+Returns available PowerSync service versions for a release channel with status information.
+
+- **Method:** `POST`
+- **Path:** `/api/v2/channel-versions`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `channel` | string | Yes | Release channel (e.g., "stable") |
+
+**Version Status Values:**
+- `current` - The recommended version
+- `available` - Can be deployed
+- `deprecated` - Should be upgraded
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v2/channel-versions \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "channel": "stable"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": [
+    { "version": "1.17", "status": "current" },
+    { "version": "1.16", "status": "available" },
+    { "version": "1.15", "status": "available" },
+    // ... additional versions
+    { "version": "1.9", "status": "deprecated" }
+  ]
+}
+```
+</Accordion>
+
+---
+
+## Reporting Endpoints
+
+### Get Connected Clients
+
+Returns currently connected clients to your PowerSync instance.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/report/connection/current`
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/report/connection/current \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id"
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": { 
+    "users": 50,
+    "sdks": [
+      {
+        "sdk": "powersync-js@1.0.0",
+        "users": 30,
+        "clients": 35
+      },
+      {
+        "sdk": "powersync-react-native@1.0.0",
+        "users": 20,
+        "clients": 22
+      }
+    ]
+  }
+}
+```
+</Accordion>
+
+---
+
+### Get General Client Connection Analytics
+
+Returns detailed client connection events with pagination. Useful for debugging connection issues or analyzing user behavior.
+
+- **Method:** `POST`
+- **Path:** `/api/v1/report/connection/general/analytics`
+- **Paginated:** Yes
+
+#### Request Parameters
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `org_id` | string | Yes | Organization ID |
+| `app_id` | string | Yes | Application ID |
+| `id` | string | Yes | Instance ID |
+| `client_id` | string | No | Filter by client ID |
+| `user_id` | string | No | Filter by user ID |
+| `date_range` | object | No | Time range filter |
+| `cursor` | string | No | Pagination cursor |
+| `limit` | number | No | Results per page |
+
+<Accordion title="Example Request">
+```bash
+curl --request POST \
+  --url https://powersync-api.journeyapps.com/api/v1/report/connection/general/analytics \
+  --header 'Authorization: Bearer <PAT>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "org_id": "your_organization_id",
+    "app_id": "your_powersync_project_id",
+    "id": "your_powersync_instance_id",
+    "date_range": {
+      "start": "2024-01-01T00:00:00Z",
+      "end": "2024-01-31T23:59:59Z"
+    },
+    "limit": 100
+  }'
+```
+</Accordion>
+
+<Accordion title="Example Response">
+```json
+{
+  "data": {
+    "total": 1000,
+    "count": 100,
+    "more": true,
+    "cursor": "eyJza2lwIjoxMDB9",
+    "items": [
+      {
+        "user_id": "user123",
+        "client_id": "client456",
+        "connected_at": "2024-01-15T10:30:00Z",
+        "disconnected_at": "2024-01-15T11:45:00Z",
+        "jwt_exp": "2024-01-15T12:30:00Z",
+        "user_agent": "Mozilla/5.0...",
+        "sdk": "powersync-js@1.0.0"
+      }
+    ]
+  }
+}
+```
+</Accordion>
+
+---
+
+## Connection Configuration Reference
+
+### Common Fields (All Connection Types)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Connection type: `"postgresql"`, `"mongodb"`, or `"mysql"` |
+| `name` | string | No | Descriptive name for the connection |
+| `id` | string | No | Unique identifier (optional for single connection) |
+| `tag` | string | No | Reference tag for sync rules (default: `"default"`) |
+| `username` | string | No | Database username |
+| `password` | object | No | Password as `{"secret": "value"}` or `{"secret_ref": "ref"}` |
+| `database` | string | No | Database name |
+
+### PostgreSQL-Specific Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hostname` | string | Database hostname |
+| `port` | number | Database port (default: 5432) |
+| `uri` | string | Full connection URI (alternative to hostname) |
+| `sslmode` | string | `"verify-full"` or `"verify-ca"` |
+| `cacert` | string | CA certificate in PEM format |
+| `client_certificate` | string | Client certificate for mutual TLS |
+| `client_private_key` | object | Client private key for mutual TLS |
+| `vpc_endpoint_hostname` | string | AWS VPC endpoint hostname |
+| `debug_api` | boolean | Enable execute-sql endpoint |
+
+### MongoDB-Specific Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `uri` | string | MongoDB connection URI (required) |
+| `post_images` | string | Change stream mode: `"off"`, `"auto_configure"`, or `"read_only"` |
+| `vpc_endpoint_hostname` | string | AWS VPC endpoint hostname |
+
+### MySQL-Specific Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hostname` | string | Database hostname |
+| `port` | number | Database port (default: 3306) |
+| `uri` | string | Full connection URI (alternative to hostname) |
+| `client_certificate` | string | Client certificate for mutual TLS |
+| `client_private_key` | object | Client private key for mutual TLS |
+| `debug_api` | boolean | Enable execute-sql endpoint |
+
+---

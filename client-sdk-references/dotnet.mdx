@@ -297,6 +297,200 @@ await db.Execute(
 );
 ```
 
+## Accessing PowerSync connection status information
+
+Use [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and access [CurrentStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/Client/PowerSyncDatabase.cs) to listen for status changes to your PowerSync instance.
+
+```cs
+using PowerSync.Common.Client;
+using PowerSync.Common.DB.Crud;
+
+class StatusIndicator
+{
+    private PowerSyncDatabase _db;
+    private SyncStatus? _currentStatus;
+
+    public StatusIndicator(PowerSyncDatabase db)
+    {
+        _db = db;
+        _currentStatus = db.CurrentStatus;
+        
+        // Monitor status changes (you would typically use an event or observable pattern)
+        // For example, poll periodically or use your framework's reactive patterns
+        Task.Run(async () =>
+        {
+            while (true)
+            {
+                var newStatus = _db.CurrentStatus;
+                if (newStatus != _currentStatus)
+                {
+                    _currentStatus = newStatus;
+                    UpdateStatusIcon(_currentStatus);
+                }
+                await Task.Delay(1000); // Poll every second
+            }
+        });
+    }
+
+    private void UpdateStatusIcon(SyncStatus status)
+    {
+        var dataFlow = status.DataFlowStatus;
+        var hasError = dataFlow.DownloadError != null || dataFlow.UploadError != null;
+        
+        if (hasError)
+        {
+            var errorMessage = dataFlow.DownloadError?.Message ?? dataFlow.UploadError?.Message ?? "Unknown error";
+            if (!status.Connected)
+            {
+                Console.WriteLine($"Error: {errorMessage} - Not connected");
+            }
+            else
+            {
+                Console.WriteLine($"Error: {errorMessage} - Sync problem");
+            }
+        }
+        else if (status.Connecting)
+        {
+            Console.WriteLine("Connecting...");
+        }
+        else if (!status.Connected)
+        {
+            Console.WriteLine("Not connected");
+        }
+        else if (dataFlow.Uploading && dataFlow.Downloading)
+        {
+            Console.WriteLine("Uploading and downloading");
+        }
+        else if (dataFlow.Uploading)
+        {
+            Console.WriteLine("Uploading");
+        }
+        else if (dataFlow.Downloading)
+        {
+            Console.WriteLine("Downloading");
+        }
+        else
+        {
+            Console.WriteLine("Connected");
+        }
+    }
+}
+```
+
+## Wait for the initial sync to complete
+
+Use the [HasSynced](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) property (available since version 0.0.6-alpha.1 of the SDK) to indicate to the user whether the initial sync is in progress.
+
+```cs
+using PowerSync.Common.Client;
+
+// Example of using HasSynced to show whether the first sync has completed
+var status = db.CurrentStatus;
+if (status?.HasSynced == true)
+{
+    Console.WriteLine("Initial sync completed!");
+}
+else
+{
+    Console.WriteLine("Busy with initial sync...");
+}
+
+// For async use cases, use WaitForFirstSync which returns a task that completes once the first full sync has completed
+await db.WaitForFirstSync();
+
+// Wait for a specific priority level to complete syncing
+// The priority parameter is available since version 0.0.6-alpha.1 of the SDK
+const int priority = 1; // Your bucket priority
+await db.WaitForFirstSync(priority: priority);
+```
+
+## Report sync download progress
+
+You can show users a progress bar when data downloads using the `DownloadProgress()` method from the [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) class. `DownloadProgress().DownloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
+
+<Note>
+  **Version compatibility**: The `DownloadProgress()` method is available since version 0.0.6-alpha.1 of the SDK.
+</Note>
+
+Example:
+
+```cs
+using PowerSync.Common.Client;
+using PowerSync.Common.DB.Crud;
+
+class SyncProgressBar
+{
+    private PowerSyncDatabase _db;
+    private int? _priority; // Optional: when set, show progress towards this priority instead of the full sync
+
+    public SyncProgressBar(PowerSyncDatabase db, int? priority = null)
+    {
+        _db = db;
+        _priority = priority;
+    }
+
+    public void DisplayProgress()
+    {
+        var status = _db.CurrentStatus;
+        var totalProgress = status?.DownloadProgress();
+        
+        var progress = _priority == null 
+            ? totalProgress 
+            : totalProgress?.UntilPriority(_priority.Value);
+
+        if (progress != null)
+        {
+            var fraction = progress.DownloadedFraction; // 0.0 to 1.0
+            var downloadedOps = progress.DownloadedOperations;
+            var totalOps = progress.TotalOperations;
+            
+            Console.WriteLine($"Sync progress: {fraction * 100:F1}%");
+            
+            if (downloadedOps == totalOps)
+            {
+                Console.WriteLine("Applying server-side changes...");
+            }
+            else
+            {
+                Console.WriteLine($"Downloaded {downloadedOps} out of {totalOps} operations");
+            }
+        }
+    }
+}
+```
+
+## Monitor Priority Status Entries
+
+When using [bucket priorities](/usage/use-case-examples/prioritized-sync), you can access priority-specific sync status information using [PriorityStatusEntries](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and [StatusForPriority](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs):
+
+<Note>
+  **Version compatibility**: `PriorityStatusEntries` and `StatusForPriority()` are available since version 0.0.6-alpha.1 of the SDK.
+</Note>
+
+```cs
+using PowerSync.Common.Client;
+using PowerSync.Common.DB.Crud;
+
+var status = db.CurrentStatus;
+var priorityEntries = status?.PriorityStatusEntries;
+
+if (priorityEntries != null && priorityEntries.Length > 0)
+{
+    foreach (var entry in priorityEntries)
+    {
+        var syncedStatus = entry.HasSynced == true ? "Synced" : entry.HasSynced == false ? "Not synced" : "Unknown";
+        Console.WriteLine($"Priority {entry.Priority}: {syncedStatus} (Last synced: {entry.LastSyncedAt?.ToString() ?? "Never"})");
+    }
+    
+    // Get status for a specific priority
+    var priority1Status = status?.StatusForPriority(1);
+    if (priority1Status != null)
+    {
+        Console.WriteLine($"Priority 1 has synced: {priority1Status.HasSynced}");
+    }
+}
+```
+
 ## Configure Logging
 
 Enable logging to help you debug your app. By default, the SDK uses a no-op logger that doesn't output any logs. To enable logging, you can configure a custom logger using .NET's `ILogger` interface:

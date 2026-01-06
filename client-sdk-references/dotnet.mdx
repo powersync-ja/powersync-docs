@@ -307,27 +307,19 @@ using PowerSync.Common.DB.Crud;
 
 class StatusIndicator
 {
-    private PowerSyncDatabase _db;
     private SyncStatus? _currentStatus;
 
     public StatusIndicator(PowerSyncDatabase db)
     {
-        _db = db;
-        _currentStatus = db.CurrentStatus;
-        
         // Monitor status changes (you would typically use an event or observable pattern)
         // For example, poll periodically or use your framework's reactive patterns
-        Task.Run(async () =>
+        db.RunListener((update) =>
         {
-            while (true)
+            var newStatus= update.StatusChanged;
+            if (newStatus != null && newStatus != _currentStatus)
             {
-                var newStatus = _db.CurrentStatus;
-                if (newStatus != _currentStatus)
-                {
-                    _currentStatus = newStatus;
-                    UpdateStatusIcon(_currentStatus);
-                }
-                await Task.Delay(1000); // Poll every second
+                _currentStatus = newStatus;
+                UpdateStatusIcon(_currentStatus);
             }
         });
     }
@@ -336,7 +328,7 @@ class StatusIndicator
     {
         var dataFlow = status.DataFlowStatus;
         var hasError = dataFlow.DownloadError != null || dataFlow.UploadError != null;
-        
+
         if (hasError)
         {
             var errorMessage = dataFlow.DownloadError?.Message ?? dataFlow.UploadError?.Message ?? "Unknown error";
@@ -385,7 +377,6 @@ Use the [HasSynced](https://github.com/powersync-ja/powersync-dotnet/blob/main/P
 using PowerSync.Common.Client;
 
 // Example of using HasSynced to show whether the first sync has completed
-var status = db.CurrentStatus;
 if (status?.HasSynced == true)
 {
     Console.WriteLine("Initial sync completed!");
@@ -400,8 +391,8 @@ await db.WaitForFirstSync();
 
 // Wait for a specific priority level to complete syncing
 // The priority parameter is available since version 0.0.6-alpha.1 of the SDK
-const int priority = 1; // Your bucket priority
-await db.WaitForFirstSync(priority: priority);
+var prioritySyncRequest = new PowerSyncDatabase.PrioritySyncRequest{ Priority = 1 };
+await db.WaitForFirstSync(request: prioritySyncRequest);
 ```
 
 ## Report sync download progress
@@ -423,17 +414,29 @@ class SyncProgressBar
     private PowerSyncDatabase _db;
     private int? _priority; // Optional: when set, show progress towards this priority instead of the full sync
 
+    private SyncStatus? _currentStatus;
+
     public SyncProgressBar(PowerSyncDatabase db, int? priority = null)
     {
         _db = db;
         _priority = priority;
+
+           db.RunListener((update) =>
+        {
+            var newStatus= update.StatusChanged;
+            if (newStatus != null && newStatus != _currentStatus)
+            {
+                _currentStatus = newStatus;
+                DisplayProgress();
+            }
+        });
     }
 
     public void DisplayProgress()
     {
-        var status = _db.CurrentStatus;
+        var status = _currentStatus;
         var totalProgress = status?.DownloadProgress();
-        
+
         var progress = _priority == null 
             ? totalProgress 
             : totalProgress?.UntilPriority(_priority.Value);
@@ -443,9 +446,9 @@ class SyncProgressBar
             var fraction = progress.DownloadedFraction; // 0.0 to 1.0
             var downloadedOps = progress.DownloadedOperations;
             var totalOps = progress.TotalOperations;
-            
+
             Console.WriteLine($"Sync progress: {fraction * 100:F1}%");
-            
+
             if (downloadedOps == totalOps)
             {
                 Console.WriteLine("Applying server-side changes...");

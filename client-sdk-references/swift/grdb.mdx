@@ -1,0 +1,110 @@
+---
+title: "GRDB (Alpha)"
+---
+
+PowerSync integrates with the [GRDB library](https://github.com/groue/GRDB.swift), a powerful SQLite tool for Swift development. GRDB is a full-fledged SQLite ecosystem that offers SQLite connection creation and pooling, SQL generation (ORM functionality), database observation (reactive queries), robust concurrency, migrations, and SwiftUI integration with [GRDBQuery](https://github.com/groue/GRDBQuery).
+
+This integration allows you to combine PowerSync's sync capabilities with GRDB's mature tooling and Swift-friendly patterns. It provides an easier adoption path for existing GRDB users while also enabling access to GRDB's ecosystem of libraries.
+
+<Note>
+GRDB support was added in v1.9.0 of the PowerSync Swift SDK and is currently in an **alpha** release.
+
+There are some limitations to be aware of:
+
+- Updating the PowerSync schema using `updateSchema` is not yet supported. 
+- Xcode previews may not yet work correctly. 
+- The current implementation uses the SQLite session API for change tracking, which may consume more memory than the standard PowerSync implementation. A more efficient tracking mechanism is planned.
+- You may see thread priority inversion warnings in Xcode. We're working to ensure consistent quality-of-service classes across threads.
+- The schema definition process requires manually defining both the PowerSync `AppSchema` and GRDB record types separately. Future versions may allow these to be declared together or derived from each other.
+</Note>
+
+## Features
+
+When using GRDB with PowerSync:
+
+- **Easier adoption for existing GRDB users**: The familiar GRDB API lowers the barrier to entry for teams already using GRDB.
+- **Access to GRDB ecosystem**: Use libraries built on GRDB like GRDBQuery (SwiftUI data layer with automatic UI updates) and SQLiteData.
+- **Type-safe query generation**: GRDB's ORM provides compile-time error checking and Swift-idiomatic patterns that make SQLite development more productive. You get features like database observation (similar to PowerSync's watch functionality), migration support, and record protocols that reduce boilerplate while maintaining flexibility to drop down to raw SQL when needed.
+- **Direct SQLite access**: GRDB provides more direct access to the actual SQLite connections being used. This enables advanced SQLite operations like registering custom SQLite functions.
+
+## Installation
+
+This guide assumes that you have completed the [Getting Started](/client-sdk-references/swift#getting-started) steps in the SDK documentation, or are at least familiar with them. The GRDB-specific configuration described below applies to the "Instantiate the PowerSync Database" step (step 2) in the Getting Started guide.
+
+## Setup
+
+To set up PowerSync with GRDB, create a `DatabasePool` with PowerSync configuration:
+
+```swift
+var config = Configuration()
+
+try config.configurePowerSync(
+    schema: schema
+)
+
+let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+let dbURL = documentsDir.appendingPathComponent("test.sqlite")
+let pool = try DatabasePool(
+    path: dbURL.path,
+    configuration: config
+)
+```
+
+You can then pass this pool when creating the `PowerSyncDatabase`:
+
+```swift
+let powerSync = openPowerSyncWithGRDB(
+    pool: pool,
+    schema: schema,
+    identifier: "mydatabase.sqlite"
+)
+```
+
+The returned `PowerSyncDatabase` behaves just like a regular PowerSync database, meaning that you can call `connect` to establish a sync connection.
+
+## Usage
+
+Using the `DatabasePool` in the PowerSync SDK results in the same locking mechanisms being used between instances of the `PowerSyncDatabase` and `DatabasePool`. Consumers should be safe to alternate between both clients.
+
+You can use PowerSync queries:
+
+```swift
+try await powerSync.execute(
+    "INSERT INTO users(id, name, count) VALUES(uuid(), 'steven', 1)"
+)
+
+let initialUsers = try await powerSync.getAll(
+    "SELECT * FROM users"
+) { cursor in
+    try cursor.getString(name: "name")
+}
+print("initial users \(initialUsers)")
+```
+
+And also use GRDB queries:
+
+```swift
+// Define a GRDB record type
+struct Users: Codable, Identifiable, FetchableRecord, PersistableRecord {
+    var id: String
+    var name: String
+    var count: Int
+
+    enum Columns {
+        static let name = Column(CodingKeys.name)
+        static let count = Column(CodingKeys.count)
+    }
+}
+
+let grdbUsers = try await pool.read { db in
+    try Users.fetchAll(db)
+}
+```
+
+## Architecture
+
+The GRDB integration works by sharing the same underlying SQLite database between PowerSync and GRDB. Instead of PowerSync creating its own SQLite database instance (as in the standard implementation), the integration uses a GRDB `DatabasePool` that has been configured with [PowerSync's Rust core extension](https://github.com/powersync-ja/powersync-sqlite-core) (required for PowerSync features).
+
+When you create a `DatabasePool` with PowerSync configuration and pass it to `openPowerSyncWithGRDB`, PowerSync uses that same `DatabasePool` interface for all database operations.
+
+This shared architecture means that you can use both the GRDB `DatabasePool` and PowerSync `PowerSyncDatabase` interfaces interchangeably.

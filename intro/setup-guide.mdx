@@ -34,24 +34,29 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
         ```bash
         # 1. Create a directory for your config
         mkdir powersync-service && cd powersync-service
-        
-        # 2. Create config.yaml (see example below)
 
-        # 3. Run MongoDB for sync bucket storage (if not already running)
-        docker run -d --name powersync-mongo \
+        # 2. Create a Docker network
+        docker network create powersync-network
+
+        # 3. Run MongoDB for sync bucket storage
+        docker run -d \
+          --name powersync-mongo \
+          --network powersync-network \
           -p 27017:27017 \
           mongo:7.0 --replSet rs0 --bind_ip_all
-        
-        # Initialize replica set
+
+        # 4. Initialize replica set
         docker exec -it powersync-mongo mongosh --eval "rs.initiate()"
-        
-        # 4. Run PowerSync Service
+
+        # 5. Create config.yaml (see below)
+
+        # 6. Run PowerSync Service
         docker run -d \
-          -p 8080:8080 \
-          --name powersync \
-          -v $(pwd)/config.yaml:/config/config.yaml \
-          -e POWERSYNC_CONFIG_PATH=/config/config.yaml \
-          journeyapps/powersync-service:latest start -r unified
+        --name powersync \
+        --network powersync-network \
+        -p 8080:80 \
+        -e POWERSYNC_CONFIG_B64="$(base64 -i ./config.yaml)" \
+        journeyapps/powersync-service:latest
         ```
 
         **Basic `config.yaml` structure:**
@@ -62,14 +67,12 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
           connections:
             - type: postgresql # or mongodb, mysql, mssql
               uri: postgresql://postgres:mypassword@pg-db:5432/postgres # The connection URI or individual parameters can be specified.
-              sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
-              # Note: 'disable' is only suitable for local/private networks, not for public networks
-        
+
         # Connection settings for sync bucket storage
         storage:
           type: mongodb
-          uri: mongodb://localhost:27017/powersync
-        
+          uri: mongodb://powersync-mongo:27017/powersync
+
         # Sync Rules (defined in a later step)
         sync_rules:
           content: |

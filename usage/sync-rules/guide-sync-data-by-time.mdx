@@ -2,7 +2,7 @@
 title: "Guide: Syncing Data by Time"
 ---
 
-A common need in offline-first apps is syncing data based on time—for example, only syncing issues updated in the last 7 days instead of the entire dataset.
+A common need in offline-first apps is syncing data based on time, for example, only syncing issues updated in the last 7 days instead of the entire dataset.
 You might expect to write something like:
 
 ```yaml focus={4} lines
@@ -16,11 +16,11 @@ However, This won't work. Here's why.
 
 # The Problem
 
-Sync rules only support a limited set of operators when filtering on parameters. You can use `=`, `IN`, and `IS NULL`—but not range operators like `>`, `<`, `>=`, or `<=`.
+Sync rules only support a limited set of operators when filtering on parameters. You can use `=`, `IN`, and `IS NULL`, but not range operators like `>`, `<`, `>=`, or `<=`.
 
 Additionally, sync rule functions must be deterministic. Time-based functions like `now()` aren't allowed because the result changes depending on when the query runs.
 
-These constraints exist for good reason—they ensure buckets can be pre-computed and cached efficiently. But they make time-based filtering less obvious to implement.
+These constraints exist for good reason, they ensure buckets can be pre-computed and cached efficiently. But they make time-based filtering less obvious to implement.
 
 This guide covers a few practical workarounds.
 
@@ -66,7 +66,11 @@ bucket_definitions:
 
 This approach works well when you have a small, fixed set of time ranges. However, it requires schema changes and a scheduled job to keep the columns updated.
 
-If you need more flexibility like letting users pick arbitrary date ranges [see Workaround 2]().
+<Warning>
+**Cons:** Requires schema changes and scheduled jobs (e.g., pg_cron). Limited to pre-defined time ranges.
+</Warning>
+
+If you need more flexibility like letting users pick arbitrary date ranges [see Workaround 2](#2:-buckets-per-date).
 
 ## 2: Buckets Per Date
 
@@ -91,11 +95,15 @@ await db.connect(connector, {
 })
 ```
 
-This gives users full control over which dates to sync—no schema changes or scheduled jobs required.
+This gives users full control over which dates to sync, with no schema changes or scheduled jobs required.
 
-The trade-off is granularity. In this example we're using daily buckets. If you need finer precision (hourly), syncing a large range means many buckets. If you go coarser (monthly), you lose the ability to filter accurately.
+The trade-off is granularity. In this example we're using daily buckets. If you need finer precision (hourly), syncing a large range means many buckets. If you use larger buckets (monthly), you lose the ability to filter accurately.
 
-You have to pick a granularity and stick with it. If that's a problem—say, you want hourly precision for recent data but don't want hundreds of buckets when syncing a full month [see Workaround 3]().
+<Warning>
+**Cons:** Must commit to a single granularity. Daily = too many buckets for long ranges. Monthly = lose precision for recent data.
+</Warning>
+
+You have to pick a granularity and stick with it. If that's a problem, say, you want hourly precision for recent data but don't want hundreds of buckets when syncing a full month [see Workaround 3](#3:-multiple-granularities).
 
 ## 3: Multiple Granularities
 
@@ -136,8 +144,12 @@ This syncs January 5–6 by day, the morning of January 7 by hour, and the last 
 
 The trade-off is complexity. The client must decide which granularity to use for each time segment, and each row belongs to multiple buckets, which increases replication overhead.
 
-<Warning>
+<Note>
 When using multiple time granularities (e.g., monthly, daily, hourly), rows move between buckets as time passes. Since each granularity creates a different bucket ID, the client must re-download the row from the new bucket even if it already has the data. This re-download overhead can nullify the benefits of granular filtering. For this reason, in some cases it may be better to sync entire months avoiding the re-sync overhead, even if you sync more data initially.
+</Note>
+
+<Warning>
+**Cons:** Each row belongs to multiple buckets (replication overhead). Re-sync overhead when rows move between bucket granularities. Added complexity may not justify the gains over Workaround 2.
 </Warning>
 
 # Conclusion

@@ -1,67 +1,75 @@
 ---
 title: "Consistency"
-description: 'PowerSync uses the concept of "checkpoints" to ensure the data is consistent.'
+description: 'PowerSync uses the concept of "checkpoints" to ensure that data is consistent.'
 ---
 
-## PowerSync: Designed for causal+ consistency
+## PowerSync: Designed for Causal+ Consistency
 
-PowerSync is designed to have [Causal+ Consistency](https://jepsen.io/consistency/models/causal), while providing enough flexibility for applications to perform their own data validations and conflict handling.
+PowerSync is designed to have [causal+ consistency](https://jepsen.io/consistency/models/causal), while providing enough flexibility for applications to perform their own data validations and conflict handling. PowerSync's consistency properties have been [tested and verified](https://github.com/nurturenature/jepsen-powersync#readme).
 
-## How it works: Checkpoints
+## How It Works: Checkpoints
 
 A checkpoint is a single point-in-time on the server (similar to an [LSN in Postgres](https://www.postgresql.org/docs/current/datatype-pg-lsn.html)) with a consistent state — only fully committed transactions are part of the state.
 
-The client only updates its local state when it has all the data matching a checkpoint, and then it updates the state to exactly match that of the checkpoint. There is no intermediate state while downloading large sets of changes such as large server-side transactions. Different tables and sync buckets are all included in the same consistent checkpoint, to ensure that the state is consistent over all data in the app.
+The client only updates its local state when it has all the data matching a checkpoint, and then it updates the state to exactly match that of the checkpoint. There is no intermediate state while downloading large sets of changes such as large server-side transactions. Different tables and [sync buckets](/architecture/powersync-service#bucket-system) are all included in the same consistent checkpoint, to ensure that the state is consistent over all data in the client.
 
-## Local client changes
+## Client-Side Mutations
 
-Local changes are applied on top of the last checkpoint received from the server, as well as being persisted into an upload queue.
+Client-side mutations are applied on top of the last checkpoint received from the <Tooltip tip="PowerSync Service">server</Tooltip>, as well as being persisted into an [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue).
 
-While changes are present in the upload queue, the client does not advance to a new checkpoint. This means the client never has to resolve conflicts locally.
+While mutations are present in the upload queue, the client does not advance to a new checkpoint. This means the client never has to resolve conflicts locally.
 
-Only once all the local changes have been acknowledged by the server, and the data for that new checkpoint is downloaded by the client, does the client advance to the next checkpoint. This ensures that the operations are always ordered correctly on the client.
+Only once all the client-side mutations have been acknowledged by the server, and the data for that new checkpoint is downloaded by the client, does the client advance to the next checkpoint. This ensures that the operations are always ordered correctly on the client.
 
-## Types of local operations
+<Note>
+There is one nuanced case here, which is buckets with [Priority 0](/sync/advanced/prioritized-sync#special-case:-priority-0) if you are using [Prioritized Syncing](/sync/advanced/prioritized-sync).
+</Note>
 
-The client automatically records changes to the local database as PUT, PATCH or DELETE operations — corresponding to INSERT, UPDATE or DELETE statements. These are grouped together in a batch per local transaction.
+## Types of Client-Side Mutations/Operations
 
-Since the developer has full control over how operations are applied, more advanced operations can be modeled on top of these three. For example an insert-only "operations" table can be added, that records additional metadata for individual operations.
+The client automatically records mutations to the client-side database as `PUT`, `PATCH` or `DELETE` operations — corresponding to `INSERT`, `UPDATE` or `DELETE` statements in SQLite. These are grouped together in a batch per client-side transaction.
 
-## Validation and conflict handling
+Since the [developer has full control](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) over how mutations are applied to the source database, more advanced operations can be modeled on top of these three. See [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution) for examples.
 
-With PowerSync offering full flexibility in how changes are applied on the server, it is also the developer's responsibility to implement this correctly to avoid consistency issues.
+
+## Validation and Conflict Handling
+
+With PowerSync offering [full flexibility](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) in how mutations are <Tooltip tip="I.e., processed via your backend API and applied to the source database">applied on the server</Tooltip>, it is also the developer's responsibility to implement this correctly to avoid consistency issues.
 
 Some scenarios to consider:
 
-While the client was offline, a record was modified locally. By the time the client is online again, that record has been deleted. Some options for handling the change:
+While the client was offline, a row was modified on the client-side. By the time the client is online again, that row has been deleted on the source database. Some options for handling the mutation in your backend:
 
-* Discard the change.
+* Discard the mutation.
 * Discard the entire transaction.
-* Re-create the record.
-* Record the change elsewhere, potentially notifying the user and allowing the user to resolve the issue.
+* Re-create the <Tooltip tip="PowerSync supports NoSQL source databases like MongoDB that have 'documents' rather than 'rows', but we often refer just to 'row' for brevity.">row</Tooltip>.
+* Record the failed mutation elsewhere, potentially notifying the user and allowing the user to resolve the issue.
 
 Some other examples include foreign-key or not-null constraints, maximum size of numeric fields, unique constraints, and access restrictions (such as row-level security policies).
 
-With an online-only application, the user typically sees the error as soon as it occurs, and can make changes as required. In an offline-capable application, these errors may occur much later than when the change was made, so more care is required to handle these cases.
+In an online-only application, the user typically sees the error as soon as it occurs, and can correct the issue as required. In an offline-capable application that syncs asynchronously with the server, these errors may occur much later than when the mutation was made, so more care is required to handle these cases.
 
-Special care must be taken so that issues such as those do not block the upload queue — the queue cannot advance if the server does not acknowledge a change.
+Special care must be taken so that issues such as those do not block the upload queue. The upload queue in the PowerSync Client SDK is a blocking [FIFO](https://en.wikipedia.org/wiki/FIFO_%28computing_and_electronics%29) queue, and the queue cannot advance if the backend does not <Tooltip tip="The typical implementation is that your backend API returns a 2xx response to acknowledge a change, and a 4xx response to reject it. And then in your implementation of the 'uploadData()' function on the client, only when a 2xx response is received, the transaction is marked as complete and removed from the upload queue.">acknowledge a mutation</Tooltip>. And as mentioned above, if the queue cannot be cleared, the client does not move on to the next checkpoint of synced data.
 
 There is no single correct choice on how to handle write failures such as mentioned above — the best action depends on the specific application and scenario. However, we do have some suggestions for general approaches:
 
-1. In general, consider relaxing constraints somewhat on the server where it is not absolutely important. It may be better to accept data that is somewhat inconsistent (e.g. a client not applying all expected validations), rather than discarding the data completely.
-2. If it is critical to preserve all client changes and preserve the order of changes:
-   1. Block the client's queue on unexpected errors (don't acknowledge the change).
+1. In general, consider relaxing constraints somewhat on the backend where they are not absolutely required. It may be better to accept data that is somewhat inconsistent (e.g. a client not applying all expected validations), rather than discarding the data completely.
+2. If it is critical to preserve all client mutations and preserve the order of mutations:
+   1. Block the client's upload queue on unexpected errors (don't <Tooltip tip="The typical implementation is that your backend API returns a 2xx response to acknowledge a change, and a 4xx response to reject it. And then in your implementation of the 'uploadData()' function on the client, only when a 2xx response is received, the transaction is marked as complete and removed from the upload queue.">acknowledge the mutation</Tooltip> in your backend API).
    2. Implement error monitoring to be notified of issues, and resolve the issues as soon as possible.
-3. If it is critical to preserve all client changes, but the exact order may not be critical:
-   1. On a constraint error, persist the transaction in a separate server-side queue, and acknowledge the change.
-   2. The server-side queue can then be inspected and retried asynchronously, without blocking the client-side queue.
-4. If it is acceptable to lose some changes due to constraint errors:
-   1. Discard the change, or the entire transaction if the changes must all be applied together.
+3. If it is critical to preserve all client mutations, but the exact order may not be critical:
+   1. On a constraint error, persist the transaction in a separate queue on your backend, and acknowledge the change.
+   2. The backend queue can then be inspected and retried asynchronously, without blocking the client-side upload queue.
+4. If it is acceptable to lose some mutations due to constraint errors:
+   1. Discard the mutation, or the entire transaction if the changes must all be applied together.
    2. Implement error notifications to detect these issues.
 
 See also:
 
 * [Handling Update Conflicts](/handling-writes/handling-update-conflicts)
 * [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution)
+
+
+## Questions?
 
 If you have any questions about consistency, please [join our Discord](https://discord.gg/powersync) to discuss.

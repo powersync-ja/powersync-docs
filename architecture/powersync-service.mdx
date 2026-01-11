@@ -2,7 +2,7 @@
 title: "PowerSync Service"
 ---
 
-When we say "PowerSync instance" we are referring to an instance of the [PowerSync Service](https://github.com/powersync-ja/powersync-service), which is the server-side component of the sync engine responsible for the _read path_ from the source database to client-side SQLite databases: The primary purpose of the PowerSync Service is replicating data from your source database (Postgres, MongoDB, MySQL, SQL Server), and streaming data to clients, based on your Sync Rules configuration.
+When we say "PowerSync instance" we are referring to an instance of the [PowerSync Service](https://github.com/powersync-ja/powersync-service), which is the server-side component of the sync engine responsible for the _read path_ from the source database to client-side SQLite databases: The primary purpose of the PowerSync Service is replicating data from your source database (Postgres, MongoDB, MySQL, SQL Server), and streaming data to clients, based on your _Sync Rules_ configuration.
 
 
 ## Bucket System
@@ -15,7 +15,7 @@ When you define [Sync Rules](/sync/rules/overview), you define the <Tooltip tip=
 
 <Note>**Sync Streams: Implicit Buckets**: In our new [Sync Streams](/sync/streams) system which is in [early alpha](/sync/overview), buckets and parameters are not explicitly defined, and are rather implicit based on the streams, their queries and subqueries.</Note>
 
-For example, let's say you have a bucket named `user_todo_lists` that contains the to-do lists for a user, and that bucket utilizes a `user_id` parameter (which will be provided in the JWT) to scope those to-do lists. 
+For example, let's say you have a sync bucket named `user_todo_lists` that contains the to-do lists for a user, and that bucket utilizes a `user_id` parameter (which will be embedded in the JWT) to scope those to-do lists. 
 
 Now let's say users with IDs `1`, `2` and `3` exist in the source database. PowerSync will then replicate data from the source database and create buckets named `user_todo_lists["1"]`, `user_todo_lists["2"]` and `user_todo_lists["3"]`. 
 
@@ -24,7 +24,11 @@ If a user with `user_id=1` in its JWT connects to the PowerSync Service and sync
 
 ### Deduplication for Scalability
 
-The bucket system also allows for high-scalability because it _deduplicates_ data that is shared between different users. For example, let's pretend that instead of `user_todo_lists`, we have `org_todo_lists` buckets, each contain the to-do lists for an _organization_. Now let's pretend that both users with IDs `1` and `2` both belong to an organization with an ID of `1`. In this scenario, both users `1` and `2` will sync from a sync bucket `org_todo_lists["1"]`.
+The bucket system also allows for high-scalability because it _deduplicates_ data that is shared between different users. 
+
+For example, let's pretend that instead of `user_todo_lists`, we have `org_todo_lists` buckets, each containing the to-do lists for an _organization_., and we use an `organization_id` parameter from the JWT for this bucket. Now let's pretend that both users with IDs `1` and `2` both belong to an organization with an ID of `1`. In this scenario, both users `1` and `2` will sync from a sync bucket `org_todo_lists["1"]`.
+
+This also means that the PowerSync Service has to keep track of less state per-user — and therefore, server-side resource requirements don't scale linearly with the number of users/clients.
 
 
 ## Operation History 
@@ -34,6 +38,13 @@ Each sync bucket stores the _recent history_ of operations on each <Tooltip tip=
 This is another core part of the PowerSync architecure — the PowerSync Service can efficiently query the _operations_ that each client needs to receive in order to be up to date. Tracking of operation history is also key to the data integrity and [consistency](/architecture/consistency) properties of PowerSync.
 
 When a change occurs in the source database that affects a certain sync bucket (based on the Sync Rules configuration), that change will be appended to the operation history in that sync bucket. Sync buckets are therefore treated as "append-only" data structures. That being said, to avoid an ever-growing operation history, the sync buckets can be [compacted](/maintenance-ops/compacting-buckets).
+
+
+## Sync Bucket Storage
+
+The PowerSync Service persists the sync bucket state in durable storage: there is a pluggable storage layer for sync bucket data, and MongoDB and Postgres is currently supported. We refer to this as the _bucket storage_ database and it is separate from the connection to your _source database_ (Postgres, MongoDB, MySQL or SQL Server). Our cloud-hosting offering (PowerSync Cloud) uses MongoDB Atlas as the _bucket storage_ database.
+
+Persisting the sync bucket state in a database is also part of how PowerSync achieves high scalability: it means that the PowerSync Service can have a low memory footprint even as you scale to very large volumes of synced data and users/clients.
 
 
 ## Replication From the Source Database
@@ -75,6 +86,6 @@ Only the internal _bucket storage_ of the PowerSync Service is used — the sour
 
 The repo for the PowerSync Service can be found here:
 
-<Card title="powersync-service" horizontal icon="github" href="https://github.com/powersync-ja/powersync-service">
+<Card title="GitHub - powersync-service" horizontal icon="github" href="https://github.com/powersync-ja/powersync-service">
 </Card>
 

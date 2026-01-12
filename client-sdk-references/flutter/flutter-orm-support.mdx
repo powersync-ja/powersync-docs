@@ -31,6 +31,43 @@ An example project which showcases setting up and using Drift with PowerSync is 
   horizontal
 />
 
+## Troubleshooting: Watch Streams with Local-Only Tables
+
+When using local-only tables with a `viewName` that differs from the table name, Drift's `watch()` streams may not receive update notifications. This happens because PowerSync sends notifications using the internal table name (e.g., `local_items`), but Drift is listening for the view name (e.g., `items`).
+
+**Example problem:**
+```dart
+// PowerSync schema with viewName override
+Table.localOnly(
+  'local_items',    // Internal table name
+  [...],
+  viewName: 'items', // User-facing view name
+)
+```
+
+**Solution:** Use `transformTableUpdates` to map internal names to view names:
+
+```dart
+import 'package:drift/drift.dart' show TableUpdate;
+
+final connection = SqliteAsyncDriftConnection(
+  powerSyncDatabase,
+  transformTableUpdates: (notification) {
+    return notification.tables.map((tableName) {
+      if (tableName.startsWith('local_')) {
+        // Convert local_items → items
+        return TableUpdate(tableName.substring(6));
+      }
+      return TableUpdate(tableName);
+    }).toSet();
+  },
+);
+
+final db = AppDatabase(connection);
+```
+
+This ensures Drift receives notifications with the expected view names, allowing watch streams to work correctly.
+
 ### Support for Other Flutter ORMs
 
 Other ORMs for Flutter, like [Floor](https://pinchbv.github.io/floor/), are not currently supported. It is technically possible to open a separate connection to the same database file using Floor but there are two big caveats to that:

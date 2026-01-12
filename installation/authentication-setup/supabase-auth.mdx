@@ -26,34 +26,118 @@ You can implement various types of auth:
 
 ## Enabling Supabase Auth
 
-To implement either **Supabase Auth** or **Anonymous Sign-Ins**, enable the relevant setting on the PowerSync instance, and provide your Supabase JWT Secret. Internally, this setting allows PowerSync to verify and use Supabase JWTs directly using HS256 and the provided secret.
+PowerSync can verify Supabase JWTs using either the legacy JWT signing keys or the newer asymmetric JWT signing keys:
+
+- **Legacy JWT signing keys**: Use the "Use Supabase Auth" checkbox and provide your JWT secret. PowerSync verifies tokens using HS256 symmetric signing.
+- **JWT signing keys**: Manually configure JWKS authentication (do not use "Use Supabase Auth"). PowerSync verifies tokens using asymmetric public key cryptography.
 
 ### PowerSync Cloud instances:
 
+#### Using Legacy JWT Signing Keys
+
 1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Client Auth** view.
 
-2. Enable the **"Use Supabase Auth"** checkbox.
+2. **Enable** the **"Use Supabase Auth"** checkbox.
 
 3. Copy your JWT Secret from your Supabase project's settings ([JWT Keys](https://supabase.com/dashboard/project/_/settings/jwt) section in the Supabase dashboard).
 
-4. If your Supabase project uses the legacy JWT signing keys, paste the secret into the **"Supabase JWT Secret (optional) Legacy"** field. If you're using Supabase's new JWT signing keys, you can leave this field empty.
+4. Paste the secret into the **"Supabase JWT Secret (optional) Legacy"** field.
 
 5. Click **Save and Deploy** to apply the changes.
 
+#### Using New JWT Signing Keys
+
+<Warning>
+"Use Supabase Auth" ONLY works with legacy JWT signing keys. If you're using Supabase's new JWT signing keys, you must use manual JWKS configuration instead.
+</Warning>
+
+1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Client Auth** view.
+
+2. **Disable** the **"Use Supabase Auth"** checkbox (or leave it unchecked).
+
+3. Complete ALL steps in Supabase's [JWT Signing Keys migration guide](https://supabase.com/blog/jwt-signing-keys#start-using-asymmetric-jwts-today), including the **"Rotate Keys"** step.
+
+4. Add the custom JWKS URI:
+   - **JWKS URI**: `https://<your-project-ref>.supabase.co/auth/v1/.well-known/jwks.json`
+   - Replace `<your-project-ref>` with your actual Supabase project reference ID
+
+5. Add JWT audience:
+   - Add `authenticated` as an accepted JWT audience
+
+6. Click **Save and Deploy** to apply the changes.
+
 <Note>
-PowerSync is compatible with Supabase's new [JWT signing keys](https://supabase.com/blog/jwt-signing-keys). If you're using the new keys, you don't need to provide the legacy JWT secret. See this [Discord thread](https://discord.com/channels/1138230179878154300/1194710422960472175/1396878076683485205) for details.
+See this [Discord thread](https://discord.com/channels/1138230179878154300/1194710422960472175/1396878076683485205) for community discussion about using the new JWT signing keys.
 </Note>
 
 ### Self-hosted instances:
 
-This can be enabled via your [`config.yaml`](/self-hosting/installation/powersync-service-setup):
+Configure via your [`config.yaml`](/self-hosting/installation/powersync-service-setup):
 
+**For legacy JWT signing keys:**
 ```yaml
 client_auth:
-  # Enable this if using Supabase Auth*
   supabase: true
   supabase_jwt_secret: your-jwt-secret
 ```
+
+**For new JWT signing keys:**
+```yaml
+client_auth:
+  # Do NOT set supabase: true - it only works with legacy keys
+  jwks_uri: https://<your-project-ref>.supabase.co/auth/v1/.well-known/jwks.json
+  audience:
+    - authenticated
+```
+
+## Migrating Between JWT Signing Key Types
+
+<Warning>
+Your JWT configuration must be consistent across your entire stack. If you're migrating between Supabase's legacy JWT signing keys and the new JWT signing keys, ensure all components are updated together.
+</Warning>
+
+### Migrating from Legacy to New JWT Signing Keys
+
+To migrate from legacy JWT signing keys to the new asymmetric keys:
+
+1. **Complete Supabase migration:**
+   - Follow ALL steps in [Supabase's JWT Signing Keys migration guide](https://supabase.com/blog/jwt-signing-keys#start-using-asymmetric-jwts-today)
+
+2. **Update your PowerSync configuration:**
+   - **Disable** the **"Use Supabase Auth"** checkbox (it only works with legacy keys)
+   - Add a custom JWKS URI: `https://<your-project-ref>.supabase.co/auth/v1/.well-known/jwks.json`
+   - Add `authenticated` as an accepted JWT audience
+   - Click **Save and Deploy**
+
+3. **Update all client applications:**
+   - Ensure all client apps are using the new Supabase API keys (not legacy keys)
+   - Update any hardcoded anon keys or service role keys
+
+4. **Clear cached tokens:**
+   - Have all users sign out and sign back in
+   - This ensures they're using tokens generated with the new signing keys
+
+### Common Migration Issues
+
+**Error:** `PSYNC_S2101 - Could not find an appropriate key in the keystore`
+
+This authentication error typically occurs when there's a mismatch between:
+- The JWT signing key type used by your client app (legacy vs. new)
+- The JWT configuration in your PowerSync instance
+
+**Common causes:**
+1. **Using "Use Supabase Auth" with new JWT signing keys** - This doesn't work. "Use Supabase Auth" ONLY supports legacy keys.
+2. **Mismatched client and server keys** - Your client is using legacy keys while PowerSync is configured for new keys (or vice versa).
+3. **Incomplete Supabase migration** - You haven't completed the "Rotate Keys" step in Supabase.
+4. **Cached tokens** - Old tokens are still being used after configuration changes.
+
+**Solutions:**
+1. Verify your configuration:
+   - **Legacy keys**: "Use Supabase Auth" = **enabled** + JWT Secret filled in
+   - **New keys**: "Use Supabase Auth" = **disabled** + JWKS URI configured
+2. Ensure your PowerSync instance and ALL client applications use the same JWT key type
+3. If using new JWT signing keys, ensure you've completed the "Rotate Keys" step in Supabase
+4. Clear all cached tokens by having users sign out and back in
 
 ## Sync Rules
 

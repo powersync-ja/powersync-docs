@@ -1,0 +1,156 @@
+---
+title: "Backup and Recovery"
+description: "Backup strategies and recovery procedures for PowerSync self-hosted deployments"
+---
+
+## Overview
+
+PowerSync self-hosted deployments require backup strategies for configuration files and source databases. Understanding how [PowerSync replicates data](/architecture/powersync-service#replication) and handles database recovery is critical for planning maintenance windows and disaster recovery procedures.
+
+## Configuration Files
+
+We recommend using Git to version control and backup your PowerSync configuration files:
+- `powersync.yaml` - Service configuration
+- [`sync-rules.yaml`](/usage/sync-rules) - Your data synchronization logic
+
+None of the PowerSync containers use local storage, so no container-level backups are required.
+
+## Bucket Storage Database
+
+The [sync bucket storage](/usage/sync-rules/organize-data-into-buckets) database (MongoDB or Postgres used for bucket storage) may be backed up using standard database backup procedures. However, this is not a strict requirement since bucket data can be fully recovered by re-replicating from the source database.
+
+<Note>
+Bucket storage contains derived data from your source database. If lost, PowerSync can rebuild it automatically through [replication](/architecture/powersync-service#replication).
+</Note>
+
+## Source Database Backup and Recovery
+
+When backing up and restoring your source database, PowerSync's behavior depends on whether the sync state is preserved. PowerSync uses [checkpoints](/architecture/consistency#how-it-works-checkpoints) to maintain consistency, and the replication process must be able to continue from these checkpoints after a restore.
+
+<Tabs>
+<Tab title="Postgres">
+**Sync State Tracking:** Logical replication slots
+
+**Restore with Sync State Preserved:**
+- Sync continues from the replication slot position
+- No re-sync required
+
+**Restore without Sync State:**
+- PowerSync creates a new replication slot
+- Triggers a full re-sync from the current database state
+- Re-sync duration depends on data volume and complexity
+
+**Best Practices:**
+- Standard backup tools like `pg_basebackup` do not preserve replication slots - plan for full re-sync after restore
+- To avoid re-sync, restore using point-in-time recovery (PITR) that maintains WAL continuity
+- Monitor replication slot disk usage, especially during deployments
+</Tab>
+
+<Tab title="MongoDB">
+**Sync State Tracking:** Change stream resume tokens
+
+**Restore to a Point After Resume Token:**
+- Sync continues normally from the last known position
+- No re-sync required
+
+**Restore to a Point Before Resume Token:**
+- PowerSync detects the invalidated change stream (error `PSYNC_S1344`)
+- Automatically starts a fresh change stream
+- Triggers a full re-sync from the source database
+
+**Best Practices:**
+- When possible, restore to a point after the stored resume token
+- For more details on the `PSYNC_S1344` error, see the [Error Codes Reference](/resources/troubleshooting/error-codes#psync_s13xx-mongodb-replication-issues)
+</Tab>
+
+<Tab title="MySQL">
+**Sync State Tracking:** Binary log position
+
+**Restore with Binary Logs Available:**
+- Sync continues from the last known position if binary logs are still available
+- No re-sync required
+
+**Restore without Binary Logs:**
+- PowerSync detects that the binary log position is no longer valid
+- Starts replication from the current position
+- Triggers a full re-sync
+
+**Best Practices:**
+- Retain binary logs for your backup retention period
+- Use point-in-time recovery (PITR) for consistent restores
+- Test restore procedures in staging
+</Tab>
+
+<Tab title="MSSQL">
+**Sync State Tracking:** Change Tracking metadata
+
+**Restore with Change Tracking Preserved:**
+- Sync continues from the last tracked position if retention covers the restore point
+- No re-sync required
+
+**Restore without Change Tracking or Expired Retention:**
+- PowerSync detects insufficient change tracking history
+- Triggers a full re-sync from the current database state
+
+**Best Practices:**
+- Configure change tracking retention longer than your backup retention period
+- Monitor change tracking table sizes to balance retention and storage
+- Verify retention covers your maximum recovery time objective
+</Tab>
+</Tabs>
+
+<Warning>
+A full re-sync can take significant time for large datasets. Plan maintenance windows accordingly when sync state cannot be preserved.
+</Warning>
+
+## Multi-Tenant Backup and Recovery
+
+For multi-tenant architectures using a shared database with tenant isolation through [sync rules](/usage/sync-rules), you can perform tenant-specific recovery without affecting other tenants.
+
+### Recovery Approach
+
+When using tenant isolation through sync rules in a single database:
+
+**1. Backup and restore tenant-specific data** using your database's native tools with filtering:
+   - **Postgres:** [`pg_dump`](https://www.postgres.org/docs/current/app-pgdump.html) and [`pg_restore`](https://www.postgres.org/docs/current/app-pgrestore.html) with `WHERE tenant_id = X`
+   - **MongoDB:** [`mongodump`](https://www.mongodb.com/docs/database-tools/mongodump/) and [`mongorestore`](https://www.mongodb.com/docs/database-tools/mongorestore/) with query filters
+   - **MySQL:** [`mysqldump`](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html) with `--where="tenant_id = X"`
+   - **MSSQL:** [SQL Server backup/restore](https://learn.microsoft.com/en-us/sql/relational-databases/backup-restore/back-up-and-restore-of-sql-server-databases) with filtered queries
+
+**2. PowerSync detects restored data as incremental changes** and [replicates them](/architecture/powersync-service#replication) automatically
+
+**3. Other tenants continue operating** without interruption (assuming replication keeps pace)
+
+<Tip>
+Implement soft deletes for accidental deletions to avoid database-level recovery in many scenarios.
+</Tip>
+
+### Performance Considerations
+
+Large tenant restores increase replication volume. Monitor the following factors:
+
+- **Replication lag** during restore operations using the [Diagnostics API](/self-hosting/lifecycle-maintenance/diagnostics)
+- **Data volume impact** - high volumes can affect all tenants if replication falls behind
+- **Database resources** during restore operations
+
+## Recovery Time Planning
+
+### Factors Affecting Re-sync Time
+
+When planning your backup and recovery strategy, consider:
+
+1. **Data Volume**: Total size of data in synced tables
+2. **Sync Rules Complexity**: Number of tables, joins, and transformations
+3. **Database Performance**: CPU, memory, and I/O capacity
+4. **Network Bandwidth**: Connection speed between PowerSync and source database
+5. **Concurrent Load**: Other operations running during re-sync
+
+### Minimizing Recovery Time
+
+To minimize downtime during recovery:
+
+1. **Test Recovery Procedures**: Regularly test backup restoration in a staging environment
+2. **Monitor Re-sync Progress**: Use the [Diagnostics API](/self-hosting/lifecycle-maintenance/diagnostics) to track replication progress
+3. **Optimize During Re-sync**: Temporarily increase database resources during re-sync
+4. **Plan Maintenance Windows**: Schedule restorations during low-traffic periods
+5. **Preserve Sync State**: When possible, preserve sync state (MongoDB resume tokens, Postgres replication slots, MySQL binary log positions, or MSSQL change tracking data)

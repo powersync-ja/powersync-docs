@@ -8,92 +8,9 @@ import LocalOnly from '/snippets/local-only-escape.mdx';
 
 <LocalOnly />
 
-# 1. Set Up PowerSync Service Instance
+# 1. Configure Your Source Database
 
-PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be self-hosted.
-
-<Tabs>
-      <Tab title="PowerSync Cloud">
-        For the quickest start, sign up for a free PowerSync Cloud account [here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs).
-
-        After signing up, you will be taken to the [PowerSync Dashboard](https://dashboard.powersync.com/). 
-        Here, create a new project. _Development_ and _Production_ instances of the PowerSync Service will be created by default in the project. 
-      </Tab>
-
-      <Tab title="Self-Hosted">
-        Self-hosted PowerSync runs via Docker. You'll need to:
-
-        1. **Set up sync bucket storage**: PowerSync requires MongoDB or Postgres for storing sync buckets (separate from your source database). For development, a single MongoDB node in replica set mode is sufficient.
-
-        2. **Create a config file**: Create a `config.yaml` file with your database connection and Sync Rules.
-
-        3. **Run the PowerSync Service**: Start the service using Docker.
-
-        Here's a minimal setup:
-
-        ```bash
-        # 1. Create a directory for your config
-        mkdir powersync-service && cd powersync-service
-
-        # 2. Create a Docker network
-        docker network create powersync-network
-
-        # 3. Run MongoDB for sync bucket storage
-        docker run -d \
-          --name powersync-mongo \
-          --network powersync-network \
-          -p 27017:27017 \
-          mongo:7.0 --replSet rs0 --bind_ip_all
-
-        # 4. Initialize replica set
-        docker exec -it powersync-mongo mongosh --eval "rs.initiate()"
-
-        # 5. Create config.yaml (see below)
-
-        # 6. Run PowerSync Service
-        docker run -d \
-        --name powersync \
-        --network powersync-network \
-        -p 8080:80 \
-        -e POWERSYNC_CONFIG_B64="$(base64 -i ./config.yaml)" \
-        journeyapps/powersync-service:latest
-        ```
-
-        **Basic `config.yaml` structure:**
-
-        ```yaml
-        # Database connection (configured in next step)
-        replication:
-          connections:
-            - type: postgresql # or mongodb, mysql, mssql
-              uri: postgresql://postgres:mypassword@pg-db:5432/postgres # The connection URI or individual parameters can be specified.
-
-        # Connection settings for sync bucket storage
-        storage:
-          type: mongodb
-          uri: mongodb://powersync-mongo:27017/powersync
-
-        # Sync Rules (defined in a later step)
-        sync_rules:
-          content: |
-            bucket_definitions:
-              global:
-                data:
-                  - SELECT * FROM lists
-                  - SELECT * FROM todos
-        ```
-
-        <Tip>
-          **Learn More**
-          * [Self-Hosting Introduction](/intro/self-hosting-powersync)
-          * [Self-Hosted Service Configuration](/configuration/powersync-service/self-hosted-instances)
-        </Tip>
-      </Tab>
-    </Tabs>
-
-# 2. Configure Your Source Database
-
-PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or SQL Server) to replicate data. Before connecting, you need to configure your database with the appropriate permissions and replication settings.
+PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or SQL Server) to replicate data. Before setting up PowerSync, you need to configure your database with the appropriate permissions and replication settings.
 
 <Tabs>
       <Tab title="Postgres">
@@ -126,6 +43,28 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
           
           CREATE PUBLICATION powersync FOR ALL TABLES;
+          ```
+
+          ```bash Docker (Local development)
+          # 1. Create a Docker network (if not already created)
+          # This allows various PowerSync containers to communicate with each other
+          docker network create powersync-network
+
+          # 2. Run Postgres source database with logical replication enabled (required for PowerSync)
+          docker run -d \
+            --name powersync-postgres \
+            --network powersync-network \
+            -e POSTGRES_PASSWORD="my_secure_password" \
+            -p 5432:5432 \
+            postgres:18 \
+            postgres -c wal_level=logical
+
+          # 3. Configure PowerSync user and publication
+          docker exec -it powersync-postgres psql -U postgres -c "
+          CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
+          CREATE PUBLICATION powersync FOR ALL TABLES;"
           ```
         </CodeGroup>
 
@@ -200,6 +139,92 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
       </Tab>
     </Tabs>
 
+# 2. Set Up PowerSync Service Instance
+
+PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be self-hosted (PowerSync Open Edition or PowerSync Enterprise Self-Hosted Edition).
+
+<Tabs>
+      <Tab title="PowerSync Cloud">
+        If you haven't yet, sign up for a free PowerSync Cloud account [here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs).
+
+        After signing up, you will be taken to the [PowerSync Dashboard](https://dashboard.powersync.com/). 
+        
+        Here, create a new project. _Development_ and _Production_ instances of the PowerSync Service will be created by default in the project. 
+        
+        In the next step, you will connect your source database to your PowerSync Service instance.
+      </Tab>
+
+      <Tab title="Self-Hosted">
+        <Note>
+          **Prerequisites**: Ensure you've configured your source database with the required user and publication (see [Step 1: Configure Your Source Database](#1-configure-your-source-database) above).
+        </Note>
+
+        Self-hosted PowerSync runs via Docker. This example shows setting up the PowerSync Service with sync bucket storage:
+
+        ```bash
+        # 1. Create a directory for your config
+        mkdir powersync-service && cd powersync-service
+
+        # 2. Set up sync bucket storage (Postgres and MongoDB are supported)
+        docker run -d \
+          --name powersync-postgres-storage \
+          --network powersync-network \
+          -p 5433:5432 \
+          -e POSTGRES_PASSWORD="my_secure_storage_password" \
+          -e POSTGRES_DB=powersync_storage \
+          postgres:18
+
+        ## Set up Postgres storage user
+        docker exec -it powersync-postgres-storage psql -U postgres -d powersync_storage -c "
+        CREATE USER powersync_storage_user WITH PASSWORD 'my_secure_user_password';
+        GRANT CREATE ON DATABASE powersync_storage TO powersync_storage_user;"
+
+        # 3. Create config.yaml (see below)
+
+        # 4. Run PowerSync Service
+        docker run -d \
+          --name powersync \
+          --network powersync-network \
+          -p 8080:80 \
+          -e POWERSYNC_CONFIG_B64="$(base64 -i ./config.yaml)" \
+          journeyapps/powersync-service:latest
+        ```
+
+        **Basic `config.yaml` structure:**
+
+        ```yaml
+        # Source database connection (defined in the previous step)
+        replication:
+          connections:
+            - type: postgresql # or mongodb, mysql, mssql
+              uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres
+              sslmode: disable  # Only for local/private networks
+
+        # Connection settings for sync bucket storage (Postgres and MongoDB are supported)   
+        storage:   
+          type: postgresql
+          uri: postgresql://powersync_storage_user:my_secure_user_password@powersync-postgres-storage:5432/powersync_storage
+          sslmode: disable  # Use 'disable' only for local/private networks
+
+        # Sync Rules (defined in a later step)
+        sync_rules:
+          content: |
+            bucket_definitions:
+              global:
+                data:
+                  - SELECT * FROM lists
+                  - SELECT * FROM todos
+        ```
+
+        <Tip>
+          **Learn More**
+          * [Self-Hosting Introduction](/intro/self-hosting-powersync)
+          * [Self-Host Demo App](https://github.com/powersync-ja/self-host-demo) for complete working examples.
+          * [Self-Hosted Service Configuration](/configuration/powersync-service/self-hosted-instances) for more details on the config file structure.
+        </Tip>
+      </Tab>
+    </Tabs>
+
 # 3. Connect PowerSync To Your Source Database
 
 The next step is to connect your PowerSync Service instance to your source database.
@@ -228,14 +253,14 @@ The next step is to connect your PowerSync Service instance to your source datab
   </Tab>
 
   <Tab title="Self-Hosted">
-    For self-hosted setups, configure the connection in your `config.yaml` file:
+    For self-hosted setups, configure the source database connection in your `config.yaml` file (as you did in the previous step). Examples for the different database types are below.
 
     <CodeGroup>
       ```yaml Postgres
       replication:
-        connections:
-          - type: postgresql
-            uri: postgresql://powersync_role:password@host:5432/database # The connection URI or individual parameters can be specified.
+          connections:
+            - type: postgresql # or mongodb, mysql, mssql
+              uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres # The connection URI or individual parameters can be specified.
             sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
             # Note: 'disable' is only suitable for local/private networks, not for public networks
       ```
@@ -267,6 +292,12 @@ The next step is to connect your PowerSync Service instance to your source datab
               pollingBatchSize: 20
       ```
     </CodeGroup>
+
+    <Tip>
+      **Learn More**
+      
+      See the [self-host-demo app](https://github.com/powersync-ja/self-host-demo) for complete working examples of the different database types.
+    </Tip>
   </Tab>
 </Tabs>
 
@@ -394,11 +425,11 @@ You'll use this token for two purposes:
       Using an online key generator for secrets in a production environment is not recommended. 
     </Warning>
 
-    #### Step 2: Update `powersync.yaml`
+    #### Step 2: Update `config.yaml`
 
-    Update the `k` value in the `jwks` `keys` in your `powersync.yaml` config file with the shared secret value copied in the previous step:
+    Update the `k` value in the `jwks` `keys` in your `config.yaml` config file with the shared secret value copied in the previous step:
 
-    ```yaml powersync.yaml
+    ```yaml config.yaml
     # Client (application end user) authentication settings
     client_auth:
         # JWKS URIs can be specified here

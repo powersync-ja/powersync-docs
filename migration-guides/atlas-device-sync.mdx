@@ -47,16 +47,16 @@ Migrating to PowerSync results in this architecture: (new components in green)
 Here is a quick overview of the resulting PowerSync architecture:
 * The **PowerSync Service** is the server-side component of PowerSync. It's available as a cloud-hosted service ([PowerSync Cloud](https://powersync.com/pricing)), or you can [self-host](/intro/self-hosting-powersync) using our Open Edition.
 * **Authentication**: PowerSync piggybacks off your app’s existing [authentication](/configuration/auth/overview), and JWTs are used to authenticate between clients and the PowerSync Service. If you are using Atlas Device SDKs for authentication, you will need to implement an authentication provider.
-* **PowerSync Client SDKs** use **SQLite** under the hood. Even though MongoDB is a "NoSQL" document database, PowerSync’s use of SQLite works well with MongoDB, since the [PowerSync protocol](/architecture/powersync-protocol) is schemaless (it syncs schemaless JSON data) and we dynamically apply a [client-side schema](/intro/setup-guide#define-your-client-side-schema) to the data in SQLite using SQLite views. Client-side queries can be written in SQL or you can make use of an ORM (we provide a few [ORM integrations](https://www.powersync.com/blog/using-orms-with-powersync)). Working with embedded documents from MongoDB is easy with SQLite due to [its JSON support](/client-sdks/advanced/query-json-in-sqlite).
+* **PowerSync Client SDKs** use **SQLite** under the hood. Even though MongoDB is a "NoSQL" document database, PowerSync’s use of SQLite works well with MongoDB, since the [PowerSync protocol](/architecture/powersync-protocol) is schemaless (it syncs schemaless JSON data) and we dynamically apply a [client-side schema](/intro/setup-guide#define-your-client-side-schema) to the data in SQLite using SQLite views. Client-side queries can be written in SQL or you can make use of an ORM (we provide a few [ORM integrations](https://www.powersync.com/blog/using-orms-with-powersync)). Working with embedded documents and arrays from MongoDB is easy with SQLite due to [its JSON support](/client-sdks/advanced/query-json-in-sqlite).
 * **Reads vs Writes**: PowerSync handles syncing of reads differently from writes (mutations)
    * **Reads**: The PowerSync Service connects to your MongoDB database for real-time replication of data, and syncs data to clients based on the [Sync Rules](/sync/rules/overview) configuration. Sync Rules are more flexible than MongoDB Realm Flexible Sync, but are defined on the server-side, not on the client-side.
    * **Writes**: The client-side application can perform writes (mutations) directly on the SQLite database. The PowerSync Client SDK automatically places those mutations into an [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) and invokes an `uploadData()` function (defined by you) as needed to upload those mutations sequentially to your backend application.
 * **Authorization**: Authorization is controlled separately for reads vs. writes.
    * **Reads**: The [Sync Rules](/sync/rules/overview) control which users can access which data.
    * **Writes**: Your backend application controls authorization for how users can modify data, when it receives uploaded mutations from clients.
-* **Backend Application**: PowerSync requires a backend API interface to upload mutations to MongoDB. There are currently two options:
-   * **Custom backend**: If you already have a backend application as part of your stack, you should use your existing backend. If you don’t yet have one: We have example implementations available (e.g. Node.js, Django, Rails, .NET). See the instructions below for more details.
-   * **Serverless cloud functions (hosted/managed)**: An alternative option is to use CloudCode, a serverless cloud functions environment provided by PowerSync. We have a template available that you can use as a turnkey starting point. Details are explained below.
+* **Backend Application**: PowerSync requires a backend API interface to upload mutations to MongoDB (and optionally for custom authentication too). There are currently two options:
+   * **"Bring your own backend"**: If you already have a backend application as part of your stack, you should use your existing backend. If you don’t yet have one, but would like to run your own backend, we have example implementations available. See the [instructions below](#2-accept-uploads-on-the-backend) for more details.
+   * **Serverless cloud functions (hosted/managed)**: An alternative option is to use CloudCode, a serverless cloud functions environment provided by PowerSync. We have a template available that you can use as a turnkey starting point. Details are [explained below](#2-accept-uploads-on-the-backend).
 
 
 ## Migration Steps
@@ -84,6 +84,8 @@ Follow the steps for MongoDB and your client platform/framework in our standard 
   * [Connect to PowerSync Service Instance](/intro/setup-guide#connect-to-powersync-service-instance)
   * [Read and Write Data (Using SQLite)](/intro/setup-guide#read-data)
 
+<Tip>For specific details on working with embedded documents and arrays from MongoDB, see our guide on [Querying JSON Data in SQLite](/client-sdks/advanced/query-json-in-sqlite)</Tip>
+
 Once you have completed the _Setup Guide_, the only two remaining steps are to configure & integrate a backend application to handle mutations uploaded from clients, and to implement authentication.
 
 
@@ -95,18 +97,18 @@ PowerSync offers [full customizability](/architecture/client-architecture#writin
 
 There are two options:
 
-* **Custom backend**: If you already have a backend application as part of your stack, you should use your existing backend. This can be any kind of backend environment including e.g. Node.js, Rails, Laravel, Django, ASP.NET or some kind of serverless cloud functions (e.g. Azure Functions, AWS Lambda, Google Cloud Functions, Cloudflare Workers, etc.), or any other equivalent system that allows you to run privileged logic securely. If you don’t yet have a backend application, but would like to use a custom backend, we have example implementations available (see below). 
+* **"Bring your own backend"**: If you already have a backend application as part of your stack, you should use your existing backend. This can be any kind of backend environment including a custom backend (e.g. Node.js, Rails, Laravel, Django, ASP.NET), an API platform (e.g. Hasura), some kind of serverless cloud functions (e.g. Azure Functions, AWS Lambda, Google Cloud Functions, Cloudflare Workers, etc.), or any other equivalent system that allows you to run privileged logic securely or apply mutations to your MongoDB database securely. If you don’t yet have a backend application, but would like to run your own backend environment, we have example implementations available (see below). 
 * **Serverless cloud functions (hosted/managed)**: PowerSync offers serverless cloud functions hosted on the same infrastructure as PowerSync Cloud which can be used for the needed backend functionality. We provide a MongoDB-specific template for this which can be used as a turnkey solution.
 
 #### Using Your Own Custom Backend API
 
-This option gives you complete control over the backend. The simplest backend implementation is to simply apply writes to MongoDB as they are received, which results in a last-write-wins conflict resolution strategy (same as the "turnkey backend functionality" option above). See [App Backend Setup](/configuration/app-backend/setup) and [Writing Client Changes](/handling-writes/writing-client-changes) for more details.
+This option gives you complete control over the backend. The simplest backend implementation is to simply apply mutations to MongoDB as they are received, which results in a last-write-wins conflict resolution strategy. See [App Backend Setup](/configuration/app-backend/setup) and [Writing Client Changes](/handling-writes/writing-client-changes) for more details.
+
+We have [example backend implementations](/resources/demo-apps-example-projects#backend-examples) available (e.g. Node.js, Django, Rails, .NET).
+
+<Tip>The [Migrating A MongoDB Atlas Device Sync App To PowerSync](https://www.powersync.com/blog/migrating-a-mongodb-atlas-device-sync-app-to-powersync) practical example on our blog also provides an example of a custom Node.js backend implementation.</Tip>
 
 On the client-side, you need to wire up the `uploadData()` function in the "backend connector" to use your own backend API. The [Client-Side Integration With Your Backend](/configuration/app-backend/client-side-integration) section of our docs provides more details on this.
-
-We also have [example backend implementations](/resources/demo-apps-example-projects#backend-examples) available (e.g. Node.js, Django, Rails, .NET).
-
-Lastly, the [Migrating A MongoDB Atlas Device Sync App To PowerSync](https://www.powersync.com/blog/migrating-a-mongodb-atlas-device-sync-app-to-powersync) practical example on our blog also provides an example of a custom Node.js backend implementation.
 
 
 #### Using PowerSync’s Serverless Cloud Functions

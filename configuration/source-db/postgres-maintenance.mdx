@@ -4,15 +4,17 @@ title: "Postgres Maintenance"
 
 ## Logical Replication Slots
 
-Postgres logical replication slots are used to keep track of replication progress (recorded as a [LSN](https://www.postgresql.org/docs/current/datatype-pg-lsn.html)). Every time a new version of sync rules are deployed, PowerSync creates a new replication slot, then switches over and deletes the old replication slot when done.
+Postgres logical replication slots are used to keep track of [replication](/architecture/powersync-service#replication-from-the-source-database) progress (recorded as a [LSN](https://www.postgresql.org/docs/current/datatype-pg-lsn.html)). 
+
+Every time a new version of [Sync Rules or Sync Streams](/sync/overview) are deployed, PowerSync creates a new replication slot, then switches over and deletes the old replication slot when the reprocessing of the new Sync Rules/Streams version is done.
 
 The replication slots can be viewed using this query:
 
-Copy
-
-```
+```sql
 select slot_name, confirmed_flush_lsn, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) as lag from pg_replication_slots;
 ```
+
+Example output:
 
 | slot\_name             | confirmed\_flush\_lsn | active | lag      |
 | ---------------------- | --------------------- | ------ | -------- |
@@ -33,38 +35,15 @@ Postgres prevents active slots from being dropped. If it does happen (e.g. while
 
 ### Maximum Replication Slots
 
-Postgres is configured with a maximum number of replication slots. Since each instance uses one replication slot for replication and an additional one while deploying, the maximum number of PowerSync instances per Postgres database is equal to the maximum number of replication slots, minus 1\.
+Postgres is configured with a maximum number of replication slots per server. Since each PowerSync instance uses one replication slot for replication and an additional one while deploying a new Sync Rules/Streams version, the maximum number of PowerSync instances connected to one Postgres server is equal to the maximum number of replication slots, minus 1\.
 
 If other clients are also using replication slots, this number is reduced further.
 
-The maximum number of slots can configured by setting `max_replication_slots` (not all hosting providers expose this), and checked using `select current_setting('max_replication_slots')`.
+The maximum number of slots can configured by setting `max_replication_slots` (not all hosting providers expose this), and checked using: 
+
+```sql
+select current_setting('max_replication_slots')
+```
 
 If this number is exceeded, you'll see an error such as "all replication slots are in use".
 
-### TLS
-
-PowerSync supports TLS version 1.2 and 1.3\. Plain-text connections are not supported on our cloud version.
-
-The server certificates are always validated, using one of these two modes are supported:
-
-1. `verify-full` \- This verifies the certificate, and checks that the hostname matches. By default, we include CA certificates for AWS RDS, Azure and Supabase. Alternatively, CA certificates to trust can be explicitly specified (any number of certificates in PEM format).
-2. `verify-ca` \- This verifies the certificate, but does not check the hostname. Because of this, public certificate authorities are not supported - an explicit CA must be specified. This mode can be used with self-signed certificates.
-
-In some cases, the "Test Connection" button in the Dashboard will automatically retrieve the certificate for `verify-ca` mode.
-
-Once deployed, the current connections and TLS versions can be viewed using this query:
-
-```sql
-select
-  usename,
-  ssl,
-  version,
-  client_addr,
-  application_name,
-  backend_type
-from
-  pg_stat_ssl
-  join pg_stat_activity on pg_stat_ssl.pid = pg_stat_activity.pid
-where
-  ssl = true;
-```

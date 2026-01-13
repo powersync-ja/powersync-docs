@@ -5,10 +5,18 @@ description: "This guide walks you through adding PowerSync to your app project 
 ---
 
 import LocalOnly from '/snippets/local-only-escape.mdx';
+import ReactNativeInstallation from '/snippets/react-native/installation.mdx';
+import JavaScriptWebInstallation from '/snippets/javascript-web/installation.mdx';
+import NodeInstallation from '/snippets/node/installation.mdx';
+import CapacitorInstallation from '/snippets/capacitor/installation.mdx';
+import FlutterInstallation from '/snippets/flutter/installation.mdx';
+import KotlinInstallation from '/snippets/kotlin/installation.mdx';
+import SwiftInstallation from '/snippets/swift/installation.mdx';
+import DotnetInstallation from '/snippets/dotnet/installation.mdx';
 
 <LocalOnly />
 
-# 1. Configure Your Source Database
+# 1. Configure your Source Database
 
 PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or SQL Server) to replicate data. Before setting up PowerSync, you need to configure your database with the appropriate permissions and replication settings.
 
@@ -25,12 +33,17 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
           -- 1. Enable logical replication (requires restart)
           ALTER SYSTEM SET wal_level = logical;
           
-          -- 2. Create PowerSync user with replication privileges
+          -- 2. Create PowerSync database user/role with replication privileges and read-only access to your tables
           CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          
+          -- Set up permissions for the newly created role
+          -- Read-only (SELECT) access is required
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          
+          -- Optionally, grant SELECT on all future tables (to cater for schema additions)
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
           
-          -- 3. Create publication (replicates all tables)
+          -- 3. Create a publication to replicate tables. The publication must be named "powersync"
           CREATE PUBLICATION powersync FOR ALL TABLES;
           ```
 
@@ -38,10 +51,17 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
           -- Supabase has logical replication enabled by default
           -- Just create the user and publication:
           
+          -- Create PowerSync database user/role with replication privileges and read-only access to your tables
           CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          
+          -- Set up permissions for the newly created role
+          -- Read-only (SELECT) access is required
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          
+          -- Optionally, grant SELECT on all future tables (to cater for schema additions)
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
           
+          -- Create a publication to replicate tables. The publication must be named "powersync"
           CREATE PUBLICATION powersync FOR ALL TABLES;
           ```
 
@@ -60,6 +80,9 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
             postgres -c wal_level=logical
 
           # 3. Configure PowerSync user and publication
+          # This creates a PowerSync database user/role with replication privileges and read-only access to your tables
+          # Read-only (SELECT) access is also granted to all future tables (to cater for schema additions)
+          # It also creates a publication to replicate tables. The publication must be named "powersync"
           docker exec -it powersync-postgres psql -U postgres -c "
           CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
@@ -69,8 +92,11 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
         </CodeGroup>
 
         <Note>
-          **Version compatibility**: PowerSync requires Postgres version 11 or greater.
+          * **Version compatibility**: PowerSync requires Postgres version 11 or greater.
+          * **To restrict read access to specific tables**, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+          * **Performance consideration**: The PowerSync Service has to read all updates present in the publication's WAL, regardless of whether the table is referenced in your Sync Rules definitions. This can cause large spikes in memory usage or introduce replication delays, so if you're dealing with large data volumes, you'll want to specify a comma-separated subset of tables to replicate instead of `FOR ALL TABLES`.   
         </Note>
+
         <Tip>
           **Learn More**
           
@@ -79,7 +105,7 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
         </Tip>
       </Tab>
 
-      <Tab title="MongoDB">
+      <Tab title="MongoDB Atlas">
         For MongoDB Atlas databases, the minimum permissions when using built-in roles are:
 
         ```
@@ -99,7 +125,7 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
         <Tip>
           **Learn More**
           
-          * For more details on MongoDB setup, see [Source Database Setup](/configuration/source-db/setup#mongodb).
+          * For more details including instructions for self-hosted MongoDB, or for custom roles on MongoDB Atlas, see [Source Database Setup](/configuration/source-db/setup#mongodb).
           * **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb) for a complete working example of connecting a MongoDB source database to PowerSync.
         </Tip>
       </Tab>
@@ -107,24 +133,27 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
       <Tab title="MySQL (beta)">
         For MySQL, you need to configure binary logging and create a user with replication privileges:
 
-        <CodeGroup>
-          ```sql Configuration
+        ```sql
+          -- Configure binary logging
           -- Add to MySQL option file (my.cnf or my.ini):
           server_id=<Unique Integer Value>
           log_bin=ON
           enforce_gtid_consistency=ON
           gtid_mode=ON
           binlog_format=ROW
-          ```
 
-          ```sql User Setup
-          -- Create user with replication privileges
+          -- Create a user with necessary privileges
           CREATE USER 'repl_user'@'%' IDENTIFIED BY '<password>';
+
+          -- Grant replication client privilege
           GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl_user'@'%';
+
+          -- Grant select access to the specific database
           GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
+
+          -- Apply changes
           FLUSH PRIVILEGES;
-          ```
-        </CodeGroup>
+        ```
 
         <Note>
           **Version compatibility**: PowerSync requires MySQL version 5.7 or greater.
@@ -235,7 +264,7 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
       </Tab>
     </Tabs>
 
-# 3. Connect PowerSync To Your Source Database
+# 3. Connect PowerSync to your Source Database
 
 The next step is to connect your PowerSync Service instance to your source database.
 
@@ -523,56 +552,39 @@ Now it's time to integrate PowerSync into your app. This involves installing the
 
 Add the PowerSync Client SDK to your app project. PowerSync provides SDKs for various platforms and frameworks.
 
-<CodeGroup>
-  ```bash React Native / Expo
-  npm install @powersync/react-native
-  # or
-  yarn add @powersync/react-native
-  ```
+<Tabs>
+  <Tab title="React Native / Expo">
+    <ReactNativeInstallation />
+  </Tab>
 
-  ```bash JavaScript Web
-  npm install @powersync/web
-  # or
-  yarn add @powersync/web
-  ```
+  <Tab title="JavaScript Web">
+    <JavaScriptWebInstallation />
+  </Tab>
 
-  ```bash Node.js
-  npm install @powersync/node
-  # or
-  yarn add @powersync/node
-  ```
+  <Tab title="Node.js">
+    <NodeInstallation />
+  </Tab>
 
-  ```bash Capacitor
-  npm install @powersync/capacitor
-  ```
+  <Tab title="Capacitor">
+    <CapacitorInstallation />
+  </Tab>
 
-  ```yaml Dart/Flutter
-  dependencies:
-    powersync: ^2.0.0
-  ```
+  <Tab title="Dart/Flutter">
+    <FlutterInstallation />
+  </Tab>
 
-  ```kotlin Kotlin
-  dependencies {
-    implementation("com.powersync:powersync-kotlin:2.0.0")
-  }
-  ```
+  <Tab title="Kotlin">
+    <KotlinInstallation />
+  </Tab>
 
-  ```swift Swift
-  dependencies: [
-    .package(url: "https://github.com/powersync-ja/powersync-swift", from: "2.0.0")
-  ]
-  ```
+  <Tab title="Swift">
+    <SwiftInstallation />
+  </Tab>
 
-  ```xml .NET
-  <PackageReference Include="PowerSync" Version="2.0.0" />
-  ```
-</CodeGroup>
-
-<Tip>
-  **Learn More**
-  
-  Refer to the [SDK references](/client-sdks/overview) for more detailed installation instructions, including peer dependencies.
-</Tip>
+  <Tab title=".NET">
+    <DotnetInstallation />
+  </Tab>
+</Tabs>
 
 ### Define Your Client-Side Schema
 
@@ -607,11 +619,11 @@ Connect your client-side PowerSync database to the PowerSync Service instance yo
 
 <Note>You don't have to worry about the _backend connector_ implementation details right now — you can leave the boilerplate as-is and come back to it later.</Note>
 
-For development, you can use the development token you generated in the [Generate a Development Token](#optional-generate-a-development-token) step above. For production, you'll implement proper JWT authentication as we'll explain below.
+For development, you can use the development token you generated in the [Generate a Development Token](#optional-generate-a-development-token) step above. For production, you'll implement proper JWT authentication as we'll explain further below.
 
     <CodeGroup>
       ```typescript React Native (TS)
-      import { PowerSyncDatabase, PowerSyncCredentials } from '@powersync/react-native';
+      import { AbstractPowerSyncDatabase, PowerSyncCredentials } from '@powersync/react-native';
       import { db } from './Database';
 
       class Connector {
@@ -623,7 +635,7 @@ For development, you can use the development token you generated in the [Generat
           };
         }
 
-        async uploadData(database: PowerSyncDatabase) {
+        async uploadData(database: AbstractPowerSyncDatabase) {
           const transaction = await database.getNextCrudTransaction();
           if (!transaction) return;
 
@@ -642,7 +654,7 @@ For development, you can use the development token you generated in the [Generat
       ```
 
       ```typescript Web & Capacitor (TS)
-      import { PowerSyncDatabase, PowerSyncCredentials } from '@powersync/web';
+      import { AbstractPowerSyncDatabase, PowerSyncCredentials } from '@powersync/web';
       import { db } from './Database';
 
       class Connector {
@@ -654,7 +666,7 @@ For development, you can use the development token you generated in the [Generat
           };
         }
 
-        async uploadData(database: PowerSyncDatabase) {
+        async uploadData(database: AbstractPowerSyncDatabase) {
           const transaction = await database.getNextCrudTransaction();
           if (!transaction) return;
 

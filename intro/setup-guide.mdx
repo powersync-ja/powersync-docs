@@ -5,6 +5,14 @@ description: "This guide walks you through adding PowerSync to your app project 
 ---
 
 import LocalOnly from '/snippets/local-only-escape.mdx';
+import ReactNativeInstallation from '/snippets/react-native/installation.mdx';
+import JavaScriptWebInstallation from '/snippets/javascript-web/installation.mdx';
+import NodeInstallation from '/snippets/node/installation.mdx';
+import CapacitorInstallation from '/snippets/capacitor/installation.mdx';
+import FlutterInstallation from '/snippets/flutter/installation.mdx';
+import KotlinInstallation from '/snippets/kotlin/installation.mdx';
+import SwiftInstallation from '/snippets/swift/installation.mdx';
+import DotnetInstallation from '/snippets/dotnet/installation.mdx';
 
 <LocalOnly />
 
@@ -25,12 +33,17 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
           -- 1. Enable logical replication (requires restart)
           ALTER SYSTEM SET wal_level = logical;
           
-          -- 2. Create PowerSync user with replication privileges
+          -- 2. Create PowerSync database user/role with replication privileges and read-only access to your tables
           CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          
+          -- Set up permissions for the newly created role
+          -- Read-only (SELECT) access is required
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          
+          -- Optionally, grant SELECT on all future tables (to cater for schema additions)
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
           
-          -- 3. Create publication (replicates all tables)
+          -- 3. Create a publication to replicate tables. The publication must be named "powersync"
           CREATE PUBLICATION powersync FOR ALL TABLES;
           ```
 
@@ -38,10 +51,17 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
           -- Supabase has logical replication enabled by default
           -- Just create the user and publication:
           
+          -- Create PowerSync database user/role with replication privileges and read-only access to your tables
           CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          
+          -- Set up permissions for the newly created role
+          -- Read-only (SELECT) access is required
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          
+          -- Optionally, grant SELECT on all future tables (to cater for schema additions)
           ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
           
+          -- Create a publication to replicate tables. The publication must be named "powersync"
           CREATE PUBLICATION powersync FOR ALL TABLES;
           ```
 
@@ -60,6 +80,9 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
             postgres -c wal_level=logical
 
           # 3. Configure PowerSync user and publication
+          # This creates a PowerSync database user/role with replication privileges and read-only access to your tables
+          # Read-only (SELECT) access is also granted to all future tables (to cater for schema additions)
+          # It also creates a publication to replicate tables. The publication must be named "powersync"
           docker exec -it powersync-postgres psql -U postgres -c "
           CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
@@ -69,16 +92,18 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
         </CodeGroup>
 
         <Note>
-          **Version compatibility**: PowerSync requires Postgres version 11 or greater.
+          * **Version compatibility**: PowerSync requires Postgres version 11 or greater.
         </Note>
+
         <Tip>
           **Learn More**
           
-          For more details on Postgres setup, including provider-specific guides (Supabase, AWS RDS, MongoDB Atlas, etc.), see [Source Database Setup](/configuration/source-db/setup#postgres).
+          * For more details on Postgres setup, including provider-specific guides (Supabase, AWS RDS, MongoDB Atlas, etc.), see [Source Database Setup](/configuration/source-db/setup#postgres).
+          * **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs) for a complete working example of connecting a Postgres source database to PowerSync.
         </Tip>
       </Tab>
 
-      <Tab title="MongoDB">
+      <Tab title="MongoDB Atlas">
         For MongoDB Atlas databases, the minimum permissions when using built-in roles are:
 
         ```
@@ -98,31 +123,35 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
         <Tip>
           **Learn More**
           
-          For more details on MongoDB setup, see [Source Database Setup](/configuration/source-db/setup#mongodb).
+          * For more details including instructions for self-hosted MongoDB, or for custom roles on MongoDB Atlas, see [Source Database Setup](/configuration/source-db/setup#mongodb).
+          * **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb) for a complete working example of connecting a MongoDB source database to PowerSync.
         </Tip>
       </Tab>
 
       <Tab title="MySQL (beta)">
         For MySQL, you need to configure binary logging and create a user with replication privileges:
 
-        <CodeGroup>
-          ```sql Configuration
+        ```sql
+          -- Configure binary logging
           -- Add to MySQL option file (my.cnf or my.ini):
           server_id=<Unique Integer Value>
           log_bin=ON
           enforce_gtid_consistency=ON
           gtid_mode=ON
           binlog_format=ROW
-          ```
 
-          ```sql User Setup
-          -- Create user with replication privileges
+          -- Create a user with necessary privileges
           CREATE USER 'repl_user'@'%' IDENTIFIED BY '<password>';
+
+          -- Grant replication client privilege
           GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl_user'@'%';
+
+          -- Grant select access to the specific database
           GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
+
+          -- Apply changes
           FLUSH PRIVILEGES;
-          ```
-        </CodeGroup>
+        ```
 
         <Note>
           **Version compatibility**: PowerSync requires MySQL version 5.7 or greater.
@@ -130,12 +159,15 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
         <Tip>
           **Learn More**
           
-          For more details on MySQL setup, see [Source Database Setup](/configuration/source-db/setup#mysql-beta).
+          * For more details on MySQL setup, see [Source Database Setup](/configuration/source-db/setup#mysql-beta).
+          * **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mysql) for a complete working example of connecting a MySQL source database to PowerSync.
         </Tip>
       </Tab>
 
       <Tab title="SQL Server (alpha)">
         Refer to [these instructions](/configuration/source-db/setup#sql-server-alpha).
+
+        **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mssql) for a complete working example of connecting a SQL Server source database to PowerSync.
       </Tab>
     </Tabs>
 
@@ -150,15 +182,12 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
         After signing up, you will be taken to the [PowerSync Dashboard](https://dashboard.powersync.com/). 
         
         Here, create a new project. _Development_ and _Production_ instances of the PowerSync Service will be created by default in the project. 
-        
       </Tab>
 
       <Tab title="Self-Hosted">
-        <Note>
-          **Prerequisites**: Ensure you've configured your source database with the required user and publication (see [Step 1: Configure Your Source Database](#1-configure-your-source-database) above).
-        </Note>
-
-        Self-hosted PowerSync runs via Docker. This example shows setting up the PowerSync Service with sync bucket storage:
+        Self-hosted PowerSync runs via Docker. 
+        
+        Below is a minimal example of setting up the PowerSync Service with Postgres as the sync bucket storage database and example Sync Rules. MongoDB is also supported as a sync bucket storage database (docs are linked at the end of this step), and you will learn more about Sync Rules in a next step.
 
         ```bash
         # 1. Create a directory for your config
@@ -181,6 +210,8 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
         # 3. Create config.yaml (see below)
 
         # 4. Run PowerSync Service
+        # The Service config can be specified as an environment variable (shown below), as a filepath, or as a command line parameter
+        # See these docs for more details: https://docs.powersync.com/configuration/powersync-service/self-hosted-instances
         docker run -d \
           --name powersync \
           --network powersync-network \
@@ -192,7 +223,7 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
         **Basic `config.yaml` structure:**
 
         ```yaml
-        # Source database connection (defined in the previous step)
+        # Source database connection (see the next step for more details)
         replication:
           connections:
             - type: postgresql # or mongodb, mysql, mssql
@@ -215,6 +246,13 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
                   - SELECT * FROM todos
         ```
 
+        <Warning>
+          **Note**: This example assumes you've configured your source database with the required user and publication (see the previous step) 
+          and are running it via Docker in the 'powersync-network' network. 
+          
+          If you are not using Docker, you will need to specify the connection details in the `config.yaml` file manually (see next step for more details).
+        </Warning>
+
         <Tip>
           **Learn More**
           * [Self-Hosting Introduction](/intro/self-hosting-powersync)
@@ -224,7 +262,7 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
       </Tab>
     </Tabs>
 
-# 3. Connect PowerSync To Your Source Database
+# 3. Connect PowerSync to Your Source Database
 
 The next step is to connect your PowerSync Service instance to your source database.
 
@@ -235,6 +273,9 @@ The next step is to connect your PowerSync Service instance to your source datab
     1. Click **Connect to Source Database**
     2. Select the appropriate database type tab (Postgres, MongoDB, MySQL or SQL Server)
     3. Fill in your connection details:
+        <Note>
+          **Note**: Use the username (e.g., `powersync_role`) and password you created in Step 1: Configure your Source Database.
+        </Note>
        - **Postgres**: Host, Port (5432), Database name, Username, Password, SSL Mode
        - **MongoDB**: Connection URI (e.g., `mongodb+srv://user:pass@cluster.mongodb.net/database`)
        - **MySQL**: Host, Port (3306), Database name, Username, Password
@@ -253,6 +294,10 @@ The next step is to connect your PowerSync Service instance to your source datab
 
   <Tab title="Self-Hosted">
     For self-hosted setups, configure the source database connection in your `config.yaml` file (as you did in the previous step). Examples for the different database types are below.
+
+    <Note>
+      **Note**: Use the username (e.g., `powersync_role`) and password you created in Step 1: Configure your Source Database.
+    </Note>
 
     <CodeGroup>
       ```yaml Postgres
@@ -354,7 +399,7 @@ We recommend starting with a simple **global bucket** that syncs data to all use
         1. Select your project and instance
         2. Go to the **Sync Rules** view
         3. Edit the YAML directly in the dashboard
-        4. Click **Save** to deploy
+        4. Click **Deploy** to validate and deploy your Sync Rules
       </Tab>
 
       <Tab title="Self-Hosted">
@@ -408,57 +453,52 @@ You'll use this token for two purposes:
   <Tab title="Self-Hosted">
     For self-hosted setups, you can generate development tokens using the [powersync-service test-client](https://github.com/powersync-ja/powersync-service/tree/main/test-client):
 
-    #### Step 1: Generate a shared secret
+    <Steps>
+      <Step title="Step 1: Generate a shared secret">
+        Generate a temporary private/public key-pair (RS256) or shared key (HS256) for JWT signing and verification. 
+        
+        You can use an online JWS key generator like [this one](https://8gwifi.org/jwsgen.jsp).
+        
+        1. Click **Generate JWS Keys & Sign** (you don't need to edit the default payload)
+        2. Copy the shared secret value
+        <Warning>
+          Using an online key generator for secrets in a production environment is not recommended. 
+        </Warning>
+      </Step>
+      <Step title="Step 2: Update `config.yaml`">
+        Add the `client_auth` parameter to your `config.yaml` and update the `jwks` > `keys` > `k` value with the shared secret value copied in the previous step:
 
-    To generate a shared secret, you can use an online JWS key generator like [this one](https://8gwifi.org/jwsgen.jsp) (not affiliated with PowerSync).
-
-    <Note>
-      You don't need to edit the default payload in the [JWS key generator](https://8gwifi.org/jwsgen.jsp).
-      You simply need to obtain the generated shared secret value.
-    </Note>
-
-    1. Click **Generate JWS Keys & Sign**
-    2. Copy the shared secret value
-
-    <Warning>
-      Using an online key generator for secrets in a production environment is not recommended. 
-    </Warning>
-
-    #### Step 2: Update `config.yaml`
-
-    Update the `k` value in the `jwks` `keys` in your `config.yaml` config file with the shared secret value copied in the previous step:
-
-    ```yaml config.yaml
-    # Client (application end user) authentication settings
-    client_auth:
-        # JWKS URIs can be specified here
-        jwks_uri: !env PS_JWKS_URL
-        jwks:
+        ```yaml config.yaml
+        # Client (application end user) authentication settings
+        client_auth:
+          # static collection of public keys for JWT verification
+          jwks:
             keys:
-                - kty: 'oct'
-                  k: 'YOUR_GENERATED_SHARED_SECRET'
-                  alg: 'HS256'
-    ```
-
-    #### Step 3: Generate a development token
-
-    1. If you have not done so already, clone the [powersync-service repo](https://github.com/powersync-ja/powersync-service/tree/main)
-    2. Install the dependencies:
-       - In the project root, run the following commands:
-         ```bash
-         pnpm install
-         pnpm build:packages
-         ```
-       - In the `test-client` directory, run the following commands:
-         ```bash
-         pnpm build
-         ```
-    3. Generate a new token by running the following command in the `test-client` directory with your updated `powersync.yaml` config file:
-       ```bash
-       node dist/bin.js generate-token --config path/to/powersync.yaml --sub test-user
-       ```
-       
-       Since you're starting with just a simple global bucket in your Sync Rules that syncs all data to all users (as we recommended in the previous step), we are just using a dummy value of `test-user` as the token subject (`sub`) (which would normally be the user ID you want to test with)
+              - kty: oct
+                alg: 'HS256'
+                k: '[secret]'
+        ```
+      </Step>
+      <Step title="Step 3: Generate a development token">
+        1. If you have not done so already, clone the [`powersync-service` repo](https://github.com/powersync-ja/powersync-service/tree/main)
+        2. Install the dependencies:
+          - In the project root, run the following commands:
+            ```bash
+            pnpm install
+            pnpm build:packages
+            ```
+          - In the `test-client` directory, run the following commands:
+            ```bash
+            pnpm build
+            ```
+        3. Generate a new token by running the following command in the `test-client` directory with your updated `config.yaml` file:
+          ```bash
+          node dist/bin.js generate-token --config path/to/config.yaml --sub test-user
+          ```
+          
+          Since you're starting with just a simple global bucket in your Sync Rules that syncs all data to all users (as we recommended in the previous step), we are just using a dummy value of `test-user` as the token subject (`sub`) (which would normally be the user ID you want to test with)
+      </Step> 
+    </Steps>
 
     <Note>
       Development tokens expire after 12 hours.
@@ -510,56 +550,39 @@ Now it's time to integrate PowerSync into your app. This involves installing the
 
 Add the PowerSync Client SDK to your app project. PowerSync provides SDKs for various platforms and frameworks.
 
-<CodeGroup>
-  ```bash React Native / Expo
-  npm install @powersync/react-native
-  # or
-  yarn add @powersync/react-native
-  ```
+<Tabs>
+  <Tab title="React Native / Expo">
+    <ReactNativeInstallation />
+  </Tab>
 
-  ```bash JavaScript Web
-  npm install @powersync/web
-  # or
-  yarn add @powersync/web
-  ```
+  <Tab title="JavaScript Web">
+    <JavaScriptWebInstallation />
+  </Tab>
 
-  ```bash Node.js
-  npm install @powersync/node
-  # or
-  yarn add @powersync/node
-  ```
+  <Tab title="Node.js">
+    <NodeInstallation />
+  </Tab>
 
-  ```bash Capacitor
-  npm install @powersync/capacitor
-  ```
+  <Tab title="Capacitor">
+    <CapacitorInstallation />
+  </Tab>
 
-  ```yaml Dart/Flutter
-  dependencies:
-    powersync: ^2.0.0
-  ```
+  <Tab title="Dart/Flutter">
+    <FlutterInstallation />
+  </Tab>
 
-  ```kotlin Kotlin
-  dependencies {
-    implementation("com.powersync:powersync-kotlin:2.0.0")
-  }
-  ```
+  <Tab title="Kotlin">
+    <KotlinInstallation />
+  </Tab>
 
-  ```swift Swift
-  dependencies: [
-    .package(url: "https://github.com/powersync-ja/powersync-swift", from: "2.0.0")
-  ]
-  ```
+  <Tab title="Swift">
+    <SwiftInstallation />
+  </Tab>
 
-  ```xml .NET
-  <PackageReference Include="PowerSync" Version="2.0.0" />
-  ```
-</CodeGroup>
-
-<Tip>
-  **Learn More**
-  
-  Refer to the [SDK references](/client-sdks/overview) for more detailed installation instructions, including peer dependencies.
-</Tip>
+  <Tab title=".NET">
+    <DotnetInstallation />
+  </Tab>
+</Tabs>
 
 ### Define Your Client-Side Schema
 
@@ -594,11 +617,11 @@ Connect your client-side PowerSync database to the PowerSync Service instance yo
 
 <Note>You don't have to worry about the _backend connector_ implementation details right now — you can leave the boilerplate as-is and come back to it later.</Note>
 
-For development, you can use the development token you generated in the [Generate a Development Token](#optional-generate-a-development-token) step above. For production, you'll implement proper JWT authentication as we'll explain below.
+For development, you can use the development token you generated in the [Generate a Development Token](#optional-generate-a-development-token) step above. For production, you'll implement proper JWT authentication as we'll explain further below.
 
     <CodeGroup>
       ```typescript React Native (TS)
-      import { PowerSyncDatabase, PowerSyncCredentials } from '@powersync/react-native';
+      import { AbstractPowerSyncDatabase, PowerSyncCredentials } from '@powersync/react-native';
       import { db } from './Database';
 
       class Connector {
@@ -610,7 +633,7 @@ For development, you can use the development token you generated in the [Generat
           };
         }
 
-        async uploadData(database: PowerSyncDatabase) {
+        async uploadData(database: AbstractPowerSyncDatabase) {
           const transaction = await database.getNextCrudTransaction();
           if (!transaction) return;
 
@@ -629,7 +652,7 @@ For development, you can use the development token you generated in the [Generat
       ```
 
       ```typescript Web & Capacitor (TS)
-      import { PowerSyncDatabase, PowerSyncCredentials } from '@powersync/web';
+      import { AbstractPowerSyncDatabase, PowerSyncCredentials } from '@powersync/web';
       import { db } from './Database';
 
       class Connector {
@@ -641,7 +664,7 @@ For development, you can use the development token you generated in the [Generat
           };
         }
 
-        async uploadData(database: PowerSyncDatabase) {
+        async uploadData(database: AbstractPowerSyncDatabase) {
           const transaction = await database.getNextCrudTransaction();
           if (!transaction) return;
 
@@ -1028,10 +1051,10 @@ For production deployments, you'll need to:
 
 1. **[Implement Authentication](/configuration/auth/overview)**: Replace development tokens with proper JWT-based authentication. PowerSync supports various authentication providers including Supabase, Firebase Auth, Auth0, Clerk, and custom JWT implementations.
 2. **Configure & Integrate Your Backend Application**: Set up your backend to handle mutations uploaded from clients.
-  - [Server-Side Setup](/configuration/app-backend/setup)
-  - [Client-Side Integration](/configuration/app-backend/client-side-integration)
+    - [Server-Side Setup](/configuration/app-backend/setup)
+    - [Client-Side Integration](/configuration/app-backend/client-side-integration)
 
-### Additional Resources:
+### Additional Resources
 
 - Learn more about [Sync Rules](/sync/rules/overview) for advanced data filtering
 - Explore [Live Queries / Watch Queries](/client-sdks/watch-queries) for reactive UI updates

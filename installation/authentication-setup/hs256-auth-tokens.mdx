@@ -1,0 +1,73 @@
+---
+title: "HS256 Auth Token Guide"
+description: "Setting up and using HS256 authentication tokens with PowerSync."
+---
+
+PowerSync supports HS256 authentication tokens for authentication. This is a simple and secure option to authenticate clients with PowerSync and this guide will walk you through the process of setting up and using HS256 authentication tokens with PowerSync.
+
+## Generating a Shared Secret
+
+You can generate a shared secret in the terminal using the following command:
+
+```bash
+openssl rand -base64 32
+```
+
+<Warning>
+  Using an online key generator for secrets in a production environment is not recommended.
+</Warning>
+
+## Set the shared secret in the PowerSync instance `Client Auth` configuration
+
+### Base64url Encode the Shared Secret
+Once you've generated the shared secret, you'll need to base64url encode it before setting it in the PowerSync instance Client Auth configuration.
+
+You can use the following command to base64url encode the shared secret:
+```bash
+echo -n "your-value-here" | base64 -w 0 | tr '+/' '-_' | tr -d '='
+```
+
+### PowerSync Cloud Dashboard
+
+1. Go to the [PowerSync Cloud Dashboard](https://dashboard.powersync.com/) and select your project and instance.
+2. Go to the **Client Auth** view.
+3. Find the section labeled **HS256 Authentication Tokens (ADVANCED)** and click **+** button to add a new token.
+4. Set the **KID** to a unique identifier for the token (You'll use the same KID to sign the token). Set the **Shared Secret** to the base64url encoded shared secret.
+5. Click **Save and Deploy**.
+
+### PowerSync Self-Hosted Setup
+
+1. Add the shared secret to your PowerSync Service configuration file, e.g.:
+
+```yaml powersync.yaml
+client_auth:
+  jwks:
+    keys:
+      - kty: oct
+        alg: 'HS256'
+        kid: 'your-kid'
+        k: 'your-base64url-encoded-shared-secret'
+```
+
+2. Restart the PowerSync Service.
+
+## Generate a new JWT token using the KID and shared secret
+
+Using your newly created shared secret, you can generate JWT tokens using the same KID you set in the PowerSync Service configuration. Here's a function using the [`jose`](https://github.com/panva/jose) library:
+
+```typescript
+import * as jose from 'jose';
+
+export const generateToken = async (payload: Record<string, unknown>, userId: string) => {
+  return await new jose.SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256', kid: 'your-kid' })
+    .setSubject(userId)
+    .setIssuer('https://your-domain.com')
+    .setAudience('https://your-powersync-instance.com')
+    .setExpirationTime('60m')
+    // Note: The shared secret should be read from a secure source or environment variable and not hardcoded.
+    .sign(Buffer.from('your-base64url-encoded-shared-secret', 'base64url'));
+};
+```
+
+This token can then be used to authenticate with the PowerSync Service. The client application will need to return the token in the `fetchCredentials()` function and should retrieve the token from your custom authentication service.

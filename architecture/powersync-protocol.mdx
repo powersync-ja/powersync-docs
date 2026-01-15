@@ -10,15 +10,15 @@ For details, see the implementation in the various PowerSync Client SDKs.
 The PowerSync protocol is designed to efficiently sync changes to clients, while maintaining [consistency](/architecture/consistency) and integrity of data.
 
 The same process is used for:
-* downloading the initial set of data
-* bulk downloading changes after being offline for a while
-* and incrementally streaming changes while connected.
+* Downloading the initial set of data
+* Bulk downloading changes after being offline for a while
+* And incrementally streaming changes while connected.
 
 ## Concepts
 
 ### Buckets
 
-All synced data is grouped into [buckets](/architecture/powersync-service#bucket-system). A bucket represents a collection of synced rows, synced to any number of users.
+All synced data is grouped into [buckets](/architecture/powersync-service#bucket-system). A bucket represents a collection of synced rows, synced to any number of users. 
 
 [Buckets](/architecture/powersync-service#bucket-system) is a core concept that allows PowerSync to efficiently scale to tens of thousands of concurrent clients per PowerSync Service instance, and incrementally sync changes to hundreds of thousands of rows (or even [a million or more](/resources/performance-and-limits#sync-powersync-service-→-client)) to each client.
 
@@ -26,6 +26,13 @@ Each bucket keeps an ordered list of changes to rows within the bucket (operatio
 
 * `PUT` is the equivalent of `INSERT OR REPLACE`
 * `REMOVE` is slightly different from `DELETE`: a row is only deleted from the client if it has been removed from <Tooltip tip="It is possible for different buckets in Sync Rules to include overlapping data (for example, if multiple buckets query data from the same table). So the same row may be present in more than one bucket.">_all_ buckets</Tooltip> synced to the client.
+
+<Note>
+As a practical example of how buckets manifest themselves, let's say you have a bucket named `user_todo_lists` that contains the to-do lists for a user, and that bucket utilizes a `user_id` parameter (which will be obtained from the JWT). Now let's say users with IDs `A` and `B` exist in the source database. PowerSync will then replicate data from the source database and create individual buckets with bucket IDs `user_todo_lists["A"]` and `user_todo_lists["B"]`.
+
+As you can see, buckets are essentially scoped by their parameters (`A` and `B` in this example), so they are always synced as a whole. For user `A` to receive only their relevant to-do lists, they would sync the entire contents of the bucket `user_todo_lists["A"]`
+</Note>
+
 
 ### Checkpoints
 
@@ -37,11 +44,11 @@ For any checkpoint, the client and <Tooltip tip="PowerSync Service">server</Tool
 
 The checksum helps to ensure that the client has all the correct data. In the hypothetical scenario where the bucket data becomes corrupted on the PowerSync Service, the checksums will stop matching, and the client will re-download the entire bucket.
 
-Note: Checksums are not a cryptographically secure method to verify data integrity. Rather, it is designed to detect simple data mismatches, whether due to bugs, bucket data tampering, or other corruption issues.
+<Note>Note: Checksums are not a cryptographically secure method to verify data integrity. Rather, it is designed to detect simple data mismatches, whether due to bugs, bucket data tampering, or other corruption issues.</Note>
 
 ### Compacting
 
-To avoid indefinite growth in size of buckets, the operation history of a bucket [can be compacted](/maintenance-ops/compacting-buckets). Stale updates are replaced with marker entries, which can be merged together, while keeping the same checksums.
+To avoid indefinite growth in size of buckets, the operation history of a bucket can be [compacted](/maintenance-ops/compacting-buckets). Stale updates are replaced with marker entries, which can be merged together, while keeping the same checksums.
 
 ## Protocol
 
@@ -52,7 +59,7 @@ A client initiates a sync session using:
 
 The <Tooltip tip="PowerSync Service">server</Tooltip> then responds with a stream of:
 
-1. **"Checkpoint available"**: A new checkpoint ID, with a checksum for each bucket in the checkpoint.
+1. **Checkpoint available**: A new checkpoint ID, with a checksum for each bucket in the checkpoint.
 2. **Data**: New operations for the above checkpoint for each relevant bucket, starting from the last operation ID as sent by the client.
 3. **Checkpoint complete**: Sent once all data for the checkpoint have been sent.
 

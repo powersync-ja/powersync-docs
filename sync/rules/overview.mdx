@@ -1,56 +1,125 @@
 ---
 title: "Sync Rules"
-sidebarTitle: Overview
+sidebarTitle: "Overview & Key Concepts"
 ---
 
-PowerSync Sync Rules allow developers to control which data gets synchronized to which devices (i.e. they enable _dynamic partial replication_).
-
-## Introduction
-
-We recommend starting with our [Sync Rules from First Principles](https://www.powersync.com/blog/sync-rules-from-first-principles-partial-replication-to-sqlite) blog post, which explains on a high-level what Sync Rules are, why they exist and how to implement them.
-
-The remainder of these docs dive further into the details.
+PowerSync Sync Rules is the current generally-available/stable/production-ready mechanism to control which data gets synchronized to which clients/devices (i.e. they enable _dynamic partial replication_).
 
 <Note>
-**Sync Streams available in Early Alpha**
+**Sync Streams Available in Early Alpha**
 
 [Sync Streams](/sync/streams/overview) are now available in early alpha! Sync Streams will eventually replace Sync Rules and are designed to allow for more dynamic syncing, while not compromising on existing offline-first capabilities. See the [Overview](/sync/overview) page for more details.
 </Note>
 
-## Defining Sync Rules
 
-Each [PowerSync Service](/architecture/powersync-service) instance has a Sync Rules configuration where Sync Rules are defined using SQL-like queries (limitations and more info [here](/sync/operators-and-functions)) combined together in a YAML file. 
-The Service uses these SQL-like queries to group data into "sync buckets" when replicating data from your backend source database to client devices.
+## Key Concepts
 
-<Frame caption="Sync rules are configured per PowerSync instance to enable partial sync.">
-  <img src="/images/usage/sync-rules/powersync-docs-diagram-sync-rules-001.png"/>
-</Frame>
+### Bucket Definition
 
-Functionality includes:
+_Sync Rules_ are a set of _bucket definitions_. A _bucket definition_ defines the actual individual [buckets](/architecture/powersync-service#bucket-system) that will be created by the PowerSync Service when it replicates data from your source database.
 
-* Selecting tables/collections and columns/fields to sync.
-* Filtering data according to user ID.
-* Filter data with static conditions.
-* Filter data with custom parameters (from [the JWT](/configuration/auth/overview) or [from clients directly](/sync/rules/client-parameters))
-* Transforming column/field values.
+Each _bucket definition_ consists of:
+* A custom **name** for the bucket, e.g `user_lists`
+* One or more [**Parameter Queries**](#parameter-queries) which are used to explicitly select the **parameters** for the bucket.
+* One or more [**Data Queries**](#data-queries) which selects the data for the bucket. Can make use of **parameters**.
 
-## Replication Into Sync Buckets
+```yaml Sync Rules with a single bucket definition
+bucket_definitions:
+  user_lists:
+    parameters: SELECT request.user_id() as user_id 
+    data:
+      - SELECT * FROM lists WHERE owner_id = bucket.user_id
+```
 
-PowerSync replicates and transforms relevant data from the backend source database according to Sync Rules.
+### Parameters
 
-Data from this step is persisted in separate sync buckets on the PowerSync Service. Data is incrementally updated so that sync buckets always contain current state data as well as a full history of changes.
+A **Parameter** is a value that can be used in the Sync Rules to create dynamic sync behavior for each user/client. Each client syncs only the relevant buckets based on the parameters for that client (i.e. the results returned from the **Parameter Query** for that client).
 
-<Frame caption="Data is replicated from the source database into sync buckets.">
-  <img src="/images/usage/sync-rules/powersync-docs-diagram-sync-rules-002.png"/>
-</Frame>
 
-## Client Database Hydration
+### Parameter Queries
 
-PowerSync asynchronously hydrates local SQLite databases embedded in the PowerSync Client SDK based on data in sync buckets.
+**Parameter Queries** are SQL-like queries that explicitly define the parameters for the bucket.
 
-<Frame caption="Data flow showing sync buckets which are created based on sync rules.">
-  <img src="/images/usage/sync-rules/powersync-docs-diagram-sync-rules-003.png"/>
-</Frame>
+The following values can be queried in Parameter Queries:
+
+- **Authentication Parameters** (see below)
+- **Client Parameters** (see below)
+- **Values From a Table/Collection** (see below)
+
+<Note>See [Parameter Queries](/sync/rules/parameter-queries) for more details and examples.</Note>
+
+
+### Authentication Parameters
+
+This is a set of parameters specified in the user's JWT authentication token, and they are signed as part of the JWT (see [Authentication](/configuration/auth/overview)). This always includes the JWT subject (`sub`) which is the user ID, but may include additional and custom parameters (other claims in the JWT). Authentication Parameters are used to identify the user, and specify permissions for the user.
+
+```yaml
+parameters: SELECT request.user_id() as user_id
+```
+
+<Note>See [Parameter Queries](/sync/rules/parameter-queries) for more details and examples.</Note>
+
+ 
+### Client Parameters
+Clients can specify **Client Parameters** when connecting to PowerSync (i.e. when [`connect()` is called](/intro/setup-guide#connect-to-powersync-service-instance)).
+
+```yaml
+parameters: SELECT (request.parameters() ->> 'current_project') as current_project
+```
+
+A client can pass any value for a Client Parameter. Hence, Client Parameters should always be treated with care, and should not be used for access control purposes.
+
+That being said, Client Parameters can be useful for use cases such as syncing different buckets based on state in the client app, for example only synchronizing data for the project currently selected, or syncing different buckets based on the client version ([see here](/sync/advanced/multiple-client-versions)).
+
+<Note>See [Client Parameters](/sync/rules/client-parameters) and [Parameter Queries](/sync/rules/parameter-queries) for more details and examples.</Note>
+
+
+### Values From a Table/Collection
+
+A **Parameter Query** can select a parameter from another table/collection, e.g.:
+
+```yaml
+SELECT primary_list_id FROM users WHERE users.id = request.user_id()
+```
+
+<Note>See [Parameter Queries](/sync/rules/parameter-queries) for more details and examples.</Note>
+
+
+### Data Queries
+
+**Data Queries** select the data for the bucket, and can make use of any of the bucket **parameters** (i.e. values returned by the **Parameter Queries**). 
+
+When referencing a parameter, the syntax `bucket.<parameter-name>` should be used in the Data Query:
+
+```yaml 
+data:
+  - SELECT * FROM lists WHERE owner_id = bucket.user_id
+```
+
+<Note>See [Data Queries](/sync/rules/data-queries) for more details and examples.</Note>
+
+
+### Global Buckets
+
+If no **Parameter Query** is specified in the bucket definition, the bucket is automatically a global bucket. These buckets will be synced to all clients/users. 
+
+<Note>See [Global Buckets](/sync/rules/global-data) for more details and examples.</Note>
+
+
+## Potential Parameter Values Determine Created Buckets
+
+When your PowerSync Service instance does [replication from your source database](/sync/overview#sync-rules/streams-determine-replication-from-the-source-database) based on your Sync Rules configuration (i.e. your bucket definitions), it finds all possible values for the parameters in the relevant tables/collections in your source database, and creates individual buckets based on those values.
+
+For example, let's say you have a bucket named `user_todo_lists` that contains the to-do lists for a user, and that bucket utilizes a `user_id` parameter (which will be obtained from the JWT) to scope those to-do lists. Now let's say users with IDs `1`, `2` and `3` exist in the source database. PowerSync will then replicate data from the source database and create individual buckets with bucket IDs of `user_todo_lists["1"]`, `user_todo_lists["2"]` and `user_todo_lists["3"]`. 
+
+This approach is key to the scalability and performance of PowerSync. See the [PowerSync Service architecture overview](/architecture/powersync-service) for more background.
+
+
+## Designing Sync Rules
+
+Designing your Sync Rules is basically about _organizing data into buckets_, and creating the bucket definitions accordingly.
+
+<Note>See [Organize Data Into Buckets](/sync/rules/organize-data-into-buckets).</Note>
 
 
 

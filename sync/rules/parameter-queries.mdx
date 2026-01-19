@@ -2,7 +2,45 @@
 title: "Parameter Queries"
 ---
 
-Parameter queries allow parameters to be defined on a bucket to group data. These queries can use parameters from the JWT (we loosely refer to these as token parameters), such as a `user_id`, or [parameters from clients](/sync/rules/client-parameters) directly.
+_Parameter Queries_ allow [parameters](/sync/rules/overview#parameters) to be defined on a [bucket](/sync/rules/overview#bucket-definition) to group data. 
+
+Each [bucket](/sync/rules/overview#bucket-definition) can have zero or more Parameter Queries.
+
+Parameter Queries can return multiple rows/documents. The values selected in each row/document become parameters for the bucket.
+
+The following values can be selected in Parameter Queries:
+
+- **Authentication Parameters**, which come from the JWT token.
+- **Client Parameters**, which are passed directly from clients (specified [at connection](/sync/rules/client-parameters#usage))
+- **Values From a Table/Collection** (in your source database)
+
+<Note>Parameter Queries are not run directly on your source database. Instead, the Parameter Queries in your Sync Rules are used to pre-process rows/documents as they are [replicated from your source database](/architecture/powersync-service#replication-from-the-source-database). During replication, parameter values are indexed for [efficient use](/architecture/powersync-service#bucket-system) in the sync process.</Note>
+
+
+## Using Authentication Parameters
+
+The following functions allow you to select Authentication Parameters in your Parameter Queries:
+
+| Function | Description |
+|----------|-------------|
+| `request.user_id()` | Returns the JWT subject (`sub`). Same as `request.jwt() ->> 'sub'` (see below) |
+| `request.jwt()` | Returns the entire (signed) JWT payload as a JSON string. If there are other _claims_ in your JWT (in addition to the user ID), you can select them from this JSON string. |
+
+Since `request.jwt()` is a string containing JSON, use the `->>` [operator](/sync/rules/supported-sql#operators) to select values from it:
+
+```sql
+request.jwt() ->> 'sub' -- the 'subject' of the JWT - same as `request.user_id()
+```
+
+As an example, Supabase Auth includes [various claims](https://supabase.com/docs/guides/auth/jwt-fields) in their JWTs: 
+
+```sql
+request.jwt() ->> 'role' -- 'authenticated' or 'anonymous'
+request.jwt() ->> 'email' -- automatic email field
+request.jwt() ->> 'app_metadata.custom_field' -- custom field added by a service account (authenticated)
+```
+
+This is a simple example of Sync Rules with a single bucket definition with a Parameter Query that selects the user ID from the JWT:
 
 ```yaml
 bucket_definitions:
@@ -13,44 +51,10 @@ bucket_definitions:
     # Data Query
     data:
       - SELECT * FROM lists WHERE lists.owner_id = bucket.user_id
-
-  user_lists_table:
-    # Similar query, but using a table
-    # Access can instantly be revoked by deleting the user row/document
-    parameters: SELECT id as user_id FROM users WHERE users.id = request.user_id()
-    data:
-      - SELECT * FROM lists WHERE lists.user_id = bucket.user_id
 ```
 
-Available functions in sync rules are:
-
-1. `request.user_id()`: Returns the JWT subject, same as `request.jwt() ->> 'sub'`
-
-2. `request.jwt()`: Returns the entire (signed) JWT payload as a JSON string.
-
-3. `request.parameters()`: Returns [client parameters](/sync/rules/client-parameters) as a JSON string.
-
-Example usage:
-
-```sql
-request.user_id()
-request.jwt() ->> 'sub' -- Same as `request.user_id()
-request.parameters() ->> 'param' -- Client parameters
-
--- Some Supabase-specific examples below. These can be used with standard Supabase tokens,
--- for use cases which previously required custom tokens
-request.jwt() ->> 'role' -- 'authenticated' or 'anonymous'
-request.jwt() ->> 'email' -- automatic email field
-request.jwt() ->> 'app_metadata.custom_field' -- custom field added by a service account (authenticated)
-
-```
-
-<Note>
-  A previous syntax for parameter queries used `token_parameters`. Expand the below for details on how to migrate to the recommended syntax above.
-</Note>
-
-<Accordion title="Previous Syntax">
-  The previous syntax for parameter queries used `token_parameters.user_id` to return the JWT subject. Example:
+<Accordion title="Legacy Syntax (`token_parameters`)">
+  A legacy syntax for Parameter Queries used `token_parameters.user_id` to return the JWT subject. Example:
 
   ```yaml
   bucket_definitions:
@@ -60,27 +64,15 @@ request.jwt() ->> 'app_metadata.custom_field' -- custom field added by a service
         - SELECT * FROM lists WHERE lists.owner_id = bucket.user_id
   ```
 
-  ### Migrate to Recommended Syntax
+  That legacy syntax also allowed custom claims from the JWT, but only if they were nested under a `parameters` claim in the JWT.
 
-  The new functions available in sync rules are:
-
-  1. `request.jwt()`: Returns the entire (signed) JWT payload as a JSON string.
-
-  2. `request.parameters()`: Returns [client parameters](/sync/rules/client-parameters) as a JSON string.
-
-  3. `request.user_id()`: Returns the token subject, same as `request.jwt() ->> 'sub'` and also the same as `token_parameters.user_id` in the previous syntax.
-
-  The major difference from the previous `token_parameters` is that all payloads are preserved as-is, which can make usage a little more intuitive. This also includes JWT payload fields that were not previously accessible.
-
-  Migrating to the new syntax:
+  If you are still using this legacy syntax, you can migrate to the current syntax as follows:
 
   1. `token_parameters.user_id` references can simply be updated to `request.user_id()`
 
-  2. Custom parameters can be updated from `token_parameters.my_custom_field` to `request.jwt() ->> 'parameters.my_custom_field'`
+  2. For custom parameters, if you keep your custom JWT in the format required by the legacy syntax, you can update `token_parameters.my_custom_field` references to `request.jwt() ->> 'parameters.my_custom_field'`
 
-     1. This example applies if you keep your existing custom JWT as is.
-
-     2. Supabase users can now make use of [Supabase's standard JWT structure](https://supabase.com/docs/guides/auth/jwts#jwts-in-supabase) and reference `app_metadata.my_custom_field` directly.
+  3. Alternatively, you can get custom parameters directly from the JWT payload/claims, e.g. `request.jwt() ->> 'my_custom_field'`
 
   Example:
 
@@ -94,7 +86,44 @@ request.jwt() ->> 'app_metadata.custom_field' -- custom field added by a service
   ```
 </Accordion>
 
-#### Filter on additional columns
+
+## Using Client Parameters
+
+| Function | Description |
+|----------|-------------|
+| `request.parameters()` | Returns [Client Parameters](/sync/rules/client-parameters) as a JSON string. |
+
+Example usage:
+
+```sql
+request.parameters() ->> 'param' -- select Client Parameter named 'param'
+```
+
+For full details, see the dedicated page on [Client Parameters](/sync/rules/client-parameters).
+
+
+## Using Values From a Table/Collection
+
+A Parameter Query can select a parameter from a table/collection in your source database, for example:
+
+```yaml
+bucket_definitions:
+  user_lists_table:
+    # This is similar to the 'user_lists' example above, but with the advantage that access
+    # can instantly be revoked by deleting the user row/document from the source database:
+    parameters: SELECT id as user_id FROM users WHERE users.id = request.user_id()
+    data:
+      - SELECT * FROM lists WHERE lists.user_id = bucket.user_id
+```
+
+## Supported SQL
+
+The supported SQL in Parameter Queries is based on a small subset of the SQL standard syntax. Not all SQL constructs are supported. See [Supported SQL](/sync/rules/supported-sql) for full details.
+
+
+## Usage Examples
+
+### Filter on Additional Columns/Fields
 
 ```yaml
 bucket_definitions:
@@ -108,54 +137,35 @@ bucket_definitions:
       - SELECT * FROM lists WHERE lists.owner_id = bucket.user_id
 ```
 
-#### Group according to different columns
+### Group According to Different Columns/Fields
 
 ```yaml
 bucket_definitions:
   primary_list:
     parameters: |
-        SELECT primary_list_id FROM users WHERE
-           users.id = request.user_id()
+        SELECT primary_list_id FROM users WHERE users.id = request.user_id()
     data:
       - SELECT * FROM todos WHERE todos.list_id = bucket.primary_list_id
 ```
 
-#### Using different tables for parameters
+### Using Different Tables/Collections for Parameters
 
 ```yaml
 bucket_definitions:
   owned_lists:
     parameters: |
-        SELECT id as list_id FROM lists WHERE
-           owner_id = request.user_id()
+        SELECT id as list_id FROM lists WHERE owner_id = request.user_id()
     data:
       - SELECT * FROM lists WHERE lists.id = bucket.list_id
       - SELECT * FROM todos WHERE todos.list_id = bucket.list_id
 ```
 
-#### Using a join table
+### Multiple Columns/Fields 
 
-In this example, a single query can return multiple sets of bucket parameters for a single user.
-
-Keep in mind that the total number of buckets per user should remain limited (\<= 1,000 [by default](/resources/performance-and-limits)), so don't make buckets too granular.
-
-```yaml
-bucket_definitions:
-  user_lists:
-    parameters: |
-        SELECT list_id FROM user_lists WHERE
-           user_lists.user_id = request.user_id()
-    data:
-      - SELECT * FROM lists WHERE lists.id = bucket.list_id
-      - SELECT * FROM todos WHERE todos.list_id = bucket.list_id
-```
-
-#### Multiple bucket parameters
-
-Parameter queries may return multiple bucket parameters.
+Parameter Queries may select multiple columns/fields parameters.
 
 <Note>
-  **Note that every bucket parameter must be used in every data query.**
+  Note that [every bucket parameter must be used in every Data Query](/sync/rules/data-queries#every-data-query-must-use-every-bucket-parameter).
 </Note>
 
 ```yaml
@@ -169,11 +179,43 @@ bucket_definitions:
       - SELECT * FROM todos WHERE todos.list_id = bucket.list_id and todos.org_id = bucket.org_id
 ```
 
-#### Using multiple parameter queries
+### Using a Join Table/Collection
 
-Multiple parameter queries can be used in the same bucket definition.
+In this example, the Parameter Query can return multiple rows/documents, resulting in multiple sets of bucket parameters for a single user.
 
-It is important in this case that the output columns are exactly the same for each query in the bucket definition, as these define the bucket parameters.
+```yaml
+bucket_definitions:
+  user_lists:
+    parameters: |
+        SELECT list_id FROM user_lists WHERE user_lists.user_id = request.user_id()
+    data:
+      - SELECT * FROM lists WHERE lists.id = bucket.list_id
+      - SELECT * FROM todos WHERE todos.list_id = bucket.list_id
+```
+
+<Warning>
+  Keep in mind that the total number of buckets per user should [remain limited](/sync/rules/organize-data-into-buckets#limit-on-number-of-buckets-per-client) (\<= 1,000 [by default](/resources/performance-and-limits)), so buckets should not be too granular.
+</Warning>
+
+For more advanced details on many-to-many relationships and join tables, see [this guide](/sync/advanced/many-to-many-and-join-tables).
+
+
+### Expanding JSON Array Into Multiple Parameters
+
+Using the `json_each()` [function](/sync/rules/supported-sql#functions) and `->` [operator](/sync/rules/supported-sql#operators), we can expand a parameter that is a JSON array into multiple rows, thereby filtering by multiple parameter values:
+
+```yaml
+bucket_definitions:
+  user_projects:
+    parameters: SELECT project_id FROM json_each(request.jwt() -> 'project_ids')
+    data:
+      - SELECT * FROM projects WHERE id = bucket.project_id
+```
+
+
+### Multiple Parameter Queries
+
+Multiple Parameter Queries can be used in the same bucket definition, however, the output columns must be exactly the same for each of these Parameter Queries:
 
 ```yaml
 bucket_definitions:
@@ -186,19 +228,14 @@ bucket_definitions:
       - SELECT * FROM todos WHERE todos.list_id = bucket.list_id
 ```
 
-Keep in mind that the total number of buckets per user should remain limited (\<= 1,000 [by default](/resources/performance-and-limits)), so don't make buckets too granular.
+<Warning>
+  Keep in mind that the total number of buckets per user should [remain limited](/sync/rules/organize-data-into-buckets#limit-on-number-of-buckets-per-client) (\<= 1,000 [by default](/resources/performance-and-limits)), so buckets should not be too granular.
+</Warning>
 
-#### Pass parameters from clients
 
-It is possible to pass parameters from clients directly. See [client parameters](/sync/rules/client-parameters) to learn more.
+### No Output Columns/Fields
 
-#### Global buckets
-
-Global buckets are buckets with no bucket parameters. This means there is a single bucket for the bucket definition.
-
-When no parameter query is specified, it is automatically a global bucket.
-
-Alternatively, a parameter query with no output columns may be specified to only sync the bucket to a subset of users.
+A Parameter Query with no output columns may be specified to only sync the bucket to a subset of users.
 
 ```yaml
 bucket_definitions:
@@ -212,18 +249,9 @@ bucket_definitions:
       - SELECT * FROM admin_settings
 ```
 
-## Restrictions
+### No Parameter Query
 
-Parameter queries are not run directly on a database. Instead, the queries are used to pre-process rows/documents as they are replicated, and index them for efficient use in the sync process.
+Any bucket with no _Parameter Query_ in the bucket definition is automatically a _Global Bucket_. These buckets will be synced to all clients/users. 
 
-The supported SQL is based on a small subset of the SQL standard syntax.
+See [Global Buckets](/sync/rules/global-data)
 
-Notable features and restrictions:
-
-1. Only simple `SELECT` statements are supported.
-
-2. No `JOIN`, `GROUP BY` or other aggregation, `ORDER BY`, `LIMIT`, or subqueries are supported.
-
-3. For token parameters, only `=` operators are supported, and `IN` to a limited extent.
-
-4. A limited set of operators and functions are supported — see [Operators and Functions](/sync/operators-and-functions).

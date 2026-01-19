@@ -19,8 +19,8 @@ Sync Rules is the current generally-available / stable approach to use, that is 
 [Sync Streams](/sync/streams/overview) are now available in early alpha! Sync Streams will eventually replace Sync Rules and are designed to allow for more dynamic on-demand syncing, while not compromising on the "sync data upfront" strengths of PowerSync for offline-first architecture use cases. 
 
 Key improvements in Sync Streams over Sync Rules include:
-- **On-demand syncing**: You define Sync Streams on the PowerSync Service, and a client can then subscribe to them one or more times with different parameters, on-demand. You still have the option of auto-subscribing certain buckets when a client connects for "sync data upfront" behavior.
-- **Temporary caching-like behavior**: Each subscription includes a configurable TTL that keeps data active after the client unsubscribes, acting as a warm cache for recently accessed data.
+- **On-demand syncing**: You define Sync Streams on the PowerSync Service, and a client can then subscribe to them one or more times with different parameters, on-demand. You still have the option of auto-subscribing streams when a client connects, for "sync data upfront" behavior.
+- **Temporary caching-like behavior**: Each subscription includes a configurable TTL that keeps data active after the client unsubscribes, acting as a warm cache for re-subscribing.
 - **Simpler developer experience**: Simplified syntax and mental model, and capabilities such as your UI components automatically managing subscriptions (for example, React hooks).
 
 We encourage you to explore Sync Streams, and once they're in Beta, migrating existing projects:
@@ -33,23 +33,25 @@ We encourage you to explore Sync Streams, and once they're in Beta, migrating ex
 
 <Tip>You may also find it useful to look at the [PowerSync Service architecture](/architecture/powersync-service) for background.</Tip>
 
-Each [PowerSync Service](/architecture/powersync-service) instance has a deployed _Sync Rules_ or _Sync Streams_ configuration. This takes the form of a YAML file which contains:
-- **In the case of Sync Rules:** Definitions of the different _buckets_ that exist (basically logical groupings of data), with SQL-like queries to specify the parameters used by each bucket, as well as the data contained in each bucket.
+Each [PowerSync Service](/architecture/powersync-service) instance has a deployed _Sync Rules_ or _Sync Streams_ configuration. This takes the form of a <Tooltip tip="For PowerSync Cloud, the YAML file is edited and deployed to a specific PowerSync instance in the PowerSync Dashboard. For self-hosting setups, the YAML is configured as part of your instance configuration.">YAML file</Tooltip> which contains:
+- **In the case of Sync Rules:** Definitions of the different [buckets](/architecture/powersync-service#bucket-system) that exist (basically logical groupings of data), with SQL-like queries to specify the parameters used by each bucket (if any), as well as the data contained in each bucket.
 - **In the case of Sync Streams:** Definitions of the streams that exist, with a SQL-like query (which can also contain limited subqueries), which defines the data in the stream, and references the necessary parameters.
 
 <Note>
-A _parameter_ is a value that can be used in the Sync Rules or Streams to create dynamic sync behavior for each user/client. Each client syncs only the relevant [_buckets_](#sync-rules/streams-determine-replication-from-the-source-database) based on the parameters for that client.
+A _parameter_ is a value that can be used in Sync Rules or Streams to create dynamic sync behavior for each user/client. Each client syncs only the relevant [_buckets_](/architecture/powersync-service#bucket-system) based on the parameters for that client.
 * Sync Rules can make use of _authentication parameters_ from the JWT token (such as the user ID or other JWT claims), as well [_client parameters_](/sync/rules/client-parameters) (passed directly from the client when it connects to the PowerSync Service). 
 * Sync Streams can similarly make use of _authentication parameters_ from the JWT token, _connection parameters_ (the equivalent of _client parameters_, specified at connection), and _subscription parameters_ (specified by the client when it subscribes to a stream at any time). See details [here](/sync/streams/overview#accessing-parameters).
+
+It is also possible to have buckets with no parameters. These sync to all users/clients and we refer to them as "Global Buckets".
 </Note>
 
 <Note>
 The concept of _buckets_ is core to PowerSync and key to its performance and scalability. The [PowerSync Service architecture overview](/architecture/powersync-service) provides more background on this. 
-* In the _Sync Rules_ system, buckets and their parameters are explicitly defined.
+* In the _Sync Rules_ system, buckets and their parameters are [explicitly defined](/sync/rules/overview#bucket-definition).
 * In our new _Sync Streams_ system which is in early alpha, buckets and parameters are not explicitly defined, and are instead implicit based on the streams, their queries and subqueries.
 </Note>
 
-There are limitations on the SQL syntax and functionality that is supported in the Sync Rules and Sync Streams. For details and limitations, see [Operators and Functions](/sync/operators-and-functions).
+There are limitations on the SQL syntax and functionality that is supported in the Sync Rules and Sync Streams. For Sync Rules, details and limitations are documented at [Supported SQL](/sync/rules/supported-sql).
 
 In addition to filtering data based on parameters, Sync Rules and Sync Streams also enable:
 
@@ -60,10 +62,10 @@ In addition to filtering data based on parameters, Sync Rules and Sync Streams a
 
 ### Sync Rules/Streams Determine Replication From the Source Database
 
-A PowerSync Service instance replicates and transforms relevant data from the backend source database according to the deployed Sync Rules or Sync Streams. During replication, data and metadata is persisted in [buckets](/architecture/powersync-service#bucket-system) on the PowerSync Service. Buckets are incrementally updated so that they contain the latest state as well as a history of changes (operations). This is key to how PowerSync achieves efficient delta syncing — having the operation history for each bucket allows clients to sync only the deltas that they need to get up to date.
+A PowerSync Service instance [replicates and transforms](/architecture/powersync-service#replication-from-the-source-database) relevant data from the backend source database according to the deployed Sync Rules or Sync Streams. During replication, data and metadata is persisted in [buckets](/architecture/powersync-service#bucket-system) on the PowerSync Service. Buckets are incrementally updated so that they contain the latest state as well as a history of changes (operations). This is key to how PowerSync achieves efficient delta syncing — having the operation history for each bucket allows clients to sync only the deltas that they need to get up to date (see [Protocol](/architecture/powersync-protocol#protocol) for more details).
 
 <Note>
-As a practical example, let's say you have a bucket named `user_todo_lists` that contains the to-do lists for a user, and that bucket utilizes a `user_id` parameter (which will be embedded in the JWT). Now let's say users with IDs `A` and `B` exist in the source database. PowerSync will then replicate data from the source database and create individual buckets with bucket IDs `user_todo_lists["A"]` and `user_todo_lists["B"]`.
+As a practical example, let's say you have a bucket named `user_todo_lists` that contains the to-do lists for a user, and that bucket utilizes a `user_id` parameter (which will be embedded in the JWT). Now let's say users with IDs `A` and `B` exist in the source database. PowerSync will then replicate data from the source database and create individual buckets with IDs `user_todo_lists["A"]` and `user_todo_lists["B"]`. When the user with ID `A` connects, they can efficiently sync just the bucket with ID `user_todo_lists["A"]`.
 </Note>
 
 <Frame caption="Data is replicated from the source database into buckets.">

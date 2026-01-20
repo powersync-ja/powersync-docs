@@ -49,9 +49,103 @@ Encryption support is available for PowerSync's Node.js SDK using [`better-sqlit
 </Accordion>
 
 <Accordion title="Kotlin" icon="k">
-Encryption support is available for PowerSync's Kotlin SDK using [`SQLite3MultipleCiphers`](https://utelle.github.io/SQLite3MultipleCiphers/). This allows you to encrypt your local SQLite database with various cipher algorithms.
+Encryption support is available for PowerSync's Kotlin SDK (since version 1.9.0) using [`SQLite3MultipleCiphers`](https://utelle.github.io/SQLite3MultipleCiphers/) via the [`com.powersync:sqlite3multipleciphers`](https://central.sonatype.com/artifact/com.powersync/sqlite3multipleciphers) package. This allows you to encrypt your local SQLite database with various cipher algorithms.
 
-For implementation details see [`sqlite3multipleciphers`](https://github.com/powersync-ja/powersync-kotlin/tree/main/sqlite3multipleciphers) in the PowerSync Kotlin SDK.
+**Setup:**
+
+1. Replace your dependency on `com.powersync:core` with `com.powersync:common` of the same version.
+
+2. Add a dependency on `com.powersync:sqlite3multipleciphers`.
+
+3. Since `:core` includes a Ktor client implementation, you'll need to [add one manually](https://ktor.io/docs/client-engines.html) if you're not already using Ktor:
+   - Android/JVM: `io.ktor:ktor-client-okhttp`
+   - Apple targets (Kotlin/Native): `io.ktor:ktor-client-darwin`
+
+4. Use the appropriate encrypted database factory when creating your `PowerSyncDatabase`:
+
+```kotlin
+// Android
+val database = PowerSyncDatabase(
+    factory = AndroidEncryptedDatabaseFactory(
+        context,
+        Key.Passphrase("your encryption key")
+    ),
+    schema = yourSchema,
+    dbFilename = "your_database"
+)
+
+// JVM
+val database = PowerSyncDatabase(
+    factory = JavaEncryptedDatabaseFactory(
+        Key.Passphrase("your encryption key")
+    ),
+    schema = yourSchema,
+    dbFilename = "your_database"
+)
+
+// Kotlin/Native (Apple targets)
+val database = PowerSyncDatabase(
+    factory = NativeEncryptedDatabaseFactory(
+        Key.Passphrase("your encryption key")
+    ),
+    schema = yourSchema,
+    dbFilename = "your_database"
+)
+```
+
+<Note>
+  Store encryption keys securely rather than hardcoding them in your code.
+</Note>
+
+For more details, see the [`sqlite3multipleciphers` README](https://github.com/powersync-ja/powersync-kotlin/tree/main/sqlite3multipleciphers) in the PowerSync Kotlin SDK repository.
+</Accordion>
+
+<Accordion title="Swift" icon="swift">
+Encryption support is available for PowerSync's Swift SDK (since version 1.10.0) using [`SQLite3MultipleCiphers`](https://utelle.github.io/SQLite3MultipleCiphers/). Encryptions keys are configured with the `initialStatements` parameter on `PowerSyncDatabase()` which allows running `PRAGMA key` statements.
+
+**Setup requirements:**
+
+The PowerSync Swift SDK depends on [CSQLite](https://github.com/powersync-ja/CSQLite) to build and link SQLite.
+That package can be configured to optionally link SQLite3 Multiple Ciphers by enabling the `Encryption` trait. Due to SwiftPM limitations, we can't directly expose that trait on the Swift SDK.
+
+Instead, we recommend directly depending on CSQLite with the encryption trait, which will enable the same for the SDK (since each package can only appear in a build once). Since XCode doesn't support specifying package traits when adding dependencies, you first need to add a local Swift package as a workaround.
+
+1. Create a local `Package.swift` in your project that depends on CSQLite with the `Encryption` trait:
+
+```swift
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+    name: "helper",
+    products: [
+        .library(name: "helper", targets: ["helper"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/powersync-ja/CSQLite.git", exact: "3.51.2", traits: ["Encryption"]),
+    ],
+    targets: [
+        .target(name: "helper", dependencies: [.product(name: "CSQLite", package: "CSQLite")]),
+    ]
+)
+```
+
+2. Add a dependency to this local package from Xcode and resolve packages. This enables `sqlite3mc` for your entire app, including the PowerSync framework.
+
+3. Configure encryption when opening the database:
+
+```swift
+let db = PowerSyncDatabase(
+    schema: yourSchema,
+    initialStatements: ["pragma key = 'your encryption key'"]
+)
+```
+
+<Note>
+  Store encryption keys securely (e.g., in Keychain) rather than hardcoding them in your code.
+</Note>
+
+For a complete working example, see the [SwiftEncryptionDemo](https://github.com/powersync-ja/powersync-swift/tree/main/Demos/SwiftEncryptionDemo) in the PowerSync Swift SDK repository.
 </Accordion>
 
 <Note>

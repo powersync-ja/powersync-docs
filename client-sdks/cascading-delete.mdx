@@ -1,41 +1,40 @@
 ---
 title: "Cascading Delete"
-description: "Learn how to perform a cascading delete on the client."
+description: "Perform cascading deletes on the client-side database"
 keywords: ["data", "cascade", "delete"]
 ---
 
-## Introduction
+PowerSync [uses SQLite views](/architecture/client-architecture#schema) instead of standard tables, so SQLite features like foreign key constraints and cascading deletes are not available.
 
-Since PowerSync utilizes SQLite views instead of standard tables, SQLite features like constraints, foreign keys, or cascading deletes are not available.
-Currently, there is no direct support for cascading deletes on the client. However, you can achieve this by either:
-1. Manually deleting all the relevant tables within a **single transaction**, OR
-    <Note>
-        Every local mutation performed against SQLite via the PowerSync SDK will be returned in `uploadData`. So as long as you are using `.execute()` for the mutation,
-        the operation will be present in the upload queue.
-    </Note>
-2. Implementing triggers (which is more complex)
-    <Note>
-        You create triggers on the [internal tables](https://docs.powersync.com/architecture/client-architecture#schema) (not the views defined by the client schema), similar to what is
-        done [here](https://github.com/powersync-ja/powersync-js/blob/e77b1abfbed91988de1f4c707c24855cd66b2219/demos/react-supabase-todolist/src/app/utils/fts_setup.ts#L50)
-    </Note>
+There's no built-in support for cascading deletes on the client, but you can achieve this in two ways:
 
-## Example
+1. Manual deletion in a transaction - Delete all related records in a single transaction (recommended for most cases)
+   <Note>
+   Every local mutation performed against SQLite via the PowerSync SDK will be returned in `uploadData`. As long as you're using `.execute()` for the mutation, the operation will be present in the upload queue.
+   </Note>
 
-The following example is taken from the [React Native To-Do List demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist).
-It showcases how to delete a `list` and all its associated `todos` in a single transaction.
+2. Triggers - Create triggers on the [internal tables](/architecture/client-architecture#schema) (more complex, but more automatic)
+   <Note>
+   You create triggers on the internal tables (not the views defined by the client schema), similar to what is done [here](https://github.com/powersync-ja/powersync-js/blob/e77b1abfbed91988de1f4c707c24855cd66b2219/demos/react-supabase-todolist/src/app/utils/fts_setup.ts#L50).
+   </Note>
+
+## Example: Manual Transaction
+
+This example from the [React Native To-Do List demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) shows how to delete a `list` and all its associated `todos` in a single transaction:
 
 ```typescript
-  const deleteList = async (id: string) => {
-    await system.powersync.writeTransaction(async (tx) => {
-      // Delete associated todos
-      await tx.execute(`DELETE FROM ${TODO_TABLE} WHERE list_id = ?`, [id]);
-      // Delete list record
-      await tx.execute(`DELETE FROM ${LIST_TABLE} WHERE id = ?`, [id]);
-    });
-  };
+const deleteList = async (id: string) => {
+  await system.powersync.writeTransaction(async (tx) => {
+    // Delete associated todos
+    await tx.execute(`DELETE FROM ${TODO_TABLE} WHERE list_id = ?`, [id]);
+    // Delete list record
+    await tx.execute(`DELETE FROM ${LIST_TABLE} WHERE id = ?`, [id]);
+  });
+};
 ```
 
 <Note>
-    An important thing to note is that the local SQLite database will always match the backend source database, as long as the tables are in the publication, when online.
-    For example, if you delete a record from the local `lists` table and Supabase cascade deletes a record from the `todo` table, PowerSync will also delete the local `todo` record when online.
+Every mutation performed via `.execute()` is added to the upload queue and returned in `uploadData`. PowerSync will also delete local records when your backend performs cascade deletes on the source database (as long as those tables are in the publication).
+
+For example, if you delete a record from the local `lists` table and Supabase cascade deletes a record from the `todo` table, PowerSync will also delete the local `todo` record when online.
 </Note>

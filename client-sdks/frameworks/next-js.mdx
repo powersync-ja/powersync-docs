@@ -6,14 +6,14 @@ keywords: ["next.js", "web"]
 ---
 
 ## Introduction
-In this tutorial, we’ll explore how to enhance a Next.js application with offline-first capabilities using PowerSync. In the following sections, we’ll walk through the process of integrating PowerSync into a Next.js application, setting up local-first storage, and handling synchronization efficiently.
+This guide walks through integrating PowerSync into a Next.js application for offline-first functionality with local-first storage and efficient synchronization.
 
-<Note>At present PowerSync will not work with SSR enabled with Next.js and in this guide we disable SSR across the entire app. However, it is possible to have other pages, which do not require authentication for example, to still be rendered server-side. This can be done by only using the DynamicSystemProvider (covered further down in the guide) for specific pages. This means you can still have full SSR on other page which do not require PowerSync.</Note>
+<Note>PowerSync does not work with SSR. In this guide we disable SSR across the entire app using the `'use client'` directive. For pages that don't require PowerSync, you can still use SSR by only wrapping PowerSync-dependent pages with the SystemProvider.</Note>
 
 ## Setup
 
 ### Next.js Project Setup
-Let's start by bootstrapping a new Next.js application using [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Bootstrap a new Next.js application using [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 <CodeGroup>
 
 ```shell npm
@@ -30,28 +30,22 @@ pnpm create next-app my-powersync-app
 
 </CodeGroup>
 
-When running this command you'll be presented with a few options. The PowerSync suggested selection for the setup options Next.js offers are:
+When running this command you'll be presented with a few options. The PowerSync suggested selections are:
 ```shell
 Would you like to use TypeScript?  Yes
 Would you like to use ESLint?  Yes
 Would you like to use Tailwind CSS?  Yes
 Would you like your code inside a `src/` directory?  Yes
 Would you like to use App Router? (recommended)   Yes
-Would you like to use Turbopack for `next dev`?  No
+Would you like to use Turbopack for `next dev`?  Yes
 Would you like to customize the import alias (`@/*` by default)?  Yes
 ```
 
-<Warning>
-  Do not use Turbopack when setting up a new Next.js project as we’ll be updating the `next.config.ts` to use Webpack. This is done because we need to enable:
-  1. asyncWebAssembly
-  2. topLevelWait
-</Warning>
-
 ### Install PowerSync Dependencies
 
-Using PowerSync in a Next.js application will require the use of the [PowerSync Web SDK](https://www.npmjs.com/package/@powersync/web) and it's peer dependencies.
+Using PowerSync in a Next.js application requires the [PowerSync Web SDK](https://www.npmjs.com/package/@powersync/web) and its peer dependencies.
 
-In addition to this we'll also install [`@powersync/react`](https://www.npmjs.com/package/@powersync/react), which provides several hooks and providers for easier integration.
+We'll also install [`@powersync/react`](https://www.npmjs.com/package/@powersync/react), which provides hooks and providers for easier integration.
 
 <CodeGroup>
 
@@ -71,39 +65,53 @@ pnpm install @powersync/web @journeyapps/wa-sqlite @powersync/react
 
 <Note>This SDK currently requires [@journeyapps/wa-sqlite](https://www.npmjs.com/package/@journeyapps/wa-sqlite) as a peer dependency.</Note>
 
-## Next.js Config Setup
+### Copy PowerSync Worker Assets
 
-In order for PowerSync to work with the Next.js we'll need to modify the default `next.config.ts` to support PowerSync.
+PowerSync uses Web Workers for database and sync operations. These worker files need to be copied to your `public` directory. Add the following scripts to your `package.json`:
 
-```typescript next.config.ts
-module.exports = {
-    experimental: {
-        turbo: false,
-    },
-    webpack: (config: any, isServer: any) => {
-        config.experiments = {
-            ...config.experiments,
-            asyncWebAssembly: true, // Enable WebAssembly in Webpack
-            topLevelAwait: true,
-        };
-
-        // For Web Workers, ensure proper file handling
-        if (!isServer) {
-            config.module.rules.push({
-                test: /\.wasm$/,
-                type: "asset/resource", // Adds WebAssembly files to the static assets
-            });
-        }
-
-        return config;
-    }
+```json package.json
+{
+  "scripts": {
+    "copy-assets": "powersync-web copy-assets -o public",
+    "postinstall": "pnpm copy-assets"
+  }
 }
 ```
 
-Some important notes here, we have to enable `asyncWebAssemply` in Webpack, `topLevelAwait` is required and for Web Workers, ensure proper file handling.
-It's also important to add web assembly files to static assets for the site. We will not be using SSR because PowerSync does not support it.
+Run the copy-assets script to copy the worker files:
 
-Run `pnpm dev` to start the development server and check that everything compiles correctly, before moving onto the next section.
+<CodeGroup>
+
+```shell npm
+npm run copy-assets
+```
+
+```shell yarn
+yarn copy-assets
+```
+
+```shell pnpm
+pnpm copy-assets
+```
+
+</CodeGroup>
+
+This will create a `@powersync` directory in your `public` folder containing the necessary worker files.
+
+## Next.js Config Setup
+
+PowerSync works with Turbopack. The `next.config.js` only needs minimal configuration:
+
+```javascript next.config.js
+module.exports = {
+  images: {
+    disableStaticImages: true
+  },
+  turbopack: {}
+};
+```
+
+Run `pnpm dev` to start the development server and check that everything compiles correctly before moving onto the next section.
 
 ## Configure a PowerSync Instance
 Now that we've got our project setup, let's create a new PowerSync Cloud instance and connect our client to it.
@@ -202,16 +210,31 @@ export class BackendConnector implements PowerSyncBackendConnector {
                   // TODO: Instruct your backend API to PATCH a record
                   break;
                 case UpdateType.DELETE:
-                  //TODO: Instruct your backend API to DELETE a record
+                  // TODO: Instruct your backend API to DELETE a record
                   break;
               }
             }
             await transaction.complete();
         } catch (error: any) {
-            console.error(`Data upload error - discarding`, error);
-            await transaction.complete();
+            if (shouldDiscardDataOnError(error)) {
+                // Instead of blocking the queue with these errors, discard the (rest of the) transaction.
+                // Note that these errors typically indicate a bug in the application.
+                // If protecting against data loss is important, save the failing records
+                // elsewhere instead of discarding, and/or notify the user.
+                console.error(`Data upload error - discarding`, error);
+                await transaction.complete();
+            } else {
+                // Error may be retryable - e.g. network error or temporary server error.
+                // Throwing an error here causes this call to be retried after a delay.
+                throw error;
+            }
         }
     }
+}
+
+function shouldDiscardDataOnError(error: any) {
+    // TODO: Ignore non-retryable errors here
+    return false;
 }
 ```
 
@@ -219,13 +242,15 @@ There are two core functions to this file:
 * `fetchCredentials()` - Used to return a JWT token to the PowerSync Service for authentication.
 * `uploadData()` - Used to upload changes captured in the local SQLite database that need to be sent to the backend source database, in this case Supabase. We'll get back to this further down.
 
+The `shouldDiscardDataOnError` helper function distinguishes between errors that should be retried (network issues, temporary server errors) and those that won't succeed on retry (validation errors, malformed requests). Customize this based on your backend's error responses to prevent non-retryable errors from blocking the upload queue.
+
 You'll notice that we need to add a `.env` file to our project which will contain two variables:
 * `NEXT_PUBLIC_POWERSYNC_URL` - This is the PowerSync instance url. You can grab this from the PowerSync Cloud dashboard.
 * `NEXT_PUBLIC_POWERSYNC_TOKEN` - For development purposes we'll be using a development token. To generate one, please follow the steps outlined in [Development Token](/configuration/auth/development-tokens) from our installation docs.
 
 ### Create Providers
 
-Create a new directory in `./src/app/components` named `providers`
+Create a new directory in `./src/components` named `providers`
 
 #### `SystemProvider`
 Add a new file in the newly created `providers` directory called `SystemProvider.tsx`.
@@ -236,140 +261,121 @@ Add a new file in the newly created `providers` directory called `SystemProvider
 import { AppSchema } from '@/lib/powersync/AppSchema';
 import { BackendConnector } from '@/lib/powersync/BackendConnector';
 import { PowerSyncContext } from '@powersync/react';
-import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS, createBaseLogger, LogLevel } from '@powersync/web';
+import { PowerSyncDatabase, WASQLiteOpenFactory, createBaseLogger, LogLevel } from '@powersync/web';
 import React, { Suspense } from 'react';
 
 const logger = createBaseLogger();
 logger.useDefaults();
 logger.setLevel(LogLevel.DEBUG);
 
-export const db = new PowerSyncDatabase({
-    schema: AppSchema,
-    database: new WASQLiteOpenFactory({
-        dbFilename: 'exampleVFS.db',
-        vfs: WASQLiteVFS.OPFSCoopSyncVFS,
-        flags: {
-            enableMultiTabs: typeof SharedWorker !== 'undefined',
-            ssrMode: false
-        }
-    }),
-    flags: {
-        enableMultiTabs: typeof SharedWorker !== 'undefined',
-    }
+const factory = new WASQLiteOpenFactory({
+  dbFilename: 'powersync.db',
+  // Use the pre-bundled workers from public/@powersync/
+  worker: '/@powersync/worker/WASQLiteDB.umd.js'
+});
+
+const powerSync = new PowerSyncDatabase({
+  database: factory,
+  schema: AppSchema,
+  flags: {
+    disableSSRWarning: true
+  },
+  sync: {
+    // Use the pre-bundled sync worker from public/@powersync/
+    worker: '/@powersync/worker/SharedSyncImplementation.umd.js'
+  }
 });
 
 const connector = new BackendConnector();
-db.connect(connector);
+powerSync.connect(connector);
 
 export const SystemProvider = ({ children }: { children: React.ReactNode }) => {
-
-    return (
-        <Suspense>
-            <PowerSyncContext.Provider value={db}>{children}</PowerSyncContext.Provider>
-        </Suspense>
-    );
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <PowerSyncContext.Provider value={powerSync}>{children}</PowerSyncContext.Provider>
+    </Suspense>
+  );
 };
 
 export default SystemProvider;
-
 ```
 
-The `SystemProvider` will be responsible for initializing the `PowerSyncDatabase`. Here we supply a few arguments, such as the AppSchema we defined earlier along with very important properties such as `ssrMode: false`.
-PowerSync will not work when rendered server side, so we need to explicitly disable SSR.
+The `SystemProvider` initializes the `PowerSyncDatabase` with the AppSchema and configures it to use the pre-bundled worker files copied to the `public` directory. The `disableSSRWarning: true` flag suppresses SSR-related warnings since PowerSync only runs on the client.
 
-We also instantiate our `BackendConnector` and pass an instance of that to `db.connect()`. This will connect to the PowerSync instance, validate the token supplied in the `fetchCredentials` function and then start syncing with the PowerSync Service.
-
-#### DynamicSystemProvider.tsx
-
-Add a new file in the newly created `providers` directory called `DynamicSystemProvider.tsx`.
-
-```typescript components/providers/DynamicSystemProvider.tsx
-'use client';
-
-import dynamic from 'next/dynamic';
-
-export const DynamicSystemProvider = dynamic(() => import('./SystemProvider'), {
-    ssr: false
-});
-
-```
-We can only use PowerSync in client side rendering, so here we're setting `ssr:false`
+We also instantiate our `BackendConnector` and pass an instance to `powerSync.connect()`. This connects to the PowerSync instance, validates the token from the `fetchCredentials` function, and starts syncing with the PowerSync Service.
 
 #### Update `layout.tsx`
 
-In our main `layout.tsx` we'll update the `RootLayout` function to use the `DynamicSystemProvider` created in the last step.
+In your main `layout.tsx`, update the `RootLayout` function to use the `SystemProvider`. The `'use client'` directive at the top ensures this layout runs on the client side.
 
 ```typescript app/layout.tsx
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
-import { DynamicSystemProvider } from '@/app/components/providers/DynamicSystemProvider';
+'use client';
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
+import { SystemProvider } from '@/components/providers/SystemProvider';
+import React from 'react';
+import './globals.css';
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <DynamicSystemProvider>{children}</DynamicSystemProvider>
+      <body>
+        <SystemProvider>{children}</SystemProvider>
       </body>
     </html>
   );
 }
-
 ```
 
 #### Use PowerSync
 
 ##### Reading Data
-In our `page.tsx` we can now use the `useQuery` hook or other PowerSync functions to read data from the SQLite database and render the results in our application.
+In your `page.tsx` you can use the `useQuery` hook or other PowerSync functions to read data from the SQLite database and render the results.
 
 ```typescript app/page.tsx
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useQuery, useStatus, usePowerSync } from '@powersync/react';
+import { useQuery, useStatus } from '@powersync/react';
 
 export default function Page() {
-    // Hook
-    const powersync = usePowerSync();
+  // Get database status information e.g. downloading, uploading and lastSynced dates
+  const status = useStatus();
 
-    // Get database status information e.g. downloading, uploading and lastSycned dates
-    const status = useStatus();
+  // Reactive query - automatically updates when data changes
+  const { data: lists } = useQuery('SELECT * FROM lists');
 
-    // Example 1: Reactive Query
-    const { data: lists } = useQuery("SELECT * FROM lists");
+  if (!status.hasSynced) {
+    return <div>Syncing...</div>;
+  }
 
-    // Example 2: Standard query
-    const [lists, setLists] = useState([]);
-    useEffect(() => {
-        powersync.getAll('SELECT * from lists').then(setLists)
-    }, []);
-
-    return (
+  return (
     <ul>
-      {lists.map(list => <li key={list.id}>{list.name}</li>)}
+      {lists.map((list) => (
+        <li key={list.id}>{list.name}</li>
+      ))}
     </ul>
-  )
+  );
 }
 ```
 
-##### Writing Data
-Using the `execute` function we can also write data into our local SQLite database.
+You can also use the `usePowerSync` hook to access the PowerSync database instance directly for non-reactive queries:
+
 ```typescript
-await powersync.execute("INSERT INTO lists (id, created_at, name, owner_id) VALUES (?, ?, ?, ?)", [uuid(), new Date(), "Test", user_id]);
+import { usePowerSync } from '@powersync/react';
+
+const powersync = usePowerSync();
+
+// One-time query
+const lists = await powersync.getAll('SELECT * FROM lists');
 ```
 
-Changes made against the local data will be stored in the upload queue and will be processed by the `uploadData` in the BackendConnector class.
+##### Writing Data
+Use the `execute` function to write data into the local SQLite database:
+
+```typescript
+await powersync.execute(
+  'INSERT INTO lists (id, created_at, name, owner_id) VALUES (?, ?, ?, ?)',
+  [uuid(), new Date().toISOString(), 'Test', user_id]
+);
+```
+
+Changes made to the local data are stored in the upload queue and processed by the `uploadData` function in the BackendConnector class.

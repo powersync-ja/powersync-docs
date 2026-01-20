@@ -201,7 +201,26 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		Also see [`readTransaction`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/queries/readtransaction(callback:)).
       </Tab>
       <Tab title=".NET">
-      	Example not yet available.
+		```cs
+		using PowerSync.Common.Client;
+
+		class Demo
+		{
+		    static async Task DeleteList(PowerSyncDatabase db, string listId)
+		    {
+		        await db.WriteTransaction(async (tx) =>
+		        {
+		            // Delete the main list
+		            await tx.Execute("DELETE FROM lists WHERE id = ?", new object[] { listId });
+		            // Delete any children of the list
+		            await tx.Execute("DELETE FROM todos WHERE list_id = ?", new object[] { listId });
+		            
+		            // Transactions are automatically committed at the end of execution
+		            // Transactions are automatically rolled back if an exception occurred
+		        });
+		    }
+		}
+		```
       </Tab>
 </Tabs>
 
@@ -262,11 +281,28 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       <Tab title="Swift">
 		Use `watch` to watch for changes to the dependent tables of any SQL query.
 
-		<SwiftWatch />
+        <SwiftWatch />
       </Tab>
 
       <Tab title=".NET">
-      	Example not yet available.
+		Use `db.Watch()` to watch queries for changes.
+
+		```cs
+		using PowerSync.Common.Client;
+		
+		// Watch for changes
+		var cancelWatchToken = new CancellationTokenSource();
+		var subscription = db.Watch("SELECT * FROM lists", cancellationToken: cancelWatchToken.Token);
+		
+		await foreach (var resultSet in subscription.WithCancellation(cancelWatchToken.Token))
+		{
+		    // Update UI when data changes
+		    Console.WriteLine($"Result count: {resultSet.Count()}");
+		}
+		
+		// To cancel watching
+		// cancelWatchToken.Cancel();
+		```
       </Tab>
 </Tabs>
 
@@ -367,7 +403,15 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
       
       <Tab title=".NET">
-      	Example not yet available.
+		Use `Execute` to run `INSERT`, `UPDATE` or `DELETE` queries.
+
+		```cs
+		// Insert a new customer
+		await db.Execute(
+		    "INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)",
+		    new object[] { "Fred", "fred@example.org" }
+		);
+		```
       </Tab>
 </Tabs>
 
@@ -543,7 +587,42 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
       
       <Tab title=".NET">
-      	Example not yet available.
+		Override `UploadData` to send local updates to your backend service.
+
+		```cs
+		public class MyConnector : IPowerSyncBackendConnector
+		{
+		    public async Task UploadData(IPowerSyncDatabase database)
+		    {
+		        var transaction = await database.GetNextCrudTransaction();
+		        if (transaction == null) return;
+
+		        try
+		        {
+		            foreach (var operation in transaction.Crud)
+		            {
+		                switch (operation.Op)
+		                {
+		                    case UpdateType.PUT:
+		                        // Send the data to your backend service
+		                        // Replace _myApi with your own API client or service
+		                        await _myApi.Put(operation.Table, operation.OpData);
+		                        break;
+		                    default:
+		                        // TODO: implement the other operations (PATCH, DELETE)
+		                        break;
+		                }
+		            }
+		            await transaction.Complete();
+		        }
+		        catch (Exception ex)
+		        {
+		            Console.WriteLine($"Upload error: {ex.Message}");
+		            throw;
+		        }
+		    }
+		}
+		```
       </Tab>
 </Tabs>
 
@@ -747,7 +826,67 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
       
       <Tab title=".NET">
-      	Example not yet available.
+		Use [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and [RunListener](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/Client/PowerSyncDatabase.cs) to listen for status changes to your PowerSync instance.
+
+		```cs
+		using PowerSync.Common.Client;
+		using PowerSync.Common.DB.Crud;
+
+		class StatusIndicator
+		{
+		    private SyncStatus? _currentStatus;
+
+		    public StatusIndicator(PowerSyncDatabase db)
+		    {
+		        // Monitor status changes
+		        db.RunListener((update) =>
+		        {
+		            var newStatus = update.StatusChanged;
+		            if (newStatus != null && newStatus != _currentStatus)
+		            {
+		                _currentStatus = newStatus;
+		                UpdateStatusIcon(_currentStatus);
+		            }
+		        });
+		    }
+
+		    private void UpdateStatusIcon(SyncStatus status)
+		    {
+		        var dataFlow = status.DataFlowStatus;
+		        var hasError = dataFlow.DownloadError != null || dataFlow.UploadError != null;
+
+		        if (hasError)
+		        {
+		            var errorMessage = dataFlow.DownloadError?.Message ?? dataFlow.UploadError?.Message ?? "Unknown error";
+		            Console.WriteLine(status.Connected ? $"Error: {errorMessage} - Sync problem" : $"Error: {errorMessage} - Not connected");
+		        }
+		        else if (status.Connecting)
+		        {
+		            Console.WriteLine("Connecting...");
+		        }
+		        else if (!status.Connected)
+		        {
+		            Console.WriteLine("Not connected");
+		        }
+		        else if (dataFlow.Uploading && dataFlow.Downloading)
+		        {
+		            Console.WriteLine("Uploading and downloading");
+		        }
+		        else if (dataFlow.Uploading)
+		        {
+		            Console.WriteLine("Uploading");
+		        }
+		        else if (dataFlow.Downloading)
+		        {
+		            Console.WriteLine("Downloading");
+		        }
+		        else
+		        {
+		            Console.WriteLine("Connected");
+		        }
+		    }
+		}
+		```
       </Tab>
 </Tabs>
 
@@ -910,7 +1049,29 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
       
       <Tab title=".NET">
-      	Example not yet available.
+		Use the [HasSynced](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) property (available since version 0.0.6-alpha.1 of the SDK) to indicate to the user whether the initial sync is in progress.
+
+		```cs
+		using PowerSync.Common.Client;
+
+		// Example of using HasSynced to show whether the first sync has completed
+		if (status?.HasSynced == true)
+		{
+		    Console.WriteLine("Initial sync completed!");
+		}
+		else
+		{
+		    Console.WriteLine("Busy with initial sync...");
+		}
+
+		// For async use cases, use WaitForFirstSync which returns a task that completes once the first full sync has completed
+		await db.WaitForFirstSync();
+
+		// Wait for a specific priority level to complete syncing
+		// The priority parameter is available since version 0.0.6-alpha.1 of the SDK
+		var prioritySyncRequest = new PowerSyncDatabase.PrioritySyncRequest{ Priority = 1 };
+		await db.WaitForFirstSync(request: prioritySyncRequest);
+		```
       </Tab>
 </Tabs>
 
@@ -1192,7 +1353,69 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
       
       <Tab title=".NET">
-      	Example not yet available.
+		You can show users a progress bar when data downloads using the `DownloadProgress()` method from the [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) class. `DownloadProgress().DownloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
+
+		<Note>
+		  **Version compatibility**: The `DownloadProgress()` method is available since version 0.0.6-alpha.1 of the SDK.
+		</Note>
+
+		Example:
+
+		```cs
+		using PowerSync.Common.Client;
+		using PowerSync.Common.DB.Crud;
+
+		class SyncProgressBar
+		{
+		    private PowerSyncDatabase _db;
+		    private int? _priority; // Optional: when set, show progress towards this priority instead of the full sync
+		    private SyncStatus? _currentStatus;
+
+		    public SyncProgressBar(PowerSyncDatabase db, int? priority = null)
+		    {
+		        _db = db;
+		        _priority = priority;
+
+		        db.RunListener((update) =>
+		        {
+		            var newStatus = update.StatusChanged;
+		            if (newStatus != null && newStatus != _currentStatus)
+		            {
+		                _currentStatus = newStatus;
+		                DisplayProgress();
+		            }
+		        });
+		    }
+
+		    public void DisplayProgress()
+		    {
+		        var status = _currentStatus;
+		        var totalProgress = status?.DownloadProgress();
+
+		        var progress = _priority == null 
+		            ? totalProgress 
+		            : totalProgress?.UntilPriority(_priority.Value);
+
+		        if (progress != null)
+		        {
+		            var fraction = progress.DownloadedFraction; // 0.0 to 1.0
+		            var downloadedOps = progress.DownloadedOperations;
+		            var totalOps = progress.TotalOperations;
+
+		            Console.WriteLine($"Sync progress: {fraction * 100:F1}%");
+
+		            if (downloadedOps == totalOps)
+		            {
+		                Console.WriteLine("Applying server-side changes...");
+		            }
+		            else
+		            {
+		                Console.WriteLine($"Downloaded {downloadedOps} out of {totalOps} operations");
+		            }
+		        }
+		    }
+		}
+		```
       </Tab>
 </Tabs>
 

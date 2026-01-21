@@ -1,0 +1,1422 @@
+---
+title: "Usage Examples"
+description: "Code examples and common patterns for using PowerSync Client SDKs"
+---
+
+import FlutterWatch from '/snippets/flutter/basic-watch-query.mdx';
+import SwiftWatch from '/snippets/swift/basic-watch-query.mdx';
+import KotlinWatch from '/snippets/kotlin/basic-watch-query.mdx';
+import JavaScriptAsyncWatch from '/snippets/basic-watch-query-javascript-async.mdx';
+import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-callback.mdx';
+
+
+## Using transactions to group changes
+
+<Tabs>
+      <Tab title="Dart/Flutter">
+		Read and write transactions present a context where multiple changes can be made then finally committed to the DB or rolled back. This ensures that either all the changes get persisted, or no change is made to the DB (in the case of a rollback or exception).
+
+		The [writeTransaction(callback)](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/writeTransaction.html) method combines all writes into a single transaction, only committing to persistent storage once.
+
+		```dart
+		deleteList(SqliteDatabase db, String id) async {
+		  await db.writeTransaction((tx) async {
+		     // Delete the main list
+		     await tx.execute('DELETE FROM lists WHERE id = ?', [id]);
+		     // Delete any children of the list
+		     await tx.execute('DELETE FROM todos WHERE list_id = ?', [id]);
+		  });
+		}
+		```
+
+		Also see [readTransaction(callback)](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/readTransaction.html)
+      </Tab>
+
+      <Tab title="React Native & Expo">
+		Read and write transactions present a context where multiple changes can be made then finally committed to the DB or rolled back. This ensures that either all the changes get persisted, or no change is made to the DB (in the case of a rollback or exception).
+
+		[PowerSyncDatabase.writeTransaction(callback)](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#writetransaction) automatically commits changes after the transaction callback is completed if [`tx.rollback()`](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/db/DBAdapter.ts#L53) has not explicitly been called. If an exception is thrown in the callback then changes are automatically rolled back.
+
+
+		```js
+		// ListsWidget.jsx
+		import {Alert, Button, FlatList, Text, View} from 'react-native';
+
+		export const ListsWidget = () => {
+		  // Populate lists with one of methods listed above
+		  const [lists, setLists] = React.useState([]);
+
+		  return (
+		    <View>
+		      <FlatList
+		        data={lists.map(list => ({key: list.id, ...list}))}
+		        renderItem={({item}) => (<View>
+		          <Text>{item.name}</Text>
+		           <Button
+		              title="Delete"
+		              onPress={async () => {
+		                  try {
+		                    await PowerSync.writeTransaction(async (tx) => {
+		                        // Delete the main list
+		                        await tx.execute(`DELETE FROM lists WHERE id = ?`, [item.id]);
+		                        // Delete any children of the list
+		                        await tx.execute(`DELETE FROM todos WHERE list_id = ?`, [item.id]);
+
+		                        // Transactions are automatically committed at the end of execution
+		                        // Transactions are automatically rolled back if an exception occurred
+		                      })
+		                    // Watched queries should automatically reload after mutation
+		                  } catch (ex) {
+		                    Alert.alert('Error', ex.message)
+		                  }
+		                }}
+		            />
+		        </View>)}
+		      />
+		      <Button
+		        title="Create List"
+		        color="#841584"
+		        onPress={async () => {
+		            try {
+		              await PowerSync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
+		                'A list name',
+		                "[The user's uuid]"
+		              ])
+		              // Watched queries should automatically reload after mutation
+		            } catch (ex) {
+		              Alert.alert('Error', ex.message)
+		            }
+		          }}
+		      />
+		    </View>
+		    )
+		}
+		```
+
+		Also see [PowerSyncDatabase.readTransaction(callback)](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#readtransaction).
+      </Tab>
+
+      <Tab title="JavaScript Web">
+		Read and write transactions present a context where multiple changes can be made then finally committed to the DB or rolled back. This ensures that either all the changes get persisted, or no change is made to the DB (in the case of a rollback or exception).
+
+		[PowerSyncDatabase.writeTransaction(callback)](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#writetransaction) automatically commits changes after the transaction callback is completed if `tx.rollback()` has not explicitly been called. If an exception is thrown in the callback then changes are automatically rolled back.
+
+		```js
+		// ListsWidget.jsx
+		import React, { useState } from 'react';
+
+		export const ListsWidget = () => {
+		  const [lists, setLists] = useState([]);
+
+		  return (
+		    <div>
+		      <ul>
+		        {lists.map((list) => (
+		          <li key={list.id}>
+		            {list.name}
+		            <button
+		              onClick={async () => {
+		                try {
+		                    await PowerSync.writeTransaction(async (tx) => {
+		                        // Delete the main list
+		                        await tx.execute(`DELETE FROM lists WHERE id = ?`, [item.id]);
+		                        // Delete any children of the list
+		                        await tx.execute(`DELETE FROM todos WHERE list_id = ?`, [item.id]);
+
+		                        // Transactions are automatically committed at the end of execution
+		                        // Transactions are automatically rolled back if an exception occurred
+		                      })
+		                    // Watched queries should automatically reload after mutation
+		                  } catch (ex) {
+		                    Alert.alert('Error', ex.message)
+		                  }
+		              }}
+		            >
+		              Delete
+		            </button>
+		          </li>
+		        ))}
+		      </ul>
+		      <button
+		        onClick={async () => {
+		          try {
+		              await PowerSync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
+		                'A list name',
+		                "[The user's uuid]"
+		              ])
+		              // Watched queries should automatically reload after mutation
+		            } catch (ex) {
+		              Alert.alert('Error', ex.message)
+		            }
+		        }}
+		      >
+		        Create List
+		      </button>
+		    </div>
+		  );
+		};
+		```
+
+		Also see [PowerSyncDatabase.readTransaction(callback)](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#readtransaction).
+      </Tab>
+
+      <Tab title="Capacitor">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Node.js">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Kotlin">
+		Use `writeTransaction` to group statements that can write to the database.
+
+		```kotlin
+		database.writeTransaction {
+		    database.execute(
+		        sql = "DELETE FROM list WHERE id = ?",
+		        parameters = listOf(listId)
+		    )
+		    database.execute(
+		        sql = "DELETE FROM todos WHERE list_id = ?",
+		        parameters = listOf(listId)
+		    )
+		}
+		```
+      </Tab>
+
+      <Tab title="Swift">
+		Read and write transactions present a context where multiple changes can be made then finally committed to the DB or rolled back. This ensures that either all the changes get persisted, or no change is made to the DB (in the case of a rollback or exception).
+
+		```swift
+		// Delete a list and its todos in a transaction
+		func deleteList(db: PowerSyncDatabase, listId: String) async throws {
+		    try await db.writeTransaction { tx in
+		        try await tx.execute(sql: "DELETE FROM lists WHERE id = ?", parameters: [listId])
+		        try await tx.execute(sql: "DELETE FROM todos WHERE list_id = ?", parameters: [listId])
+		    }
+		}
+		```
+
+		Also see [`readTransaction`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/queries/readtransaction(callback:)).
+      </Tab>
+      <Tab title=".NET">
+		```cs
+		using PowerSync.Common.Client;
+
+		class Demo
+		{
+		    static async Task DeleteList(PowerSyncDatabase db, string listId)
+		    {
+		        await db.WriteTransaction(async (tx) =>
+		        {
+		            // Delete the main list
+		            await tx.Execute("DELETE FROM lists WHERE id = ?", new object[] { listId });
+		            // Delete any children of the list
+		            await tx.Execute("DELETE FROM todos WHERE list_id = ?", new object[] { listId });
+		            
+		            // Transactions are automatically committed at the end of execution
+		            // Transactions are automatically rolled back if an exception occurred
+		        });
+		    }
+		}
+		```
+      </Tab>
+</Tabs>
+
+
+## Listen for changes in data
+
+<Tabs>
+      <Tab title="Dart/Flutter">
+		Use [watch](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteQueries/watch.html) to watch for changes to the dependent tables of any SQL query.
+
+		<FlutterWatch />
+      </Tab>
+
+      <Tab title="React Native & Expo">
+		Use [PowerSyncDatabase.watch](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#watch) to watch for changes in source tables.
+
+		<Tabs>
+		  <Tab title="AsyncIterator approach">
+		  <JavaScriptAsyncWatch />
+		  </Tab>
+		  <Tab title="Callback approach">
+		  <JavaScriptCallbackWatch />
+		  </Tab>
+		</Tabs>
+
+		For advanced watch query features like incremental updates and differential results, see [Live Queries / Watch Queries](/client-sdks/watch-queries).
+      </Tab>
+
+      <Tab title="JavaScript Web">
+		Use [PowerSyncDatabase.watch](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#watch) to watch for changes in source tables.
+
+		<Tabs>
+		  <Tab title="AsyncIterator approach">
+		  <JavaScriptAsyncWatch />
+		  </Tab>
+		  <Tab title="Callback approach">
+		  <JavaScriptCallbackWatch />
+		  </Tab>
+		</Tabs>
+
+		For advanced watch query features like incremental updates and differential results, see [Live Queries / Watch Queries](/client-sdks/watch-queries).
+      </Tab>
+
+      <Tab title="Capacitor">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Node.js">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Kotlin">
+        Use the `watch` method to watch for changes to the dependent tables of any SQL query.
+
+        <KotlinWatch />
+      </Tab>
+
+      <Tab title="Swift">
+		Use `watch` to watch for changes to the dependent tables of any SQL query.
+
+        <SwiftWatch />
+      </Tab>
+
+      <Tab title=".NET">
+		Use `db.Watch()` to watch queries for changes.
+
+		```cs
+		using PowerSync.Common.Client;
+		
+		// Watch for changes
+		var cancelWatchToken = new CancellationTokenSource();
+		var subscription = db.Watch("SELECT * FROM lists", cancellationToken: cancelWatchToken.Token);
+		
+		await foreach (var resultSet in subscription.WithCancellation(cancelWatchToken.Token))
+		{
+		    // Update UI when data changes
+		    Console.WriteLine($"Result count: {resultSet.Count()}");
+		}
+		
+		// To cancel watching
+		// cancelWatchToken.Cancel();
+		```
+      </Tab>
+</Tabs>
+
+
+## Insert, update, and delete data in the local database
+
+<Tabs>
+      <Tab title="Dart/Flutter">
+		Use [execute](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/execute.html) to run INSERT, UPDATE or DELETE queries.
+
+		```dart
+		FloatingActionButton(
+		  onPressed: () async {
+		    await db.execute(
+		      'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
+		      ['Fred', 'fred@example.org'],
+		    );
+		  },
+		  tooltip: '+',
+		  child: const Icon(Icons.add),
+		);
+		```
+      </Tab>
+
+      <Tab title="React Native & Expo">
+		Use [PowerSyncDatabase.execute](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#execute) to run INSERT, UPDATE or DELETE queries.
+
+		```js
+		const handleButtonClick = async () => {
+		  await db.execute(
+		    'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
+		    ['Fred', 'fred@example.org']
+		  );
+		};
+
+		return (
+		  <button onClick={handleButtonClick} title="+">
+		    <span>+</span>
+		    <i className="material-icons">add</i>
+		  </button>
+		);
+		```
+      </Tab>
+
+      <Tab title="JavaScript Web">      
+		Use [PowerSyncDatabase.execute](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#execute) to run INSERT, UPDATE or DELETE queries.
+
+		```js
+		const handleButtonClick = async () => {
+		  await db.execute(
+		    'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
+		    ['Fred', 'fred@example.org']
+		  );
+		};
+
+		return (
+		  <button onClick={handleButtonClick} title="+">
+		    <span>+</span>
+		    <i className="material-icons">add</i>
+		  </button>
+		);
+		```
+      </Tab>
+
+      <Tab title="Capacitor">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Node.js">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Kotlin">
+		Use `execute` to run `INSERT`, `UPDATE` or `DELETE` queries.
+
+		```kotlin
+		suspend fun updateCustomer(id: String, name: String, email: String) {
+		    database.execute(
+		        "UPDATE customers SET name = ? WHERE email = ?",
+		        listOf(name, email)
+		    )
+		}
+		```
+      </Tab>
+
+      <Tab title="Swift">
+		Use `execute` to run `INSERT`, `UPDATE` or `DELETE` queries.
+
+		```swift
+		// Insert a new TODO
+		func insertTodo(_ todo: NewTodo, _ listId: String) async throws {
+		    try await db.execute(
+		        sql: "INSERT INTO \(TODOS_TABLE) (id, created_at, created_by, description, list_id, completed) VALUES (uuid(), datetime(), ?, ?, ?, ?)",
+		        parameters: [connector.currentUserID, todo.description, listId, todo.isComplete]
+		    )
+		}
+		```
+      </Tab>
+      
+      <Tab title=".NET">
+		Use `Execute` to run `INSERT`, `UPDATE` or `DELETE` queries.
+
+		```cs
+		// Insert a new customer
+		await db.Execute(
+		    "INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)",
+		    new object[] { "Fred", "fred@example.org" }
+		);
+		```
+      </Tab>
+</Tabs>
+
+
+## Send changes in local data to your backend service
+
+<Tabs>
+      <Tab title="Dart/Flutter">
+		Override [uploadData](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncBackendConnector/uploadData.html) to send local updates to your backend service.
+
+		```dart
+		@override
+		Future<void> uploadData(PowerSyncDatabase database) async {
+		  final batch = await database.getCrudBatch();
+		  if (batch == null) return;
+		  for (var op in batch.crud) {
+		    switch (op.op) {
+		      case UpdateType.put:
+		        // Send the data to your backend service
+		        // Replace `_myApi` with your own API client or service
+		        await _myApi.put(op.table, op.opData!);
+		        break;
+		      default:
+		        // TODO: implement the other operations (patch, delete)
+		        break;
+		    }
+		  }
+		  await batch.complete();
+		}
+		```
+      </Tab>
+
+      <Tab title="React Native & Expo">
+		Override [uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) to send local updates to your backend service.
+
+		```js
+		// Implement the uploadData method in your backend connector
+		async function uploadData(database) {
+		  const batch = await database.getCrudBatch();
+		  if (batch === null) return;
+
+		  for (const op of batch.crud) {
+		    switch (op.op) {
+		      case 'put':
+		        // Send the data to your backend service
+		        // replace `_myApi` with your own API client or service
+		        await _myApi.put(op.table, op.opData);
+		        break;
+		      default:
+		        // TODO: implement the other operations (patch, delete)
+		        break;
+		    }
+		  }
+
+		  await batch.complete();
+		}
+		```      
+      </Tab>
+
+      <Tab title="JavaScript Web">
+		Override [uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) to send local updates to your backend service.
+
+
+		```js
+		// Implement the uploadData method in your backend connector
+		async function uploadData(database) {
+		  const batch = await database.getCrudBatch();
+		  if (batch === null) return;
+
+		  for (const op of batch.crud) {
+		    switch (op.op) {
+		      case 'put':
+		        // Send the data to your backend service
+		        // replace `_myApi` with your own API client or service
+		        await _myApi.put(op.table, op.opData);
+		        break;
+		      default:
+		        // TODO: implement the other operations (patch, delete)
+		        break;
+		    }
+		  }
+
+		  await batch.complete();
+		}
+		```
+      </Tab>
+
+      <Tab title="Capacitor">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Node.js">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Kotlin">
+		Override `uploadData` to send local updates to your backend service. If you are using Supabase, see [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/connectors/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) for a complete implementation.
+
+		```kotlin
+		/**
+		 * This function is called whenever there is data to upload, whether the device is online or offline.
+		 * If this call throws an error, it is retried periodically.
+		 */
+		override suspend fun uploadData(database: PowerSyncDatabase) {
+
+		    val transaction = database.getNextCrudTransaction() ?: return;
+
+		    var lastEntry: CrudEntry? = null;
+		    try {
+
+		        for (entry in transaction.crud) {
+		            lastEntry = entry;
+
+		            val table = supabaseClient.from(entry.table)
+		            when (entry.op) {
+		                UpdateType.PUT -> {
+		                    val data = entry.opData?.toMutableMap() ?: mutableMapOf()
+		                    data["id"] = entry.id
+		                    table.upsert(data)
+		                }
+
+		                UpdateType.PATCH -> {
+		                    table.update(entry.opData!!) {
+		                        filter {
+		                            eq("id", entry.id)
+		                        }
+		                    }
+		                }
+
+		                UpdateType.DELETE -> {
+		                    table.delete {
+		                        filter {
+		                            eq("id", entry.id)
+		                        }
+		                    }
+		                }
+		            }
+		        }
+
+		        transaction.complete(null);
+
+		    } catch (e: Exception) {
+		        println("Data upload error - retrying last entry: ${lastEntry!!}, $e")
+		        throw e
+		    }
+		}
+		```
+      </Tab>
+
+      <Tab title="Swift">
+		Override `uploadData` to send local updates to your backend service.
+
+		```swift
+		class MyConnector: PowerSyncBackendConnector {
+		    override func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+		        let batch = try await database.getCrudBatch()
+		        guard let batch = batch else { return }
+		        for entry in batch.crud {
+		            switch entry.op {
+		            case .put:
+		                // Send the data to your backend service
+		                // Replace `_myApi` with your own API client or service
+		                try await _myApi.put(table: entry.table, data: entry.opData)
+		            default:
+		                // TODO: implement the other operations (patch, delete)
+		                break
+		            }
+		        }
+		        try await batch.complete(writeCheckpoint: nil)
+		    }
+		}
+		```
+      </Tab>
+      
+      <Tab title=".NET">
+		Override `UploadData` to send local updates to your backend service.
+
+		```cs
+		public class MyConnector : IPowerSyncBackendConnector
+		{
+		    public async Task UploadData(IPowerSyncDatabase database)
+		    {
+		        var transaction = await database.GetNextCrudTransaction();
+		        if (transaction == null) return;
+
+		        try
+		        {
+		            foreach (var operation in transaction.Crud)
+		            {
+		                switch (operation.Op)
+		                {
+		                    case UpdateType.PUT:
+		                        // Send the data to your backend service
+		                        // Replace _myApi with your own API client or service
+		                        await _myApi.Put(operation.Table, operation.OpData);
+		                        break;
+		                    default:
+		                        // TODO: implement the other operations (PATCH, DELETE)
+		                        break;
+		                }
+		            }
+		            await transaction.Complete();
+		        }
+		        catch (Exception ex)
+		        {
+		            Console.WriteLine($"Upload error: {ex.Message}");
+		            throw;
+		        }
+		    }
+		}
+		```
+      </Tab>
+</Tabs>
+
+
+## Accessing PowerSync connection status information
+
+<Tabs>
+      <Tab title="Dart/Flutter">
+		Use [SyncStatus](https://pub.dev/documentation/powersync/latest/powersync/SyncStatus-class.html) and register an event listener with [statusStream](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/statusStream.html) to listen for status changes to your PowerSync instance.
+
+
+		```dart
+		class _StatusAppBarState extends State<StatusAppBar> {
+		  late SyncStatus _connectionState;
+		  StreamSubscription<SyncStatus>? _syncStatusSubscription;
+
+		  @override
+		  void initState() {
+		    super.initState();
+		    _connectionState = db.currentStatus;
+		    _syncStatusSubscription = db.statusStream.listen((event) {
+		      setState(() {
+		        _connectionState = db.currentStatus;
+		      });
+		    });
+		  }
+
+		  @override
+		  void dispose() {
+		    super.dispose();
+		    _syncStatusSubscription?.cancel();
+		  }
+
+		  @override
+		  Widget build(BuildContext context) {
+		    final statusIcon = _getStatusIcon(_connectionState);
+
+		    return AppBar(
+		      title: Text(widget.title),
+		      actions: <Widget>[
+		        ...
+		        statusIcon
+		      ],
+		    );
+		  }
+		}
+
+		Widget _getStatusIcon(SyncStatus status) {
+		  if (status.anyError != null) {
+		    // The error message is verbose, could be replaced with something
+		    // more user-friendly
+		    if (!status.connected) {
+		      return _makeIcon(status.anyError!.toString(), Icons.cloud_off);
+		    } else {
+		      return _makeIcon(status.anyError!.toString(), Icons.sync_problem);
+		    }
+		  } else if (status.connecting) {
+		    return _makeIcon('Connecting', Icons.cloud_sync_outlined);
+		  } else if (!status.connected) {
+		    return _makeIcon('Not connected', Icons.cloud_off);
+		  } else if (status.uploading && status.downloading) {
+		    // The status changes often between downloading, uploading and both,
+		    // so we use the same icon for all three
+		    return _makeIcon('Uploading and downloading', Icons.cloud_sync_outlined);
+		  } else if (status.uploading) {
+		    return _makeIcon('Uploading', Icons.cloud_sync_outlined);
+		  } else if (status.downloading) {
+		    return _makeIcon('Downloading', Icons.cloud_sync_outlined);
+		  } else {
+		    return _makeIcon('Connected', Icons.cloud_queue);
+		  }
+		}
+		```
+      </Tab>
+
+      <Tab title="React Native & Expo">
+		Use [PowerSyncDatabase.connected](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#connected) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#registerlistener) to listen for status changes to your PowerSync instance.
+
+		```js
+		// Example of using connected status to show online or offline
+
+		// Tap into connected
+		const [connected, setConnected] = React.useState(powersync.connected);
+
+		React.useEffect(() => {
+		// Register listener for changes made to the powersync status
+		  return powersync.registerListener({
+		    statusChanged: (status) => {
+		      setConnected(status.connected);
+		    }
+		  });
+		}, [powersync]);
+
+		// Icon to show connected or not connected to powersync
+		// as well as the last synced time
+		<Icon
+		  name={connected ? 'wifi' : 'wifi-off'}
+		  type="material-community"
+		  color="black"
+		  size={20}
+		  style={{ padding: 5 }}
+		  onPress={() => {
+		    Alert.alert(
+		      'Status',
+		      `${connected ? 'Connected' : 'Disconnected'}. \nLast Synced at ${powersync.currentStatus?.lastSyncedAt.toISOString() ?? '-'
+		      }\nVersion: ${powersync.sdkVersion}`
+		    );
+		  }}
+		/>;
+		```
+      </Tab>
+
+      <Tab title="JavaScript Web">
+		Use [PowerSyncDatabase.connected](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#connected) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#registerlistener) to listen for status changes to your PowerSync instance.
+
+		```js
+		// Example of using connected status to show online or offline
+
+		// Tap into connected
+		const [connected, setConnected] = React.useState(powersync.connected);
+
+		React.useEffect(() => {
+		// Register listener for changes made to the powersync status
+		  return powersync.registerListener({
+		    statusChanged: (status) => {
+		      setConnected(status.connected);
+		    }
+		  });
+		}, [powersync]);
+
+		// Icon to show connected or not connected to powersync
+		// as well as the last synced time
+		<Icon
+		  name={connected ? 'wifi' : 'wifi-off'}
+		  type="material-community"
+		  color="black"
+		  size={20}
+		  style={{ padding: 5 }}
+		  onPress={() => {
+		    Alert.alert(
+		      'Status',
+		      `${connected ? 'Connected' : 'Disconnected'}. \nLast Synced at ${powersync.currentStatus?.lastSyncedAt.toISOString() ?? '-'
+		      }\nVersion: ${powersync.sdkVersion}`
+		    );
+		  }}
+		/>;
+		```
+      </Tab>
+
+      <Tab title="Capacitor">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Node.js">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Kotlin">
+		```kotlin
+		// Intialize the DB
+		val db = remember { PowerSyncDatabase(factory, schema) }
+		// Get the status as a flow
+		val status = db.currentStatus.asFlow().collectAsState(initial = null)
+		// Use the emitted values from the flow e.g. to check if connected
+		val isConnected = status.value?.connected
+		```
+      </Tab>
+
+      <Tab title="Swift">
+		Use [`currentStatus`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/currentstatus) and observe changes to listen for status changes to your PowerSync instance.
+
+		```swift
+		import Foundation
+		import SwiftUI
+		import PowerSync
+
+		struct PowerSyncConnectionIndicator: View {
+		    private let powersync: any PowerSyncDatabaseProtocol
+		    @State private var connected: Bool = false
+		    
+		    init(powersync: any PowerSyncDatabaseProtocol) {
+		        self.powersync = powersync
+		    }
+		    
+		    var body: some View {
+		        let iconName = connected ? "wifi" : "wifi.slash"
+		        let description = connected ? "Online" : "Offline"
+		        
+		        Image(systemName: iconName)
+		            .accessibility(label: Text(description))
+		            .task {
+		                self.connected = powersync.currentStatus.connected
+		                
+		                for await status in powersync.currentStatus.asFlow() {
+		                    self.connected = status.connected
+		                }
+		           }
+		    }
+		}
+		```
+      </Tab>
+      
+      <Tab title=".NET">
+		Use [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and [RunListener](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/Client/PowerSyncDatabase.cs) to listen for status changes to your PowerSync instance.
+
+		```cs
+		using PowerSync.Common.Client;
+		using PowerSync.Common.DB.Crud;
+
+		class StatusIndicator
+		{
+		    private SyncStatus? _currentStatus;
+
+		    public StatusIndicator(PowerSyncDatabase db)
+		    {
+		        // Monitor status changes
+		        db.RunListener((update) =>
+		        {
+		            var newStatus = update.StatusChanged;
+		            if (newStatus != null && newStatus != _currentStatus)
+		            {
+		                _currentStatus = newStatus;
+		                UpdateStatusIcon(_currentStatus);
+		            }
+		        });
+		    }
+
+		    private void UpdateStatusIcon(SyncStatus status)
+		    {
+		        var dataFlow = status.DataFlowStatus;
+		        var hasError = dataFlow.DownloadError != null || dataFlow.UploadError != null;
+
+		        if (hasError)
+		        {
+		            var errorMessage = dataFlow.DownloadError?.Message ?? dataFlow.UploadError?.Message ?? "Unknown error";
+		            Console.WriteLine(status.Connected ? $"Error: {errorMessage} - Sync problem" : $"Error: {errorMessage} - Not connected");
+		        }
+		        else if (status.Connecting)
+		        {
+		            Console.WriteLine("Connecting...");
+		        }
+		        else if (!status.Connected)
+		        {
+		            Console.WriteLine("Not connected");
+		        }
+		        else if (dataFlow.Uploading && dataFlow.Downloading)
+		        {
+		            Console.WriteLine("Uploading and downloading");
+		        }
+		        else if (dataFlow.Uploading)
+		        {
+		            Console.WriteLine("Uploading");
+		        }
+		        else if (dataFlow.Downloading)
+		        {
+		            Console.WriteLine("Downloading");
+		        }
+		        else
+		        {
+		            Console.WriteLine("Connected");
+		        }
+		    }
+		}
+		```
+      </Tab>
+</Tabs>
+
+
+## Wait for the initial sync to complete
+
+<Tabs>
+      <Tab title="Dart/Flutter">
+		Use the [hasSynced](https://pub.dev/documentation/powersync/latest/powersync/SyncStatus/hasSynced.html) property (available since version 1.5.1 of the SDK) and register a listener to indicate to the user whether the initial sync is in progress.
+
+		```dart
+		// Example of using hasSynced to show whether the first sync has completed
+
+		/// Global reference to the database
+		final PowerSyncDatabase db;
+
+		bool hasSynced = false;
+		StreamSubscription? _syncStatusSubscription;
+
+		// Use the exposed statusStream
+		Stream<SyncStatus> watchSyncStatus() {
+		  return db.statusStream;
+		}
+
+		@override
+		void initState() {
+		  super.initState();
+		  _syncStatusSubscription = watchSyncStatus.listen((status) {
+		    setState(() {
+		      hasSynced = status.hasSynced ?? false;
+		    });
+		  });
+		}
+
+		@override
+		Widget build(BuildContext context) {
+		  return Text(hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...');
+		}
+
+		// Don't forget to dispose of stream subscriptions when the view is disposed
+		void dispose() {
+		  super.dispose();
+		  _syncStatusSubscription?.cancel();
+		}
+		```
+
+		For async use cases, see the [waitForFirstSync](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/waitForFirstSync.html) method which returns a promise that resolves once the first full sync has completed.
+      </Tab>
+
+      <Tab title="React Native & Expo">
+		Use the [hasSynced](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/SyncStatus#hassynced) property (available since version 1.4.1 of the SDK) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#registerlistener) to indicate to the user whether the initial sync is in progress.
+
+		```js
+		// Example of using hasSynced to show whether the first sync has completed
+
+		// Tap into hasSynced
+		const [hasSynced, setHasSynced] = React.useState(powerSync.currentStatus?.hasSynced || false);
+
+		  React.useEffect(() => {
+		    // Register listener for changes made to the powersync status
+		    return powerSync.registerListener({
+		      statusChanged: (status) => {
+		        setHasSynced(!!status.hasSynced);
+		      }
+		    });
+		  }, [powerSync]);
+
+		return <Text>{hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...'}</Text>;
+		```
+
+		For async use cases, see [PowerSyncDatabase.waitForFirstSync](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/AbstractPowerSyncDatabase#waitforfirstsync), which returns a promise that resolves once the first full sync has completed (it queries the internal SQL [ps\_buckets](/architecture/client-architecture) table to determine if data has been synced).
+      </Tab>
+
+      <Tab title="JavaScript Web">
+		Use the [hasSynced](https://powersync-ja.github.io/powersync-js/web-sdk/classes/SyncStatus#hassynced) property (available since version 0.4.1 of the SDK) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#registerlistener) to indicate to the user whether the initial sync is in progress.
+
+		```js
+		// Example of using hasSynced to show whether the first sync has completed
+
+		// Tap into hasSynced
+		const [hasSynced, setHasSynced] = React.useState(powerSync.currentStatus?.hasSynced || false);
+
+		  React.useEffect(() => {
+		    // Register listener for changes made to the powersync status
+		    return powerSync.registerListener({
+		      statusChanged: (status) => {
+		        setHasSynced(!!status.hasSynced);
+		      }
+		    });
+		  }, [powerSync]);
+
+		return <div>{hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...'}</div>;
+		```
+
+		For async use cases, see [PowerSyncDatabase.waitForFirstSync()](https://powersync-ja.github.io/powersync-js/web-sdk/classes/AbstractPowerSyncDatabase#waitforfirstsync), which returns a promise that resolves once the first full sync has completed (it queries the internal SQL [ps\_buckets](/architecture/client-architecture) table to determine if data has been synced).
+      </Tab>
+
+      <Tab title="Capacitor">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Node.js">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Kotlin">
+		Use the `hasSynced` property and register a listener to indicate to the user whether the initial sync is in progress.
+
+		```kotlin
+		val db = remember { PowerSyncDatabase(factory, schema) }
+		val status = db.currentStatus.asFlow().collectAsState(initial = null)
+		val hasSynced by remember { derivedStateOf { status.value?.hasSynced } }
+
+		when {
+		    hasSynced == null || hasSynced == false -> {
+		        Box(
+		            modifier = Modifier.fillMaxSize().background(MaterialTheme.colors.background),
+		            contentAlignment = Alignment.Center
+		        ) {
+		                Text(
+		                    text = "Busy with initial sync...",
+		                    style = MaterialTheme.typography.h6
+		                )
+		            }
+		    }
+		    else -> {
+		    ... show rest of UI
+		```
+
+		For async use cases, use `waitForFirstSync` method which is a suspense function that resolves once the first full sync has completed.
+      </Tab>
+
+      <Tab title="Swift">
+		Use the `hasSynced` property and observe status changes to indicate to the user whether the initial sync is in progress.
+
+		```swift
+		struct WaitForFirstSync: View {
+		    private let powersync: any PowerSyncDatabaseProtocol
+		    @State var didSync: Bool = false
+
+		    init(powersync: any PowerSyncDatabaseProtocol) {
+		        self.powersync = powersync
+		    }
+		    
+		    var body: some View {
+		        if !didSync {
+		            ProgressView().task {
+		                do {
+		                    try await powersync.waitForFirstSync()
+		                } catch {
+		                    // TODO: Handle errors
+		                }
+		            }
+		        }
+		    }
+		}
+		```
+
+		For async use cases, use [`waitForFirstSync`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/powersyncdatabaseprotocol/waitforfirstsync()).
+      </Tab>
+      
+      <Tab title=".NET">
+		Use the [HasSynced](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) property (available since version 0.0.6-alpha.1 of the SDK) to indicate to the user whether the initial sync is in progress.
+
+		```cs
+		using PowerSync.Common.Client;
+
+		// Example of using HasSynced to show whether the first sync has completed
+		if (status?.HasSynced == true)
+		{
+		    Console.WriteLine("Initial sync completed!");
+		}
+		else
+		{
+		    Console.WriteLine("Busy with initial sync...");
+		}
+
+		// For async use cases, use WaitForFirstSync which returns a task that completes once the first full sync has completed
+		await db.WaitForFirstSync();
+
+		// Wait for a specific priority level to complete syncing
+		// The priority parameter is available since version 0.0.6-alpha.1 of the SDK
+		var prioritySyncRequest = new PowerSyncDatabase.PrioritySyncRequest{ Priority = 1 };
+		await db.WaitForFirstSync(request: prioritySyncRequest);
+		```
+      </Tab>
+</Tabs>
+
+
+## Report sync download progress
+
+<Tabs>
+      <Tab title="Dart/Flutter">
+		You can show users a progress bar when data downloads using the `downloadProgress` property from the
+		[SyncStatus](https://pub.dev/documentation/powersync/latest/powersync/SyncStatus/downloadProgress.html) class.
+		`downloadProgress.downloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
+
+		As an example, this widget renders a progress bar when a download is active:
+
+		```dart
+		import 'package:flutter/material.dart';
+		import 'package:powersync/powersync.dart' hide Column;
+
+		class SyncProgressBar extends StatelessWidget {
+		  final PowerSyncDatabase db;
+
+		  /// When set, show progress towards the [BucketPriority] instead of towards
+		  /// the full sync.
+		  final BucketPriority? priority;
+
+		  const SyncProgressBar({
+		    super.key,
+		    required this.db,
+		    this.priority,
+		  });
+
+		  @override
+		  Widget build(BuildContext context) {
+		    return StreamBuilder<SyncStatus>(
+		      stream: db.statusStream,
+		      initialData: db.currentStatus,
+		      builder: (context, snapshot) {
+		        final status = snapshot.requireData;
+		        final progress = switch (priority) {
+		          null => status.downloadProgress,
+		          var priority? => status.downloadProgress?.untilPriority(priority),
+		        };
+
+		        if (progress != null) {
+		          return Center(
+		            child: Column(
+		              children: [
+		                const Text('Busy with sync...'),
+		                LinearProgressIndicator(value: progress?.downloadedFraction),
+		                Text(
+		                    '${progress.downloadedOperations} out of ${progress.totalOperations}')
+		              ],
+		            ),
+		          );
+		        } else {
+		          return const SizedBox.shrink();
+		        }
+		      },
+		    );
+		  }
+		}
+
+		```
+
+		Also see:
+		- [SyncDownloadProgress API](https://pub.dev/documentation/powersync/latest/powersync/SyncDownloadProgress-extension-type.html)
+		- [Demo component](https://github.com/powersync-ja/powersync.dart/blob/main/demos/supabase-todolist/lib/widgets/guard_by_sync.dart)
+      </Tab>
+
+      <Tab title="React Native & Expo">
+		You can show users a progress bar when data downloads using the `downloadProgress` property from the [SyncStatus](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/SyncStatus) class. This is especially useful for long-running initial syncs. `downloadProgress.downloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. 
+
+		Example:
+
+		```jsx
+		import { useStatus } from '@powersync/react';
+		import { FC, ReactNode } from 'react';
+		import { View } from 'react-native';
+		import { Text, LinearProgress } from '@rneui/themed';
+
+		export const SyncProgressBar: FC<{ priority?: number }> = ({ priority }) => {
+		  const status = useStatus();
+		  const progressUntilNextSync = status.downloadProgress;
+		  const progress = priority == null ? progressUntilNextSync : progressUntilNextSync?.untilPriority(priority);
+
+		  if (progress == null) {
+		    return <></>;
+		  }
+
+		  return (
+		    <View>
+		      <LinearProgress variant="determinate" value={progress.downloadedFraction * 100} />
+		      {progress.downloadedOperations == progress.totalOperations ? (
+		        <Text>Applying server-side changes</Text>
+		      ) : (
+		        <Text>
+		          Downloaded {progress.downloadedOperations} out of {progress.totalOperations}.
+		        </Text>
+		      )}
+		    </View>
+		  );
+		};
+		```
+
+		Also see:
+		- [SyncStatus API](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/SyncStatus)
+		- [Demo component](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/widgets/GuardBySync.tsx)
+      </Tab>
+
+      <Tab title="JavaScript Web">
+		You can show users a progress bar when data downloads using the `downloadProgress` property from the
+		[SyncStatus](https://powersync-ja.github.io/powersync-js/web-sdk/classes/SyncStatus) class. This is especially useful for long-running initial syncs. `downloadProgress.downloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress.
+
+		Example (React, using [MUI](https://mui.com) components):
+
+		```jsx
+		import { Box, LinearProgress, Stack, Typography } from '@mui/material';
+		import { useStatus } from '@powersync/react';
+		import { FC, ReactNode } from 'react';
+
+		export const SyncProgressBar: FC<{ priority?: number }> = ({ priority }) => {
+		  const status = useStatus();
+		  const progressUntilNextSync = status.downloadProgress;
+		  const progress = priority == null ? progressUntilNextSync : progressUntilNextSync?.untilPriority(priority);
+
+		  if (progress == null) {
+		    return <></>;
+		  }
+
+		  return (
+		    <Stack direction="column" spacing={1} sx={{ p: 4 }} alignItems="stretch">
+		      <LinearProgress variant="determinate" value={progress.downloadedFraction * 100} />
+		      <Box sx={{ alignSelf: 'center' }}>
+		        {progress.downloadedOperations == progress.totalOperations ? (
+		          <Typography>Applying server-side changes</Typography>
+		        ) : (
+		          <Typography>
+		            Downloaded {progress.downloadedOperations} out of {progress.totalOperations}.
+		          </Typography>
+		        )}
+		      </Box>
+		    </Stack>
+		  );
+		};
+		```
+
+		Also see:
+		- [SyncStatus API](https://powersync-ja.github.io/powersync-js/web-sdk/classes/SyncStatus)
+		- [Demo component](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/widgets/GuardBySync.tsx)
+      </Tab>
+
+      <Tab title="Capacitor">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Node.js">
+      	Example not yet available.
+      </Tab>
+
+      <Tab title="Kotlin">
+		You can show users a progress bar when data downloads using the `syncStatus.downloadProgress` property. This is especially useful for long-running initial syncs. `downloadProgress.downloadedFraction` gives a value from 0.0 to 1.0 representing the total sync progress. 
+
+		Example (Compose):
+
+		```kotlin
+		import androidx.compose.foundation.background
+		import androidx.compose.foundation.layout.Arrangement
+		import androidx.compose.foundation.layout.Column
+		import androidx.compose.foundation.layout.fillMaxSize
+		import androidx.compose.foundation.layout.fillMaxWidth
+		import androidx.compose.foundation.layout.padding
+		import androidx.compose.material.LinearProgressIndicator
+		import androidx.compose.material.MaterialTheme
+		import androidx.compose.material.Text
+		import androidx.compose.runtime.Composable
+		import androidx.compose.runtime.getValue
+		import androidx.compose.ui.Alignment
+		import androidx.compose.ui.Modifier
+		import androidx.compose.ui.unit.dp
+		import com.powersync.PowerSyncDatabase
+		import com.powersync.bucket.BucketPriority
+		import com.powersync.compose.composeState
+
+		/**
+		 * Shows a progress bar while a sync is active.
+		 *
+		 * The [priority] parameter can be set to, instead of showing progress until the end of the entire
+		 * sync, only show progress until data in the [BucketPriority] is synced.
+		 */
+		@Composable
+		fun SyncProgressBar(
+		    db: PowerSyncDatabase,
+		    priority: BucketPriority? = null,
+		) {
+		    val state by db.currentStatus.composeState()
+		    val progress = state.downloadProgress?.let {
+		        if (priority == null) {
+		            it
+		        } else {
+		            it.untilPriority(priority)
+		        }
+		    }
+
+		    if (progress == null) {
+		        return
+		    }
+
+		    Column(
+		        modifier = Modifier.fillMaxSize().background(MaterialTheme.colors.background),
+		        horizontalAlignment = Alignment.CenterHorizontally,
+		        verticalArrangement = Arrangement.Center,
+		    ) {
+		        LinearProgressIndicator(
+		            modifier = Modifier.fillMaxWidth().padding(8.dp),
+		            progress = progress.fraction,
+		        )
+
+		        if (progress.downloadedOperations == progress.totalOperations) {
+		            Text("Applying server-side changes...")
+		        } else {
+		            Text("Downloaded ${progress.downloadedOperations} out of ${progress.totalOperations}.")
+		        }
+		    }
+		}
+		```
+
+		Also see:
+		- [SyncDownloadProgress API](https://powersync-ja.github.io/powersync-kotlin/core/com.powersync.sync/-sync-download-progress/index.html)
+		- [Demo component](https://github.com/powersync-ja/powersync-kotlin/blob/main/demos/supabase-todolist/shared/src/commonMain/kotlin/com/powersync/demos/components/GuardBySync.kt)
+      </Tab>
+
+      <Tab title="Swift">
+		You can show users a progress bar when data downloads using the `downloadProgress` property from the [`SyncStatusData`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/) object. `downloadProgress.downloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
+
+		Example:
+
+		```swift
+		struct SyncProgressIndicator: View {
+		    private let powersync: any PowerSyncDatabaseProtocol
+		    private let priority: BucketPriority?
+		    @State private var status: SyncStatusData? = nil
+
+		    init(powersync: any PowerSyncDatabaseProtocol, priority: BucketPriority? = nil) {
+		        self.powersync = powersync
+		        self.priority = priority
+		    }
+		    
+		    var body: some View {
+		        VStack {
+		            if let totalProgress = status?.downloadProgress {
+		                let progress = if let priority = self.priority {
+		                    totalProgress.untilPriority(priority: priority)
+		                } else {
+		                    totalProgress
+		                }
+		                
+		                ProgressView(value: progress.fraction)
+
+		                if progress.downloadedOperations == progress.totalOperations {
+		                    Text("Applying server-side changes...")
+		                } else {
+		                    Text("Downloaded \(progress.downloadedOperations) out of \(progress.totalOperations)")
+		                }
+		            }
+		        }.task {
+		            status = powersync.currentStatus
+		            for await status in powersync.currentStatus.asFlow() {
+		                self.status = status
+		            }
+		        }
+		    }
+		}
+		```
+
+		Also see:
+		- [SyncStatusData API](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/)
+		- [SyncDownloadProgress API](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncdownloadprogress/)
+		- [Demo component](https://github.com/powersync-ja/powersync-swift/blob/main/Demo/PowerSyncExample/Components/ListView.swift)
+      </Tab>
+      
+      <Tab title=".NET">
+		You can show users a progress bar when data downloads using the `DownloadProgress()` method from the [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) class. `DownloadProgress().DownloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
+
+		<Note>
+		  **Version compatibility**: The `DownloadProgress()` method is available since version 0.0.6-alpha.1 of the SDK.
+		</Note>
+
+		Example:
+
+		```cs
+		using PowerSync.Common.Client;
+		using PowerSync.Common.DB.Crud;
+
+		class SyncProgressBar
+		{
+		    private PowerSyncDatabase _db;
+		    private int? _priority; // Optional: when set, show progress towards this priority instead of the full sync
+		    private SyncStatus? _currentStatus;
+
+		    public SyncProgressBar(PowerSyncDatabase db, int? priority = null)
+		    {
+		        _db = db;
+		        _priority = priority;
+
+		        db.RunListener((update) =>
+		        {
+		            var newStatus = update.StatusChanged;
+		            if (newStatus != null && newStatus != _currentStatus)
+		            {
+		                _currentStatus = newStatus;
+		                DisplayProgress();
+		            }
+		        });
+		    }
+
+		    public void DisplayProgress()
+		    {
+		        var status = _currentStatus;
+		        var totalProgress = status?.DownloadProgress();
+
+		        var progress = _priority == null 
+		            ? totalProgress 
+		            : totalProgress?.UntilPriority(_priority.Value);
+
+		        if (progress != null)
+		        {
+		            var fraction = progress.DownloadedFraction; // 0.0 to 1.0
+		            var downloadedOps = progress.DownloadedOperations;
+		            var totalOps = progress.TotalOperations;
+
+		            Console.WriteLine($"Sync progress: {fraction * 100:F1}%");
+
+		            if (downloadedOps == totalOps)
+		            {
+		                Console.WriteLine("Applying server-side changes...");
+		            }
+		            else
+		            {
+		                Console.WriteLine($"Downloaded {downloadedOps} out of {totalOps} operations");
+		            }
+		        }
+		    }
+		}
+		```
+      </Tab>
+</Tabs>
+
+

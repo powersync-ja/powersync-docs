@@ -1,0 +1,164 @@
+---
+title: "Private Endpoints"
+---
+
+## PowerSync Cloud: AWS Private Endpoints
+
+To avoid exposing a database in AWS to the public internet, using AWS Private Endpoints ([AWS PrivateLink](https://aws.amazon.com/privatelink/)) is an option that provides private networking between the source database and the PowerSync Service. Private Endpoints are currently available on our [Team and Enterprise plans](https://www.powersync.com/pricing).
+
+We use Private Endpoints instead of VPC peering to ensure that no other resources are exposed between the VPCs.
+
+<Warning>
+Do not rely on Private Endpoints as the only form of security. Always use strong database passwords, and use client certificates if additional security is required.
+</Warning>
+
+## Current Limitations
+
+1. Private Endpoints are currently only supported for Postgres and MongoDB instances. [Contact us](/resources/contact-us) if you need this for MySQL or SQL Server.
+2. Self-service is not yet available on the PowerSync side — [contact PowerSync support](/resources/contact-us) to configure the instance.
+3. Only AWS is supported currently — other cloud providers are not supported yet.
+4. The **"Test Connection"** function on the [PowerSync Dashboard](https://dashboard.powersync.com/) is not supported yet — the instance has to be deployed to test the connection.
+
+## Concepts
+
+* [AWS PrivateLink](https://aws.amazon.com/privatelink/) is the overarching feature on AWS.
+
+* **VPC/Private Endpoint Service** is the service that exposes the database, and lives in the same VPC as the source database. It provides a one-way connection to the database without exposing other resources in the VPC.
+
+  * **Endpoint Service Name** is a unique identifier for this Endpoint Service.
+  * Each Endpoint Service may have multiple Private Endpoints in different VPCs.
+
+* **VPC/Private Endpoint** is the endpoint in the PowerSync VPC. This is what the PowerSync instance connects to.
+
+For custom Endpoint Services for Postgres:
+* **Network Load Balancer (NLB)** is a load balancer that exposes the source database to the Endpoint Service.
+  * **Target Group** specifies the IPs and ports for the Network Load Balancer to expose.
+  * **Listener** for the Network Load Balancer is what describes the incoming port on the Network Load Balancer (the port that the PowerSync instance connects to).
+
+## Private Endpoint Setup
+
+<AccordionGroup>
+<Accordion title="AWS PrivateLink in MongoDB Atlas">
+
+MongoDB Atlas supports creating an Endpoint Service per project for AWS.
+
+**Limitations:**
+
+1. Only Atlas clusters in AWS are supported.
+2. The Atlas cluster must be in one of the PowerSync [AWS regions](#aws-regions). Cross-region endpoints are not yet supported by MongoDB Atlas.
+3. This is only supported for _Atlas_ clusters — PowerSync does not support PrivateLink for MongoDB clusters self-hosted in AWS.
+
+### 1. Configure the Endpoint Service
+
+1. In the Atlas project dashboard, go to **Network Access** → **Private Endpoint** → **Dedicated Cluster**.
+2. Select **Add Private Endpoint**.
+3. Select **AWS** and the relevant AWS region.
+4. Wait for the **Endpoint Service** to be created.
+5. "Your VPC ID" and "Your Subnet IDs" are not relevant for PowerSync - leave those blank.
+6. Avoid running the command to create the "VPC Interface Endpoint"; this step is handled by PowerSync.
+7. Note the **Endpoint Service Name**. This is displayed in the command to run, as the `--service-name` option.
+
+The Service Name should look something like `com.amazonaws.vpce.us-east-1.vpce-svc-0123456`.
+
+Skip the final step of configuring the "VPC Endpoint ID" — this will be done later.
+
+### 2. PowerSync Setup
+
+On PowerSync Cloud, create a new instance, but do not configure the connection yet. Copy the **Instance ID**.
+
+[Contact us](/resources/contact-us) and provide:
+1. The **Endpoint Service Name**.
+2. The PowerSync **Instance ID**.
+
+We will then configure the instance to use the Endpoint Service for the database connection, and provide you with a **VPC Endpoint ID**, in the form `vpce-12346`.
+
+### 3. Finish Atlas Endpoint Service Setup
+
+On the Atlas Private Endpoint Configuration, in the final step, specify the **VPC Endpoint ID** from above.
+If you have already closed the dialog, go through the process of creating a Private Endpoint again. It should have the same Endpoint Service Name as before.
+
+Check that the **Endpoint Status** changes to _Available_.
+
+### 4. Get the Connection String
+
+1. On the Atlas cluster, select **Connect**.
+2. Select **Private Endpoint** as the connection type, and select the provisioned endpoint.
+3. Select **Drivers** as the connection method, and copy the connection string.
+
+The connection string should look something like `mongodb+srv://<db_username>:<db_password>@your-cluster-pl-0.abcde.mongodb.net/`.
+
+### 5. Deploy
+
+Once the Private Endpoint has been created on the PowerSync side, it will be visible in the instance settings
+under the connection details, as **VPC Endpoint Hostname**.
+
+Configure the instance the connection string from the previous step, then deploy.
+Monitor the logs to ensure the instance can connect after deploying.
+
+</Accordion>
+<Accordion title="Custom Endpoint Service for Postgres">
+
+To configure a Private Endpoint Service, a network load balancer is required to forward traffic to the database.
+
+This can be used with a Postgres database running on an EC2 instance, or an RDS instance.
+
+For AWS RDS, the guide below does not handle dynamic IPs if the RDS instance's IP changes. This needs additional work to automatically update the IP — see this [AWS blog post](https://aws.amazon.com/blogs/database/access-amazon-rds-across-vpcs-using-aws-privatelink-and-network-load-balancer/) on the topic. This is specifically relevant if using an RDS cluster with failover support.
+
+Use the following steps to configure the Endpoint Service:
+
+### 1. Create a Target Group
+
+1. Obtain the RDS instance's private IP address. Make sure this points to a writable instance.
+2. Create a **Target Group** with IP addresses as target type, using the IP address from above. Use TCP protocol, and specify the database port (typically `5432` for Postgres).
+
+<Warning>Note: The IP address of your RDS instance may change over time. To maintain a consistent connection, consider implementing automation to monitor and update the target group's IP address as needed. See the [AWS blog post](https://aws.amazon.com/blogs/database/access-amazon-rds-across-vpcs-using-aws-privatelink-and-network-load-balancer/) on the topic.</Warning>
+
+### 2. Create a Network Load Balancer (NLB)
+
+1. Select the same VPC as your RDS instance.
+2. Choose at least two subnets in different availability zones.
+3. Configure a TCP listener and pick a port (for example `5432` again).
+4. Associate the listener with the target group created earlier.
+
+### 3. Modify the Security Group
+
+1. Modify the security group associated with your RDS instance to permit traffic from the load balancer IP range.
+
+### 4. Create a VPC Endpoint Service
+
+1. In the AWS Management Console, navigate to the VPC service and select **Endpoint Services**.
+2. Click on **Create Endpoint Service**.
+3. Select the Network Load Balancer created in the previous step.
+4. If the load balancer is in one of the PowerSync regions (see below), it is not required to select any "Supported Region". If the load balancer is in a different region, select the region corresponding to your PowerSync instance here. Note that this will incur additional AWS charges for the cross-region support.
+5. Decide whether to require acceptance for endpoint connections. Disabling acceptance can simplify the process but may reduce control over connections.
+6. Under **Supported IP address types**, select both IPv4 and IPv6.
+7. After creating the endpoint service, note the **Service Name**. This identifier will be used when configuring PowerSync to connect via PrivateLink.
+8. Configure the Endpoint Service to accept connections from the principal `arn:aws:iam::131569880293:root`. See the [AWS documentation](https://docs.aws.amazon.com/vpc/latest/privatelink/configure-endpoint-service.html#add-remove-permissions) for details.
+
+
+### 5. PowerSync Setup
+
+On PowerSync Cloud, create a new instance, but do not configure the connection yet.
+
+[Contact us](/resources/contact-us) and provide the Service Name from above, as well as the PowerSync instance ID created above. We will then configure the instance to use the Endpoint Service for the database connection.
+
+### 6. Deploy
+
+Once the Private Endpoint has been created on the PowerSync side, it will be visible in the instance settings
+under the connection details, as **VPC Endpoint Hostname**.
+
+Verify the connection details, and deploy the instance. Monitor the logs to ensure the instance can connect after deploying.
+
+
+</Accordion>
+</AccordionGroup>
+
+## AWS Regions
+
+PowerSync Cloud currently runs in the AWS regions below. Make sure the region matching your PowerSync instance is supported in by the Endpoint Service.
+
+ 1. US: `us-east-1`
+ 2. EU: `eu-west-1`
+ 3. BR: `sa-east-1`
+ 4. JP: `ap-northeast-1`
+ 5. AU: `ap-southeast-2`

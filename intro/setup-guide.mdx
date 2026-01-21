@@ -1,0 +1,1054 @@
+---
+title: "PowerSync Setup Guide"
+sidebarTitle: "Setup Guide"
+description: "This guide walks you through adding PowerSync to your app project step-by-step. "
+---
+
+import LocalOnly from '/snippets/local-only-escape.mdx';
+import ReactNativeInstallation from '/snippets/react-native/installation.mdx';
+import JavaScriptWebInstallation from '/snippets/javascript-web/installation.mdx';
+import NodeInstallation from '/snippets/node/installation.mdx';
+import CapacitorInstallation from '/snippets/capacitor/installation.mdx';
+import FlutterInstallation from '/snippets/flutter/installation.mdx';
+import KotlinInstallation from '/snippets/kotlin/installation.mdx';
+import SwiftInstallation from '/snippets/swift/installation.mdx';
+import DotnetInstallation from '/snippets/dotnet/installation.mdx';
+import DevTokenSelfHostedSteps from '/snippets/dev-token-self-hosted-steps.mdx';
+
+# 1. Configure Your Source Database
+
+PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or SQL Server) to replicate data. Before setting up PowerSync, you need to configure your database with the appropriate permissions and replication settings.
+
+<Tabs>
+      <Tab title="Postgres">
+        Configuring Postgres for PowerSync involves three main tasks:
+
+        1. **Enable logical replication**: PowerSync reads the Postgres WAL using logical replication. Set `wal_level = logical` in your Postgres configuration.
+        2. **Create a PowerSync database user**: Create a role with replication privileges and read-only access to your tables.
+        3. **Create a `powersync` publication**: Create a logical replication publication named `powersync` to specify which tables to replicate.
+
+        <CodeGroup>
+          ```sql General
+          -- 1. Enable logical replication (requires restart)
+          ALTER SYSTEM SET wal_level = logical;
+          
+          -- 2. Create PowerSync database user/role with replication privileges and read-only access to your tables
+          CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          
+          -- Set up permissions for the newly created role
+          -- Read-only (SELECT) access is required
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          
+          -- Optionally, grant SELECT on all future tables (to cater for schema additions)
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
+          
+          -- 3. Create a publication to replicate tables. The publication must be named "powersync"
+          CREATE PUBLICATION powersync FOR ALL TABLES;
+          ```
+
+          ```sql Supabase
+          -- Supabase has logical replication enabled by default
+          -- Just create the user and publication:
+          
+          -- Create PowerSync database user/role with replication privileges and read-only access to your tables
+          CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          
+          -- Set up permissions for the newly created role
+          -- Read-only (SELECT) access is required
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          
+          -- Optionally, grant SELECT on all future tables (to cater for schema additions)
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
+          
+          -- Create a publication to replicate tables. The publication must be named "powersync"
+          CREATE PUBLICATION powersync FOR ALL TABLES;
+          ```
+
+          ```bash Docker (Self-hosting)
+          # 1. Create a Docker network (if not already created)
+          # This allows various PowerSync containers to communicate with each other
+          docker network create powersync-network
+
+          # 2. Run Postgres source database with logical replication enabled (required for PowerSync)
+          docker run -d \
+            --name powersync-postgres \
+            --network powersync-network \
+            -e POSTGRES_PASSWORD="my_secure_password" \
+            -p 5432:5432 \
+            postgres:18 \
+            postgres -c wal_level=logical
+
+          # 3. Configure PowerSync user and publication
+          # This creates a PowerSync database user/role with replication privileges and read-only access to your tables
+          # Read-only (SELECT) access is also granted to all future tables (to cater for schema additions)
+          # It also creates a publication to replicate tables. The publication must be named "powersync"
+          docker exec -it powersync-postgres psql -U postgres -c "
+          CREATE ROLE powersync_role WITH REPLICATION BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
+          CREATE PUBLICATION powersync FOR ALL TABLES;"
+          ```
+        </CodeGroup>
+
+        <Note>
+          * **Version compatibility**: PowerSync requires Postgres version 11 or greater.
+        </Note>
+
+        <Tip>
+          **Learn More**
+          
+          * For more details on Postgres setup, including provider-specific guides (Supabase, AWS RDS, MongoDB Atlas, etc.), see [Source Database Setup](/configuration/source-db/setup#postgres).
+          * **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs) for a complete working example of connecting a Postgres source database to PowerSync.
+        </Tip>
+      </Tab>
+
+      <Tab title="MongoDB Atlas">
+        For MongoDB Atlas databases, the minimum permissions when using built-in roles are:
+
+        ```
+        readWrite@<your_database>._powersync_checkpoints
+        read@<your_database>
+        ```
+
+        To allow PowerSync to automatically enable `changeStreamPreAndPostImages` on replicated collections (recommended), additionally add:
+
+        ```
+        dbAdmin@<your_database>
+        ```
+
+        <Note>
+          **Version compatibility**: PowerSync requires MongoDB version 6.0 or greater.
+        </Note>
+        <Tip>
+          **Learn More**
+          
+          * For more details including instructions for self-hosted MongoDB, or for custom roles on MongoDB Atlas, see [Source Database Setup](/configuration/source-db/setup#mongodb).
+          * **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb) for a complete working example of connecting a MongoDB source database to PowerSync.
+        </Tip>
+      </Tab>
+
+      <Tab title="MySQL (beta)">
+        For MySQL, you need to configure binary logging and create a user with replication privileges:
+
+        ```sql
+          -- Configure binary logging
+          -- Add to MySQL option file (my.cnf or my.ini):
+          server_id=<Unique Integer Value>
+          log_bin=ON
+          enforce_gtid_consistency=ON
+          gtid_mode=ON
+          binlog_format=ROW
+
+          -- Create a user with necessary privileges
+          CREATE USER 'repl_user'@'%' IDENTIFIED BY '<password>';
+
+          -- Grant replication client privilege
+          GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl_user'@'%';
+
+          -- Grant select access to the specific database
+          GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
+
+          -- Apply changes
+          FLUSH PRIVILEGES;
+        ```
+
+        <Note>
+          **Version compatibility**: PowerSync requires MySQL version 5.7 or greater.
+        </Note>
+        <Tip>
+          **Learn More**
+          
+          * For more details on MySQL setup, see [Source Database Setup](/configuration/source-db/setup#mysql-beta).
+          * **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mysql) for a complete working example of connecting a MySQL source database to PowerSync.
+        </Tip>
+      </Tab>
+
+      <Tab title="SQL Server (alpha)">
+        Refer to [these instructions](/configuration/source-db/setup#sql-server-alpha).
+
+        **Self-hosting PowerSync?** See the [Self-Host-Demo App](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mssql) for a complete working example of connecting a SQL Server source database to PowerSync.
+      </Tab>
+    </Tabs>
+
+# 2. Set Up PowerSync Service Instance
+
+PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be self-hosted (PowerSync Open Edition or PowerSync Enterprise Self-Hosted Edition).
+
+<Tabs>
+      <Tab title="PowerSync Cloud">
+        If you haven't yet, sign up for a free PowerSync Cloud account [here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs).
+
+        After signing up, you will be taken to the [PowerSync Dashboard](https://dashboard.powersync.com/). 
+        
+        Here, create a new project. _Development_ and _Production_ instances of the PowerSync Service will be created by default in the project. 
+      </Tab>
+
+      <Tab title="Self-Hosted">
+        Self-hosted PowerSync runs via Docker. 
+        
+        Below is a minimal example of setting up the PowerSync Service with Postgres as the bucket storage database and example Sync Rules. MongoDB is also supported as a bucket storage database (docs are linked at the end of this step), and you will learn more about Sync Rules in a next step.
+
+        ```bash
+        # 1. Create a directory for your config
+        mkdir powersync-service && cd powersync-service
+
+        # 2. Set up bucket storage (Postgres and MongoDB are supported)
+        docker run -d \
+          --name powersync-postgres-storage \
+          --network powersync-network \
+          -p 5433:5432 \
+          -e POSTGRES_PASSWORD="my_secure_storage_password" \
+          -e POSTGRES_DB=powersync_storage \
+          postgres:18
+
+        ## Set up Postgres storage user
+        docker exec -it powersync-postgres-storage psql -U postgres -d powersync_storage -c "
+        CREATE USER powersync_storage_user WITH PASSWORD 'my_secure_user_password';
+        GRANT CREATE ON DATABASE powersync_storage TO powersync_storage_user;"
+
+        # 3. Create config.yaml (see below)
+
+        # 4. Run PowerSync Service
+        # The Service config can be specified as an environment variable (shown below), as a filepath, or as a command line parameter
+        # See these docs for more details: https://docs.powersync.com/configuration/powersync-service/self-hosted-instances
+        docker run -d \
+          --name powersync \
+          --network powersync-network \
+          -p 8080:80 \
+          -e POWERSYNC_CONFIG_B64="$(base64 -i ./config.yaml)" \
+          journeyapps/powersync-service:latest
+        ```
+
+        **Basic `config.yaml` structure:**
+
+        ```yaml
+        # Source database connection (see the next step for more details)
+        replication:
+          connections:
+            - type: postgresql # or mongodb, mysql, mssql
+              uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres
+              sslmode: disable  # Only for local/private networks
+
+        # Connection settings for bucket storage (Postgres and MongoDB are supported)   
+        storage:   
+          type: postgresql
+          uri: postgresql://powersync_storage_user:my_secure_user_password@powersync-postgres-storage:5432/powersync_storage
+          sslmode: disable  # Use 'disable' only for local/private networks
+
+        # Sync Rules (defined in a later step)
+        sync_rules:
+          content: |
+            bucket_definitions:
+              global:
+                data:
+                  - SELECT * FROM lists
+                  - SELECT * FROM todos
+        ```
+
+        <Warning>
+          **Note**: This example assumes you've configured your source database with the required user and publication (see the previous step) 
+          and are running it via Docker in the 'powersync-network' network. 
+          
+          If you are not using Docker, you will need to specify the connection details in the `config.yaml` file manually (see next step for more details).
+        </Warning>
+
+        <Tip>
+          **Learn More**
+          * [Self-Hosting Introduction](/intro/self-hosting)
+          * [Self-Host Demo App](https://github.com/powersync-ja/self-host-demo) for complete working examples.
+          * [Self-Hosted Service Configuration](/configuration/powersync-service/self-hosted-instances) for more details on the config file structure.
+        </Tip>
+      </Tab>
+    </Tabs>
+
+# 3. Connect PowerSync to Your Source Database
+
+The next step is to connect your PowerSync Service instance to your source database.
+
+<Tabs>
+  <Tab title="PowerSync Cloud">
+    In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, then go to **Database Connections**:
+
+    1. Click **Connect to Source Database**
+    2. Select the appropriate database type tab (Postgres, MongoDB, MySQL or SQL Server)
+    3. Fill in your connection details:
+        <Note>
+          **Note**: Use the username (e.g., `powersync_role`) and password you created in Step 1: Configure your Source Database.
+        </Note>
+       - **Postgres**: Host, Port (5432), Database name, Username, Password, SSL Mode
+       - **MongoDB**: Connection URI (e.g., `mongodb+srv://user:pass@cluster.mongodb.net/database`)
+       - **MySQL**: Host, Port (3306), Database name, Username, Password
+       - **SQL Server**: Name, Host, Port (1433), Database name, Username, Password
+    4. Click **Test Connection** to verify
+    5. Click **Save Connection**
+
+    PowerSync will now deploy and configure an isolated cloud environment, which can take a few minutes.
+
+    <Tip>
+      **Learn More**
+      
+      For more details on database connections, including provider-specific connection details (Supabase, AWS RDS, MongoDB Atlas, etc.), see [Source Database Connection](/configuration/source-db/connection).
+    </Tip>
+  </Tab>
+
+  <Tab title="Self-Hosted">
+    For self-hosted setups, configure the source database connection in your `config.yaml` file (as you did in the previous step). Examples for the different database types are below.
+
+    <Note>
+      **Note**: Use the username (e.g., `powersync_role`) and password you created in Step 1: Configure your Source Database.
+    </Note>
+
+    <CodeGroup>
+      ```yaml Postgres
+      replication:
+          connections:
+            - type: postgresql # or mongodb, mysql, mssql
+              uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres # The connection URI or individual parameters can be specified.
+            sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
+            # Note: 'disable' is only suitable for local/private networks, not for public networks
+      ```
+
+      ```yaml MongoDB
+      replication:
+        connections:
+          - type: mongodb
+            uri: mongodb+srv://user:password@cluster.mongodb.net/database
+            post_images: auto_configure
+      ```
+
+      ```yaml MySQL
+      replication:
+        connections:
+          - type: mysql
+            uri: mysql://repl_user:password@host:3306/database
+      ```
+
+      ```yaml SQL Server
+      replication:
+        connections:
+          - type: mssql
+            uri: mssql://user:password@$host:1433/database
+            schema: dbo
+            additionalConfig:
+              trustServerCertificate: true
+              pollingIntervalMs: 1000
+              pollingBatchSize: 20
+      ```
+    </CodeGroup>
+
+    <Tip>
+      **Learn More**
+      
+      See the [self-host-demo app](https://github.com/powersync-ja/self-host-demo) for complete working examples of the different database types.
+    </Tip>
+  </Tab>
+</Tabs>
+
+
+# 4. Define Basic Sync Rules
+
+Sync Rules control which data gets synced to which users/devices. They consist of SQL-like queries organized into "buckets" (groupings of data). Each PowerSync Service instance has a Sync Rules definition in YAML format.
+
+We recommend starting with a simple **global bucket** that syncs data to all users. This is the simplest way to get started.
+
+<CodeGroup>
+      ```yaml Postgres Example
+      bucket_definitions:
+        global:
+          data:
+            - SELECT * FROM todos
+            - SELECT * FROM lists WHERE archived = false
+      ```
+
+      ```yaml MongoDB Example
+      bucket_definitions:
+        global:
+          data:
+            # Note that MongoDB uses “_id” as the name of the ID field in collections whereas
+            # PowerSync uses “id” in its client-side database. This is why the below syntax
+            # should always be used in the data queries when pairing PowerSync with MongoDB.
+            - SELECT _id as id, * FROM lists
+            - SELECT _id as id, * FROM todos WHERE archived = false
+      ```
+
+      ```yaml MySQL Example
+      bucket_definitions:
+        global:
+          data:
+            - SELECT * FROM todos
+            - SELECT * FROM lists WHERE archived = 0
+      ```
+
+      ```yaml SQL Server Example
+      bucket_definitions:
+        global:
+          data:
+            - SELECT * FROM todos
+            - SELECT * FROM lists WHERE archived = 0
+      ```
+    </CodeGroup>
+
+
+### Deploy Sync Rules
+
+<Tabs>
+      <Tab title="PowerSync Cloud">
+        In the [PowerSync Dashboard](https://dashboard.powersync.com/):
+
+        1. Select your project and instance
+        2. Go to the **Sync Rules** view
+        3. Edit the YAML directly in the dashboard
+        4. Click **Deploy** to validate and deploy your Sync Rules
+      </Tab>
+
+      <Tab title="Self-Hosted">
+        Add to your `config.yaml`:
+
+        ```yaml
+        sync_rules:
+          content: |
+            bucket_definitions:
+              global:
+                data:
+                  - SELECT * FROM todos
+                  - SELECT * FROM lists WHERE archived = false
+        ```
+      </Tab>
+    </Tabs>
+
+<Note>
+  **Note**: Table/collection names within your Sync Rules must match the table names defined in your client-side schema (defined in a later step below).
+</Note>
+
+<Tip>
+  **Learn More**
+  
+  For more details on Sync Rules usage, see the [Sync Rules documentation](/sync/rules/overview).
+</Tip>
+
+
+# 5. Generate a Development Token
+
+For quick development and testing, you can generate a temporary development token instead of implementing full authentication.
+
+You'll use this token for two purposes:
+- **Testing with the _Sync Diagnostics Client_** (in the next step) to verify your setup and Sync Rules
+- **Connecting your app** (in a later step) to test the client SDK integration
+
+<Tabs>
+  <Tab title="PowerSync Cloud">
+    1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance
+    2. Go to the **Client Auth** view
+    3. Check the **Development tokens** setting and save your changes
+    4. Click the **Connect** button in the top bar
+    5. **Enter token subject**: Since you're starting with just a simple global bucket in your Sync Rules that syncs all data to all users (as we recommended in the previous step), you can just put something like `test-user` as the token subject (which would normally be the user ID you want to test with).
+    6. Click **Generate token** and copy the token
+
+    <Note>
+      Development tokens expire after 12 hours.
+    </Note>
+  </Tab>
+
+  <Tab title="Self-Hosted">
+    For self-hosted setups, you can generate development tokens using the [powersync-service test-client](https://github.com/powersync-ja/powersync-service/tree/main/test-client):
+
+    
+
+    <DevTokenSelfHostedSteps />
+
+    
+  </Tab>
+</Tabs>
+
+
+# 6. [Optional] Test Sync with the Sync Diagnostics Client
+
+Before implementing the PowerSync Client SDK in your app, you can validate that syncing is working correctly using our [Sync Diagnostics Client](https://diagnostics-app.powersync.com) (this hosted version works with both PowerSync Cloud and self-hosted setups).
+
+Use the development token you generated in the [previous step](#5-generate-a-development-token) to connect and verify your setup:
+
+<Tabs>
+  <Tab title="PowerSync Cloud">
+    1. Go to [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com)
+    2. Enter your development token (from the [Generate a Development Token](#5-generate-a-development-token) step above)
+    3. Enter your PowerSync instance URL (found in [PowerSync Dashboard](https://dashboard.powersync.com/) - click **Connect** in the top bar)
+    4. Click **Connect**
+  </Tab>
+
+  <Tab title="Self-Hosted">
+    1. Go to [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com)
+    2. Enter your development token (from the [Generate a Development Token](#5-generate-a-development-token) step above)
+    3. Enter your PowerSync Service endpoint (the URL where your self-hosted service is running, e.g. `http://localhost:8080` if running locally)
+    4. Click **Connect**
+
+    <Note>
+      The Sync Diagnostics Client can also be run as a local standalone web app — see the [README](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app#readme) for instructions.
+    </Note>
+
+  </Tab>
+</Tabs>
+
+The Sync Diagnostics Client will connect to your PowerSync Service instance and display [information](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app#functionality) about the synced data, and allow you to [query](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app#sql-console) the client-side SQLite database.
+
+<Check>
+  **Checkpoint:**
+
+  Inspect your global bucket and synced tables in the Sync Diagnostics Client — these should match the Sync Rules you [defined previously](#4-define-basic-sync-rules). This confirms your setup is working correctly before integrating the client SDK into your app.
+</Check>
+
+# 7. Use the Client SDK
+
+Now it's time to integrate PowerSync into your app. This involves installing the SDK, defining your client-side schema, instantiating the database, connecting to your PowerSync Service instance, and reading/writing data.
+
+### Install the Client SDK
+
+Add the PowerSync Client SDK to your app project. PowerSync provides SDKs for various platforms and frameworks.
+
+<Tabs>
+  <Tab title="React Native / Expo">
+    <ReactNativeInstallation />
+  </Tab>
+
+  <Tab title="JavaScript Web">
+    <JavaScriptWebInstallation />
+  </Tab>
+
+  <Tab title="Node.js">
+    <NodeInstallation />
+  </Tab>
+
+  <Tab title="Capacitor">
+    <CapacitorInstallation />
+  </Tab>
+
+  <Tab title="Dart/Flutter">
+    <FlutterInstallation />
+  </Tab>
+
+  <Tab title="Kotlin">
+    <KotlinInstallation />
+  </Tab>
+
+  <Tab title="Swift">
+    <SwiftInstallation />
+  </Tab>
+
+  <Tab title=".NET">
+    <DotnetInstallation />
+  </Tab>
+</Tabs>
+
+### Define Your Client-Side Schema
+
+import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
+
+<SdkClientSideSchema />
+
+_PowerSync Cloud:_ The easiest way to generate your schema is using the [PowerSync Dashboard](https://dashboard.powersync.com/). Click the **Connect** button in the top bar to generate the client-side schema based on your Sync Rules in your preferred language.
+
+Here's an example schema for a simple `todos` table:
+
+import SdkSchemaExamples from '/snippets/sdk-schema-examples.mdx';
+
+<SdkSchemaExamples />
+
+<Note>
+  **Note**: The schema does not explicitly specify an `id` column, since PowerSync automatically creates an `id` column of type `text`. PowerSync [recommends](/sync/advanced/client-id) using UUIDs.
+</Note>
+
+<Tip>
+  **Learn More**
+  
+  The client-side schema uses three column types: `text`, `integer`, and `real`. These map directly to values from your Sync Rules and are automatically cast if needed. For details on how backend database types map to SQLite types, see [Types](/sync/types).
+</Tip>
+
+### Instantiate the PowerSync Database
+
+Now that you have your client-side schema defined, instantiate the PowerSync database in your app. This creates the client-side SQLite database that will be kept in sync with your source database based on your Sync Rules configuration.
+
+import SdkInstantiateDbExamples from '/snippets/sdk-instantiate-db-examples.mdx';
+
+<SdkInstantiateDbExamples />
+
+
+### Connect to PowerSync Service Instance
+
+Connect your client-side PowerSync database to the PowerSync Service instance you created in [step 2](#2-set-up-powersync-service-instance) by defining a _backend connector_ and calling `connect()`. The backend connector handles authentication and uploading mutations to your backend.
+
+<LocalOnly />
+
+<Note>You don't have to worry about the _backend connector_ implementation details right now — you can leave the boilerplate as-is and come back to it later.</Note>
+
+For development, you can use the development token you generated in the [Generate a Development Token](#optional-generate-a-development-token) step above. For production, you'll implement proper JWT authentication as we'll explain further below.
+
+<CodeGroup>
+  ```typescript React Native (TS)
+  import { AbstractPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/react-native';
+  import { db } from './Database';
+
+  class Connector implements PowerSyncBackendConnector {
+    async fetchCredentials(): Promise<PowerSyncCredentials> {
+      // for development: use development token
+      return {
+        endpoint: 'https://your-instance.powersync.com',
+        token: 'your-development-token-here'
+      };
+    }
+
+    async uploadData(database: AbstractPowerSyncDatabase) {
+      const transaction = await database.getNextCrudTransaction();
+      if (!transaction) return;
+
+      for (const op of transaction.crud) {
+        const record = { ...op.opData, id: op.id };
+        // upload to your backend API
+      }
+
+      await transaction.complete();
+    }
+  }
+
+  // connect the database to PowerSync Service
+  const connector = new Connector();
+  await db.connect(connector);
+  ```
+
+  ```typescript Web & Capacitor (TS)
+  import { AbstractPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/web';
+  import { db } from './Database';
+
+  class Connector implements PowerSyncBackendConnector {
+    async fetchCredentials(): Promise<PowerSyncCredentials> {
+      // for development: use development token
+      return {
+        endpoint: 'https://your-instance.powersync.com',
+        token: 'your-development-token-here'
+      };
+    }
+
+    async uploadData(database: AbstractPowerSyncDatabase) {
+      const transaction = await database.getNextCrudTransaction();
+      if (!transaction) return;
+
+      for (const op of transaction.crud) {
+        const record = { ...op.opData, id: op.id };
+        // upload to your backend API
+      }
+
+      await transaction.complete();
+    }
+  }
+
+  // connect the database to PowerSync Service
+  const connector = new Connector();
+  await db.connect(connector);
+  ```
+
+  ```typescript Node.js (TS)
+  import { PowerSyncBackendConnector } from '@powersync/node';
+
+  export class Connector implements PowerSyncBackendConnector {
+      async fetchCredentials() {
+          // for development: use development token
+          return {
+              endpoint: 'https://your-instance.powersync.com',
+              token: 'your-development-token-here'
+          };
+      }
+
+      async uploadData(database) {
+        // upload to your backend API
+      }
+  }
+
+  // connect the database to PowerSync Service
+  const connector = new Connector();
+  await db.connect(connector);
+  ```
+
+  ```kotlin Kotlin
+  import com.powersync.PowerSyncCredentials
+  import com.powersync.PowerSyncDatabase
+
+  class MyConnector : PowerSyncBackendConnector {
+    override suspend fun fetchCredentials(): PowerSyncCredentials {
+      // for development: use development token
+      return PowerSyncCredentials(
+        endpoint = "https://your-instance.powersync.com",
+        token = "your-development-token-here"
+      )
+    }
+
+    override suspend fun uploadData(database: PowerSyncDatabase) {
+      val transaction = database.getNextCrudTransaction() ?: return
+      
+      for (op in transaction.crud) {
+        val record = op.opData + ("id" to op.id)
+        // upload to your backend API
+      }
+      
+      transaction.complete()
+    }
+  }
+
+  // connect the database to PowerSync Service
+  database.connect(MyConnector())
+  ```
+
+  ```swift Swift
+  import PowerSync
+
+  class Connector: PowerSyncBackendConnector {
+    func fetchCredentials() async throws -> PowerSyncCredentials {
+      // for development: use development token
+      return PowerSyncCredentials(
+        endpoint: "https://your-instance.powersync.com",
+        token: "your-development-token-here"
+      )
+    }
+
+    func uploadData(database: PowerSyncDatabase) async throws {
+      guard let transaction = try await database.getNextCrudTransaction() else {
+        return
+      }
+      
+      for op in transaction.crud {
+        var record = op.opData
+        record["id"] = op.id
+        // upload to your backend API
+      }
+      
+      try await transaction.complete()
+    }
+  }
+
+  // connect the database to PowerSync Service
+  let connector = Connector()
+  await db.connect(connector: connector)
+  ```
+
+  ```dart Dart/Flutter
+  import 'package:powersync/powersync.dart';
+
+  class Connector extends PowerSyncBackendConnector {
+    @override
+    Future<PowerSyncCredentials> fetchCredentials() async {
+      return PowerSyncCredentials(
+        endpoint: 'https://your-instance.powersync.com',
+        token: 'your-development-token-here'
+      );
+    }
+
+    @override
+    Future<void> uploadData(PowerSyncDatabase database) async {
+      final transaction = await database.getNextCrudTransaction();
+      if (transaction == null) return;
+
+      for (final op in transaction.crud) {
+        final record = {...op.opData, 'id': op.id};
+        // upload to your backend API
+      }
+
+      await transaction.complete();
+    }
+  }
+
+  // connect the database to PowerSync Service
+  final connector = Connector();
+  await db.connect(connector);
+  ```
+
+  ```csharp .NET
+  using System;
+  using System.Collections.Generic;
+  using System.Net.Http;
+  using System.Text;
+  using System.Text.Json;
+  using System.Threading.Tasks;
+  using PowerSync.Common.Client;
+  using PowerSync.Common.Client.Connection;
+  using PowerSync.Common.DB.Crud;
+
+  public class MyConnector : IPowerSyncBackendConnector
+  {
+      public MyConnector()
+      {
+      }
+
+      public async Task<PowerSyncCredentials?> FetchCredentials()
+      {
+          var powerSyncUrl = "https://your-instance.powersync.com";
+          var authToken = "your-development-token-here";
+
+          // Return credentials with PowerSync endpoint and JWT token
+          return new PowerSyncCredentials(powerSyncUrl, authToken);
+      }
+
+      public async Task UploadData(IPowerSyncDatabase database)
+      {
+          // upload to your backend API
+      }
+  }
+
+  // connect the database to PowerSync Service
+  await db.Connect(new MyConnector());
+  ```
+</CodeGroup>
+
+Once connected, you can read from and write to the client-side SQLite database. Changes from your source database will be automatically synced down into the SQLite database. For client-side mutations to be uploaded back to your source database, you need to complete the backend integration as we'll explain below.
+### Read Data
+
+Read data using SQL queries. The data comes from your client-side SQLite database:
+
+<CodeGroup>
+      ```typescript React Native, Web, Node.js & Capacitor (TS)
+      // Get all todos
+      const todos = await db.getAll('SELECT * FROM todos');
+
+      // Get a single todo
+      const todo = await db.get('SELECT * FROM todos WHERE id = ?', [todoId]);
+
+      // Watch for changes (reactive query)
+      const stream = db.watch('SELECT * FROM todos WHERE list_id = ?', [listId]);
+      for await (const todos of stream) {
+        // Update UI when data changes
+        console.log(todos);
+      }
+
+      // Note: The above example requires async iterator support in React Native. 
+      // If you encounter issues, use one of these callback-based APIs instead:
+
+      // Option 1: Using onResult callback
+      // const abortController = new AbortController();
+      // db.watch(
+      //   'SELECT * FROM todos WHERE list_id = ?',
+      //   [listId],
+      //   {
+      //     onResult: (todos) => {
+      //       // Update UI when data changes
+      //       console.log(todos);
+      //     }
+      //   },
+      //   { signal: abortController.signal }
+      // );
+
+      // Option 2: Using the query builder API
+      // const query = db
+      //   .query({
+      //     sql: 'SELECT * FROM todos WHERE list_id = ?',
+      //     parameters: [listId]
+      //   })
+      //   .watch();
+      // query.registerListener({
+      //   onData: (todos) => {
+      //     // Update UI when data changes
+      //     console.log(todos);
+      //   }
+      // });
+      ```
+
+      ```kotlin Kotlin
+      // Get all todos
+      val todos = database.getAll("SELECT * FROM todos") { cursor ->
+        Todo.fromCursor(cursor)
+      }
+
+      // Get a single todo
+      val todo = database.get("SELECT * FROM todos WHERE id = ?", listOf(todoId)) { cursor ->
+        Todo.fromCursor(cursor)
+      }
+
+      // Watch for changes
+      database.watch("SELECT * FROM todos WHERE list_id = ?", listOf(listId))
+        .collect { todos ->
+          // Update UI when data changes
+        }
+      ```
+
+      ```swift Swift
+      // Get all todos
+      let todos = try await db.getAll(
+        sql: "SELECT * FROM todos",
+        mapper: { cursor in
+          TodoContent(
+            description: try cursor.getString(name: "description")!,
+            completed: try cursor.getBooleanOptional(name: "completed")
+          )
+        }
+      )
+
+      // Watch for changes
+      for try await todos in db.watch(
+        sql: "SELECT * FROM todos WHERE list_id = ?",
+        parameters: [listId]
+      ) {
+        // Update UI when data changes
+      }
+      ```
+
+      ```dart Dart/Flutter
+      // Get all todos
+      final todos = await db.getAll('SELECT * FROM todos');
+
+      // Get a single todo
+      final todo = await db.get('SELECT * FROM todos WHERE id = ?', [todoId]);
+
+      // Watch for changes
+      db.watch('SELECT * FROM todos WHERE list_id = ?', [listId])
+        .listen((todos) {
+          // Update UI when data changes
+        });
+      ```
+
+      ```csharp .NET
+      // Use db.Get() to fetch a single row:
+      Console.WriteLine(await db.Get<object>("SELECT powersync_rs_version();"));
+
+      // Or db.GetAll() to fetch all:
+      // Where List result is defined:
+      // record ListResult(string id, string name, string owner_id, string created_at);
+      Console.WriteLine(await db.GetAll<ListResult>("SELECT * FROM lists;"));
+
+      // Use db.Watch() to watch queries for changes (await is used to wait for initialization):
+      <DotNetWatch />
+      ```
+    </CodeGroup>
+
+<Tip>
+  **Learn More**
+  
+  - [Reading Data](/client-sdks/reading-data) - Details on querying synced data
+  - [ORMs Overview](/client-sdks/orms/overview) - Using type-safe ORMs with PowerSync
+  - [Live Queries / Watch Queries](/client-sdks/watch-queries) - Building reactive UIs with automatic updates
+</Tip>
+
+### Write Data
+
+Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements. PowerSync automatically queues these mutations and uploads them to your backend via the `uploadData()` function, once you've fully implemented your _backend connector_ (as we'll talk about below).
+
+<CodeGroup>
+      ```typescript React Native (TS), Web & Node.js
+      // Insert a new todo
+      await db.execute(
+        'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
+        [listId, 'Buy groceries']
+      );
+
+      // Update a todo
+      await db.execute(
+        'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
+        [todoId]
+      );
+
+      // Delete a todo
+      await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
+      ```
+
+      ```kotlin Kotlin
+      // Insert a new todo
+      database.writeTransaction { ctx ->
+        ctx.execute(
+          sql = "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)",
+          parameters = listOf(listId, "Buy groceries")
+        )
+      }
+
+      // Update a todo
+      database.execute(
+        sql = "UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?",
+        parameters = listOf(todoId)
+      )
+
+      // Delete a todo
+      database.execute(
+        sql = "DELETE FROM todos WHERE id = ?",
+        parameters = listOf(todoId)
+      )
+      ```
+
+      ```swift Swift
+      // Insert a new todo
+      try await db.execute(
+        sql: "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)",
+        parameters: [listId, "Buy groceries"]
+      )
+
+      // Update a todo
+      try await db.execute(
+        sql: "UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?",
+        parameters: [todoId]
+      )
+
+      // Delete a todo
+      try await db.execute(
+        sql: "DELETE FROM todos WHERE id = ?",
+        parameters: [todoId]
+      )
+      ```
+
+      ```dart Dart/Flutter
+      // Insert a new todo
+      await db.execute(
+        'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
+        [listId, 'Buy groceries']
+      );
+
+      // Update a todo
+      await db.execute(
+        'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
+        [todoId]
+      );
+
+      // Delete a todo
+      await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
+      ```
+
+      ```csharp .NET
+      // Insert a new todo
+      await db.Execute(
+        'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
+        [listId, "Buy groceries"]
+      );
+
+      // Update a todo
+      await db.Execute(
+        'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
+        [todoId]
+      );
+
+      // Delete a todo
+      await db.Execute(
+        'DELETE FROM todos WHERE id = ?', [todoId]
+      );
+      ```
+</CodeGroup>
+
+<Note>
+  **Best practice**: Use UUIDs when inserting new rows on the client side. UUIDs can be generated offline/locally, allowing for unique identification of records created in the client database before they are synced to the server. See [Client ID](/sync/advanced/client-id) for more details.
+</Note>
+
+<Tip>
+  **Learn More**
+  
+  For more details, see the [Writing Data](/client-sdks/writing-data) page.
+</Tip>
+
+# Next Steps
+
+For production deployments, you'll need to:
+
+1. **[Implement Authentication](/configuration/auth/overview)**: Replace development tokens with proper JWT-based authentication. PowerSync supports various authentication providers including Supabase, Firebase Auth, Auth0, Clerk, and custom JWT implementations.
+2. **Configure & Integrate Your Backend Application**: Set up your backend to handle mutations uploaded from clients.
+    - [Server-Side Setup](/configuration/app-backend/setup)
+    - [Client-Side Integration](/configuration/app-backend/client-side-integration)
+
+### Additional Resources
+
+- Learn more about [Sync Rules](/sync/rules/overview) for advanced data filtering
+- Explore [Live Queries / Watch Queries](/client-sdks/watch-queries) for reactive UI updates
+- Check out [Example Projects](/intro/examples) for complete implementations
+- Review the [Client SDK References](/client-sdks/overview) for client-side platform-specific details
+
+# Questions?
+
+Try "Ask AI" on this site which is trained on all our documentation, repositories and Discord discussions. Also join us on [our community Discord server](https://discord.gg/powersync) where you can browse topics from the PowerSync community and chat with our team.

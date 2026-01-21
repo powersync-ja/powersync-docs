@@ -1,0 +1,316 @@
+---
+title: "Supabase + PowerSync"
+description: "Tutorial-style integration guide for creating offline-first apps with Supabase and PowerSync, using a demo to-do list app in Flutter, React Native, Web, Kotlin and Swift."
+sidebarTitle: Overview
+---
+
+import CreateCloudInstance from '/snippets/create-cloud-instance.mdx';
+import SupabaseConnection from '/snippets/supabase-database-connection.mdx';
+import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
+import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
+
+<Frame caption="Video walkthrough of the integration guide.">
+  <iframe width="1005" height="420" src="https://www.youtube.com/embed/Xg5FTYGPn5U?si=4TjdYEACDR2g98yh" title="YouTube video player" frameborder="0" 
+allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" referrerpolicy="strict-origin-when-cross-origin" 
+allowfullscreen>    
+  </iframe>
+</Frame>
+
+Used in conjunction with **Supabase**, PowerSync enables developers to build local-first & offline-first apps that are robust in poor network conditions and that have highly responsive frontends while relying on [Supabase](https://supabase.com/) for their backend. This guide provides instructions for how to configure PowerSync for use with your Supabase project.
+
+<Note>
+  Before you proceed, this guide assumes that you have already signed up for free accounts with both Supabase and PowerSync Cloud (our cloud-hosted offering). If you haven't signed up for a **PowerSync** (Cloud) account yet, [click here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs) (and if you haven't signed up for Supabase yet, [click here](https://supabase.com/dashboard/sign-up)).
+</Note>
+
+<Note>
+For mobile/desktop apps, this guide assumes that you already have **Flutter / React Native / Kotlin / Xcode** set up.
+
+For web apps, this guide assumes that you have [pnpm](https://pnpm.io/installation#using-npm) installed.
+</Note>
+<Check>
+  This guide takes 10-15 minutes to complete.
+</Check>
+
+## Architecture
+
+Upon successful integration of Supabase + PowerSync, your system architecture will look like this: (click to enlarge image)
+<Frame>
+  <img src="/images/integration-guides/supabase/powersync-docs-diagram-supabase-integration.png"/>
+</Frame>
+The local SQLite database embedded in the PowerSync SDK is automatically kept in sync with the Supabase Postgres database (based on configured Sync Rules as you will see later in this guide). Client-side data modifications are persisted in the local SQLite database as well as stored in an upload queue that gets processed via the Supabase client library when network connectivity is available. Therefore reads and writes can happen in the app regardless of whether the user is online or offline, by using the local SQLite database.
+
+<Note>
+  For more details on PowerSync's general architecture, [see here](/architecture/architecture-overview).
+</Note>
+
+## Integration Guide/Tutorial Overview
+
+We will follow these steps to get an offline-first 'To-Do List' demo app up and running:
+
+<Steps>
+  <Step title="Configure Supabase:">
+    * Create the demo database schema
+    * Create the Postgres user and publication
+  </Step>
+  <Step title="Configure PowerSync:">
+    * Create connection to Supabase
+    * Configure Sync Rules
+  </Step>
+  <Step title="Test the configuration">
+    Test the configuration using our provided PowerSync-Supabase 'To-Do List' demo app with your framework of choice.
+  </Step>
+</Steps>
+
+## Configure Supabase
+
+Create a new Supabase project (or use an existing project if you prefer) and follow the below steps.
+
+### Create the Demo Database Schema
+
+To set up the Postgres database for our _To-Do List_ demo app, we will create two new tables: `lists` and `todos`. The demo app will have access to these tables even while offline.
+
+Run the below SQL statements in your **Supabase SQL Editor**:
+
+```sql
+create table
+  public.lists (
+    id uuid not null default gen_random_uuid (),
+    created_at timestamp with time zone not null default now(),
+    name text not null,
+    owner_id uuid not null,
+    constraint lists_pkey primary key (id),
+    constraint lists_owner_id_fkey foreign key (owner_id) references auth.users (id) on delete cascade
+  ) tablespace pg_default;
+
+create table
+  public.todos (
+    id uuid not null default gen_random_uuid (),
+    created_at timestamp with time zone not null default now(),
+    completed_at timestamp with time zone null,
+    description text not null,
+    completed boolean not null default false,
+    created_by uuid null,
+    completed_by uuid null,
+    list_id uuid not null,
+    constraint todos_pkey primary key (id),
+    constraint todos_created_by_fkey foreign key (created_by) references auth.users (id) on delete set null,
+    constraint todos_completed_by_fkey foreign key (completed_by) references auth.users (id) on delete set null,
+    constraint todos_list_id_fkey foreign key (list_id) references lists (id) on delete cascade
+  ) tablespace pg_default;
+```
+
+### Create a PowerSync Database User
+
+PowerSync uses the Postgres [Write Ahead Log (WAL)](https://www.postgresql.org/docs/current/wal-intro.html) to replicate data changes in order to keep PowerSync SDK clients up to date.
+
+Run the below SQL statement in your **Supabase SQL Editor** to create a Postgres role/user with replication privileges:
+
+<PostgresPowerSyncUser />
+
+### Create the Postgres Publication
+
+Run the below SQL statement in your **Supabase SQL Editor** to create a Postgres publication:
+
+<PostgresPowerSyncPublication />
+
+
+## Configure PowerSync
+
+### Create a PowerSync Cloud Instance
+<CreateCloudInstance />
+
+### Connect PowerSync to Your Supabase
+<SupabaseConnection />
+
+### Configure Sync Rules
+
+[Sync Rules](/sync/rules/overview) allow developers to control which data gets synced to which user devices using a SQL-like syntax in a YAML file. For the demo app, we're going to specify that each user can only see their own to-do lists and list items.
+
+1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Sync Rules** view.
+
+2. Edit the Sync Rules in the editor and replace the contents with the below:
+
+```yaml
+bucket_definitions:
+  user_lists:
+    # Separate bucket per To-Do list
+    parameters: select id as list_id from lists where owner_id = request.user_id()
+    data:
+      - select * from lists where id = bucket.list_id
+      - select * from todos where list_id = bucket.list_id
+```
+
+2. Click **"Validate"** and ensure there are no errors. This validates your Sync Rules against your Postgres database.
+3. Click **"Deploy"** to deploy your Sync Rules.
+
+<Tip>
+- For additional information on PowerSync's Sync Rules, refer to the [Sync Rules](/sync/rules/overview) documentation.
+- If you're wondering how Sync Rules relate to Supabase Postgres [RLS](https://supabase.com/docs/guides/auth/row-level-security), see [this subsection](/integrations/supabase/rls-and-sync-rules). 
+</Tip>
+
+## Test Everything (Using Our Demo App)
+
+In this step you'll test your setup using a 'To-Do List' demo app provided by PowerSync.
+
+#### Clone the demo app
+
+Clone the demo app based on your framework:
+
+<CodeGroup>
+
+```bash Flutter
+git clone https://github.com/powersync-ja/powersync.dart.git
+cd powersync.dart/demos/supabase-todolist/
+```
+
+```bash React Native
+git clone https://github.com/powersync-ja/powersync-js.git
+cd powersync-js/demos/react-native-supabase-todolist
+```
+
+```bash JavaScript Web
+git clone https://github.com/powersync-ja/powersync-js.git
+cd powersync-js/demos/react-supabase-todolist
+```
+
+```bash Kotlin
+git clone https://github.com/powersync-ja/powersync-kotlin.git
+
+# Open `demos/supabase-todolist` in Android Studio
+```
+
+```bash Swift
+git clone https://github.com/powersync-ja/powersync-swift.git
+
+# Open the Demo directory in XCode and follow the README instructions.
+```
+
+</CodeGroup>
+
+
+#### Configure the demo app to use your PowerSync instance
+
+Locate the relevant config file for your framework:
+
+<CodeGroup>
+
+```bash Flutter
+cp lib/app_config_template.dart lib/app_config.dart
+
+# Edit `lib/app_config.dart` and insert the necessary credentials as detailed below.
+```
+
+```bash React Native
+# Edit the `.env` file and insert the necessary credentials as detailed below.
+```
+
+```bash JavaScript Web
+cp .env.local.template .env.local
+
+# Edit `.env.local` and insert the necessary credentials as detailed below.
+```
+
+```bash Kotlin
+# Make a `local.properties` file in the root and fill in the relevant variables (see points below for further details):
+
+# local.properties
+sdk.dir=/path/to/android/sdk
+
+# Enter your PowerSync instance URL
+POWERSYNC_URL=https://foo.powersync.journeyapps.com
+# Enter your Supabase project's URL and public anon key
+SUPABASE_URL=https://foo.supabase.co # from https://supabase.com/dashboard/project/_/settings/api
+SUPABASE_ANON_KEY=foo # from https://supabase.com/dashboard/project/_/settings/api-keys
+```
+
+```bash Swift
+# Edit the `_Secrets` file and insert the necessary credentials as detailed below.
+```
+
+</CodeGroup>
+
+
+1. In the relevant config file, replace the values for `supabaseUrl` (from the [Project URL](https://supabase.com/dashboard/project/_/settings/api) section in the Supabase dashboard) and `supabaseAnonKey` (from the [API Keys](https://supabase.com/dashboard/project/_/settings/api-keys) section in the Supabase dashboard)
+2. For the value of `powersyncUrl`, click **Connect** in the top bar of the [PowerSync Dashboard](https://dashboard.powersync.com/) and copy the instance URL from the dialog.
+
+#### Run the app
+
+<CodeGroup>
+
+```bash Flutter
+# Ensure you have [melos](https://melos.invertase.dev/~melos-latest/getting-started) installed.
+
+melos bootstrap
+flutter run
+```
+
+```bash React Native
+# In the repo root directory:
+pnpm install
+pnpm build:packages
+
+# In `demos/react-native-supabase-todolist`:
+# Run on iOS
+pnpm ios
+# Run on Android
+pnpm android
+```
+
+```bash JavaScript Web
+# In the repo root directory:
+pnpm install
+pnpm build:packages
+
+# In `demos/react-supabase-todolist`:
+pnpm dev
+```
+
+```bash Kotlin
+# Run the app on Android or iOS in Android Studio using the Run widget.
+```
+
+```bash Swift
+# Run the app using XCode.
+```
+
+</CodeGroup>
+
+
+<Note>
+  For ease of use of the demo app, you can disable email confirmation in your Supabase Auth settings. In your Supabase project, go to "Authentication" -> "Providers" -> "Email" and then disable "Confirm email". If you keep email confirmation enabled, the Supabase user confirmation email will reference the default Supabase Site URL of `http://localhost:3000` — you can ignore this.
+</Note>
+
+<img src="/images/integration-8.png" width="30%"/>
+
+Once signed in to the demo app, you should see a blank list of to-do lists, so go ahead and create a new list. Try placing your device into airplane mode to test out the offline capabilities. Once the device is back online, you should see the data automatically appear in your Supabase dashboard (e.g. in the Table Editor).
+
+For more information, explore the [PowerSync docs](/) or join us on [our community Discord](https://discord.gg/powersync) where our team is always available to answer questions.
+
+## Bonus: Optional Extras
+
+If you plan on sharing this demo app with other people, you may want to set up demo data triggers so that new user signups don't see an empty screen.
+
+It's useful to have some data when a user signs up to the demo app. The below trigger automatically creates some sample data when a user registers (you can run it in the Supabase SQL Editor). See [Supabase: Managing User Data](https://supabase.com/docs/guides/auth/managing-user-data#using-trigger) for more details.
+
+```sql
+create function public.handle_new_user_sample_data()
+returns trigger as $$
+declare
+  new_list_id uuid;
+begin
+  insert into public.lists (name, owner_id)
+    values ('Shopping list', new.id)
+    returning id into new_list_id;
+
+  insert into public.todos(description, list_id, created_by)
+    values ('Bread', new_list_id, new.id);
+
+  insert into public.todos(description, list_id, created_by)
+    values ('Apples', new_list_id, new.id);
+
+  return new;
+end;
+$$ language plpgsql security definer;
+
+create trigger new_user_sample_data after insert on auth.users for each row execute procedure public.handle_new_user_sample_data();
+```

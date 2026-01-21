@@ -1,0 +1,223 @@
+---
+title: "Neon + PowerSync"
+description: "Tutorial-style integration guide for creating synced / local-first / offline-first apps with Neon and PowerSync, using a demo notes web app written in TypeScript."
+sidebarTitle: Neon
+---
+
+import CreateCloudInstance from '/snippets/create-cloud-instance.mdx';
+import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
+import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
+import NeonDatabaseSetup from '/snippets/neon-database-setup.mdx';
+import NeonConnection from '/snippets/neon-database-connection.mdx';
+
+
+Used in conjunction with **Neon**, PowerSync enables developers to build synced, local-first & offline-first apps that are robust in poor network conditions and that have highly responsive frontends while relying on [Neon](https://neon.tech/) for their backend. This guide provides instructions for how to configure PowerSync for use with your Neon project.
+
+<Info>
+  Before you proceed, this guide assumes that you have already signed up for free accounts with both Neon and PowerSync Cloud (our cloud-hosted offering). If you haven't signed up for a **PowerSync** (Cloud) account yet, [click here](https://accounts.journeyapps.com/portal/powersync-signup?s=docs) (and if you haven't signed up for Neon yet, [do so now](https://console.neon.tech/signup)).
+</Info>
+
+<Info>
+For web apps, this guide assumes that you have [pnpm](https://pnpm.io/installation#using-npm) installed.
+</Info>
+
+<Check>
+  This guide takes 10-15 minutes to complete.
+</Check>
+
+## Architecture
+
+Upon successful integration of Neon + PowerSync, your system architecture will look like this: (click to enlarge image)
+
+<Frame>
+  {/* TODO: Add Neon-specific architecture diagram */}
+  <img src="/images/integration-guides/neon/powersync-docs-diagram-neon-integration.png"/>
+</Frame>
+
+The local SQLite database embedded in the PowerSync SDK is automatically kept in sync with the Neon Postgres database (based on configured Sync Rules as you will see later in this guide). Client-side data modifications are persisted in the local SQLite database as well as stored in an upload queue that gets processed via the Neon Data API when network connectivity is available. Therefore reads and writes can happen in the app regardless of whether the user is online or offline, by using the local SQLite database.
+
+<Info>
+  For more details on PowerSync's general architecture, [see here](/architecture/architecture-overview).
+</Info>
+
+## Integration Guide/Tutorial Overview
+
+We will follow these steps to get an offline-first 'Notes' demo app up and running:
+
+<Steps>
+  <Step title="Configure Neon:">
+    * Create a Neon project with Auth and Data API
+    * Set up the database schema
+    * Configure logical replication
+  </Step>
+  <Step title="Configure PowerSync:">
+    * Create connection to Neon
+    * Configure authentication
+    * Configure Sync Rules
+  </Step>
+  <Step title="Test the configuration">
+    Test the configuration using our provided PowerSync-Neon 'Notes' demo app.
+  </Step>
+</Steps>
+
+## Configure Neon
+
+### Create a Neon Project with Auth and Data API
+
+1. Go to [pg.new](https://pg.new) to create a new Neon project.
+2. In the Neon Console, navigate to your project and enable:
+   - **Neon Auth** — Go to the **Auth** page in the left sidebar and enable it
+   - **Data API** — Go to the **Data API** page in the left sidebar and enable it
+
+### Set Up the Database
+
+The demo app uses Drizzle ORM for schema management. The schema includes `notes` and `paragraphs` tables with Row Level Security (RLS) policies.
+
+Clone the demo repository and run the migration:
+
+```bash
+git clone https://github.com/powersync-ja/powersync-js.git
+cd powersync-js
+pnpm install
+pnpm build:packages
+cd demos/react-neon-tanstack-query-notes
+```
+
+Create a `.env` file in the project root with your database connection string:
+
+```env
+DATABASE_URL=postgresql://user:password@your-project-id.pooler.region.neon.tech/neondb?sslmode=require
+```
+
+<Tip>
+Find your connection string in the Neon Console → Dashboard → Connect → Connection string (select "Pooled connection") → Copy snippet.
+</Tip>
+
+Run the migration to create the tables and RLS policies:
+
+```bash
+pnpm db:migrate
+```
+
+This creates the following schema:
+
+```sql
+CREATE TABLE "notes" (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+  "owner_id" text DEFAULT auth.user_id() NOT NULL,
+  "title" text DEFAULT 'untitled note' NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now(),
+  "updated_at" timestamp with time zone DEFAULT now(),
+  "shared" boolean DEFAULT false
+);
+
+CREATE TABLE "paragraphs" (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+  "note_id" uuid REFERENCES notes(id),
+  "content" text NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now()
+);
+```
+
+The migration also sets up RLS policies so users can only access their own notes (and shared notes).
+
+### Configure Logical Replication, User and Publication
+
+PowerSync uses logical replication to sync data from your Neon database.
+
+<NeonDatabaseSetup />
+
+## Configuring PowerSync
+
+### Create a PowerSync Cloud Instance
+<CreateCloudInstance />
+
+### Connect PowerSync to Your Neon Database
+<NeonConnection />
+
+### Configure Sync Rules
+
+[Sync Rules](/sync/rules/overview) allow developers to control which data gets synced to which user devices using a SQL-like syntax in a YAML file. For the demo app, we're going to specify that each user can only see their own notes (plus any shared notes).
+
+1. In the PowerSync Dashboard, select your project and instance and go to the **Sync Rules** view.
+
+2. Edit the Sync Rules in the editor and replace the contents with the below:
+
+```yaml
+config:
+  edition: 2
+
+bucket_definitions:
+  by_user:
+    # Only sync rows belonging to the user
+    parameters: SELECT id as note_id FROM notes WHERE owner_id = request.user_id()
+    data:
+      - SELECT * FROM notes WHERE id = bucket.note_id
+      - SELECT * FROM paragraphs WHERE note_id = bucket.note_id
+  # Sync all shared notes to all users (not recommended for production)
+  shared_notes:
+    parameters: SELECT id as note_id from notes where shared = TRUE
+    data:
+      - SELECT * FROM notes WHERE id = bucket.note_id
+      - SELECT * FROM paragraphs WHERE note_id = bucket.note_id
+```
+
+3. Click **"Validate"** and ensure there are no errors. This validates your Sync Rules against your Postgres database.
+4. Click **"Deploy"** to deploy your Sync Rules.
+
+<Tip>
+For additional information on PowerSync's Sync Rules, refer to the [Sync Rules](/sync/rules/overview) documentation.
+</Tip>
+
+## Test Everything (Using Our Demo App)
+
+In this step you'll test your setup using the 'Notes' demo app. This is a modified version of Neon's demo app.
+
+### Configure Environment Variables
+
+In the demo project directory (`powersync-js/demos/react-neon-notes-tanstack`), update your `.env` file with the following:
+
+```env
+# Neon Data API URL
+# Find this in Neon Console → Data API page → "API URL"
+VITE_NEON_DATA_API_URL=https://your-project-id.data-api.neon.tech
+
+# Neon Auth Base URL
+# Find this in Neon Console → Auth page → "Auth URL"
+VITE_NEON_AUTH_URL=https://your-project-id.auth.neon.tech
+
+# PowerSync instance URL
+# Find this in PowerSync Dashboard → Connect button
+VITE_POWERSYNC_URL=https://your-instance.powersync.journeyapps.com
+```
+
+### Run the App
+
+Start the development server:
+
+```bash
+pnpm dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+Once signed in to the demo app, you should see a blank list of notes, so go ahead and create a new note. Try disabling wifi on your device to test out the offline capabilities. Once back online, you should see the data automatically sync.
+
+<Frame>
+  <img src="/images/integration-guides/neon/demo-app.png"/>
+</Frame>
+
+
+### Test Sync (Optional)
+
+During development, you can use the **Sync Test** feature in the PowerSync Dashboard to validate your Sync Rules:
+
+1. Click on **"Sync Test"** in the PowerSync Dashboard.
+2. Enter the UUID of a user in your Neon Auth database to generate a test JWT.
+3. Click **"Launch Sync Diagnostics Client"** to test the sync rules.
+
+For more information, explore the [PowerSync docs](/) or join us on [our community Discord](https://discord.gg/powersync) where our team is always available to answer questions.
+
+<Warning>
+After deployment, update your Neon Auth settings to allow your Vercel domain. Go to Neon Console → Auth page and add your Vercel URL (e.g., `https://your-project.vercel.app`) to the allowed origins.
+</Warning>

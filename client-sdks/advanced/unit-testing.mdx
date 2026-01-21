@@ -1,0 +1,84 @@
+---
+title: "Unit Testing"
+description: "Set up unit tests for PowerSync in Dart/Flutter"
+---
+
+<Note>
+This guide is currently specific to the Dart/Flutter SDK. We may expand it to cover other SDKs in the future.
+</Note>
+
+For unit testing your projects using PowerSync (for example, testing whether your queries run as expected), you'll need the `powersync-sqlite-core` binary in your project's root directory.
+
+## Setup
+
+1. Download the PowerSync SQLite binary
+   - Go to [powersync-sqlite-core Releases](https://github.com/powersync-ja/powersync-sqlite-core/releases)
+   - Download the binary for your OS
+2. Rename the binary
+   - Remove the architecture suffix from the filename
+   - Examples:
+     - `powersync_x64.dll` → `powersync.dll` (Windows)
+     - `libpowersync_aarch64.dylib` → `libpowersync.dylib` (macOS)
+     - `libpowersync_x64.so` → `libpowersync.so` (Linux)
+3. Place the binary
+   - Move the renamed binary to your project's root directory
+
+## Example Test
+
+This example shows basic unit testing with PowerSync in Flutter. For more information, see the [Flutter unit testing documentation](https://docs.flutter.dev/cookbook/testing/unit/introduction).
+
+```dart
+import 'dart:io';
+import 'package:powersync/powersync.dart';
+import 'package:path/path.dart';
+
+const schema = Schema([
+    Table('customers', [Column.text('name'), Column.text('email')])
+]);
+
+late PowerSyncDatabase testDB;
+
+String getTestDatabasePath() async {
+    const dbFilename = 'powersync-test.db';
+    final dir = Directory.current.absolute.path;
+    return join(dir, dbFilename);
+}
+
+Future<void> openTestDatabase() async {
+    testDB = PowerSyncDatabase(
+      schema: schema,
+      path: await getTestDatabasePath(),
+      logger: testLogger,
+    );
+
+    await testDB.initialize();
+}
+
+test('INSERT', () async {
+    await testDB.execute(
+          'INSERT INTO customers(name, email) VALUES(?, ?)', ['John Doe', 'john@hotmail.com']);
+
+    final results = await testDB.getAll('SELECT * FROM customers');
+
+    expect(results.length, 1);
+    expect(results, ['John Doe', 'john@hotmail.com']);
+});
+```
+
+#### If you have trouble with loading the extension, confirm the following
+
+Ensure that your SQLite3 binary install on your system has extension loading enabled. You can confirm this by doing the following
+
+- Run `sqlite3` in your command-line interface.
+- In the sqlite3 prompt run `PRAGMA compile_options;`
+- Check the output for the option `ENABLE_LOAD_EXTENSION`.
+- If you see `ENABLE_LOAD_EXTENSION`, it means extension loading is enabled.
+
+If the above steps don't work, you can also confirm if extension loading is enabled by trying to load the extension in your command-line interface.
+
+- Run `sqlite3` in your command-line interface.
+- Run `.load /path/to/file/libpowersync.dylib` (macOS) or `.load /path/to/file/libpowersync.so` (Linux) or `.load /path/to/file/powersync.dll` (Windows).
+- If this runs without error, then extension loading is enabled. If it fails with an error message about extension loading being disabled, then it’s not enabled in your SQLite installation.
+
+If it is not enabled, you will have to download a compiled SQLite binary with extension loading enabled (e.g. using Homebrew) or [compile SQLite](https://www.sqlite.org/howtocompile.html) with extension loading enabled and
+include it in your project's folder alongside the extension.

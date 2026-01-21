@@ -1,0 +1,178 @@
+---
+title: "Prioritized Sync"
+description: "In some scenarios, you may want to sync tables using different priorities. For example, you may want to sync a subset of all tables first to log a user in as fast as possible, then sync the remaining tables in the background."
+---
+
+## Overview
+
+PowerSync supports defining sync priorities, which allows you to control the sync order for different buckets of data. This is particularly useful when certain data should be available sooner than others.
+
+<Note>
+**Availability**
+
+This feature was introduced in version **1.7.1** of the PowerSync Service, and in the following SDK versions: 
+- [Flutter v1.12.0](/client-sdks/reference/flutter)
+- [React Native v1.18.1](/client-sdks/reference/react-native-and-expo)
+- [JavaScript Web v1.14.2](/client-sdks/reference/javascript-web)
+- [Kotlin v1.0.0-BETA26](/client-sdks/reference/kotlin)
+- [Swift v1.0.0-Beta.8](/client-sdks/reference/swift)
+- [.NET v0.0.6-alpha.1](/client-sdks/reference/dotnet)
+
+</Note>
+
+## Why Use Sync Priorities?
+
+PowerSync's standard sync protocol ensures that:
+- The local data view is only updated when a fully consistent checkpoint is available.
+- All pending local changes must be uploaded, acknowledged, and synced back before new data is applied.
+
+While this guarantees consistency, it can lead to delays, especially for large datasets or continuous client-side updates. Sync priorities provide a way to speed up syncing of high-priority data while still maintaining overall integrity.
+
+## How It Works
+
+Each bucket is assigned a priority value between 0 and 3, where:
+
+- 0 is the highest priority and has special behavior (detailed below).
+- 3 is the default and lowest priority.
+- Lower numbers indicate higher priority.
+
+Buckets with higher priorities sync first, and lower-priority buckets sync later. It's worth noting that if you only use a single priority, there is no difference between priorities 1-3. The difference only comes in if you use multiple different priorities.
+
+## Syntax and Configuration
+
+Priorities can be defined for a bucket using the `priority` YAML key, or with the `_priority` attribute inside parameter queries:
+
+```yaml
+bucket_definitions:
+  # Using the `priority` YAML key
+  user_data:
+    priority: 1
+    parameters: SELECT request.user_id() as id where...;
+    data: 
+      # ...
+  
+  # Using the `_priority` attribute
+  project_data:
+    parameters: select id as project_id, 2 as _priority from projects where ...; # This approach is useful when you have multiple parameter queries with different priorities.
+    data: 
+      # ...
+```    
+
+Note:
+- Priorities must be static and cannot depend on row values within a parameter query.
+
+<Note>
+Your Sync Rules in the PowerSync Dashboard may show a "must NOT have additional properties" error which can safely be ignored. Your Sync Rules should still pass validation. We will improve this error in a future release.
+</Note>
+
+## Example: Syncing Lists Before Todos
+
+Consider a scenario where you want to display lists immediately while loading todos in the background. This approach allows users to view and interact with lists right away without waiting for todos to sync. Here's how to configure sync priorities in your Sync Rules to achieve this:
+
+```yaml
+bucket_definitions:
+  user_lists:
+    # Sync the user's lists with a higher priority
+    priority: 1
+    parameters: select id as list_id from lists where user_id = request.user_id()
+    data:
+      - select * from lists where id = bucket.list_id
+
+  user_todos:
+    # Sync the user's todos with a lower priority
+    priority: 3
+    parameters: select id as list_id from lists where user_id = request.user_id()
+    data:
+      - select * from todos where list_id = bucket.list_id
+```
+
+In this configuration:
+
+The `lists` bucket has the default priority of 1, meaning it syncs first.
+
+The `todos` bucket is assigned a priority of 2, meaning it may sync only after the lists have been synced.
+
+
+## Behavioral Considerations
+
+- **Interruption for Higher Priority Data**: Syncing lower-priority buckets _may_ be interrupted if new data for higher-priority buckets arrives.
+- **Local Changes & Consistency**: If local writes fail due to validation or permission issues, they are only reverted after _all_ buckets sync.
+- **Deleted Data**: Deleted data may only be removed after _all_ buckets have synced. Future updates may improve this behavior.
+- **Data Ordering**: Data in lower-priority buckets will never appear before higher-priority data.
+
+## Special Case: Priority 0
+
+Priority 0 buckets sync regardless of pending uploads.
+
+For example, in a collaborative document editing app (e.g., using Yjs), each change is stored as a separate row. Since out-of-order updates don’t affect document integrity, Priority 0 can ensure immediate availability of updates.
+
+Caution: If misused, Priority 0 may cause flickering or inconsistencies, as updates could arrive out of order.
+
+## Consistency Considerations
+
+PowerSync's full consistency guarantees only apply once all buckets have completed syncing.
+
+When higher-priority buckets are synced, all inserts and updates within the buckets for the specific priority will be consistent. However, deletes are only applied when the full sync completes, so you may still have some stale data within those buckets.
+
+Consider the following example:
+
+Imagine a task management app where users create lists and todos. Some users have millions of todos. To improve first-load speed:
+
+- Lists are assigned Priority 1, syncing first to allow UI rendering.
+- Todos are assigned Priority 2, loading in the background.
+
+Now, if another user adds new todos, it’s possible for the list count (synced at Priority 1) to temporarily not match the actual todos (synced at Priority 2). If real-time accuracy is required, both lists and todos should use the same priority.
+
+## Client-Side Considerations
+
+PowerSync's client SDKs provide APIs to allow applications to track sync status at different priority levels. Developers can leverage these to ensure critical data is available before proceeding with UI updates or background processing. This includes:
+
+1. `waitForFirstSync(priority: int)`. When passing the optional `priority` parameter to this method, it will wait for specific priority level to complete syncing. 
+2. `SyncStatus.priorityStatusEntries()` A list containing sync information for each priority that was seen by the PowerSync Service.
+3. `SyncStatus.statusForPriority(priority: int)` This method takes a fixed priority and returns the sync state for that priority by looking it up in `priorityStatusEntries`.
+
+## Example
+Using the above we can render a lists component only once the user's lists (with priority 1) have completed syncing, else display a message indicating that the sync is still in progress:
+
+```dart
+  // Define the priority level of the lists bucket
+  static final _listsPriority = BucketPriority(1);
+
+  @override
+  Widget build(BuildContext context) {
+    // Use FutureBuilder to wait for the first sync of the specified priority to complete
+    return FutureBuilder(
+      future: db.waitForFirstSync(priority: _listsPriority),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.done) {
+          // Use StreamBuilder to render the lists once the sync completes
+          return StreamBuilder(
+            stream: TodoList.watchListsWithStats(),
+            builder: (context, snapshot) {
+              if (snapshot.data case final todoLists?) {
+                return ListView(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  children: todoLists.map((list) {
+                    return ListItemWidget(list: list);
+                  }).toList(),
+                );
+              } else {
+                return const CircularProgressIndicator();
+              }
+            },
+          );
+        } else {
+          return const Text('Busy with sync...');
+        }
+      },
+    );
+  }
+
+```
+
+Example implementations of prioritized sync are also available in the following apps:
+- Flutter: [Supabase To-Do List](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist)
+- Kotlin: 
+  - [Supabase To-Do List (KMP)](https://github.com/powersync-ja/powersync-kotlin/blob/main/demos/supabase-todolist/shared/src/commonMain/kotlin/com/powersync/demos/App.kt#L46)
+  - [Supabase To-Do List (Android)](https://github.com/powersync-ja/powersync-kotlin/blob/main/demos/android-supabase-todolist/app/src/main/java/com/powersync/androidexample/screens/HomeScreen.kt#L69)
+- Swift: [Supabase To-Do List](https://github.com/powersync-ja/powersync-swift/tree/main/Demos/PowerSyncExample)

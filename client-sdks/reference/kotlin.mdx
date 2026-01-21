@@ -1,0 +1,363 @@
+---
+title: "Kotlin SDK"
+description: "Full SDK guide for using PowerSync in Kotlin clients"
+sidebarTitle: "SDK Reference"
+---
+
+import SdkFeatures from '/snippets/sdk-features.mdx';
+import KotlinInstallation from '/snippets/kotlin/installation.mdx';
+import KotlinWatch from '/snippets/kotlin/basic-watch-query.mdx';
+import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+import LocalOnly from '/snippets/local-only-escape.mdx';
+
+<CardGroup cols={3}>
+  <Card title="PowerSync SDK on Maven Central" icon="/logo/maven.svg" href="https://central.sonatype.com/artifact/com.powersync/core">
+  The PowerSync Kotlin SDK is distributed via Maven Central
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/powersync-ja/powersync-kotlin/">
+  Refer to the `powersync-kotlin` repo on GitHub
+  </Card>
+  <Card title="API Reference" icon="book" href="https://powersync-ja.github.io/powersync-kotlin">
+  Full API reference for the SDK
+  </Card>
+  <Card title="Example Projects" icon="code" href="/intro/examples#kotlin">
+  Gallery of example projects/demo apps built with Kotlin and PowerSync.
+  </Card>
+  <Card title="Changelog" icon="megaphone" href="https://releases.powersync.com/announcements/powersync-kotlin-sdk">
+  Changelog for the SDK
+  </Card>
+</CardGroup>
+
+### SDK Features
+
+<SdkFeatures />
+
+## Installation
+
+<KotlinInstallation />
+
+<Note>
+    **JVM compatibility for Desktop**
+    * The following platforms are supported: Linux AArch64, Linux X64, MacOS AArch64, MacOS X64, Windows X64.
+    * See this [example build.gradle file](https://github.com/powersync-ja/powersync-kotlin/blob/main/demos/hello-powersync/composeApp/build.gradle.kts) for the relevant JVM config.
+</Note>
+
+## Getting Started
+
+**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Rules (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
+
+### 1\. Define the Client-Side Schema
+
+The first step is to define the client-side schema, which refers to the schema for the managed SQLite database exposed by the PowerSync Client SDKs, that your app can read from and write to. The client-side schema is typically mainly derived from your backend source database schema and [Sync Rules](/sync/rules/overview), but can also include other tables such as local-only tables. Note that schema migrations are not required on the SQLite database due to the schemaless nature of the [PowerSync protocol](/architecture/powersync-protocol): schemaless data is synced to the client-side SQLite database, and the client-side schema is then applied to that data using _SQLite views_ to allow for structured querying of the data. The schema is applied when the local PowerSync database is constructed (as we'll show in the next step).
+
+<GenerateSchemaAutomatically />
+
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/sync/rules/overview). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
+
+**Example**:
+
+```kotlin
+// AppSchema.kt
+import com.powersync.db.schema.Column
+import com.powersync.db.schema.Index
+import com.powersync.db.schema.IndexedColumn
+import com.powersync.db.schema.Schema
+import com.powersync.db.schema.Table
+
+val AppSchema: Schema = Schema(
+    listOf(
+        Table(
+            name = "todos",
+            columns = listOf(
+                Column.text('list_id'),
+                Column.text('created_at'),
+                Column.text('completed_at'),
+                Column.text('description'),
+                Column.integer('completed'),
+                Column.text('created_by'),
+                Column.text('completed_by')
+            ),
+            // Index to allow efficient lookup within a list
+            indexes = listOf(
+                Index("list", listOf(IndexedColumn.descending("list_id")))
+            )
+        ),
+        Table(
+            name = "lists",
+            columns = listOf(
+                Column.text('created_at'),
+                Column.text('name'),
+                Column.text('owner_id')
+            )
+        )
+    )
+)
+```
+<Note>
+    **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Note>
+
+### 2\. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Rules](/sync/rules/overview). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline. 
+
+**Example**:
+
+a. Create platform specific `DatabaseDriverFactory` to be used by the `PowerSyncBuilder` to create the SQLite database driver.
+
+```kotlin
+// commonMain
+
+import com.powersync.DatabaseDriverFactory
+import com.powersync.PowerSyncDatabase
+
+// Android
+val driverFactory = DatabaseDriverFactory(this)
+// iOS & Desktop
+val driverFactory = DatabaseDriverFactory()
+```
+
+b. Build a `PowerSyncDatabase` instance using the `PowerSyncBuilder` and the `DatabaseDriverFactory`. The schema you created in a previous step is provided as a parameter:
+
+```kotlin
+// commonMain
+
+val database = PowerSyncDatabase({
+  factory: driverFactory, // The factory you defined above
+  schema: AppSchema, // The schema you defined in the previous step
+  dbFilename: "powersync.db"
+  // logger: YourLogger // Optionally include your own Logger that must conform to Kermit Logger
+  // dbDirectory: "path/to/directory" // Optional. Directory path where the database file is located. This parameter is ignored for iOS.
+});
+```
+
+c. Connect the `PowerSyncDatabase` to sync data with your backend:
+
+<LocalOnly />
+
+```kotlin
+// commonMain
+
+// Uses the backend connector that will be created in the next step
+database.connect(MyConnector())
+```
+
+**Special case: Compose Multiplatform**
+
+The artifact `com.powersync:powersync-compose` provides a simpler API:
+
+```kotlin
+// commonMain
+val database = rememberPowerSyncDatabase(schema)
+remember {
+    database.connect(MyConnector())
+}
+```
+
+### 3\. Integrate with your Backend
+
+Create a connector to integrate with your backend. The PowerSync backend connector provides the connection between your application backend and the PowerSync managed database. It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend source database) when the user is connected. 
+
+Accordingly, the connector must implement two methods:
+
+1. `PowerSyncBackendConnector.fetchCredentials` \- This method will be automatically invoked by the PowerSync Client SDK every couple of minutes to obtain authentication credentials. See [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
+2. `PowerSyncBackendConnector.uploadData` \- This method will be automatically invoked by the PowerSync Client SDK whenever it needs to upload client-side writes to your app backend via your backend API. Therefore, in your implememtation, you need to define how your backend API is called. See [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```kotlin
+// PowerSync.kt
+import com.powersync.DatabaseDriverFactory
+import com.powersync.PowerSyncDatabase
+
+class MyConnector : PowerSyncBackendConnector() {
+    override suspend fun fetchCredentials(): PowerSyncCredentials {
+        // implement fetchCredentials to obtain the necessary credentials to connect to your backend
+        // See an example implementation in https://github.com/powersync-ja/powersync-kotlin/blob/main/connectors/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt
+
+        return {
+            endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+            // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly) to get up and running quickly
+            token: 'An authentication token'
+        }
+    }
+
+    override suspend fun uploadData(database: PowerSyncDatabase) {
+        // Implement uploadData to send local changes to your backend service
+        // You can omit this method if you only want to sync data from the server to the client
+        // See an example implementation under Usage Examples (sub-page)
+        // See https://docs.powersync.com/handling-writes/writing-client-changes for considerations.
+    }
+}
+```
+
+**Note**: If you are using Supabase, you can use [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/connectors/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) as a starting point.
+
+## Using PowerSync: CRUD functions
+
+Once the PowerSync instance is configured you can start using the SQLite DB functions.
+
+The most commonly used CRUD functions to interact with your SQLite data are:
+
+* [PowerSyncDatabase.get](/client-sdks/reference/kotlin#fetching-a-single-item) \- get (SELECT) a single row from a table.
+* [PowerSyncDatabase.getAll](/client-sdks/reference/kotlin#querying-items-powersync-getall) \- get (SELECT) a set of rows from a table.
+* [PowerSyncDatabase.watch](/client-sdks/reference/kotlin#watching-queries-powersync-watch) \- execute a read query every time source tables are modified.
+* [PowerSyncDatabase.execute](/client-sdks/reference/kotlin#mutations-powersync-execute) \- execute a write (INSERT/UPDATE/DELETE) query.
+
+### Fetching a Single Item
+
+The `get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `getOptional` to return a single optional result (returns `null` if no result is found).
+
+```kotlin
+// Find a list item by ID
+suspend fun find(id: Any): TodoList {
+    return database.get(
+                "SELECT * FROM lists WHERE id = ?", 
+                listOf(id)
+            ) { cursor ->
+                TodoList.fromCursor(cursor)
+            }
+}
+```
+
+### Querying Items (PowerSync.getAll)
+
+The `getAll` method executes a read-only (SELECT) query and returns a set of rows.
+
+```kotlin
+// Get all list IDs
+suspend fun getLists(): List<String> {
+    return database.getAll(
+                "SELECT id FROM lists WHERE id IS NOT NULL"
+            ) { cursor ->
+                cursor.getString("id")
+            }
+}
+```
+
+### Watching Queries (PowerSync.watch)
+
+The `watch` method executes a read query whenever a change to a dependent table is made.
+
+<KotlinWatch />
+
+### Mutations (PowerSync.execute)
+
+The `execute` method executes a write query (INSERT, UPDATE, DELETE) and returns the results (if any).
+
+```kotlin
+suspend fun insertCustomer(name: String, email: String) {
+    database.writeTransaction { tx ->
+        tx.execute(
+            sql = "INSERT INTO customers (id, name, email) VALUES (uuid(), ?, ?)",
+            parameters = listOf(name, email)
+        )
+    }
+}
+
+suspend fun updateCustomer(id: String, name: String, email: String) {
+    database.execute(
+        sql = "UPDATE customers SET name = ? WHERE email = ?",
+        parameters = listOf(name, email)
+    )
+}
+
+suspend fun deleteCustomer(id: String? = null) {
+    // If no id is provided, delete the first customer in the database
+    val targetId =
+        id ?: database.getOptional(
+            sql = "SELECT id FROM customers LIMIT 1",
+            mapper = { cursor ->
+                cursor.getString(0)!!
+            }
+        ) ?: return
+
+    database.writeTransaction { tx ->
+        tx.execute(
+            sql = "DELETE FROM customers WHERE id = ?",
+            parameters = listOf(targetId)
+        )
+    }
+}
+```
+
+## Configure Logging
+
+You can include your own Logger that must conform to the [Kermit Logger](https://kermit.touchlab.co/docs/) as shown here.
+
+```kotlin
+PowerSyncDatabase(
+  ...
+  logger: Logger? = YourLogger
+)
+```
+
+If you don't supply a Logger then a default Kermit Logger is created with settings to only show `Warnings` in release and `Verbose` in debug as follows:
+
+```kotlin
+val defaultLogger: Logger = Logger
+
+// Severity is set to Verbose in Debug and Warn in Release
+if(BuildConfig.isDebug) {
+    Logger.setMinSeverity(Severity.Verbose)
+} else {
+    Logger.setMinSeverity(Severity.Warn)
+}
+
+return defaultLogger
+```
+
+You are able to use the Logger anywhere in your code as follows to debug:
+
+```kotlin
+import co.touchlab.kermit.Logger
+
+Logger.i("Some information");
+Logger.e("Some error");
+...
+```
+
+
+## Additional Usage Examples
+
+For more usage examples including accessing connection status, monitoring sync progress, and waiting for initial sync, see the [Usage Examples](/client-sdks/usage-examples) page.
+
+## ORM / SQL Library Support
+
+The PowerSync SDK for Kotlin can be used with the SQLDelight and Room libraries, making it easier to define and
+run SQL queries.
+For details, see the [SQL Library Support](/client-sdks/orms/kotlin/overview) page.
+
+## Troubleshooting
+
+See [Troubleshooting](/debugging/troubleshooting) for pointers to debug common issues.
+
+## Supported Platforms
+
+See [Supported Platforms -> Kotlin SDK](/resources/supported-platforms#kotlin-sdk).
+
+## Upgrading the SDK
+
+Update your project's Gradle file (`build.gradle.kts`) with the latest version of the [SDK](https://central.sonatype.com/artifact/com.powersync/core).
+
+## Developer Notes
+
+### Client Implementation
+
+The PowerSync Service sends encoded instructions about data to sync to connected clients.
+These instructions are decoded by our SDKs, and on Kotlin there are two implementations available for this:
+
+1. **Kotlin (default)**
+   - This is the original implementation method, mostly implemented in Kotlin.
+   - Most upcoming features will not be ported to this implementation, and we intend to remove it eventually.
+2. **Rust (currently experimental)**
+   - This is a newer implementation, mostly implemented in Rust but still using Kotlin for networking.
+   - Apart from newer features, this implementation is also more performant.
+   - We [encourage interested users to try it out](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks)
+     and report feedback, as we intend to make it the default after a stabilization period.
+
+To enable the Rust client, pass `SyncOptions(newClientImplementation = true)` as a second parameter when
+[connecting](https://powersync-ja.github.io/powersync-kotlin/core/com.powersync/-power-sync-database/connect.html).

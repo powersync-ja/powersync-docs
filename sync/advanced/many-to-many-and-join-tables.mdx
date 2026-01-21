@@ -1,0 +1,245 @@
+---
+title: "Guide: Many-to-Many and Join Tables"
+sidebarTitle: "Many-to-Many and Join Tables"
+---
+
+Join tables are often used to implement many-to-many relationships between tables. Join queries are not directly supported in PowerSync Sync Rules, and require some workarounds depending on the use case. This guide contains some recommended strategies.
+
+<Note>
+  **Postgres users:** For Postgres source databases, you can use the [`pg_ivm` extension](https://www.powersync.com/blog/using-pg-ivm-to-enable-joins-in-powersync) to create incrementally maintained materialized views with JOINs that can be referenced directly in Sync Rules. This approach avoids the need to denormalize your schema.
+</Note>
+
+## Example
+
+As an example, consider a social media application. The app has message boards. Each user can subscribe to boards, make posts, and comment on posts. Posts may also have one or more topics.
+
+<Frame>
+  <img src="/images/usage-11.avif"/>
+</Frame>
+
+<Accordion
+  title="Full schema (for Postgres)"
+>
+```sql
+create table users (
+    id uuid not null default gen_random_uuid (),
+    name text not null,
+    last_activity timestamp with time zone,
+    constraint users_pkey primary key (id)
+);
+
+create table boards (
+    id uuid not null default gen_random_uuid (),
+    name text not null,
+    constraint boards_pkey primary key (id)
+  );
+
+create table posts (
+    id uuid not null default gen_random_uuid (),
+    board_id uuid not null,
+    created_at timestamp with time zone not null default now(),
+    author_id uuid not null,
+    title text not null,
+    body text not null,
+    constraint posts_pkey primary key (id),
+    constraint posts_author_id_fkey foreign key (author_id) references users (id),
+    constraint posts_board_id_fkey foreign key (board_id) references boards (id)
+  );
+
+create table comments (
+    id uuid not null default gen_random_uuid (),
+    post_id uuid not null,
+    created_at timestamp with time zone not null default now(),
+    author_id uuid not null,
+    body text not null,
+    constraint comments_pkey primary key (id),
+    constraint comments_author_id_fkey foreign key (author_id) references users (id),
+    constraint comments_post_id_fkey foreign key (post_id) references posts (id)
+  );
+
+create table board_subscriptions (
+    id uuid not null default gen_random_uuid (),
+    user_id uuid not null,
+    board_id uuid not null,
+    constraint board_subscriptions_pkey primary key (id),
+    constraint board_subscriptions_board_id_fkey foreign key (board_id) references boards (id),
+    constraint board_subscriptions_user_id_fkey foreign key (user_id) references users (id)
+  );
+
+create table topics (
+    id uuid not null default gen_random_uuid (),
+    label text not null,
+    constraint topics_pkey primary key (id)
+  );
+
+create table post_topics (
+    id uuid not null default gen_random_uuid (),
+    board_id uuid not null,
+    post_id uuid not null,
+    topic_id uuid not null,
+    constraint post_topics_pkey primary key (id),
+    constraint post_topics_board_id_fkey foreign key (board_id) references boards (id),
+    constraint post_topics_post_id_fkey foreign key (post_id) references posts (id),
+    constraint post_topics_topic_id_fkey foreign key (topic_id) references topics (id)
+  );
+```
+</Accordion>
+
+### Many-to-many: Bucket parameters
+
+For this app, we generally want to sync all posts in boards that users have subscribed to. To simplify these examples, we assume a user has to be subscribed to a board to post.
+
+Boards make a nice grouping of data for Sync Rules: We sync the boards that a user has subscribed to, and the same board data is synced to all users subscribed to that board.
+
+The relationship between users and boards is a many-to-many, specified via the `board_subscriptions` table.
+
+To start with, in our PowerSync Sync Rules, we define a [bucket](/sync/rules/organize-data-into-buckets) and sync the posts. The [parameter query](/sync/rules/parameter-queries) is defined using the `board_subscriptions` table:
+
+```yaml
+  board_data:
+    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    data:
+      - select * from posts where board_id = bucket.board_id
+```
+
+### Avoiding joins in data queries: Denormalize relationships (comments)
+
+Next, we also want to sync comments for those boards. There is a one-to-many relationship between boards and comments, via the `posts` table. This means conceptually we can add comments to the same board bucket. With general SQL, the query could be:
+
+```sql
+SELECT comments.* FROM comments
+JOIN posts ON posts.id = comments.post_id
+WHERE board_id = bucket.board_id
+```
+
+Unfortunately, joins are not supported in PowerSync's Sync Rules. Instead, we denormalize the data to add a direct foreign key relationship between comments and boards: (Postgres example)
+
+```sql
+ALTER TABLE comments ADD COLUMN board_id uuid;
+ALTER TABLE comments ADD CONSTRAINT comments_board_id_fkey FOREIGN KEY (board_id) REFERENCES boards (id);
+```
+
+Now we can add it to the bucket definition in our Sync Rules:
+
+```yaml
+  board_data:
+    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    data:
+      - select * from posts where board_id = bucket.board_id
+      # Add comments:
+      - select * from comments where board_id = bucket.board_id
+```
+
+Now we want to sync topics of posts. In this case we added `board_id` from the start, so `post_topics` is simple in our Sync Rules:
+
+```yaml
+  board_data:
+    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    data:
+      - select * from posts where board_id = bucket.board_id
+      - select * from comments where board_id = bucket.board_id
+      # Add post_topics:
+      - select * from post_topics where board_id = bucket.board_id
+```
+
+### Many-to-many strategy: Sync everything (topics)
+
+Now we need access to sync the topics for all posts synced to the device. There is a many-to-many relationship between posts and topics, and by extension boards to topics. This means there is no simple direct way to partition topics into buckets — the same topics be used on any number of boards.
+
+If the topics table is limited in size (say 1,000 or less), the simplest solution is to just sync all topics in our Sync Rules:
+
+```yaml
+  global_topics:
+    data:
+      - select * from topics where board_id = bucket.board_id
+```
+
+### Many-to-many strategy: Denormalize data (topics, user names)
+
+If there are many thousands of topics, we may want to avoid syncing everything. One option is to denormalize the data by copying the topic label over to `post_topics`: (Postgres example)
+
+```sql
+ALTER TABLE post_topics ADD COLUMN topic_label text not null;
+```
+
+Now we don't need to sync the `topics` table itself, as everything is included in `post_topics`. Assuming the topic label never or rarely changes, this could be a good solution.
+
+Next up, we want to sync the relevant user profiles, so we can show it together with comments and posts. For simplicity, we sync profiles for all users subscribed to a board.
+
+One option is to add the author name to each board subscription, similar to what we've done for `topics`: (Postgres example)
+
+```sql
+ALTER TABLE board_subscriptions ADD COLUMN user_name text;
+```
+
+Sync Rules:
+
+```yaml
+  board_data:
+    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    data:
+      - select * from posts where board_id = bucket.board_id
+      - select * from comments where board_id = bucket.board_id
+      - select * from post_topics where board_id = bucket.board_id
+      # Add subscriptions which include the names:
+      - select * from board_subscriptions where board_id = bucket.board_id
+```
+
+### Many-to-many strategy: Array of IDs (user profiles)
+
+If we need to sync more than just the name (let's say we need a last activity date, profile picture and bio text as well), the above approach doesn't scale as well. Instead, we want to sync the `users` table directly. To sync user profiles directly in the bucket for the board, we need a new array.
+
+Adding an array to the schema in Postgres:
+
+```sql
+ALTER TABLE users ADD COLUMN subscribed_board_ids uuid[];
+```
+
+By using an array instead of or in addition to a join table, we can use it directly in Sync Rules:
+
+```yaml
+board_data:
+  parameters: select board_id from board_subscriptions where user_id = request.user_id()
+  data:
+    - select * from posts where board_id = bucket.board_id
+    - select * from comments where board_id = bucket.board_id
+    - select * from post_topics where board_id = bucket.board_id
+    # Add participating users:
+    - select name, last_activity, profile_picture, bio from users where bucket.board_id in subscribed_board_ids
+```
+
+This approach does require some extra effort to keep the array up to date. One option is to use a trigger in the case of Postgres:
+
+<Accordion
+  title="Postgres trigger to update subscribed_board_ids"
+>
+```sql
+CREATE OR REPLACE FUNCTION recalculate_subscribed_boards()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Recalculate subscribed_board_ids for the affected user
+    UPDATE users
+    SET subscribed_board_ids = (
+        SELECT array_agg(board_id)
+        FROM board_subscriptions
+        WHERE user_id = COALESCE(NEW.user_id, OLD.user_id)
+    )
+    WHERE id = COALESCE(NEW.user_id, OLD.user_id);
+
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_board_subscriptions_change
+AFTER INSERT OR UPDATE OR DELETE ON board_subscriptions
+FOR EACH ROW
+EXECUTE FUNCTION recalculate_subscribed_boards();
+```
+</Accordion>
+
+Note that this approach does have scaling limitations. When the number of board subscriptions per user becomes large (say over 100 rows per user), then:
+
+1. Updating the `subscribed_board_ids` array in Postgres becomes slower.
+2. The overhead is even more pronounced on PowerSync, since PowerSync maintains a separate copy of the data in each bucket.
+
+In those cases, another approach may be more suitable.

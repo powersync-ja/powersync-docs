@@ -1,0 +1,226 @@
+---
+title: "Full-Text Search"
+description: "Use SQLite's FTS5 extension for client-side full-text search"
+---
+
+PowerSync supports full-text search using the [SQLite FTS5 extension](https://www.sqlite.org/fts5.html). This requires creating FTS5 tables to index your data and updating them with SQLite triggers.
+
+## SDK Support
+
+Full-text search has been demonstrated in the following SDKs:
+
+- [**Dart/Flutter SDK**](/client-sdks/reference/flutter): Uses the [sqlite_async](https://pub.dev/documentation/sqlite_async/latest/) package for migrations
+- [**JavaScript Web SDK**](/client-sdks/reference/javascript-web): Requires version 0.5.0 or greater (including [wa-sqlite](https://github.com/powersync-ja/wa-sqlite) 0.2.0+)
+- [**React Native SDK**](/client-sdks/reference/react-native-and-expo): Requires version 1.16.0 or greater (including [@powersync/react-native-quick-sqlite](https://github.com/powersync-ja/react-native-quick-sqlite) 2.2.1+)
+- [**Swift SDK**](/client-sdks/reference/swift)
+
+Note that the availability of FTS in our SDKs is dependent on the underlying `sqlite` package used. It may be supported in our other SDKs, especially if the `FTS5` extension is available, but would be untested. Check with us on [Discord](https://discord.gg/powersync) if you have a use case and need help getting started.
+
+## Example Implementations
+
+FTS is implemented in the following demo apps:
+
+- [Flutter To-Do List App](https://github.com/powersync-ja/powersync.dart/tree/master/demos/supabase-todolist)
+- [React To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist)
+- [React Native To-Do List App](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist)
+- [Swift To-Do List App](https://github.com/powersync-ja/powersync-swift/tree/main/Demos/PowerSyncExample)
+
+We explain the Flutter/Dart implementation in more detail below. Example code is shown mainly in Dart, but references to the React, React Native and Swift equivalents are included where relevant, so you should be able to cross-reference.
+
+## Walkthrough (Dart): Full-text search in the To-Do List Demo App
+
+### Setup
+
+First, we need to set up the FTS tables to match the `lists` and `todos` tables already created in this demo app. Don't worry if you already have data in the tables, as it will be copied into the new FTS tables.
+
+FTS tables are created when instantiating the client-side PowerSync database.
+
+```dart
+    // https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/powersync.dart#L186
+    
+    Future<void> openDatabase() async {
+      ...
+      await configureFts(db);
+    }
+```
+
+To simplify implementation these examples make use of SQLite migrations. The migrations are run in [migrations/fts_setup.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/migrations/fts_setup.dart) in the Flutter implementation. Here we use the [sqlite_async](https://pub.dev/documentation/sqlite_async/latest/) Dart package to generate the migrations.
+
+```dart
+// migrations/fts_setup.dart
+
+/// This is where you can add more migrations to generate FTS tables
+/// that correspond to the tables in your schema and populate them
+/// with the data you would like to search on
+Future<void> configureFts(PowerSyncDatabase db) async {
+  migrations
+    ..add(createFtsMigration(
+        migrationVersion: 1,
+        tableName: 'lists',
+        columns: ['name'],
+        tokenizationMethod: 'porter unicode61'))
+    ..add(createFtsMigration(
+      migrationVersion: 2,
+      tableName: 'todos',
+      columns: ['description', 'list_id'],
+    ));
+  await migrations.migrate(db);
+}
+```
+
+The `createFtsMigration` function is key and corresponds to the below (Dart example):
+
+```dart
+// migrations/fts_setup.dart
+
+/// Create a Full Text Search table for the given table and columns
+/// with an option to use a different tokenizer otherwise it defaults
+/// to unicode61. It also creates the triggers that keep the FTS table
+/// and the PowerSync table in sync.
+SqliteMigration createFtsMigration(
+    {required int migrationVersion,
+    required String tableName,
+    required List<String> columns,
+    String tokenizationMethod = 'unicode61'}) {
+  String internalName =
+      schema.tables.firstWhere((table) => table.name == tableName).internalName;
+  String stringColumns = columns.join(', ');
+
+  return SqliteMigration(migrationVersion, (tx) async {
+    // Add FTS table
+    await tx.execute('''
+      CREATE VIRTUAL TABLE IF NOT EXISTS fts_$tableName
+      USING fts5(id UNINDEXED, $stringColumns, tokenize='$tokenizationMethod');
+    ''');
+    // Copy over records already in table
+    await tx.execute('''
+      INSERT INTO fts_$tableName(rowid, id, $stringColumns)
+      SELECT rowid, id, ${generateJsonExtracts(ExtractType.columnOnly, 'data', columns)}
+      FROM $internalName;
+    ''');
+    // Add INSERT, UPDATE and DELETE and triggers to keep fts table in sync with table
+    await tx.execute('''
+      CREATE TRIGGER IF NOT EXISTS fts_insert_trigger_$tableName AFTER INSERT
+      ON $internalName
+      BEGIN
+        INSERT INTO fts_$tableName(rowid, id, $stringColumns)
+        VALUES (
+          NEW.rowid,
+          NEW.id,
+          ${generateJsonExtracts(ExtractType.columnOnly, 'NEW.data', columns)}
+        );
+      END;
+    ''');
+    await tx.execute('''
+      CREATE TRIGGER IF NOT EXISTS fts_update_trigger_$tableName AFTER UPDATE
+      ON $internalName BEGIN
+        UPDATE fts_$tableName
+        SET ${generateJsonExtracts(ExtractType.columnInOperation, 'NEW.data', columns)}
+        WHERE rowid = NEW.rowid;
+      END;
+    ''');
+    await tx.execute('''
+      CREATE TRIGGER IF NOT EXISTS fts_delete_trigger_$tableName AFTER DELETE
+      ON $internalName BEGIN
+        DELETE FROM fts_$tableName WHERE rowid = OLD.rowid;
+      END;
+    ''');
+  });
+}
+```
+
+After this is run, you should have the following tables and triggers in your SQLite DB:
+
+<Frame caption="FTS tables and migrations">
+  ![](/images/usage-4.png)
+</Frame>
+
+<Frame caption="FTS triggers">
+  ![](/images/usage-5.png)
+</Frame>
+
+### FTS Search Delegate
+
+To show off this new functionality, we have incorporated FTS into the search button at the top of the screen in the To-Do List demo app:
+
+<Frame>
+  ![](/images/usage-6.avif)
+</Frame>
+
+Clicking on the search icon will open a search bar which will allow you to search for `lists` or `todos` that you have generated.
+
+<Frame caption="Example of searching">
+  ![](/images/usage-7.png)
+</Frame>
+
+It uses a custom search delegate widget found in [widgets/fts_search_delegate.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/widgets/fts_search_delegate.dart) (Flutter) and [widgets/SearchBarWidget.tsx](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/widgets/SearchBarWidget.tsx) (Web) to display the search results.
+
+### FTS Helper
+
+We added a helper in [lib/fts_helpers.dart](https://github.com/powersync-ja/powersync.dart/blob/master/demos/supabase-todolist/lib/fts_helpers.dart) (Flutter) and [utils/fts_helpers.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_helpers.ts) (Web) that allows you to add additional search functionality which can be found in the [SQLite FTS5 extension](https://www.sqlite.org/fts5.html) documentation.
+
+```dart
+// lib/fts_helpers.dart
+
+String _createSearchTermWithOptions(String searchTerm) {
+  // adding * to the end of the search term will match any word that starts with the search term
+  // e.g. searching bl will match blue, black, etc.
+  // consult FTS5 Full-text Query Syntax documentation for more options
+  String searchTermWithOptions = '$searchTerm*';
+  return searchTermWithOptions;
+}
+
+/// Search the FTS table for the given searchTerm and return results ordered by the
+/// rank of their relevance
+Future<List> search(String searchTerm, String tableName) async {
+  String searchTermWithOptions = _createSearchTermWithOptions(searchTerm);
+  return await db.execute(
+      'SELECT * FROM fts_$tableName WHERE fts_$tableName MATCH ? ORDER BY rank',
+      [searchTermWithOptions]);
+}
+```
+
+## Implementations in other SDKs
+
+* The React, React Native and Swift implementations do not use migrations to create the FTS tables. They create the FTS tables separately, see for example:
+  * [utils/fts_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/utils/fts_setup.ts) (React)
+  * [library/fts/fts_setup.ts](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/fts/fts_setup.ts) (React Native)
+  * [PowerSync/FtsSetup](https://github.com/powersync-ja/powersync-swift/blob/11def989bfbdc4f6ffe192192cd076abe17743c0/Demo/PowerSyncExample/PowerSync/FtsSetup.swift#L121) (Swift) 
+* See below for relevant snippets in the demo implementations.
+
+<Tabs>
+  <Tab title="React">
+    ```ts
+    // See https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/providers/SystemProvider.tsx#L41
+    
+    SystemProvider = ({ children }: { children: React.ReactNode }) => {
+      ...
+      React.useEffect(() => {
+      ...
+          configureFts();
+      })
+    }
+    ```
+    
+  </Tab>
+  <Tab title="React Native">
+    ```ts
+    // See https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/library/powersync/system.ts#L75
+    
+    export class System {
+      ...
+      powersync: PowerSyncDatabase;
+      ...
+      async init() {
+        ...
+        await configureFts(this.powersync);
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Swift">
+    ```swift
+    // See  https://github.com/powersync-ja/powersync-swift/blob/main/Demo/PowerSyncExample/PowerSync/SystemManager.swift#L89
+    ```
+  </Tab>
+</Tabs>

@@ -1,0 +1,166 @@
+---
+title: "Data Encryption"
+---
+
+### In Transit Encryption
+
+Data is always encrypted in transit using TLS — both between the client and PowerSync, and between PowerSync [and the source database](/configuration/source-db/postgres-maintenance#tls).
+
+### At Rest Encryption
+
+The client-side database can be encrypted at rest. This is currently available for:
+
+<Accordion title="Dart/Flutter" icon="flutter">
+[SQLCipher](https://www.zetetic.net/sqlcipher/) support is available for Dart/Flutter through the `powersync_sqlcipher` SDK. See usage details in the package README:
+
+<Card
+  title="powersync_sqlcipher"
+  icon="flutter"
+  href="https://pub.dev/packages/powersync_sqlcipher"
+  horizontal
+/>
+</Accordion>
+
+<Accordion title="React Native & Expo" icon="react">
+ [SQLCipher](https://www.zetetic.net/sqlcipher/) support is available for PowerSync's React Native SDK through the `@powersync/op-sqlite` package. See usage details in the package README:
+
+<Card
+  title="npm: @powersync/op-sqlite"
+  icon="npm"
+  href="https://www.npmjs.com/package/@powersync/op-sqlite"
+  horizontal
+/>
+</Accordion>
+
+<Accordion title="JavaScript Web" icon="js">
+ The Web SDK uses the [ChaCha20 cipher algorithm by default](https://utelle.github.io/SQLite3MultipleCiphers/docs/ciphers/cipher_chacha20/). See usage details in the package README:
+
+<Card
+  title="npm: @powersync/web"
+  icon="npm"
+  href="https://www.npmjs.com/package/@powersync/web"
+  horizontal
+/>
+  Additionally, a minimal example demonstrating encryption of the web database is available [here](https://github.com/powersync-ja/powersync-js/tree/main/demos/example-vite-encryption). 
+</Accordion>
+
+<Accordion title="Node.js" icon="node-js">
+Encryption support is available for PowerSync's Node.js SDK using [`better-sqlite3-multiple-ciphers`](https://www.npmjs.com/package/better-sqlite3-multiple-ciphers). See usage details and code examples in the [Node.js SDK reference](/client-sdks/reference/node#encryption-and-custom-sqlite-drivers).
+</Accordion>
+
+<Accordion title="Kotlin" icon="k">
+Encryption support is available for PowerSync's Kotlin SDK (since version 1.9.0) using [`SQLite3MultipleCiphers`](https://utelle.github.io/SQLite3MultipleCiphers/) via the [`com.powersync:sqlite3multipleciphers`](https://central.sonatype.com/artifact/com.powersync/sqlite3multipleciphers) package. This allows you to encrypt your local SQLite database with various cipher algorithms.
+
+**Setup:**
+
+1. Replace your dependency on `com.powersync:core` with `com.powersync:common` of the same version.
+
+2. Add a dependency on `com.powersync:sqlite3multipleciphers`.
+
+3. Since `:core` includes a Ktor client implementation, you'll need to [add one manually](https://ktor.io/docs/client-engines.html) if you're not already using Ktor:
+   - Android/JVM: `io.ktor:ktor-client-okhttp`
+   - Apple targets (Kotlin/Native): `io.ktor:ktor-client-darwin`
+
+4. Use the appropriate encrypted database factory when creating your `PowerSyncDatabase`:
+
+```kotlin
+// Android
+val database = PowerSyncDatabase(
+    factory = AndroidEncryptedDatabaseFactory(
+        context,
+        Key.Passphrase("your encryption key")
+    ),
+    schema = yourSchema,
+    dbFilename = "your_database"
+)
+
+// JVM
+val database = PowerSyncDatabase(
+    factory = JavaEncryptedDatabaseFactory(
+        Key.Passphrase("your encryption key")
+    ),
+    schema = yourSchema,
+    dbFilename = "your_database"
+)
+
+// Kotlin/Native (Apple targets)
+val database = PowerSyncDatabase(
+    factory = NativeEncryptedDatabaseFactory(
+        Key.Passphrase("your encryption key")
+    ),
+    schema = yourSchema,
+    dbFilename = "your_database"
+)
+```
+
+<Note>
+  Store encryption keys securely rather than hardcoding them in your code.
+</Note>
+
+For more details, see the [`sqlite3multipleciphers` README](https://github.com/powersync-ja/powersync-kotlin/tree/main/sqlite3multipleciphers) in the PowerSync Kotlin SDK repository.
+</Accordion>
+
+<Accordion title="Swift" icon="swift">
+Encryption support is available for PowerSync's Swift SDK (since version 1.10.0) using [`SQLite3MultipleCiphers`](https://utelle.github.io/SQLite3MultipleCiphers/). Encryptions keys are configured with the `initialStatements` parameter on `PowerSyncDatabase()` which allows running `PRAGMA key` statements.
+
+**Setup requirements:**
+
+The PowerSync Swift SDK depends on [CSQLite](https://github.com/powersync-ja/CSQLite) to build and link SQLite.
+That package can be configured to optionally link SQLite3 Multiple Ciphers by enabling the `Encryption` trait. Due to SwiftPM limitations, we can't directly expose that trait on the Swift SDK.
+
+Instead, we recommend directly depending on CSQLite with the encryption trait, which will enable the same for the SDK (since each package can only appear in a build once). Since XCode doesn't support specifying package traits when adding dependencies, you first need to add a local Swift package as a workaround.
+
+1. Create a local `Package.swift` in your project that depends on CSQLite with the `Encryption` trait:
+
+```swift
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+    name: "helper",
+    products: [
+        .library(name: "helper", targets: ["helper"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/powersync-ja/CSQLite.git", exact: "3.51.2", traits: ["Encryption"]),
+    ],
+    targets: [
+        .target(name: "helper", dependencies: [.product(name: "CSQLite", package: "CSQLite")]),
+    ]
+)
+```
+
+2. Add a dependency to this local package from Xcode and resolve packages. This enables `sqlite3mc` for your entire app, including the PowerSync framework.
+
+3. Configure encryption when opening the database:
+
+```swift
+let db = PowerSyncDatabase(
+    schema: yourSchema,
+    initialStatements: ["pragma key = 'your encryption key'"]
+)
+```
+
+<Note>
+  Store encryption keys securely (e.g., in Keychain) rather than hardcoding them in your code.
+</Note>
+
+For a complete working example, see the [SwiftEncryptionDemo](https://github.com/powersync-ja/powersync-swift/tree/main/Demos/SwiftEncryptionDemo) in the PowerSync Swift SDK repository.
+</Accordion>
+
+<Note>
+  Support for encryption on other platforms is planned. In the meantime, let us know your needs and use cases on [Discord](https://discord.gg/powersync).
+</Note>
+
+
+### End-to-end Encryption
+
+For end-to-end encryption, the encrypted data can be synced using PowerSync. The data can then either be encrypted and decrypted directly in memory by the application, or a separate local-only table can be used to persist the decrypted data — allowing querying the data directly.
+
+[Raw SQLite Tables](/client-sdks/advanced/raw-tables) can be used for full control over the SQLite schema and managing tables for the decrypted data. We have a [React & Supabase example app](https://github.com/powersync-community/react-supabase-chat-e2ee) that demonstrates this approach. See also the accompanying [blog post](https://www.powersync.com/blog/building-an-e2ee-chat-app-with-powersync-supabase).
+
+
+## See Also
+
+* Database Setup → [Security & IP Filtering](/configuration/source-db/security-and-ip-filtering)
+* Resources → [Security](/resources/security)

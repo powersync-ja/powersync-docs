@@ -5,26 +5,24 @@ description: "Any authentication provider can be supported by generating custom 
 ---
 
 <Note>
-   A quick way to get started during development before implementing custom auth is to use [Development Tokens](/configuration/auth/development-tokens)
+  A quick way to get started during development before implementing custom auth is to use [Development Tokens](/configuration/auth/development-tokens)
 </Note>
 
-When you set up custom authentication, you define the [`fetchCredentials()` function](/configuration/app-backend/client-side-integration) in your _backend connector_ to retrieve a JWT from your backend application API, making use of your [existing app-to-backend](/configuration/app-backend/setup) authentication:
+When you set up custom authentication, you define the [`fetchCredentials() function`](/configuration/app-backend/client-side-integration) in your _backend connector_ to retrieve a JWT from your backend application API, making use of your [existing app-to-backend](/configuration/app-backend/setup) authentication:
 
 <Frame>
-  <img src="/images/authentication/powersync-docs-diagram-authentication-setup-003.png"/>
+  ![](/images/authentication/powersync-docs-diagram-authentication-setup-003.png)
 </Frame>
-
 
 ## Custom Authentication Flow
 
 The process is as follows:
 
 1. Your client app authenticates the user using the app's authentication provider (either a third-party authentication provider or a custom one) and typically gets a session token.
-2. The client makes a call to your backend API (authenticated using the above session token), which generates and signs a JWT for PowerSync. (You define the [`fetchCredentials()` function](/configuration/app-backend/client-side-integration) in your _backend connector_ so that it makes the API call, and the PowerSync Client SDK automatically invokes `fetchCredentials()` as needed).
+2. The client makes a call to your backend API (authenticated using the above session token), which generates and signs a JWT for PowerSync. (You define the [`fetchCredentials() function`](/configuration/app-backend/client-side-integration) in your _backend connector_ so that it makes the API call, and the PowerSync Client SDK automatically invokes `fetchCredentials()` as needed).
    1. For example implementations of this backend API endpoint, see [Custom Backend Examples](/intro/examples#backend-examples)
-3. The client connects to the PowerSync Service using the above JWT (this is automatically managed by the PowerSync Client SDK).
-4. The PowerSync Service verifies the JWT.
-
+1. The client connects to the PowerSync Service using the above JWT (this is automatically managed by the PowerSync Client SDK).
+3. The PowerSync Service verifies the JWT.
 
 ## JWT Requirements
 
@@ -35,35 +33,32 @@ Requirements for the signed JWT:
 3. The `aud` of the JWT must match the PowerSync instance URL (for Cloud) or one of the audiences configured in `client_auth.audience` (for self-hosted).
    1. To get the instance URL when using PowerSync Cloud: In the [PowerSync Dashboard](https://dashboard.powersync.com/), click **Connect** in the top bar and copy the instance URL from the dialog.
    2. Alternatively, specify a custom audience in the instance settings (Cloud) or in your config file ([self-hosted](#self-hosted-configuration)).
-4. The JWT must expire in 60 minutes or less. Specifically, both `iat` and `exp` fields must be present, with a difference of 3600 or less between them.
-5. The user ID must be used as the `sub` of the JWT.
-6. Additional fields can be added which can be referenced in Sync Rules [parameter queries](/sync/rules/parameter-queries) or Sync Streams (as [`auth.parameters()`](/sync/streams/overview#accessing-parameters)).
-
+1. The JWT must expire in 24 hours or less, and 60 minutes or less is recommended. Specifically, both `iat` and `exp` fields must be present, with a difference of 86,400 or less between them.
+2. The user ID must be used as the `sub` of the JWT.
+4. Additional fields can be added which can be referenced in Sync Rules [parameter queries](/sync/rules/parameter-queries) or Sync Streams (as [`auth.parameters()`](/sync/streams/overview#accessing-parameters)).
 
 ## Option 1: Asymmetric JWTs — Using JWKS URL
 
-A key pair (private + public key) is required to sign and verify JWTs. The private key is used to sign the JWT,
-and the public key is advertised on a public [JWKS](https://auth0.com/docs/secure/tokens/json-web-tokens/json-web-key-sets) URL.
+A key pair (private + public key) is required to sign and verify JWTs. The private key is used to sign the JWT, and the public key is advertised on a public [JWKS](https://auth0.com/docs/secure/tokens/json-web-tokens/json-web-key-sets) URL.
 
 Requirements for the key in the JWKS URL:
+
 1. The URL must be a public URL in the [JWKS](https://auth0.com/docs/secure/tokens/json-web-tokens/json-web-key-sets) format.
    1. We have an example endpoint available [here](https://hlstmcktecziostiaplz.supabase.co/functions/v1/powersync-jwks) — ensure that your response looks similar.
-2. Supported signature schemes: RSA, EdDSA and ECDSA.
-3. Key type (`kty`): `RSA`, `OKP` (EdDSA) or `EC` (ECDSA).
-4. <Tooltip tip="For HS256, see Option 2 below">Algorithm</Tooltip> (`alg`): 
-   1. `RS256`, `RS384` or `RS512` for RSA 
+1. Supported signature schemes: RSA, EdDSA and ECDSA.
+2. Key type (`kty`): `RSA`, `OKP` (EdDSA) or `EC` (ECDSA).
+3. <Tooltip tip="For HS256, see Option 2 below">Algorithm</Tooltip> (`alg`):
+   1. `RS256`, `RS384` or `RS512` for RSA
    2. `EdDSA` for EdDSA
    3. `ES256`, `ES384` or `ES512` for ECDSA
-5. Curve (`crv`) - only relevant for EdDSA and ECDSA: 
+4. Curve (`crv`) - only relevant for EdDSA and ECDSA:
    1. `Ed25519` or `Ed448` for EdDSA
    2. `P-256`, `P-384` or `P-512` for ECDSA
-6. A `kid` must be specified and must match the `kid` in the JWT.
-
+1. A `kid` must be specified and must match the `kid` in the JWT.
 
 Refer to [this example](https://github.com/powersync-ja/powersync-jwks-example) for creating and verifying JWTs for PowerSync authentication.
 
 Since there is no way to revoke a JWT once issued without rotating the key, we recommend using short expiration periods (e.g. 5 minutes). JWTs older than 60 minutes are not accepted by PowerSync.
-
 
 ### Rotating Keys
 
@@ -88,6 +83,7 @@ There is a possibility of false authentication errors until PowerSync refreshes 
 ### Self-Hosted Configuration
 
 You can configure authentication using either:
+
 - A JWKS URI endpoint
 - Static public keys in the configuration file
 
@@ -110,7 +106,6 @@ client_auth:
   audience: ['powersync-dev', 'powersync']
 ```
 
-
 ## Option 2: Symmetric JWTs — Using HS256
 
 PowerSync supports HS256 symmetric JWTs.
@@ -124,9 +119,11 @@ openssl rand -base64 32
 ```
 
 ### Base64 URL Encode the Shared Secret
+
 Once you've generated the shared secret, you will need to Base64 URL encode it before setting it in the PowerSync instance Client Auth configuration.
 
 You can use the following command to Base64 URL encode the shared secret:
+
 ```bash
 echo -n "your-value-here" | base64 -w 0 | tr '+/' '-_' | tr -d '='
 ```
@@ -135,26 +132,26 @@ echo -n "your-value-here" | base64 -w 0 | tr '+/' '-_' | tr -d '='
 
 <Tabs>
   <Tab title="PowerSync Cloud">
-      1. Go to the [PowerSync Cloud Dashboard](https://dashboard.powersync.com/) and select your project and instance.
-      2. Go to the **Client Auth** view.
-      3. Find the section labeled **HS256 Authentication Tokens (ADVANCED)** and click **+** button to add a new token.
-      4. Set the **KID** to a unique identifier for the token (you'll use the same KID to sign the token). Set the **Shared Secret** to the Base64 URL encoded shared secret.
-      5. Click **Save and Deploy**.
+    1. Go to the [PowerSync Cloud Dashboard](https://dashboard.powersync.com/) and select your project and instance.
+    2. Go to the **Client Auth** view.
+    3. Find the section labeled **HS256 Authentication Tokens (ADVANCED)** and click **\+** button to add a new token.
+    4. Set the **KID** to a unique identifier for the token (you'll use the same KID to sign the token). Set the **Shared Secret** to the Base64 URL encoded shared secret.
+    5. Click **Save and Deploy**.
   </Tab>
   <Tab title="Self-Hosted PowerSync">
-      1. Add the shared secret to your PowerSync Service configuration file, e.g.:
+    1. Add the shared secret to your PowerSync Service configuration file, e.g.:
 
-      ```yaml powersync.yaml
-      client_auth:
-        jwks:
-          keys:
-            - kty: oct
-              alg: 'HS256'
-              kid: 'your-kid'
-              k: 'your-base64url-encoded-shared-secret'
-      ```
+    ```yaml powersync.yaml
+    client_auth:
+      jwks:
+        keys:
+          - kty: oct
+            alg: 'HS256'
+            kid: 'your-kid'
+            k: 'your-base64url-encoded-shared-secret'
+    ```
 
-      2. Restart the PowerSync Service.
+    2. Restart the PowerSync Service.
   </Tab>
 </Tabs>
 
@@ -177,7 +174,4 @@ export const generateToken = async (payload: Record<string, unknown>, userId: st
 };
 ```
 
-This JWT can then be used to authenticate with the PowerSync Service. In your [`fetchCredentials()` function](/configuration/app-backend/client-side-integration), you will need to retrieve the token from your backend API.
-
-
-
+This JWT can then be used to authenticate with the PowerSync Service. In your [`fetchCredentials() function`](/configuration/app-backend/client-side-integration), you will need to retrieve the token from your backend API.

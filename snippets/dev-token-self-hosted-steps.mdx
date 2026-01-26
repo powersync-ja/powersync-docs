@@ -1,18 +1,63 @@
 <Steps>
-  <Step title="Step 1: Generate a shared secret">
-    Generate a temporary private/public key-pair (RS256) or shared key (HS256) for JWT signing and verification. 
+  <Step title="Step 1: Generate signing keys">
+    Generate a temporary private/public key-pair (RS256) or shared key (HS256) for JWT signing and verification.
 
-    You can use an online JWS key generator like [this one](https://8gwifi.org/jwsgen.jsp).
+    **Option 1: RS256**
+    
+    Use an online JWK generator like [mkjwk.org](https://mkjwk.org/) (select RSA, 2048 bits, Signature use, RS256 algorithm).
+    
+    Or generate locally with Node.js:
 
-    1. Click **Generate JWS Keys & Sign** (you don't need to edit the default payload)
-    2. Copy the shared secret value
+    ```bash
+    # Install pem-jwk if needed
+    npm install -g pem-jwk
+    
+    # Generate private key
+    openssl genrsa -out private-key.pem 2048
+    
+    # Convert public key to JWK format
+    openssl rsa -in private-key.pem -pubout | pem-jwk
+    ```
+
+    **Option 2: HS256**
+
+    Use an online JWK generator like [mkjwk.org](https://mkjwk.org/) (select oct, 256 bits, Signature use, HS256 algorithm) - this outputs base64url directly.
+    
+    Or generate and convert using OpenSSL:
+
+    ```bash
+    # Generate and convert to base64url
+    openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+    ```
+    
     <Warning>
-      Using an online key generator for secrets in a production environment is not recommended. 
+      For production environments, shared secrets (HS256) are not recommended.
     </Warning>
   </Step>
   <Step title="Step 2: Update `config.yaml`">
-    Add the `client_auth` parameter to your `config.yaml` and update the `jwks` > `keys` > `k` value with the shared secret value copied in the previous step:
+    Add the `client_auth` parameter to your `config.yaml`:
 
+    **For RS256:**
+    
+    Copy the JWK values from mkjwk.org or the pem-jwk output, then add to your config:
+    
+    ```yaml config.yaml
+    # Client (application end user) authentication settings
+    client_auth:
+      # static collection of public keys for JWT verification
+      jwks:
+        keys:
+          - kty: 'RSA'
+            n: '[rsa-modulus]'
+            e: '[rsa-exponent]'
+            alg: 'RS256'
+            kid: 'dev-key-1'
+    ```
+
+    **For HS256:**
+    
+    Copy the `k` value from mkjwk.org or the OpenSSL output, then add to your config:
+    
     ```yaml config.yaml
     # Client (application end user) authentication settings
     client_auth:
@@ -21,8 +66,13 @@
         keys:
           - kty: oct
             alg: 'HS256'
-            k: '[secret]'
+            k: '[base64url-encoded-shared-secret]'
+            kid: 'dev-key-1'
     ```
+    
+    <Note>
+      These examples use static `jwks: keys:` for simplicity. For production, we recommend using `jwks_uri` to point to a JWKS endpoint instead. See [Custom Authentication](/configuration/auth/custom) for more details.
+    </Note>
   </Step>
   <Step title="Step 3: Generate a development token">
     1. If you have not done so already, clone the [`powersync-service` repo](https://github.com/powersync-ja/powersync-service/tree/main)

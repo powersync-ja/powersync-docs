@@ -3,84 +3,102 @@ title: "Update Sync Rules"
 description: "How to update sync rules in a self-hosted PowerSync deployment"
 ---
 
-## Overview
+There are two ways to update sync rules in a self-hosted deployment:
 
-PowerSync provides a HTTP endpoint `/api/sync-rules/v1/deploy` to update sync rules without redeploying the service.  
-This is useful for making quick adjustments or experimenting with synchronization logic at runtime.
+1. **Config file** - Update your config and restart the service
+2. **API endpoint** - Deploy at runtime without restarting
 
-<Warning>
-This endpoint only works when no sync rules are defined in your `powersync.yaml` config file. Config file rules always take precedence over API-deployed rules.
-</Warning>
+<Info>
+  During deployment, existing sync rules continue serving clients while new
+  rules process. Clients seamlessly transition once [initial
+  replication](/architecture/powersync-service#initial-replication-vs-incremental-replication)
+  completes.
+</Info>
 
-## Usage
+## Option 1: Config File (Recommended)
 
-### 1. Configure API token
+Define sync rules in your `powersync.yaml` either inline or via a separate file. See [Self-Hosted Instance Configuration](/configuration/powersync-service/self-hosted-instances) for the full config reference and [Sync Rules](/sync/rules/overview) for syntax.
 
-Add an API token to your `powersync.yaml`:
-
-```yaml powersync.yaml
-api:
-  tokens:
-    - !env PS_API_TOKEN
-```
-
-Restart the service to apply the configuration change.
-
-### 2. Deploy Sync Rules
-
-You can deploy sync rules either from a file: 
-
-```shell
-curl -X POST http://<your-powersync-host>:<port>/api/sync-rules/v1/deploy \
-     -H "Content-Type: application/yaml" \
-     -H "Authorization: Bearer ${PS_API_TOKEN}" \
-     -d @path/to/your/sync-rules.yaml
-```
-
-Or directly in the request body:
-
-```shell
-curl -X POST http://<your-powersync-host>:<port>/api/sync-rules/v1/deploy \
-     -H "Content-Type: application/yaml" \
-     -H "Authorization: Bearer ${PS_API_TOKEN}" \
-     -d 'bucket_definitions:
+<Steps>
+  <Step title="Edit Config">
+    Update the `sync_rules` section in your `powersync.yaml`:
+    <CodeGroup>
+      ```yaml Inline
+      sync_rules:
+        content: |
+          bucket_definitions:
             global:
               data:
-                - SELECT * FROM public.users'
-```
+                - SELECT * FROM public.users
+      ```
 
-A successful request returns a `200 OK` response with the following body.
-The `slot_name` identifies the newly created [logical replication slot](/configuration/source-db/postgres-maintenance).
+      ```yaml Separate File
+      sync_rules:
+        path: sync-rules.yaml
+      ```
+    </CodeGroup>
 
-```json
-{ 
-  "data": {
-     "slot_name": "powersync_2_c1d3" 
-  }
-}
-```
+  </Step>
+  <Step title="Restart Service">
+    Restart your service to apply changes:
+
+    ```shell
+    docker compose restart powersync
+    ```
+
+    Once the service starts up, it will load the updated sync rules and begin processing them while continuing to serve existing rules until initial replication completes.
+  </Step>
+</Steps>
+
+## Option 2: Deploy via API
+
+Deploy sync rules at runtime without restarting. Useful for quick iterations during development.
+
+<Warning>
+  The API is disabled when sync rules are defined in `powersync.yaml`. Config
+  file rules always take precedence.
+</Warning>
+
+<Steps>
+  <Step title="Configure API Token">
+    Add an API token to your `powersync.yaml` and restart:
+
+    ```yaml powersync.yaml
+    api:
+      tokens:
+        - !env PS_API_TOKEN
+    ```
+
+  </Step>
+  <Step title="Deploy Sync Rules">
+    ```shell
+    curl -X POST http://<host>:<port>/api/sync-rules/v1/deploy \
+         -H "Content-Type: application/yaml" \
+         -H "Authorization: Bearer ${PS_API_TOKEN}" \
+         -d @sync-rules.yaml
+    ```
+
+    Use `/api/sync-rules/v1/validate` first to check for errors without deploying.
+
+  </Step>
+</Steps>
+
+### Additional Endpoints
+
+| Endpoint                       | Method | Description                       |
+| ------------------------------ | ------ | --------------------------------- |
+| `/api/sync-rules/v1/current`   | GET    | Get active and pending sync rules |
+| `/api/sync-rules/v1/reprocess` | POST   | Restart replication from scratch  |
 
 ## Troubleshooting
 
-If you get the following error - this indicates that sync rules are already defined in your `powersync.yaml` file.
+Common errors when using the API:
 
-```json
-{
-  "error": {
-    "status":422,
-    "code":"PSYNC_S4105",
-    "description":"Sync rules API disabled"
-  }
-}
-```
+| Error Code    | Meaning                                             |
+| ------------- | --------------------------------------------------- |
+| `PSYNC_S4105` | Sync rules defined in config file - API is disabled |
+| `PSYNC_S4104` | No sync rules deployed yet                          |
+| `PSYNC_R0001` | Invalid sync rules YAML - check `details` field     |
 
-To **resolve** this, simply remove sync rules from your config file and restart the service.
+See [Error Codes Reference](/debugging/error-codes) for the complete list.
 
-If you get a `401 Unauthorized` error, double-check that your API token is correct and matches the token in your config file.
-
-## Notes
-<Note>
-Some important points to remember:
-- Sync rules deployed via the API get overwritten if sync rules are later added to `powersync.yaml` and the service is restarted.
-- Keep your API token secure. Store it in an environment variable or a secure vault.
-</Note>

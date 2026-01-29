@@ -249,7 +249,6 @@ The body of the request payload should look like this:
 
 The API will respond with HTTP status `200` if the write was successful.
 
-
 ## Customization: Handling Client Mutations
 
 You can make changes to the way the `upload` task writes data to the source MongoDB database. 
@@ -260,11 +259,217 @@ Here is how:
 2. Select and expand the `upload` task in the panel on the left.
 3. The `index.ts` contains the entry point function that accepts the HTTP request and has a `MongoDBStorage` class which interacts with the MongoDB database to perform inserts, updates and deletes. To adjust how mutations are performed, take a look at the `updateBatch` function.
 
+## Static IP Addresses (MongoD Atlas)
+
+To enable static IP addresses for CloudCode to connect to the MongoDB database, you need to complete the following steps:
+
+<Info>
+    Static IP addresses are only availible in the EU and US regions.
+</Info>
+
+<Steps>
+  <Step title="Converting the SRV record to get the replicas connection/port uri">
+    
+    Use the `@journeyapps/https-proxy-socket` helper to convert the SRV record to get the MongoDB replica's connection/port uri.
+
+    Using username and password:
+    ```bash
+    npx @journeyapps/https-proxy-socket mongo-replicas mongodb+srv://your_username:your_password@you_cluster.mongodb.net
+    ```
+    Without username and password:
+    ```bash
+    npx @journeyapps/https-proxy-socket mongo-replicas mongodb+srv://you_cluster.mongodb.net
+    ```
+
+    The output will be a JSON object with the following structure:
+
+    ```javascript
+    {
+        replicas: 'uri_1,uri_2,etc.';
+    }
+    ```
+
+    <Note>
+        Keep record of the output and use it in the next step.
+    </Note>
+  </Step>
+  <Step title="Request an egress token from the PowerSync support team.">
+    Request a egress token from the PowerSync support team by sending an email to support@powersync.com or by visiting the [PowerSync Support](https://support.powersync.com/) portal.
+
+    Make sure to include the following in the request:
+    * The list of replicas connection/port uri from step 1
+    * The URL to the Oxide Project that houses the CloudCode tasks
+    * If you need to configure multiple static IP addresses for different deployments/environments, please include the list of deployments along with their associated region.
+
+    The PowerSync support team will respond with an egress token and the group associated with the static IP addresses you should use. Keep record of the egress token and use it in the next step. 
+    
+    Add the egress token to the environment variables of the deployment(s). The environment variable name should be `CLOUDCODE_EGRESS_TOKEN`.
+
+    Here's a list of the IP addresses with their associated group, please include both IP addresses for each group:
+
+    | Region | Group | IP Address 1 | IP Address 2 |
+    |--------|-------|--------------|--------------|
+    | EU | A | 52.17.49.128 | 52.18.47.75 |
+    | EU | B | 52.50.132.241 | 52.209.110.101 |
+    | EU | C | 52.214.251.96 | 54.229.199.114 |
+    | US | A | 18.210.190.20 | 34.192.9.106 |
+    | US | B | 18.211.143.94 | 34.193.213.9 |
+    | US | C | 54.210.43.215 | 52.201.67.23 |
+  </Step>
+  <Step title="Configure the IP address in the MongoDB Atlas cluster.">
+    Go to the MongoDB Atlas cluster and configure the IP address for the MongoDB project by doing the following:
+
+    1. Navigate to **Database & Network Access**
+    2. Select **IP Access List**
+    3. Click on **AD IP ADDRESS**
+    4. Capture the first IP address based on the region (EU or US)
+    5. Add a comment e.g. "PowerSync CloudCode Static IP Address 1"
+    6. Click on **Confirm**
+    7. Capture the second IP address based on the region (EU or US)
+    8. Add a comment e.g. "PowerSync CloudCode Static IP Address 2"
+    8. Click on **Confirm**
+
+  </Step>
+    <Step title="Update the `upload` CloudCode task to use the proxy helper before implementing the MongoDB connection">
+        
+        In the latest version of the CloudCode tasks, the `upload` task has been updated to include the the proxy helper and the related code snippets have been commented out. Uncomment the code snippets to use the proxy helper and make sure to add an additional environment variable `CLOUDCODE_EGRESS_TOKEN` to the deployment.
+        
+        If you are using an older version of the CloudCode tasks, you need to follow the steps below to update the `upload` CloudCode task to use the proxy helper.
+        ### Step 1: Add the [`@journeyapps/https-proxy-socket`](https://github.com/journeyapps/https-proxy-socket) npm package to the `upload` CloudCode task.
+
+        1. Right-click on the CloudCode task name and select the **Add Node.js package** option.
+        2. Search for `@journeyapps/https-proxy-socket` and select the package to add it to the `upload` CloudCode task.
+        3. Right-click on the CloudCode task name and select the **Update yarn.lock** option.
+
+        <Info>
+            To confirm the package was added successfully, select the **Deploy to testing** button or press the **Ctrl/CMD + S** to save and deploy the `upload` CloudCode task.
+        </Info>
+
+        ### Step 2: Update the `MongoDBStorage` class in the `index.ts` file of the `upload` CloudCode task to use the proxy helper before implementing the MongoDB connection.
+
+        ```typescript
+        import { useProxyForMongo } from '@journeyapps/https-proxy-socket';
+
+        .... previous code ....
+
+        class MongoDBStorage {
+            public client: any;
+            public db: any;
+            public close: any;
+
+            constructor(uri: string) {
+                const TOKEN = process.env.CLOUDCODE_EGRESS_TOKEN;
+                const PROXY = "us-cc-proxy.journeyapps.com" // or za-cc-proxy.journeyapps.com for EU;
+                const PROXY_PORT = 443;
+
+                if (!MONGO_URI) {
+                    console.log(`Env variable MONGO_URI is not set, please add the environment variable in the Deployment settings`);
+                }
+                this.close = useProxyForMongo({
+                    proxy: PROXY,
+                    auth: TOKEN,
+                });
+                this.client = new MongoClient(uri, {
+                    proxyPort: PROXY_PORT,
+                    proxyHost: PROXY
+                });
+                this.db = this.client.db();
+            }
+        }
+        ```
+        <Info>
+            The EU region uses the `za-cc-proxy.journeyapps.com` proxy.
+        </Info>
+
+        Make sure to rename the `close` function in the `MongoDBStorage` class to `closeConnection` to avoid duplicate function names and call the new `close` function from the `@journeyapps/https-proxy-socket` helper when the MongoDB connection is no longer needed.
+
+        ```typescript
+        public async closeConnection() {
+            if (this.client) {
+                this.close(); // Call the proxy helper to close the connection
+                await this.client.close(true);
+            }
+        }
+        ```
+    </Step>
+    <Step title="Test the setup.">
+        Test the setup by sending a mutation to the `upload` HTTP API endpoint.
+    </Step>
+</Steps>
+
 ## Production Considerations
 
-Before going into production with this solution, you will need to set up authentication on the HTTP endpoints exposed by the CloudCode tasks.
+### HTTP Endpoint Authentication
 
-If you need more data validations and/or authorization than what is provided by the template, that will need to be customized too. Consider introducing schema validation of the data being written to the source MongoDB database. You should use a [purpose-built](https://json-schema.org/tools?query=&sortBy=name&sortOrder=ascending&groupBy=toolingTypes&licenses=&languages=&drafts=&toolingTypes=&environments=&showObsolete=false) library for this, and use [MongoDB Schema Validation](https://www.mongodb.com/docs/manual/core/schema-validation/) to enforce the types in the database.
+By default, the CloudCode tasks will authenticate all requests to help you get started quickly. However, in production, you will need to set up authentication on the HTTP endpoints exposed by the CloudCode tasks.
+Each CloudCode task includes an `authenticate` function. This function is called before the request is processed and can be used to authenticate the request.
+
+Here's an example of how to authenticate the request where the request header contains a `Authorization` header with a Bearer token and uses the [`jsonwebtoken`](https://www.npmjs.com/package/jsonwebtoken) library to verify the token using a secret key stored in an environment variable.
+
+```typescript
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET;
+
+export async function authenticate({ request, access }) {
+    // We check for a token in the Authorization header, and
+    // do a database lookup based on this.
+    const auth = request.header('Authorization');
+
+    const match = /^Bearer (\w+)$/.exec(auth);
+    if(match == null) {
+       return access.unauthorized();
+    }
+
+    // JWT in the Authorization header
+    const token = match[1];
+
+    // Verify the JWT
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (!decoded) {
+        return access.unauthorized();
+    }
+
+    // Return the user ID from the JWT
+    return access.authorized();
+};
+```
+
+Here's an example of how to use `jose` to verify a token using a JWKS endpoint exposed by authentication providers:
+
+```typescript
+import { jwtVerify, createRemoteJWKSet } from 'jose';
+
+const JWKS = createRemoteJWKSet(new URL('https://{YOUR_AUTH_PROVIDER}/.well-known/jwks.json'));
+
+export async function authenticate({ request, access }) {
+    // We check for a token in the Authorization header, and
+    // do a database lookup based on this.
+    const auth = request.header('Authorization');
+
+    const match = /^Bearer (\w+)$/.exec(auth);
+    if(match == null) {
+       return access.unauthorized();
+    }
+
+    // JWT in the Authorization header
+    const token = match[1];
+
+    try {
+        // Verify the JWT
+        const { payload } = await jwtVerify(token, JWKS);
+        return access.authorized();
+    } catch (error) {
+        // If the token is invalid, return an unauthorized response
+        return access.unauthorized();
+    }
+}
+```
+
+### Other Considerations
+
+If you need more data validations before persisting data to the source database, consider introducing schema validation of the data being written to the source MongoDB database. 
+You should use a [purpose-built](https://json-schema.org/tools?query=&sortBy=name&sortOrder=ascending&groupBy=toolingTypes&licenses=&languages=&drafts=&toolingTypes=&environments=&showObsolete=false) library for this, and use [MongoDB Schema Validation](https://www.mongodb.com/docs/manual/core/schema-validation/) to enforce the types in the database.
 
 Please [contact us](/resources/contact-us) for assistance on any of the above.
 

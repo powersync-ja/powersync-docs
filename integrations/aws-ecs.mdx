@@ -21,7 +21,7 @@ Throughout this guide, replace placeholders like `YOUR_ACCOUNT_ID`, `YOUR_REGION
 
 ## Step 1: Bucket Storage
 
-PowerSync requires MongoDB or PostgreSQL 14+ for bucket storage. Choose one:
+PowerSync requires MongoDB for bucket storage. Choose one:
 
 <CardGroup cols={2}>
   <Card title="MongoDB Atlas (Recommended)" icon="leaf">
@@ -173,7 +173,7 @@ Create `powersync.yaml`:
 ```yaml
 replication:
   connections:
-    - type: mongodb # or postgresql, mysql, sqlserver 
+    - type: postgresql # or mongodb
       uri: !env PS_DATA_SOURCE_URI
       sslmode: verify-full  # or 'disable' for VPC-only connections
 
@@ -197,6 +197,10 @@ client_auth:
 ```
 
 <Note>
+For MongoDB source databases, remove the `sslmode` parameter. For configuration examples specific to your source database type, see the [Source Database Setup Guide](/configuration/source-db/setup).
+</Note>
+
+<Note>
 For detailed configuration options, see the [Self-Hosted Configuration Guide](/configuration/powersync-service/self-hosted-instances).
 </Note>
 
@@ -208,34 +212,40 @@ For detailed configuration options, see the [Self-Hosted Configuration Guide](/c
 
 ```bash
 # ALB security group
-aws ec2 create-security-group \
+ALB_SG=$(aws ec2 create-security-group \
   --group-name powersync-alb-sg \
   --description "PowerSync ALB" \
-  --vpc-id vpc-xxxxx
+  --vpc-id vpc-xxxxx \
+  --query 'GroupId' --output text)
 
 aws ec2 authorize-security-group-ingress \
-  --group-id sg-alb-xxxxx \
+  --group-id $ALB_SG \
   --protocol tcp --port 443 --cidr 0.0.0.0/0
 
 # ECS security group
-aws ec2 create-security-group \
+ECS_SG=$(aws ec2 create-security-group \
   --group-name powersync-ecs-sg \
   --description "PowerSync ECS tasks" \
-  --vpc-id vpc-xxxxx
+  --vpc-id vpc-xxxxx \
+  --query 'GroupId' --output text)
 
 aws ec2 authorize-security-group-ingress \
-  --group-id sg-ecs-xxxxx \
-  --protocol tcp --port 8080 --source-group sg-alb-xxxxx
-
-# Allow ECS to reach databases
-aws ec2 authorize-security-group-ingress \
-  --group-id sg-mongodb-xxxxx \
-  --protocol tcp --port 27017 --source-group sg-ecs-xxxxx
+  --group-id $ECS_SG \
+  --protocol tcp --port 8080 --source-group $ALB_SG
 ```
 
-### NAT Gateway (Required)
+<Note>
+If using self-managed MongoDB on EC2, allow ECS tasks to connect:
+```bash
+aws ec2 authorize-security-group-ingress \
+  --group-id YOUR_MONGODB_SG \
+  --protocol tcp --port 27017 --source-group $ECS_SG
+```
+</Note>
 
-ECS tasks need outbound internet for ECR and JWKS URLs:
+### NAT Gateway (Required for Private Subnets)
+
+ECS tasks in private subnets need outbound internet for ECR and JWKS URLs:
 
 ```bash
 # Create Elastic IP
@@ -304,13 +314,54 @@ aws elbv2 modify-load-balancer-attributes \
 
 ---
 
-## Step 6: Secrets Manager
+## Step 6: DNS Configuration
+
+Point your domain to the load balancer:
 
 ```bash
-# Store config (base64 encoded)
+# Get ALB DNS name
+ALB_DNS=$(aws elbv2 describe-load-balancers \
+  --names powersync-alb \
+  --query 'LoadBalancers[0].DNSName' \
+  --output text)
+
+ALB_ZONE=$(aws elbv2 describe-load-balancers \
+  --names powersync-alb \
+  --query 'LoadBalancers[0].CanonicalHostedZoneId' \
+  --output text)
+
+# Create Route53 record (if using Route53)
+aws route53 change-resource-record-sets \
+  --hosted-zone-id YOUR_HOSTED_ZONE_ID \
+  --change-batch '{
+    "Changes": [{
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "powersync.yourdomain.com",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "'$ALB_ZONE'",
+          "DNSName": "'$ALB_DNS'",
+          "EvaluateTargetHealth": true
+        }
+      }
+    }]
+  }'
+```
+
+<Note>
+If using an external DNS provider, create an A or CNAME record pointing to the ALB DNS name.
+</Note>
+
+---
+
+## Step 7: Secrets Manager
+
+```bash
+# Store config
 aws secretsmanager create-secret \
-  --name powersync/config-b64 \
-  --secret-string "$(base64 -i powersync.yaml)"
+  --name powersync/config \
+  --secret-string file://powersync.yaml
 
 # Store connection strings
 aws secretsmanager create-secret \
@@ -328,7 +379,7 @@ aws secretsmanager create-secret \
 
 ---
 
-## Step 7: ECS Task Definition
+## Step 8: ECS Task Definition
 
 ### Create IAM Role
 
@@ -372,6 +423,10 @@ aws ecs create-cluster \
 
 ### Register Task Definition
 
+<Note>
+Check [Docker Hub](https://hub.docker.com/r/journeyapps/powersync-service/tags) for the latest stable version.
+</Note>
+
 Save as `task-definition.json`:
 
 ```json
@@ -385,7 +440,7 @@ Save as `task-definition.json`:
   "containerDefinitions": [
     {
       "name": "powersync",
-      "image": "journeyapps/powersync-service:latest",
+      "image": "journeyapps/powersync-service:1.8.0",
       "essential": true,
       "portMappings": [
         {"containerPort": 8080, "protocol": "tcp"}
@@ -395,7 +450,7 @@ Save as `task-definition.json`:
         {"name": "NODE_OPTIONS", "value": "--max-old-space-size=3200"}
       ],
       "secrets": [
-        {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/config-b64"},
+        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/config"},
         {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/data-source-uri"},
         {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/storage-uri"},
         {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/jwks-url"}
@@ -425,13 +480,13 @@ Save as `task-definition.json`:
 aws ecs register-task-definition --cli-input-json file://task-definition.json
 ```
 
-<Note>
-Pin to a specific version for production. Check [Docker Hub](https://hub.docker.com/r/journeyapps/powersync-service/tags) for latest releases.
-</Note>
-
 ---
 
-## Step 8: Deploy ECS Service
+## Step 9: Deploy ECS Service
+
+<Note type="warning">
+This single-process deployment may encounter sync rule lock errors during rolling updates. For production deployments, see [High Availability Setup](#high-availability-setup) to separate replication and API processes.
+</Note>
 
 ```bash
 aws ecs create-service \
@@ -488,14 +543,14 @@ Create `compact-task-definition.json`:
   "containerDefinitions": [
     {
       "name": "powersync-compact",
-      "image": "journeyapps/powersync-service:latest",
+      "image": "journeyapps/powersync-service:1.8.0",
       "command": ["compact"],
       "essential": true,
       "environment": [
         {"name": "NODE_OPTIONS", "value": "--max-old-space-size=1600"}
       ],
       "secrets": [
-        {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/config-b64"},
+        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/config"},
         {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/storage-uri"}
       ],
       "logConfiguration": {
@@ -562,7 +617,7 @@ For production deployments, separate replication and API processes:
   "family": "powersync-replication",
   "containerDefinitions": [{
     "name": "powersync-replication",
-    "image": "journeyapps/powersync-service:latest",
+    "image": "journeyapps/powersync-service:1.8.0",
     "command": ["start", "-r", "sync"]
   }]
 }
@@ -575,7 +630,7 @@ For production deployments, separate replication and API processes:
   "family": "powersync-api",
   "containerDefinitions": [{
     "name": "powersync-api",
-    "image": "journeyapps/powersync-service:latest",
+    "image": "journeyapps/powersync-service:1.8.0",
     "command": ["start", "-r", "api"]
   }]
 }

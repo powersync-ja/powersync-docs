@@ -1,0 +1,358 @@
+---
+title: "Capacitor SDK (alpha)"
+description: "Full SDK guide for using PowerSync in Capacitor clients"
+sidebarTitle: "Capacitor"
+---
+
+import SdkFeatures from '/snippets/sdk-features.mdx';
+import CapacitorInstallation from '/snippets/capacitor/installation.mdx';
+import JavaScriptAsyncWatch from '/snippets/basic-watch-query-javascript-async.mdx';
+import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-callback.mdx';
+import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+import LocalOnly from '/snippets/local-only-escape.mdx';
+
+<CardGroup cols={3}>
+  <Card title="PowerSync SDK on NPM" icon="npm" href="https://www.npmjs.com/package/@powersync/capacitor">
+    This SDK is distributed via NPM
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/powersync-ja/powersync-js/tree/main/packages/capacitor">
+    Refer to `packages/capacitor` in the `powersync-js` repo on GitHub
+  </Card>
+  <Card title="API Reference" icon="book" href="https://powersync-ja.github.io/powersync-js/capacitor-sdk">
+    Full API reference for the SDK
+  </Card>
+  <Card title="Example Projects" icon="code" href="/intro/examples">
+    Gallery of example projects/demo apps built with Capacitor and PowerSync
+  </Card>
+  <Card title="Changelog" icon="megaphone" href="https://github.com/powersync-ja/powersync-js/blob/main/packages/capacitor/CHANGELOG.md">
+    Changelog for the SDK
+  </Card>
+</CardGroup>
+
+<Warning>
+  This SDK is currently in an [**alpha** release](/resources/feature-status). 
+  
+  The SDK is largely built on our stable [Web SDK](/client-sdks/reference/javascript-web), so that functionality can be considered stable. However, the [Capacitor Community SQLite](https://github.com/capacitor-community/sqlite) integration for mobile platforms is in alpha for real-world testing and feedback. There are [known limitations](#limitations) currently.
+</Warning>
+
+<Note>
+  **Built on the Web SDK**
+
+  The PowerSync Capacitor SDK is built on top of the [PowerSync Web SDK](/client-sdks/reference/javascript-web). It shares the same API and usage patterns as the Web SDK. The main differences are:
+  
+  - Uses Capacitor-specific SQLite implementation (`@capacitor-community/sqlite`) for native Android and iOS platforms
+  - Certain features are not supported on native Android and iOS platforms, see [limitations](#limitations) below for details
+  
+  All code examples from the Web SDK apply to Capacitor — use `@powersync/web` for imports instead of `@powersync/capacitor`. See the [JavaScript Web SDK reference](/client-sdks/reference/javascript-web) for ORM support, SPA framework integration, and developer notes.
+</Note>
+
+### SDK Features
+
+<SdkFeatures />
+
+## Installation
+
+<CapacitorInstallation />
+
+## Getting Started
+
+**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Rules (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
+
+### 1. Define the Client-Side Schema
+
+import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
+
+<SdkClientSideSchema />
+
+<GenerateSchemaAutomatically />
+
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/sync/rules/overview). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
+
+**Example**:
+
+<Tip>
+  **Note on imports**: While you install `@powersync/capacitor`, the Capacitor SDK extends the Web SDK so you import general components from `@powersync/web` (installed as a peer dependency). See the [JavaScript Web SDK schema definition section](/client-sdks/reference/javascript-web#1-define-the-client-side-schema) for more advanced examples.
+</Tip>
+
+```js
+// AppSchema.ts
+import { column, Schema, Table } from '@powersync/web';
+
+const lists = new Table({
+  created_at: column.text,
+  name: column.text,
+  owner_id: column.text
+});
+
+const todos = new Table(
+  {
+    list_id: column.text,
+    created_at: column.text,
+    completed_at: column.text,
+    description: column.text,
+    created_by: column.text,
+    completed_by: column.text,
+    completed: column.integer
+  },
+  { indexes: { list: ['list_id'] } }
+);
+
+export const AppSchema = new Schema({
+  todos,
+  lists
+});
+
+// For types
+export type Database = (typeof AppSchema)['types'];
+export type TodoRecord = Database['todos'];
+// OR:
+// export type Todo = RowType<typeof todos>;
+export type ListRecord = Database['lists'];
+```
+
+<Note>
+  **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Note>
+
+### 2. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Rules](/sync/rules/overview). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline. 
+
+**Example**:
+
+<Tip>
+  The Capacitor PowerSyncDatabase automatically detects the platform and uses the appropriate database drivers:
+  - **Android and iOS**: Uses [Capacitor Community SQLite](https://github.com/capacitor-community/sqlite) for native database access
+  - **Web**: Falls back to the PowerSync Web SDK
+</Tip>
+
+```js
+import { PowerSyncDatabase } from '@powersync/capacitor';
+
+// Import general components from the Web SDK package
+import { Schema } from '@powersync/web';
+import { Connector } from './Connector';
+import { AppSchema } from './AppSchema';
+
+/**
+ * The Capacitor PowerSyncDatabase will automatically detect the platform
+ * and use the appropriate database drivers.
+ */
+export const db = new PowerSyncDatabase({
+  // The schema you defined in the previous step
+  schema: AppSchema,
+  database: {
+    // Filename for the SQLite database — it's important to only instantiate one instance per file.
+    dbFilename: 'powersync.db'
+  }
+});
+```
+
+When using custom database factories, be sure to specify the `CapacitorSQLiteOpenFactory` for Capacitor platforms:
+
+```js
+import { PowerSyncDatabase } from '@powersync/capacitor';
+import { WASQLiteOpenFactory, CapacitorSQLiteOpenFactory } from '@powersync/capacitor';
+import { Schema } from '@powersync/web';
+
+const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: isWeb 
+    ? new WASQLiteOpenFactory({ dbFilename: "mydb.sqlite" })
+    : new CapacitorSQLiteOpenFactory({ dbFilename: "mydb.sqlite" })
+});
+```
+
+Once you've instantiated your PowerSync database, call the [connect()](https://powersync-ja.github.io/powersync-js/web-sdk/classes/AbstractPowerSyncDatabase#connect) method to sync data with your backend.
+
+<LocalOnly />
+
+```js
+export const setupPowerSync = async () => {
+  // Uses the backend connector that will be created in the next section
+  const connector = new Connector();
+  db.connect(connector);
+};
+```
+
+### 3. Integrate with your Backend
+
+The PowerSync backend connector provides the connection between your application backend and the PowerSync client-side managed SQLite database. It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend source database) when the user is connected. 
+
+Accordingly, the connector must implement two methods:
+
+1. [PowerSyncBackendConnector.fetchCredentials](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L16) - This method will be automatically invoked by the PowerSync Client SDK every couple of minutes to obtain authentication credentials. See [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
+2. [PowerSyncBackendConnector.uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) - This method will be automatically invoked by the PowerSync Client SDK whenever it needs to upload client-side writes to your app backend via your backend API. Therefore, in your implememtation, you need to define how your backend API is called. See [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+<Tip>
+  See the [JavaScript Web SDK backend integration section](/client-sdks/reference/javascript-web#3-integrate-with-your-backend) for connector examples with Supabase and Firebase authentication, and handling `uploadData` with batch operations.
+</Tip>
+
+```js
+import { UpdateType } from '@powersync/web';
+
+export class Connector {
+  async fetchCredentials() {
+    // Implement fetchCredentials to obtain a JWT from your authentication service. 
+    // See https://docs.powersync.com/configuration/auth/overview
+    return {
+        endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+        // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly
+        token: 'An authentication token'
+    };
+  }
+
+  async uploadData(database) {
+    // Implement uploadData to send local changes to your backend service.
+    // You can omit this method if you only want to sync data from the database to the client
+
+    // See example implementation here: https://docs.powersync.com/client-sdks/reference/javascript-web#3-integrate-with-your-backend
+  }
+}
+```
+
+## Using PowerSync: CRUD functions
+
+Once the PowerSync instance is configured you can start using the SQLite DB functions.
+
+<Tip>
+  **All CRUD examples from the JavaScript Web SDK apply**: The Capacitor SDK uses the same API as the Web SDK. See the [JavaScript Web SDK CRUD functions section](/client-sdks/reference/javascript-web#using-powersync-crud-functions) for examples of `get`, `getAll`, `watch`, `execute`, `writeTransaction`, incremental watch updates, and differential results.
+</Tip>
+
+The most commonly used CRUD functions to interact with your SQLite data are:
+
+- [PowerSyncDatabase.get](/client-sdks/reference/javascript-web#fetching-a-single-item) - get (SELECT) a single row from a table.
+- [PowerSyncDatabase.getAll](/client-sdks/reference/javascript-web#querying-items-powersync.getall) - get (SELECT) a set of rows from a table.
+- [PowerSyncDatabase.watch](/client-sdks/reference/javascript-web#watching-queries-powersync.watch) - execute a read query every time source tables are modified.
+- [PowerSyncDatabase.execute](/client-sdks/reference/javascript-web#mutations-powersync.execute) - execute a write (INSERT/UPDATE/DELETE) query.
+
+### Fetching a Single Item
+
+The [get](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#get) method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use [getOptional](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#getoptional) to return a single optional result (returns `null` if no result is found).
+
+```js
+// Find a list item by ID
+export const findList = async (id) => {
+  const result = await db.get('SELECT * FROM lists WHERE id = ?', [id]);
+  return result;
+}
+```
+
+### Querying Items (PowerSync.getAll)
+
+The [getAll](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#getall) method returns a set of rows from a table.
+
+```js
+// Get all list IDs
+export const getLists = async () => {
+  const results = await db.getAll('SELECT * FROM lists');
+  return results;
+}
+```
+
+### Watching Queries (PowerSync.watch)
+
+The [watch](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#watch) method executes a read query whenever a change to a dependent table is made.
+
+<Tabs>
+  <Tab title="AsyncIterator approach">
+  <JavaScriptAsyncWatch />
+  </Tab>
+  <Tab title="Callback approach">
+  <JavaScriptCallbackWatch />
+  </Tab>
+</Tabs>
+
+For advanced watch query features like incremental updates and differential results, see [Live Queries / Watch Queries](/client-sdks/watch-queries).
+
+### Mutations (PowerSync.execute, PowerSync.writeTransaction)
+
+The [execute](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#execute) method can be used for executing single SQLite write statements.
+
+```js
+// Delete a list item by ID
+export const deleteList = async (id) => {
+  const result = await db.execute('DELETE FROM lists WHERE id = ?', [id]);
+  return TodoList.fromRow(results);
+}
+
+// OR: using a transaction
+const deleteList = async (id) => {
+  await db.writeTransaction(async (tx) => {
+    // Delete associated todos
+    await tx.execute(`DELETE FROM ${TODOS_TABLE} WHERE list_id = ?`, [id]);
+    // Delete list record
+    await tx.execute(`DELETE FROM ${LISTS_TABLE} WHERE id = ?`, [id]);
+  });
+};
+```
+
+## Configure Logging
+
+```js
+import { createBaseLogger, LogLevel } from '@powersync/web';
+
+const logger = createBaseLogger();
+
+// Configure the logger to use the default console output
+logger.useDefaults();
+
+// Set the minimum log level to DEBUG to see all log messages
+// Available levels: DEBUG, INFO, WARN, ERROR, TRACE, OFF
+logger.setLevel(LogLevel.DEBUG);
+```
+
+<Tip>
+  Enable verbose output in the developer tools for detailed logs.
+</Tip>
+
+## Limitations
+
+- Encryption for native mobile platforms is not yet supported.
+- Multiple tab support is not available for native Android and iOS targets.
+- `PowerSyncDatabase.executeRaw` does not support results where multiple columns would have the same name in SQLite
+- `PowerSyncDatabase.execute` has limited support on Android. The SQLCipher Android driver exposes queries and executions as separate APIs, so there is no single method that handles both. While PowerSyncDatabase.execute accepts both, on Android we treat a statement as a query only when the SQL starts with select (case-insensitive).
+
+## Additional Usage Examples
+
+For more usage examples including accessing connection status, monitoring sync progress, and waiting for initial sync, see the [Usage Examples](/client-sdks/usage-examples) page.
+
+## ORM Support
+
+See [JavaScript ORM Support](/client-sdks/orms/js/overview) for details.
+
+## Troubleshooting
+
+See [Troubleshooting](/debugging/troubleshooting) for pointers to debug common issues.
+
+## Supported Platforms
+
+See [Supported Platforms -> Capacitor SDK](/resources/supported-platforms#capacitor-sdk).
+
+## Upgrading the SDK
+
+Run the below command in your project folder:
+
+<Tabs>
+  <Tab title="npm">
+```bash
+npm upgrade @powersync/capacitor @powersync/web
+```
+  </Tab>
+  <Tab title="yarn">
+```bash
+yarn upgrade @powersync/capacitor @powersync/web
+```
+  </Tab>
+  <Tab title="pnpm">
+```bash
+pnpm upgrade @powersync/capacitor @powersync/web
+```
+  </Tab>
+</Tabs>
+

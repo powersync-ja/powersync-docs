@@ -1,0 +1,166 @@
+---
+title: "Guide: Sync Data by Time"
+description: "Learn how to sync data by time in Sync Rules."
+sidebarTitle: "Sync Data by Time"
+---
+
+A common need in offline-first apps is syncing data based on time, for example, only syncing issues updated in the last 7 days instead of the entire dataset.
+You might expect to write something like:
+
+```yaml
+bucket_definitions
+    issues_after_start_date:
+        parameters: SELECT request.parameters() ->> 'start_at' as start_at
+        data: SELECT * FROM issues WHERE updated_at > bucket.start_date
+```
+
+However, this won't work. Here's why.
+
+# The Problem
+
+Sync rules only support a limited set of [operators](https://docs.powersync.com/usage/sync-rules/operators-and-functions) when filtering on parameters. You can use `=`, `IN`, and `IS NULL`, but not range operators like `>`, `<`, `>=`, or `<=`.
+
+Additionally, sync rule functions must be deterministic. Time-based functions like `now()` aren't allowed because the result changes depending on when the query runs.
+
+These constraints exist for good reason, they ensure buckets can be pre-computed and cached efficiently. But they make time-based filtering less obvious to implement.
+
+This guide covers a few practical workarounds.
+
+<Note>We are working on a more elegant solution for this problem. When ready, this guide will be updated accordingly.</Note>
+
+# Workarounds
+
+## 1: Pre-defined time ranges
+
+Add a boolean column to your table that indicates whether a row falls within a specific time range. Keep this column updated in your source database using a scheduled job.
+
+For example, add an `updated_this_week` column:
+
+```sql
+ALTER TABLE issues ADD COLUMN updated_this_week BOOLEAN DEFAULT false;
+```
+Update it periodically using a cron job (e.g., with pg_cron):
+
+```sql
+UPDATE issues SET updated_this_week = (updated_at > now() - interval '7 days');
+```
+
+```yaml
+bucket_definitions:
+  recent_issues:
+    data:
+      - SELECT * FROM issues WHERE updated_this_week = true
+```
+For multiple time ranges, add multiple columns and let the client choose which bucket to sync:
+
+```yaml
+bucket_definitions:
+  issues_1week:
+    parameters: SELECT WHERE request.parameters() ->> 'range' = '1week'
+    data:
+      - SELECT * FROM issues WHERE updated_this_week = true
+
+  issues_1month:
+    parameters: SELECT WHERE request.parameters() ->> 'range' = '1month'
+    data:
+      - SELECT * FROM issues WHERE updated_this_month = true
+```
+
+This approach works well when you have a small, fixed set of time ranges. However, it requires schema changes and a scheduled job to keep the columns updated.
+
+<Warning>
+This approach requires schema changes and scheduled jobs (e.g., pg_cron). Limited to pre-defined time ranges.
+</Warning>
+
+If you need more flexibility like letting users pick arbitrary date ranges, see Workaround 2 below.
+
+## 2: Buckets Per Date
+
+Instead of pre-defined ranges, create a bucket for each date and let the client specify which dates to sync.
+
+Use `substring` to extract the date portion from a timestamp and match it with `=`:
+
+```sql
+bucket_definitions:
+  issues_by_update_at:
+    parameters: SELECT value as date FROM json_each(request.parameters() ->> 'dates')
+    data:
+      - SELECT * FROM issues WHERE substring(updated_at, 1, 10) = bucket.date
+```
+The client then passes the dates it wants as connection params:
+
+```javascript
+await db.connect(connector, {
+    params: {
+        dates: ["2026-01-07", "2026-01-08", "2026-01-09"],
+    },
+})
+```
+
+This gives users full control over which dates to sync, with no schema changes or scheduled jobs required.
+
+The trade-off is granularity. In this example we're using daily buckets. If you need finer precision (hourly), syncing a large range means many buckets, which can degrade sync performance and approach [PowerSync's limit of 1,000 buckets per user](https://docs.powersync.com/resources/performance-and-limits#performance-and-limits). If you use larger buckets (monthly), you lose the ability to filter accurately.
+
+<Warning>
+You must commit to a single granularity. Daily = too many buckets for long ranges. Monthly = lose precision for recent data.
+</Warning>
+
+You have to pick a granularity and stick with it. If that's a problem—say, you want hourly precision for recent data but don't want hundreds of buckets when syncing a full month, see Workaround 3 below.
+
+## 3: Multiple Granularities
+
+Combine multiple granularities in a single bucket definition. This lets you use larger buckets (days) for older data and smaller buckets (hours, minutes) for recent data.
+
+```yaml
+bucket_definitions:
+  issues_by_time:
+    parameters: SELECT value as partition FROM json_each(request.parameters() ->> 'partitions')
+    data:
+      # By day (e.g., "2026-01-07")
+      - SELECT * FROM issues WHERE substring(updated_at, 1, 10) = bucket.partition
+      # By hour (e.g., "2026-01-07T14")
+      - SELECT * FROM issues WHERE substring(updated_at, 1, 13) = bucket.partition
+      # By 10 minutes (e.g., "2026-01-07T14:3")
+      - SELECT * FROM issues WHERE substring(updated_at, 1, 15) = bucket.partition
+```
+
+The client then mixes granularities as needed:
+
+```javascript
+await db.connect(connector, {
+    params: {
+        partitions: [
+            "2026-01-05",
+            "2026-01-06",
+            "2026-01-07T10",
+            "2026-01-07T11",
+            "2026-01-07T12:0",
+            "2026-01-07T12:1",
+            "2026-01-07T12:2"
+        ]
+    },
+})
+```
+
+This syncs January 5–6 by day, the morning of January 7 by hour, and the last 30 minutes in 10-minute chunks, without creating hundreds of buckets.
+
+The trade-off is complexity. The client must decide which granularity to use for each time segment, and each row belongs to multiple buckets, which increases replication overhead.
+
+<Note>
+When using multiple time granularities (e.g., monthly, daily, hourly), rows move between buckets as time passes. Since each granularity creates a different bucket ID, the client must re-download the row from the new bucket even if it already has the data. This re-download overhead can nullify the benefits of granular filtering. For this reason, in some cases it may be better to sync entire months avoiding the re-sync overhead, even if you sync more data initially.
+</Note>
+
+<Warning>
+Each row belongs to multiple buckets (replication overhead). Re-sync overhead when rows move between bucket granularities. Added complexity may not justify the gains over Workaround 2.
+</Warning>
+
+# Conclusion
+
+Time-based sync is a common need, but current sync rules don't support range operators or time-based functions directly.
+To recap the workarounds:
+
+- **Pre-defined time ranges** — Simplest option. Use when you have a fixed set of time ranges and don't mind schema changes.
+- **Buckets Per Date** — More flexible. Use when you need arbitrary date ranges but can live with a single granularity.
+- **Multiple Granularities** — Most flexible. Use when you need precision for recent data without syncing hundreds of buckets. Be mindful of the re-sync overhead.
+
+We're working on a more elegant solution. This guide will be updated when it's ready.

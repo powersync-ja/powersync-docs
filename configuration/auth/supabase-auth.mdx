@@ -1,0 +1,246 @@
+---
+title: "Supabase Auth"
+description: "PowerSync can verify Supabase JWTs directly when connected to a Supabase-hosted Postgres database."
+sidebarTitle: Overview
+---
+
+You can implement various types of authentication when using PowerSync with Supabase:
+
+#### Standard [Supabase Auth](https://supabase.com/docs/guides/auth)
+
+These examples show how to implement [`fetchCredentials()` in your client-side _backend connector_](/configuration/app-backend/client-side-integration#‘backend-connector’) to get the Supabase JWT from the Supabase Client Library:
+
+* [JavaScript example](https://github.com/powersync-ja/powersync-js/blob/58fd05937ec9ac993622666742f53200ee694585/demos/react-supabase-todolist/src/library/powersync/SupabaseConnector.ts#L87)
+* [Dart/Flutter example](https://github.com/powersync-ja/powersync.dart/blob/9ef224175c8969f5602c140bcec6dd8296c31260/demos/supabase-todolist/lib/powersync.dart#L38)
+* [Kotlin example](https://github.com/powersync-ja/powersync-kotlin/blob/4f60e2089745dda21b0d486c70f47adbbe24d289/connectors/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt#L75)
+
+#### Anonymous Sign-Ins
+
+This examples shows use of Supabase's `signInAnonymously()` and then the implementation of [`fetchCredentials()`](/configuration/app-backend/client-side-integration#‘backend-connector’) to get the JWT from the Supabase Client Library:
+
+  * [JavaScript example](https://github.com/powersync-ja/powersync-js/blob/58fd05937ec9ac993622666742f53200ee694585/demos/react-multi-client/src/library/SupabaseConnector.ts#L47)
+
+#### Fully Custom Auth
+
+This example shows how to implement Supabase Edge Functions to generate custom JWTs for PowerSync (either for signed-in users or anonymous users) as well as expose a JWKS endpoint:
+
+  * [Example](https://github.com/powersync-ja/powersync-jwks-example/)
+
+
+#### External Auth Providers
+
+We've heard from the community that Supabase's [support for third-party auth providers](https://supabase.com/blog/third-party-auth-mfa-phone-send-hooks) works with PowerSync, but we don't have any examples for this yet.
+
+
+## Supabase JWT Signing Keys
+
+Supabase supports two types of JWT signing keys:
+
+| Type | Algorithm | Description |
+|------|-----------|-------------|
+| **Legacy JWT signing keys** | HS256 (symmetric) | Uses a shared secret to sign and verify tokens. This is the original method. |
+| **New JWT signing keys** | RS256 (asymmetric) | Uses public/private key pairs. Supabase signs tokens with a private key, and PowerSync verifies them using a public key fetched via JWKS. |
+
+PowerSync supports both methods. Which configuration you need depends on your Supabase project's JWT settings and your PowerSync deployment type.
+
+<Note>
+To check which signing keys your Supabase project uses, go to [Project Settings > JWT](https://supabase.com/dashboard/project/_/settings/jwt) in your Supabase Dashboard.
+</Note>
+
+## PowerSync Cloud
+
+When using PowerSync Cloud with a Supabase-hosted database, PowerSync can auto-detect your Supabase project from the database connection string and configure authentication automatically.
+
+<Tabs>
+  <Tab title="New JWT Signing Keys (Recommended)">
+    ### Using New JWT Signing Keys
+
+    This is the recommended approach for Supabase projects using asymmetric JWT signing keys.
+
+    1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Client Auth** view.
+
+    2. Enable the **Use Supabase Auth** checkbox.
+
+    3. Leave the **Supabase JWT Secret** field empty (it's not needed for new keys).
+
+    4. Click **Save and Deploy**.
+
+    <Info>
+    PowerSync auto-detects your Supabase project from the database connection string and configures the JWKS URI (`https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json`) and JWT audience (`authenticated`) automatically.
+    </Info>
+  </Tab>
+
+  <Tab title="Legacy JWT Signing Keys">
+    ### Using Legacy JWT Signing Keys
+
+    <Warning>
+    Legacy JWT signing keys use HS256 (symmetric encryption with shared secrets), which is less secure than asymmetric keys. We recommend migrating to [new JWT signing keys](#migrating-from-legacy-to-new-jwt-signing-keys) for better security.
+    </Warning>
+
+    Use this approach if your Supabase project still uses the legacy HS256 symmetric signing keys.
+
+    1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Client Auth** view.
+
+    2. Enable the **Use Supabase Auth** checkbox.
+
+    3. Copy your **JWT Secret** from your Supabase project's [JWT settings](https://supabase.com/dashboard/project/_/settings/jwt).
+
+    4. Paste the secret into the **Supabase JWT Secret (optional) Legacy** field.
+
+    5. Click **Save and Deploy**.
+  </Tab>
+
+  <Tab title="Manual JWKS Configuration">
+    ### Manual JWKS Configuration
+
+    Use manual configuration when PowerSync cannot auto-detect your Supabase project. This happens when:
+    - You're using a non-standard database connection string
+    - You're connecting to a self-hosted Supabase instance
+    - You're using Supabase local development (Docker)
+
+    Steps:
+    1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), go to the **Client Auth** view.
+
+    2. Leave the **Use Supabase Auth** checkbox **unchecked**.
+
+    3. Add a **JWKS URI**, e.g.:
+       ```
+       http://localhost:54321/auth/v1/.well-known/jwks.json
+       ```
+
+    4. Add `authenticated` as an accepted **JWT Audience**.
+
+    5. Click **Save and Deploy**.
+
+<Warning>
+If you skip adding the `authenticated` audience, you will see `PSYNC_S2105` errors ("JWT payload is missing a required claim 'aud'").
+</Warning>
+  </Tab>
+</Tabs>
+
+## Self-Hosted PowerSync
+
+For self-hosted PowerSync instances, configure authentication in your [`config.yaml`](/configuration/powersync-service/self-hosted-instances).
+
+<Tabs>
+  <Tab title="New JWT Signing Keys (Recommended)">
+    ### Using New JWT Signing Keys
+
+    When using a standard Supabase connection string, PowerSync auto-detects your Supabase project:
+
+    ```yaml
+    client_auth:
+      supabase: true
+    ```
+
+    PowerSync will automatically configure:
+    - **JWKS URI**: `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json`
+    - **Audience**: `authenticated`
+
+    You'll see a log message confirming the configuration:
+    ```
+    Configured Supabase Auth with https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json
+    ```
+  </Tab>
+
+  <Tab title="Legacy JWT Signing Keys">
+    ### Using Legacy JWT Signing Keys
+
+    <Warning>
+    Legacy JWT signing keys use HS256 (symmetric encryption with shared secrets), which is less secure than asymmetric keys. We recommend migrating to [new JWT signing keys](#migrating-from-legacy-to-new-jwt-signing-keys) for better security.
+    </Warning>
+
+    For projects using legacy HS256 symmetric signing keys, provide your JWT secret:
+
+    ```yaml
+    client_auth:
+      supabase: true
+      supabase_jwt_secret: your-jwt-secret-here
+    ```
+
+    Get your JWT secret from your Supabase project's [JWT settings](https://supabase.com/dashboard/project/_/settings/jwt).
+  </Tab>
+
+  <Tab title="Manual JWKS Configuration">
+    ### Manual JWKS Configuration
+
+    Use manual configuration in any of these scenarios:
+    - PowerSync cannot detect your Supabase project from the connection string
+    - You're using self-hosted Supabase
+    - You're using Supabase local development (Docker)
+    - You need explicit control over the authentication settings
+
+    ```yaml
+    client_auth:
+      jwks_uri: http://localhost:54321/auth/v1/.well-known/jwks.json
+      audience:
+        - authenticated
+    ```
+    <Note>
+    When using manual configuration, do not set `supabase: true`. Use `jwks_uri` and `audience` directly.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Migrating from Legacy to New JWT Signing Keys
+
+If you're migrating your Supabase project from legacy JWT signing keys to the new asymmetric keys:
+
+### Step 1: Complete the Supabase Migration
+
+Follow **all steps** in [Supabase's JWT signing keys migration guide](https://supabase.com/blog/jwt-signing-keys#start-using-asymmetric-jwts-today), including the **"Rotate to asymmetric JWTs"** step.
+
+<Warning>
+The migration is not complete until you complete the "Rotate to asymmetric JWTs" step in Supabase. Skipping this step will cause authentication failures.
+</Warning>
+
+### Step 2: Update PowerSync Configuration
+
+**For PowerSync Cloud and self-hosted with standard Supabase connections:**
+- No changes required. PowerSync auto-detects and uses the new JWKS endpoint.
+- If you previously provided a legacy JWT secret, you can remove it (it's no longer needed).
+
+**For manual JWKS configurations:**
+- Ensure your **JWKS URI** (`jwks_uri`) points to your Supabase JWKS endpoint.
+- Verify the `authenticated` **JWT Audience** (`audience`) is configured.
+
+### Step 3: Clear Cached Tokens
+
+Have all users sign out and sign back in. This ensures they receive new tokens signed with the asymmetric keys.
+
+## Troubleshooting
+
+Debugging [error codes](/debugging/error-codes):
+
+### `PSYNC_S2101`: Could not find an appropriate key in the keystore
+
+This error indicates PowerSync cannot verify the JWT signature. Common causes:
+
+| Cause | Solution |
+|-------|----------|
+| **Incomplete Supabase migration** | Complete the "Rotate to asymmetric JWTs" step in Supabase's [migration guide](https://supabase.com/blog/jwt-signing-keys#start-using-asymmetric-jwts-today). |
+| **Cached tokens** | Have users sign out and sign back in to get fresh tokens. |
+| **Non-standard connection string** | PowerSync couldn't auto-detect your Supabase project. Use [manual JWKS configuration](#manual-jwks-configuration). |
+| **Wrong JWT secret** | For legacy keys, verify the JWT secret matches your Supabase project settings. |
+
+### `PSYNC_S2105`: JWT payload is missing a required claim "aud"
+
+This error occurs when using manual JWKS configuration without specifying an audience. Add `authenticated` to your audience configuration.
+
+### Auto-detection not working
+
+If PowerSync logs this warning:
+```
+Supabase Auth is enabled, but no Supabase connection string found. Skipping Supabase JWKS URL configuration.
+```
+
+This means PowerSync couldn't detect your Supabase project from the database connection string. Use [manual JWKS configuration](#manual-jwks-configuration) instead.
+
+## Sync Rules / Streams
+
+The Supabase user UUID will be available as:
+* `request.user_id()` in [Sync Rules](/sync/rules/overview)
+* `auth.user_id()` in [Sync Streams](/sync/streams/overview). 
+
+To use a different identifier as the user ID in Sync Rules / Streams (for example, user email), use [Custom Authentication](/configuration/auth/custom).
+

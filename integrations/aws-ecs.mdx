@@ -1,0 +1,669 @@
+---
+title: "Deploy PowerSync on AWS ECS"
+sidebarTitle: "AWS ECS"
+description: "Deploy the PowerSync Service on AWS ECS with Fargate"
+---
+
+[AWS ECS](https://aws.amazon.com/ecs/) with Fargate provides a serverless container orchestration platform for running PowerSync without managing servers.
+
+## Architecture
+
+```mermaid actions={false}
+flowchart TD
+    subgraph vpc["AWS VPC"]
+        subgraph public["Public Subnets"]
+            alb(["Application Load Balancer"])
+            nat(["NAT Gateway"])
+        end
+
+        subgraph private["Private Subnets"]
+            ecs(["ECS Fargate<br/>PowerSync Service"])
+        end
+
+        alb ~~~ ecs
+    end
+
+    ecs --> db(["Source Database<br/>& Bucket Storage"])
+    internet([Internet]) --> alb
+    alb --> ecs
+    ecs -.-> nat
+    nat -.-> internet
+
+    style vpc fill:transparent,stroke:#0066cc,stroke-width:2px
+    style public fill:transparent,stroke:#ff9900,stroke-width:2px
+    style private fill:transparent,stroke:#666,stroke-width:2px
+    style alb fill:transparent,stroke:#e67300,stroke-width:2px
+```
+
+## Prerequisites
+
+- AWS account with permissions for EC2, ECS, ALB, IAM, Secrets Manager
+- AWS CLI installed and configured
+- Source database (Postgres/MongoDB/MySQL/SQL Server) — [see setup guide](/configuration/source-db/setup)
+- Domain name with SSL certificate (recommended)
+
+<Note>
+Throughout this guide, replace placeholders like `YOUR_ACCOUNT_ID`, `YOUR_REGION`, `vpc-xxxxx`, etc. with your actual values.
+</Note>
+
+---
+
+## Step 1: Bucket Storage
+
+PowerSync requires MongoDB or PostgreSQL 14+ for bucket storage. Choose one:
+
+<CardGroup cols={2}>
+  <Card title="MongoDB Atlas (Recommended)" icon="leaf">
+    Managed MongoDB with built-in replication and AWS PrivateLink support
+  </Card>
+  <Card title="Self-Managed MongoDB" icon="server">
+    Full control via EC2 instances with manual replica set configuration
+  </Card>
+</CardGroup>
+
+<AccordionGroup>
+<Accordion title="MongoDB Atlas">
+
+### Setup MongoDB Atlas
+
+<Steps>
+  <Step title="Create Cluster">
+    - Sign up at [MongoDB Atlas](https://www.mongodb.com/cloud/atlas)
+    - Select **AWS** as provider and your region
+    - Choose M10+ for Private Endpoint support
+  </Step>
+
+  <Step title="Configure Private Endpoint (Production)">
+    For production, use AWS PrivateLink for private connectivity. See the detailed setup guide:
+
+    <Card
+      title="MongoDB Atlas Private Endpoints"
+      href="/configuration/source-db/private-endpoints#aws-privatelink-in-mongodb-atlas"
+      icon="link"
+    />
+  </Step>
+
+  <Step title="Create Database User">
+    - Go to **Database Access** → **Add New Database User**
+    - Username: `powersync`
+    - Role: **readWrite** and **dbAdmin** on the database
+  </Step>
+
+  <Step title="Get Connection String">
+    - Go to **Clusters** → **Connect** → **Connect your application**
+    - Copy connection string (format: `mongodb+srv://powersync:PASSWORD@cluster.xxxxx.mongodb.net/`)
+  </Step>
+</Steps>
+
+</Accordion>
+
+<Accordion title="Self-Managed MongoDB">
+
+### Launch EC2 Instances
+
+```bash
+aws ec2 run-instances \
+  --image-id ami-xxxxx \
+  --instance-type t3.medium \
+  --count 3 \
+  --subnet-id subnet-xxxxx \
+  --security-group-ids sg-mongodb-xxxxx \
+  --key-name your-key-pair \
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":100,"VolumeType":"gp3","Encrypted":true}}]'
+```
+
+### Install and Configure MongoDB
+
+On each instance:
+
+```bash
+# Add MongoDB repository
+cat <<EOF | sudo tee /etc/yum.repos.d/mongodb-org-7.0.repo
+[mongodb-org-7.0]
+name=MongoDB Repository
+baseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/7.0/x86_64/
+gpgcheck=1
+enabled=1
+gpgkey=https://pgp.mongodb.com/server-7.0.asc
+EOF
+
+sudo yum install -y mongodb-org
+sudo systemctl enable mongod
+```
+
+Configure replica set in `/etc/mongod.conf`:
+
+```yaml
+storage:
+  dbPath: /var/lib/mongo
+net:
+  port: 27017
+  bindIp: 0.0.0.0
+replication:
+  replSetName: rs0
+security:
+  authorization: enabled
+```
+
+### Initialize Replica Set
+
+Connect to primary and run:
+
+```javascript
+rs.initiate({
+  _id: "rs0",
+  members: [
+    { _id: 0, host: "mongo1-ip:27017" },
+    { _id: 1, host: "mongo2-ip:27017" },
+    { _id: 2, host: "mongo3-ip:27017" }
+  ]
+})
+
+// Create PowerSync user
+use powersync_db
+db.createUser({
+  user: "powersync",
+  pwd: "YOUR_SECURE_PASSWORD",
+  roles: [
+    { role: "readWrite", db: "powersync_db" },
+    { role: "dbAdmin", db: "powersync_db" }
+  ]
+})
+```
+
+</Accordion>
+</AccordionGroup>
+
+---
+
+## Step 2: Configure Source Database
+
+Your application's source database must be configured for PowerSync replication.
+
+<Card
+  title="Source Database Setup Guide"
+  href="/configuration/source-db/setup"
+  icon="database"
+>
+  Follow the guide for your database (Postgres, MongoDB, MySQL, or SQL Server)
+</Card>
+
+For AWS RDS Postgres, ensure:
+- `rds.logical_replication` parameter is set to `1`
+- Instance is rebooted after parameter change
+- See [AWS RDS setup instructions](/configuration/source-db/setup#aws-rds)
+
+---
+
+## Step 3: PowerSync Configuration
+
+Create `powersync.yaml`:
+
+```yaml
+replication:
+  connections:
+    - type: postgresql  # or mongodb, mysql, sqlserver
+      uri: !env PS_DATA_SOURCE_URI
+      sslmode: verify-full  # or 'disable' for VPC-only connections
+
+storage:
+  type: mongodb
+  uri: !env PS_MONGO_URI
+
+port: 8080
+
+sync_rules:
+  content: |
+    bucket_definitions:
+      user_data:
+        parameters: [user_id]
+        data:
+          - SELECT * FROM todos WHERE user_id = token_parameters.user_id
+
+client_auth:
+  jwks_uri: !env PS_JWKS_URL
+  audience: ['your-app-id']
+
+telemetry:
+  disable_telemetry_sharing: false
+```
+
+<Note>
+For detailed configuration options, see the [Self-Hosted Configuration Guide](/configuration/powersync-service/self-hosted-instances).
+</Note>
+
+---
+
+## Step 4: VPC and Security Groups
+
+### Create Security Groups
+
+```bash
+# ALB security group
+aws ec2 create-security-group \
+  --group-name powersync-alb-sg \
+  --description "PowerSync ALB" \
+  --vpc-id vpc-xxxxx
+
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-alb-xxxxx \
+  --protocol tcp --port 443 --cidr 0.0.0.0/0
+
+# ECS security group
+aws ec2 create-security-group \
+  --group-name powersync-ecs-sg \
+  --description "PowerSync ECS tasks" \
+  --vpc-id vpc-xxxxx
+
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-ecs-xxxxx \
+  --protocol tcp --port 8080 --source-group sg-alb-xxxxx
+
+# Allow ECS to reach databases
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-mongodb-xxxxx \
+  --protocol tcp --port 27017 --source-group sg-ecs-xxxxx
+```
+
+### NAT Gateway (Required)
+
+ECS tasks need outbound internet for ECR and JWKS URLs:
+
+```bash
+# Create Elastic IP
+aws ec2 allocate-address --domain vpc
+
+# Create NAT Gateway
+aws ec2 create-nat-gateway \
+  --subnet-id subnet-pub-xxxxx \
+  --allocation-id eipalloc-xxxxx
+
+# Update route table
+aws ec2 create-route \
+  --route-table-id rtb-private-xxxxx \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id nat-xxxxx
+```
+
+---
+
+## Step 5: Application Load Balancer
+
+### Request SSL Certificate
+
+```bash
+aws acm request-certificate \
+  --domain-name powersync.yourdomain.com \
+  --validation-method DNS \
+  --region YOUR_REGION
+```
+
+Add DNS validation record and wait for **Issued** status.
+
+### Create ALB
+
+```bash
+# Create load balancer
+aws elbv2 create-load-balancer \
+  --name powersync-alb \
+  --subnets subnet-pub-xxxxx subnet-pub-yyyyy \
+  --security-groups sg-alb-xxxxx \
+  --scheme internet-facing
+
+# Create target group
+aws elbv2 create-target-group \
+  --name powersync-tg \
+  --protocol HTTP \
+  --port 8080 \
+  --vpc-id vpc-xxxxx \
+  --target-type ip \
+  --health-check-path /probes/liveness \
+  --health-check-interval-seconds 30
+
+# Create HTTPS listener
+aws elbv2 create-listener \
+  --load-balancer-arn ALB_ARN \
+  --protocol HTTPS \
+  --port 443 \
+  --certificates CertificateArn=CERT_ARN \
+  --default-actions Type=forward,TargetGroupArn=TG_ARN
+
+# Configure WebSocket support
+aws elbv2 modify-load-balancer-attributes \
+  --load-balancer-arn ALB_ARN \
+  --attributes Key=idle_timeout.timeout_seconds,Value=3600
+```
+
+---
+
+## Step 6: Secrets Manager
+
+```bash
+# Store config (base64 encoded)
+aws secretsmanager create-secret \
+  --name powersync/config-b64 \
+  --secret-string "$(base64 -i powersync.yaml)"
+
+# Store connection strings
+aws secretsmanager create-secret \
+  --name powersync/data-source-uri \
+  --secret-string "postgresql://user:pass@host:5432/db"
+
+aws secretsmanager create-secret \
+  --name powersync/storage-uri \
+  --secret-string "mongodb://user:pass@host:27017/?replicaSet=rs0"
+
+aws secretsmanager create-secret \
+  --name powersync/jwks-url \
+  --secret-string "https://your-auth-provider.com/.well-known/jwks.json"
+```
+
+---
+
+## Step 7: ECS Task Definition
+
+### Create IAM Role
+
+```bash
+aws iam create-role \
+  --role-name PowerSyncTaskExecutionRole \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+
+aws iam attach-role-policy \
+  --role-name PowerSyncTaskExecutionRole \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+# Add Secrets Manager access
+aws iam put-role-policy \
+  --role-name PowerSyncTaskExecutionRole \
+  --policy-name SecretsAccess \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/*"
+    }]
+  }'
+```
+
+### Create Cluster
+
+```bash
+aws ecs create-cluster \
+  --cluster-name powersync-cluster \
+  --capacity-providers FARGATE
+```
+
+### Register Task Definition
+
+Save as `task-definition.json`:
+
+```json
+{
+  "family": "powersync-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/PowerSyncTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "powersync",
+      "image": "journeyapps/powersync-service:latest",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 8080, "protocol": "tcp"}
+      ],
+      "environment": [
+        {"name": "PS_PORT", "value": "8080"},
+        {"name": "NODE_OPTIONS", "value": "--max-old-space-size=3200"}
+      ],
+      "secrets": [
+        {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/config-b64"},
+        {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/data-source-uri"},
+        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/storage-uri"},
+        {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/jwks-url"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/powersync",
+          "awslogs-region": "YOUR_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}
+```
+
+```bash
+aws ecs register-task-definition --cli-input-json file://task-definition.json
+```
+
+<Note>
+Pin to a specific version for production. Check [Docker Hub](https://hub.docker.com/r/journeyapps/powersync-service/tags) for latest releases.
+</Note>
+
+---
+
+## Step 8: Deploy ECS Service
+
+```bash
+aws ecs create-service \
+  --cluster powersync-cluster \
+  --service-name powersync-service \
+  --task-definition powersync-service:1 \
+  --desired-count 2 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={
+    subnets=[subnet-xxxxx,subnet-yyyyy],
+    securityGroups=[sg-ecs-xxxxx],
+    assignPublicIp=DISABLED
+  }" \
+  --load-balancers "targetGroupArn=TG_ARN,containerName=powersync,containerPort=8080" \
+  --health-check-grace-period-seconds 120 \
+  --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+```
+
+### Verify Deployment
+
+```bash
+# Check service status
+aws ecs describe-services \
+  --cluster powersync-cluster \
+  --services powersync-service
+
+# Test endpoint
+curl https://powersync.yourdomain.com/probes/liveness
+
+# View logs
+aws logs tail /ecs/powersync --follow
+```
+
+---
+
+## Production Enhancements
+
+### Daily Compact Job (Recommended)
+
+Create a scheduled ECS task to optimize bucket storage:
+
+<Accordion title="Compact Job Configuration">
+
+Create `compact-task-definition.json`:
+
+```json
+{
+  "family": "powersync-compact",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/PowerSyncTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "powersync-compact",
+      "image": "journeyapps/powersync-service:latest",
+      "command": ["compact"],
+      "essential": true,
+      "environment": [
+        {"name": "NODE_OPTIONS", "value": "--max-old-space-size=1600"}
+      ],
+      "secrets": [
+        {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/config-b64"},
+        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:powersync/storage-uri"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/powersync-compact",
+          "awslogs-region": "YOUR_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+```
+
+Schedule with EventBridge (daily at 2 AM UTC):
+
+```bash
+aws ecs register-task-definition --cli-input-json file://compact-task-definition.json
+
+aws events put-rule \
+  --name powersync-compact-daily \
+  --schedule-expression "cron(0 2 * * ? *)"
+
+aws events put-targets \
+  --rule powersync-compact-daily \
+  --targets '[{
+    "Id": "powersync-compact",
+    "Arn": "arn:aws:ecs:YOUR_REGION:YOUR_ACCOUNT_ID:cluster/powersync-cluster",
+    "RoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsEventsRole",
+    "EcsParameters": {
+      "TaskDefinitionArn": "arn:aws:ecs:YOUR_REGION:YOUR_ACCOUNT_ID:task-definition/powersync-compact",
+      "TaskCount": 1,
+      "LaunchType": "FARGATE",
+      "NetworkConfiguration": {
+        "awsvpcConfiguration": {
+          "Subnets": ["subnet-xxxxx", "subnet-yyyyy"],
+          "SecurityGroups": ["sg-ecs-xxxxx"],
+          "AssignPublicIp": "DISABLED"
+        }
+      }
+    }
+  }]'
+```
+
+</Accordion>
+
+### High Availability Setup
+
+For production deployments, separate replication and API processes:
+
+<Accordion title="HA Architecture">
+
+**Benefits:**
+- Rolling deploys without sync rule lock errors
+- Independent API scaling (~100 connections per container)
+- Isolated replication process
+
+**Replication Task** (1 instance):
+
+```json
+{
+  "family": "powersync-replication",
+  "containerDefinitions": [{
+    "name": "powersync-replication",
+    "image": "journeyapps/powersync-service:latest",
+    "command": ["start", "-r", "sync"]
+  }]
+}
+```
+
+**API Task** (2+ instances with auto-scaling):
+
+```json
+{
+  "family": "powersync-api",
+  "containerDefinitions": [{
+    "name": "powersync-api",
+    "image": "journeyapps/powersync-service:latest",
+    "command": ["start", "-r", "api"]
+  }]
+}
+```
+
+</Accordion>
+
+### Auto Scaling
+
+```bash
+aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 2 \
+  --max-capacity 10
+
+aws application-autoscaling put-scaling-policy \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-name cpu-scaling \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration '{
+    "TargetValue": 70.0,
+    "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"}
+  }'
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Solution |
+|---------|----------|
+| Tasks fail health checks | Check logs: `aws logs tail /ecs/powersync`<br/>Increase `startPeriod` in health check |
+| 502 Bad Gateway | Verify security groups allow ALB→ECS on port 8080 |
+| WebSocket disconnects | Increase ALB idle timeout to 3600s |
+| Can't pull image | Verify NAT Gateway for internet access from private subnet |
+| Secrets not loaded | Check IAM role has `secretsmanager:GetSecretValue` permission |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Connect Clients" icon="plug" href="/client-sdks/overview">
+    Integrate PowerSync into your mobile/web apps
+  </Card>
+  <Card title="Configure Auth" icon="key" href="/configuration/auth/overview">
+    Set up JWT authentication for your clients
+  </Card>
+</CardGroup>
+
+## Resources
+
+- [PowerSync Self-Hosting Guide](/configuration/powersync-service/self-hosted-instances)
+- [AWS ECS Best Practices](https://docs.aws.amazon.com/AmazonECS/latest/bestpracticesguide/)
+- [Self-Host Demo Repository](https://github.com/powersync-ja/self-host-demo)

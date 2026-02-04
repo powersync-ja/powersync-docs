@@ -186,7 +186,7 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
       <Tab title="Self-Hosted">
         Self-hosted PowerSync runs via Docker. 
         
-        Below is a minimal example of setting up the PowerSync Service with Postgres as the bucket storage database and example Sync Rules. MongoDB is also supported as a bucket storage database (docs are linked at the end of this step), and you will learn more about Sync Rules in a next step.
+        Below is a minimal example of setting up the PowerSync Service with Postgres as the bucket storage database and example Sync Streams. MongoDB is also supported as a bucket storage database (docs are linked at the end of this step), and you will learn more about Sync Streams in a later step.
 
         ```bash
         # 1. Create a directory for your config
@@ -235,14 +235,18 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
           uri: postgresql://powersync_storage_user:my_secure_user_password@powersync-postgres-storage:5432/powersync_storage
           sslmode: disable  # Use 'disable' only for local/private networks
 
-        # Sync Rules (defined in a later step)
-        sync_rules:
+        # Sync Streams (defined in a later step)
+        sync_config:
           content: |
-            bucket_definitions:
-              global:
-                data:
-                  - SELECT * FROM lists
-                  - SELECT * FROM todos
+            config:
+              edition: 2
+            streams:
+              all_lists:
+                query: SELECT * FROM lists
+                auto_subscribe: true
+              all_todos:
+                query: SELECT * FROM todos
+                auto_subscribe: true
         ```
 
         <Warning>
@@ -345,85 +349,105 @@ The next step is to connect your PowerSync Service instance to your source datab
 </Tabs>
 
 
-# 4. Define Basic Sync Rules
+# 4. Define Sync Streams
 
-Sync Rules control which data gets synced to which users/devices. They consist of SQL-like queries organized into "buckets" (groupings of data). Each PowerSync Service instance has a Sync Rules definition in YAML format.
+Sync Streams control which data gets synced to which users/devices. They use SQL-like queries to define what data to sync. Each PowerSync Service instance has a Sync Streams definition in YAML format.
 
-We recommend starting with a simple **global bucket** that syncs data to all users. This is the simplest way to get started.
+We recommend starting with simple **auto-subscribed streams** that sync data to all users by default. This is the simplest way to get started.
 
 <CodeGroup>
       ```yaml Postgres Example
-      bucket_definitions:
-        global:
-          data:
-            - SELECT * FROM todos
-            - SELECT * FROM lists WHERE archived = false
+      config:
+        edition: 2
+      streams:
+        all_todos:
+          query: SELECT * FROM todos
+          auto_subscribe: true
+        unarchived_lists:
+          query: SELECT * FROM lists WHERE archived = false
+          auto_subscribe: true
       ```
 
       ```yaml MongoDB Example
-      bucket_definitions:
-        global:
-          data:
+      config:
+        edition: 2
+      streams:
+        all_lists:
             # Note that MongoDB uses “_id” as the name of the ID field in collections whereas
             # PowerSync uses “id” in its client-side database. This is why the below syntax
-            # should always be used in the data queries when pairing PowerSync with MongoDB.
-            - SELECT _id as id, * FROM lists
-            - SELECT _id as id, * FROM todos WHERE archived = false
+            # should always be used in queries when pairing PowerSync with MongoDB.
+          query: SELECT _id as id, * FROM lists
+          auto_subscribe: true
+        unarchived_todos:
+          query: SELECT _id as id, * FROM todos WHERE archived = false
+          auto_subscribe: true
       ```
 
       ```yaml MySQL Example
-      bucket_definitions:
-        global:
-          data:
-            - SELECT * FROM todos
-            - SELECT * FROM lists WHERE archived = 0
+      config:
+        edition: 2
+      streams:
+        all_todos:
+          query: SELECT * FROM todos
+          auto_subscribe: true
+        unarchived_lists:
+          query: SELECT * FROM lists WHERE archived = 0
+          auto_subscribe: true
       ```
 
       ```yaml SQL Server Example
-      bucket_definitions:
-        global:
-          data:
-            - SELECT * FROM todos
-            - SELECT * FROM lists WHERE archived = 0
+      config:
+        edition: 2
+      streams:
+        all_todos:
+          query: SELECT * FROM todos
+          auto_subscribe: true
+        unarchived_lists:
+          query: SELECT * FROM lists WHERE archived = 0
+          auto_subscribe: true
       ```
     </CodeGroup>
 
 
-### Deploy Sync Rules
+### Deploy Sync Streams
 
 <Tabs>
       <Tab title="PowerSync Cloud">
         In the [PowerSync Dashboard](https://dashboard.powersync.com/):
 
         1. Select your project and instance
-        2. Go to the **Sync Rules** view
+        2. Go to the **Sync Streams** view
         3. Edit the YAML directly in the dashboard
-        4. Click **Deploy** to validate and deploy your Sync Rules
+        4. Click **Deploy** to validate and deploy your Sync Streams
       </Tab>
 
       <Tab title="Self-Hosted">
         Add to your `config.yaml`:
 
         ```yaml
-        sync_rules:
+        sync_config:
           content: |
-            bucket_definitions:
-              global:
-                data:
-                  - SELECT * FROM todos
-                  - SELECT * FROM lists WHERE archived = false
+            config:
+              edition: 2
+            streams:
+              all_todos:
+                query: SELECT * FROM todos
+                auto_subscribe: true
+              unarchived_lists:
+                query: SELECT * FROM lists WHERE archived = false
+                auto_subscribe: true
         ```
       </Tab>
     </Tabs>
 
 <Note>
-  **Note**: Table/collection names within your Sync Rules must match the table names defined in your client-side schema (defined in a later step below).
+  **Note**: Table/collection names within your Sync Streams must match the table names defined in your client-side schema (defined in a later step below).
 </Note>
 
 <Tip>
   **Learn More**
   
-  For more details on Sync Rules usage, see the [Sync Rules documentation](/sync/rules/overview).
+  For more details on Sync Streams usage, see the [Sync Streams documentation](/sync/streams/overview).
 </Tip>
 
 
@@ -432,7 +456,7 @@ We recommend starting with a simple **global bucket** that syncs data to all use
 For quick development and testing, you can generate a temporary development token instead of implementing full authentication.
 
 You'll use this token for two purposes:
-- **Testing with the _Sync Diagnostics Client_** (in the next step) to verify your setup and Sync Rules
+- **Testing with the _Sync Diagnostics Client_** (in the next step) to verify your setup and Sync Streams
 - **Connecting your app** (in a later step) to test the client SDK integration
 
 <Tabs>
@@ -441,7 +465,7 @@ You'll use this token for two purposes:
     2. Go to the **Client Auth** view
     3. Check the **Development tokens** setting and save your changes
     4. Click the **Connect** button in the top bar
-    5. **Enter token subject**: Since you're starting with just a simple global bucket in your Sync Rules that syncs all data to all users (as we recommended in the previous step), you can just put something like `test-user` as the token subject (which would normally be the user ID you want to test with).
+    5. **Enter token subject**: Since you're starting with simple auto-subscribed Sync Streams that sync all data to all users (as we recommended in the previous step), you can just put something like `test-user` as the token subject (which would normally be the user ID you want to test with).
     6. Click **Generate token** and copy the token
 
     <Note>
@@ -493,7 +517,7 @@ The Sync Diagnostics Client will connect to your PowerSync Service instance and 
 <Check>
   **Checkpoint:**
 
-  Inspect your global bucket and synced tables in the Sync Diagnostics Client — these should match the Sync Rules you [defined previously](#4-define-basic-sync-rules). This confirms your setup is working correctly before integrating the client SDK into your app.
+  Inspect your synced tables in the Sync Diagnostics Client — these should match the Sync Streams you [defined previously](#4-define-sync-streams). This confirms your setup is working correctly before integrating the client SDK into your app.
 </Check>
 
 # 7. Use the Client SDK
@@ -544,7 +568,7 @@ import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 
 <SdkClientSideSchema />
 
-_PowerSync Cloud:_ The easiest way to generate your schema is using the [PowerSync Dashboard](https://dashboard.powersync.com/). Click the **Connect** button in the top bar to generate the client-side schema based on your Sync Rules in your preferred language.
+_PowerSync Cloud:_ The easiest way to generate your schema is using the [PowerSync Dashboard](https://dashboard.powersync.com/). Click the **Connect** button in the top bar to generate the client-side schema based on your Sync Streams in your preferred language.
 
 Here's an example schema for a simple `todos` table:
 
@@ -559,12 +583,12 @@ import SdkSchemaExamples from '/snippets/sdk-schema-examples.mdx';
 <Tip>
   **Learn More**
   
-  The client-side schema uses three column types: `text`, `integer`, and `real`. These map directly to values from your Sync Rules and are automatically cast if needed. For details on how backend database types map to SQLite types, see [Types](/sync/types).
+  The client-side schema uses three column types: `text`, `integer`, and `real`. These map directly to values from your Sync Streams and are automatically cast if needed. For details on how backend database types map to SQLite types, see [Types](/sync/types).
 </Tip>
 
 ### Instantiate the PowerSync Database
 
-Now that you have your client-side schema defined, instantiate the PowerSync database in your app. This creates the client-side SQLite database that will be kept in sync with your source database based on your Sync Rules configuration.
+Now that you have your client-side schema defined, instantiate the PowerSync database in your app. This creates the client-side SQLite database that will be kept in sync with your source database based on your Sync Streams configuration.
 
 import SdkInstantiateDbExamples from '/snippets/sdk-instantiate-db-examples.mdx';
 
@@ -1050,7 +1074,7 @@ For production deployments, you'll need to:
 
 ### Additional Resources
 
-- Learn more about [Sync Rules](/sync/rules/overview) for advanced data filtering
+- Learn more about [Sync Streams](/sync/streams/overview) for advanced data filtering and on-demand syncing
 - Explore [Live Queries / Watch Queries](/client-sdks/watch-queries) for reactive UI updates
 - Check out [Example Projects](/intro/examples) for complete implementations
 - Review the [Client SDK References](/client-sdks/overview) for client-side platform-specific details

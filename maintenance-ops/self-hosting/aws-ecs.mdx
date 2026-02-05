@@ -10,23 +10,25 @@ description: "Guide to deploying PowerSync on AWS ECS with Fargate"
 
 Before deploying PowerSync on AWS ECS, ensure you have:
 
-- AWS account with permissions for EC2, ECS, ALB, IAM, Secrets Manager
+- AWS account with permissions for EC2, ECS, ALB, IAM and Secrets Manager
 - AWS CLI installed and configured
-- Understanding of [deployment architecture](/maintenance-ops/self-hosting/deployment-architecture) for production vs development setup
+- Understanding of the [deployment architecture](/maintenance-ops/self-hosting/deployment-architecture) for production vs development setup
 
 ## 1. PowerSync Configuration
 
-Create your `powersync.yaml` configuration file following the [Self-Hosted Configuration Guide](/configuration/powersync-service/self-hosted-instances). Your configuration must include:
+Create your `powersync.yaml` configuration file following the [Self-Hosted Configuration Guide](/configuration/powersync-service/self-hosted-instances). 
+
+Your configuration must include:
 
 - [Sync Rules](/sync/rules/overview): Define which data to sync to clients
 - [Client Auth](/configuration/auth/overview): Your authentication provider's JWKS URI
 - [Source Database](/configuration/source-db/setup): Connection details for your source database
-- **Bucket Storage**: Connection details for your bucket storage database (MongoDB or Postgres)
+- [Bucket Storage](/configuration/powersync-service/self-hosted-instances#bucket-storage-database): Connection details for your bucket storage database (MongoDB or Postgres)
   <Tabs>
 
   <Tab title="MongoDB Atlas">
 
-  For bucket storage, we recommend configuring **an AWS PrivateLink** to establish a secure, private connection between your ECS tasks and MongoDB Atlas that doesn't traverse the public internet.
+  For bucket storage, we recommend configuring an **AWS PrivateLink** to establish a secure, private connection between your ECS tasks and MongoDB Atlas that doesn't traverse the public internet.
 
   Follow the [AWS PrivateLink guide for MongoDB Atlas](https://aws.amazon.com/blogs/apn/connecting-applications-securely-to-a-mongodb-atlas-data-plane-with-aws-privatelink/) to configure the VPC endpoint and update your MongoDB connection string to use the private endpoint. As seen in the [Secrets Manager setup](#5-secrets-manager), use the updated connection string in your `PS_MONGO_URI` secret.
   </Tab>
@@ -433,7 +435,7 @@ echo "Validation Value: $VALIDATION_VALUE"
 <Tabs>
 <Tab title="External DNS Provider">
 
-Add the CNAME record using your DNS provider's management console:
+Add the `CNAME` record using your DNS provider's management console:
 
 | Type | Name | Value | TTL |
 |------|------|-------|-----|
@@ -444,7 +446,7 @@ Add the CNAME record using your DNS provider's management console:
 
 
 <Tab title="Route 53 DNS">
-Add the CNAME record using AWS CLI:
+Add the `CNAME` record using AWS CLI:
 
 ```bash
 aws route53 change-resource-record-sets \
@@ -542,7 +544,7 @@ echo "ALB Zone: $ALB_ZONE"
 
 <Tabs>
 <Tab title="External DNS Provider">
-Create a CNAME record pointing to the ALB DNS name.
+Create a `CNAME` record pointing to the ALB DNS name.
 
 | Type  | Name                      | Value      | TTL |
 |-------|---------------------------|------------|-----|
@@ -551,7 +553,7 @@ Create a CNAME record pointing to the ALB DNS name.
 </Tab>
 
 <Tab title="Using Route 53">
-Create an alias A record pointing to the ALB:
+Create an alias `A` record pointing to the ALB:
 
 ```bash
 aws route53 change-resource-record-sets \
@@ -728,9 +730,9 @@ Create the ECS service to run PowerSync tasks
 
 <Tab title="High Availability Setup">
 
-For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This prevents sync rule lock errors during deployments and allows independent scaling of API containers.
+For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This prevents Sync Rule lock errors during deployments and allows independent scaling of API containers.
 
-The task definitions below allocate **2 vCPU and 4GB memory** per container, which is a good starting point. You can adjust resources based on your workload - see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended minimum: 1 vCPU, 1GB memory).
+The task definitions below allocate **2 vCPU and 4GB memory** per container, which is a good starting point. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended minimum: 1 vCPU, 1GB memory).
 
 **Step 1: Create Replication Task Definition**
 
@@ -828,7 +830,7 @@ EOF
 aws ecs register-task-definition --cli-input-json file://api-task-definition.json
 ```
 
-**Step 3: Deploy Replication Service (1 instance)**
+**Step 3: Deploy Replication Service (1 Instance)**
 
 ```bash
 aws ecs create-service \
@@ -845,7 +847,7 @@ aws ecs create-service \
   --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
 ```
 
-**Step 4: Deploy API Service (2+ instances)**
+**Step 4: Deploy API Service (2+ Instances)**
 
 ```bash
 aws ecs create-service \
@@ -901,7 +903,7 @@ aws logs tail /ecs/powersync-replication --follow
 
 ### Basic Deployment
 
-This basic setup runs both replication and API processes in the same container. Running multiple instances (`desired-count > 1`) will cause **sync rule lock errors during rolling updates** when deploying new task definitions.
+This basic setup runs both replication and API processes in the same container. Running multiple instances (`desired-count > 1`) will cause **Sync Rule lock errors during rolling updates** when deploying new task definitions.
 
 ```bash
 aws ecs create-service \
@@ -1061,7 +1063,7 @@ aws events put-targets \
 ### Auto Scaling
 
 <Info>
-**High Availability Setup**: If you deployed using the HA setup, configure autoscaling for the `powersync-api` service instead of `powersync-service`. The replication service should remain at 1 instance.
+**High Availability Setup**: If you deployed using the HA setup, configure autoscaling for the `powersync-api` service instead of `powersync-service`. The replication service (`powersync-replication`) should remain at 1 instance.
 </Info>
 
 ```bash
@@ -1093,14 +1095,10 @@ aws application-autoscaling put-scaling-policy \
 | WebSocket disconnects | Verify ALB idle timeout is 3600s (set in [Step 3](#3-application-load-balancer)) |
 | Can't pull image | Verify NAT Gateway exists and route table configured correctly<br/>Check NAT Gateway has internet access |
 | Secrets not loaded | Check IAM role has `secretsmanager:GetSecretValue` permission<br/>Verify secrets exist: `aws secretsmanager list-secrets` |
-| Sync rule lock errors during deploy | Using multiple instances without HA setup<br/>Use [High Availability Setup](#high-availability-setup) for production |
+| Sync Rule lock errors during deploy | Using multiple instances without HA setup<br/>Use [High Availability Setup](#high-availability-setup) for production |
 | CIDR block conflicts | Adjust CIDR blocks in [Step 2](#2-vpc-and-networking-setup) to match available VPC address space |
 | Certificate validation fails | Verify DNS nameservers are updated and propagated<br/>Check validation CNAME record exists in Route 53 |
 
-## Next Steps
-
-- Integrate PowerSync with your applications using our [Client SDKs](/client-sdks/overview)
-- Configure authentication with JWT providers in the [Auth Configuration Guide](/configuration/auth/overview)
 
 ### Additional Resources
 

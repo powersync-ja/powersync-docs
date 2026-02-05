@@ -1,6 +1,218 @@
 ---
-title: "Using CTEs"
-description: Reuse common query patterns across multiple Sync Streams using Common Table Expressions (CTEs).
+title: "Common Table Expressions (CTEs)"
+description: Reuse common query patterns across multiple streams to simplify complex configurations and improve efficiency.
 ---
 
-todo
+When multiple streams need the same filtering logic, you can define it once using a Common Table Expression (CTE) and reuse it everywhere. This keeps your configuration DRY and makes it easier to maintain.
+
+## Why Use CTEs
+
+Consider an app where users belong to organizations. Many streams need to filter by the user's organization:
+
+```yaml
+# Without CTEs - repetitive and hard to maintain
+streams:
+  org_projects:
+    query: |
+      SELECT * FROM projects 
+      WHERE org_id IN (SELECT org_id FROM org_members WHERE user_id = auth.user_id())
+  
+  org_repositories:
+    query: |
+      SELECT * FROM repositories 
+      WHERE org_id IN (SELECT org_id FROM org_members WHERE user_id = auth.user_id())
+  
+  org_settings:
+    query: |
+      SELECT * FROM settings 
+      WHERE org_id IN (SELECT org_id FROM org_members WHERE user_id = auth.user_id())
+```
+
+The same subquery appears three times. If the membership logic changes, you'd need to update all three. CTEs solve this:
+
+```yaml
+# With CTEs - define once, use everywhere
+with:
+  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+
+streams:
+  org_projects:
+    query: SELECT * FROM projects WHERE org_id IN user_orgs
+  
+  org_repositories:
+    query: SELECT * FROM repositories WHERE org_id IN user_orgs
+  
+  org_settings:
+    query: SELECT * FROM settings WHERE org_id IN user_orgs
+```
+
+## Defining CTEs
+
+CTEs are defined in a `with` block. Each CTE has a name and a SELECT query:
+
+```yaml
+with:
+  cte_name: SELECT columns FROM table WHERE conditions
+```
+
+The CTE query can include any filtering logic, including parameters:
+
+```yaml
+with:
+  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+  active_projects: SELECT id FROM projects WHERE archived = false
+```
+
+## Using CTEs in Queries
+
+Once defined, use a CTE name anywhere you'd use a subquery. There are two syntaxes:
+
+**Short-hand syntax** (recommended for simple cases):
+
+```yaml
+streams:
+  projects:
+    query: SELECT * FROM projects WHERE org_id IN user_orgs
+```
+
+**Explicit subquery syntax** (when you need to select specific columns):
+
+```yaml
+streams:
+  projects:
+    query: SELECT * FROM projects WHERE org_id IN (SELECT org_id FROM user_orgs)
+```
+
+Both forms work the same way. The short-hand `IN cte_name` is equivalent to `IN (SELECT * FROM cte_name)`.
+
+## Global vs Stream-Scoped CTEs
+
+### Global CTEs
+
+Define CTEs at the top level to make them available to all streams:
+
+```yaml
+with:
+  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+
+streams:
+  projects:
+    query: SELECT * FROM projects WHERE org_id IN user_orgs
+  
+  tasks:
+    query: SELECT * FROM tasks WHERE project_id IN (SELECT id FROM projects WHERE org_id IN user_orgs)
+```
+
+### Stream-Scoped CTEs
+
+Define CTEs inside a stream to limit their scope to that stream:
+
+```yaml
+streams:
+  project_data:
+    with:
+      accessible_projects: |
+        SELECT id FROM projects 
+        WHERE org_id IN (SELECT org_id FROM org_members WHERE user_id = auth.user_id())
+    queries:
+      - SELECT * FROM projects WHERE id IN accessible_projects
+      - SELECT * FROM tasks WHERE project_id IN accessible_projects
+      - SELECT * FROM comments WHERE project_id IN accessible_projects
+```
+
+Stream-scoped CTEs are useful when:
+- The CTE is only relevant to one stream
+- You want to keep related logic together
+- You're using [multiple queries per stream](#combining-with-multiple-queries)
+
+## Combining with Multiple Queries
+
+CTEs work well with the `queries` feature (multiple queries per stream). This lets you share both the CTE and the bucket:
+
+```yaml
+streams:
+  user_data:
+    with:
+      my_org: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+    queries:
+      - SELECT * FROM projects WHERE org_id IN my_org
+      - SELECT * FROM repositories WHERE org_id IN my_org
+      - SELECT * FROM team_members WHERE org_id IN my_org
+```
+
+All three queries share:
+1. The CTE definition (no repeated subquery logic)
+2. The same bucket (efficient sync, no duplicate data)
+
+See [Multiple Queries per Stream](/sync/streams/queries#multiple-queries-per-stream) for more details.
+
+## Complete Example
+
+A full configuration showing CTEs in practice:
+
+```yaml
+config:
+  edition: 2
+
+with:
+  # User's organizations (used in multiple streams)
+  user_orgs: |
+    SELECT org_id FROM org_memberships WHERE user_id = auth.user_id()
+  
+  # User's accessible projects (combines org membership with project access)
+  accessible_projects: |
+    SELECT id FROM projects 
+    WHERE org_id IN user_orgs 
+      OR id IN (SELECT project_id FROM project_shares WHERE shared_with = auth.user_id())
+
+streams:
+  # Organization-level data (auto-sync)
+  organizations:
+    query: SELECT * FROM organizations WHERE id IN user_orgs
+    auto_subscribe: true
+  
+  projects:
+    query: SELECT * FROM projects WHERE id IN accessible_projects
+    auto_subscribe: true
+  
+  # Project details (on-demand with authorization)
+  project_tasks:
+    query: |
+      SELECT * FROM tasks 
+      WHERE project_id = subscription.parameter('project_id')
+        AND project_id IN accessible_projects
+  
+  project_files:
+    query: |
+      SELECT * FROM files 
+      WHERE project_id = subscription.parameter('project_id')
+        AND project_id IN accessible_projects
+```
+
+## Limitations
+
+**CTEs cannot reference other CTEs.** Each CTE must be self-contained:
+
+```yaml
+# This won't work - cte2 cannot reference cte1
+with:
+  cte1: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+  cte2: SELECT id FROM projects WHERE org_id IN cte1  # Error!
+```
+
+If you need to chain filters, use nested subqueries in your stream query instead:
+
+```yaml
+with:
+  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+
+streams:
+  tasks:
+    query: |
+      SELECT * FROM tasks 
+      WHERE project_id IN (
+        SELECT id FROM projects WHERE org_id IN user_orgs
+      )
+```
+
+**CTE names take precedence over table names.** If you define a CTE with the same name as a database table, the CTE will be used. Choose distinct names to avoid confusion.

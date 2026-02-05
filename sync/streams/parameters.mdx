@@ -1,0 +1,145 @@
+---
+title: "Using Parameters"
+description: Filter data dynamically using subscription, auth, and connection parameters in your stream queries.
+---
+
+Parameters let you filter data dynamically based on who the user is and what they need to see. Sync Streams support three types of parameters, each serving a different purpose.
+
+## Subscription Parameters
+
+Passed from the client when it subscribes to a stream. This is the most common way to request specific data on demand.
+
+For example, if a user opens two different todo lists, the client subscribes to the same `list_todos` stream twice, once for each list:
+
+```yaml
+streams:
+  list_todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')
+```
+
+```js
+// User opens List A - subscribe with list_id = 'list-a'
+const subA = await db.syncStream('list_todos', { list_id: 'list-a' }).subscribe();
+
+// User also opens List B - subscribe again with list_id = 'list-b'
+const subB = await db.syncStream('list_todos', { list_id: 'list-b' }).subscribe();
+
+// Both lists' todos are now syncing independently
+```
+
+| Function | Description |
+|----------|-------------|
+| `subscription.parameter('key')` | Get a single parameter by name |
+| `subscription.parameters()` | All parameters as JSON (for dynamic access) |
+
+## Auth Parameters
+
+Claims from the user's JWT token. Use these to filter data based on who the user is. These values are secure and tamper-proof since they come from your authentication system.
+
+```yaml
+streams:
+  my_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+  
+  # Access custom JWT claims
+  org_data:
+    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')
+```
+
+| Function | Description |
+|----------|-------------|
+| `auth.user_id()` | The user's ID (same as `auth.parameter('sub')`) |
+| `auth.parameter('key')` | Get a specific JWT claim |
+| `auth.parameters()` | Full JWT payload as JSON |
+
+## Connection Parameters
+
+Specified "globally" at the connection level, before any streams are subscribed. These are the equivalent of [Client Parameters](/sync/rules/client-parameters) in Sync Rules. Use them when you need a value that applies across all streams for the session.
+
+```yaml
+streams:
+  config:
+    query: SELECT * FROM config WHERE environment = connection.parameter('environment')
+```
+
+| Function | Description |
+|----------|-------------|
+| `connection.parameter('key')` | Get a single connection parameter |
+| `connection.parameters()` | All connection parameters as JSON |
+
+<Note>
+Changing connection parameters requires reconnecting. For values that change during a session, use subscription parameters instead.
+</Note>
+
+## When to Use Each
+
+**Subscription parameters** are the most flexible option. Use them when the client needs to choose what data to sync at runtime. Each subscription operates independently, so a user can have multiple subscriptions to the same stream with different parameters.
+
+**Auth parameters** are the most secure option. Use them when you need to filter data based on who the user is. Since these values come from the signed JWT, they can't be tampered with by the client.
+
+**Connection parameters** apply globally across all streams for the session. Use them for values that rarely change, like environment flags or feature toggles. Keep in mind that changing them requires reconnecting.
+
+For most use cases, subscription parameters are the best choice. They're more flexible and work well with modern app patterns like multiple tabs.
+
+## Expanding JSON Arrays
+
+If your JWT or connection parameters contain an array of values (like project IDs), you can expand them to filter data. There are three equivalent ways to write this:
+
+**Shorthand syntax** (recommended):
+
+```yaml
+streams:
+  # User's JWT contains: { "project_ids": ["proj-1", "proj-2", "proj-3"] }
+  my_projects:
+    query: SELECT * FROM projects WHERE id IN auth.parameter('project_ids')
+    auto_subscribe: true
+```
+
+**JOIN syntax** with table-valued function:
+
+```yaml
+streams:
+  my_projects:
+    query: |
+      SELECT p.* FROM projects p
+        JOIN json_each(auth.parameter('project_ids')) AS allowed
+      WHERE p.id = allowed.value
+    auto_subscribe: true
+```
+
+**Subquery syntax**:
+
+```yaml
+streams:
+  my_projects:
+    query: |
+      SELECT * FROM projects 
+      WHERE id IN (SELECT value FROM json_each(auth.parameter('project_ids')))
+    auto_subscribe: true
+```
+
+All three sync the same data: projects whose IDs are in the user's JWT `project_ids` claim.
+
+<Note>
+`json_each()` only works with auth and connection parameters. You cannot use it on columns from joined tables.
+</Note>
+
+## Combining Parameters
+
+You can combine different parameter types in a single query. A common pattern is using subscription parameters for on-demand data while using auth parameters for authorization:
+
+```yaml
+streams:
+  # User subscribes with a list_id, but can only see lists they have access to
+  list_items:
+    query: |
+      SELECT * FROM items 
+      WHERE list_id = subscription.parameter('list_id')
+        AND list_id IN (
+          SELECT id FROM lists 
+          WHERE owner_id = auth.user_id() 
+             OR id IN (SELECT list_id FROM list_shares WHERE shared_with = auth.user_id())
+        )
+```
+
+See [Writing Queries](/sync/streams/queries) for more filtering techniques using subqueries and joins.

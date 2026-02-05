@@ -1,0 +1,409 @@
+---
+title: "Writing Stream Queries"
+description: Learn how to filter data using parameters and subqueries, select specific columns, and transform data types in your stream queries.
+---
+
+Stream queries define what data syncs to each client. You write SQL-like queries that filter, select, and transform data based on who the user is and what they need to see.
+
+## Basic Queries
+
+The simplest stream query syncs all rows from a table:
+
+```yaml
+streams:
+  categories:
+    query: SELECT * FROM categories
+```
+
+Add a `WHERE` clause to filter:
+
+```yaml
+streams:
+  active_products:
+    query: SELECT * FROM products WHERE active = true
+```
+
+## Filtering by User
+
+Most apps need to sync different data to different users. Use `auth.user_id()` to filter by the authenticated user:
+
+```yaml
+streams:
+  my_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+```
+
+This syncs only the lists owned by the current user. The user ID comes from the `sub` claim in their JWT token.
+
+## On-Demand Data with Parameters
+
+For data that should only sync when the user navigates to a specific screen, use subscription parameters. The client passes these when subscribing:
+
+```yaml
+streams:
+  list_todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')
+```
+
+```js
+// When user opens a specific list, subscribe with that list's ID
+const sub = await db.syncStream('list_todos', { list_id: 'abc123' }).subscribe();
+```
+
+A client can subscribe to the same stream multiple times with different parameters:
+
+```js
+// User has two lists open
+const workSub = await db.syncStream('list_todos', { list_id: 'work' }).subscribe();
+const personalSub = await db.syncStream('list_todos', { list_id: 'personal' }).subscribe();
+// Both sync independently
+```
+
+## Selecting Columns
+
+Select specific columns instead of `*` to reduce data transfer:
+
+```yaml
+streams:
+  users:
+    query: SELECT id, name, email, avatar_url FROM users WHERE org_id = auth.parameter('org_id')
+```
+
+### Renaming Columns
+
+Use `AS` to rename columns in the synced data:
+
+```yaml
+streams:
+  todos:
+    query: SELECT id, name, created_timestamp AS created_at FROM todos
+```
+
+## Using Subqueries
+
+Subqueries let you filter based on related tables. Use `IN (SELECT ...)` to sync data where a foreign key matches rows in another table:
+
+```yaml
+streams:
+  # Sync comments for issues owned by the current user
+  my_issue_comments:
+    query: |
+      SELECT * FROM comments 
+      WHERE issue_id IN (SELECT id FROM issues WHERE owner_id = auth.user_id())
+```
+
+Subqueries can be nested:
+
+```yaml
+streams:
+  # Sync tasks for projects in organizations the user belongs to
+  org_tasks:
+    query: |
+      SELECT * FROM tasks 
+      WHERE project_id IN (
+        SELECT id FROM projects WHERE org_id IN (
+          SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+        )
+      )
+```
+
+### Combining Parameters with Subqueries
+
+A common pattern is using subscription parameters to select what data to sync, while using subqueries for authorization:
+
+```yaml
+streams:
+  # User subscribes with a list_id, but can only see lists they own or that are shared with them
+  list_items:
+    query: |
+      SELECT * FROM items 
+      WHERE list_id = subscription.parameter('list_id')
+        AND list_id IN (
+          SELECT id FROM lists 
+          WHERE owner_id = auth.user_id() 
+             OR id IN (SELECT list_id FROM list_shares WHERE shared_with = auth.user_id())
+        )
+```
+
+## Type Transformations
+
+PowerSync syncs data to SQLite on the client. You may need to transform types for compatibility.
+
+### Cast to Text
+
+```yaml
+streams:
+  items:
+    # Using CAST syntax
+    query: SELECT id, CAST(item_number AS TEXT) AS item_number FROM items
+    
+    # Or using :: syntax
+    # query: "SELECT id, item_number :: text AS item_number FROM items"
+```
+
+### Extract from JSON/JSONB
+
+```yaml
+streams:
+  items:
+    query: SELECT id, metadata_json ->> 'description' AS description FROM items
+```
+
+### Convert Binary to Base64
+
+```yaml
+streams:
+  documents:
+    query: SELECT id, base64(thumbnail) AS thumbnail_base64 FROM documents
+```
+
+### Convert DateTime to Unix Epoch
+
+```yaml
+streams:
+  events:
+    query: SELECT id, unixepoch(created_at) AS created_at FROM events
+```
+
+## Parameter Types
+
+Sync Streams support three types of parameters, each serving a different purpose.
+
+### Subscription Parameters
+
+Passed from the client when it subscribes to a stream. This is the most common way to request specific data.
+
+For example, if a user opens two different todo lists, the client subscribes to the same `list_todos` stream twice, once for each list:
+
+```yaml
+streams:
+  list_todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')
+```
+
+```js
+// User opens List A - subscribe with list_id = 'list-a'
+const subA = await db.syncStream('list_todos', { list_id: 'list-a' }).subscribe();
+
+// User also opens List B - subscribe again with list_id = 'list-b'
+const subB = await db.syncStream('list_todos', { list_id: 'list-b' }).subscribe();
+
+// Both lists' todos are now syncing independently
+```
+
+| Function | Description |
+|----------|-------------|
+| `subscription.parameter('key')` | Get a single parameter by name |
+| `subscription.parameters()` | All parameters as JSON (for dynamic access) |
+
+### Auth Parameters
+
+Claims from the user's JWT token. Use these to filter data based on who the user is. These values are secure and tamper-proof since they come from your authentication system.
+
+```yaml
+streams:
+  my_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+  
+  # Access custom JWT claims
+  org_data:
+    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')
+```
+
+| Function | Description |
+|----------|-------------|
+| `auth.user_id()` | The user's ID (same as `auth.parameter('sub')`) |
+| `auth.parameter('key')` | Get a specific JWT claim |
+| `auth.parameters()` | Full JWT payload as JSON |
+
+### Connection Parameters
+
+Specified "globally" at the connection level, before any streams are subscribed. These are the equivalent of [Client Parameters](/sync/rules/client-parameters) in Sync Rules. Use them when you need a value that applies across all streams for the session.
+
+```yaml
+streams:
+  config:
+    query: SELECT * FROM config WHERE environment = connection.parameter('environment')
+```
+
+| Function | Description |
+|----------|-------------|
+| `connection.parameter('key')` | Get a single connection parameter |
+| `connection.parameters()` | All connection parameters as JSON |
+
+<Note>
+Changing connection parameters requires reconnecting. For values that change during a session, use subscription parameters instead.
+</Note>
+
+### When to Use Each
+
+**Subscription parameters** are the most flexible option. Use them when the client needs to choose what data to sync at runtime. Each subscription operates independently, so a user can have multiple subscriptions to the same stream with different parameters.
+
+**Auth parameters** are the most secure option. Use them when you need to filter data based on who the user is. Since these values come from the signed JWT, they can't be tampered with by the client.
+
+**Connection parameters** apply globally across all streams for the session. Use them for values that rarely change, like environment flags or feature toggles. Keep in mind that changing them requires reconnecting.
+
+For most use cases, subscription parameters are the best choice. They're more flexible and work well with modern app patterns like multiple tabs.
+
+## Advanced Patterns
+
+### Syncing Related Data
+
+When viewing an item, sync its related data (e.g. comments) using separate streams:
+
+```yaml
+streams:
+  issue:
+    query: |
+      SELECT * FROM issues 
+      WHERE id = subscription.parameter('issue_id')
+        AND project_id IN (SELECT project_id FROM project_members WHERE user_id = auth.user_id())
+
+  issue_comments:
+    query: |
+      SELECT * FROM comments 
+      WHERE issue_id = subscription.parameter('issue_id')
+        AND issue_id IN (
+          SELECT id FROM issues WHERE project_id IN (
+            SELECT project_id FROM project_members WHERE user_id = auth.user_id()
+          )
+        )
+```
+
+Subscribe to all when the user opens an issue:
+
+```js
+const issueSub = await db.syncStream('issue', { issue_id: issueId }).subscribe();
+const commentsSub = await db.syncStream('issue_comments', { issue_id: issueId }).subscribe();
+
+await Promise.all([
+  issueSub.waitForFirstSync(),
+  commentsSub.waitForFirstSync()
+]);
+```
+
+### Multi-Tenant Applications
+
+For apps where users belong to organizations, use JWT claims to scope data to the tenant:
+
+```yaml
+streams:
+  # All projects in the user's organization (auto-sync on connect)
+  org_projects:
+    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')
+    auto_subscribe: true
+
+  # Tasks for a specific project (on-demand)
+  project_tasks:
+    query: |
+      SELECT * FROM tasks 
+      WHERE project_id = subscription.parameter('project_id')
+        AND project_id IN (SELECT id FROM projects WHERE org_id = auth.parameter('org_id'))
+```
+
+### Role-Based Access
+
+Filter data based on user roles from JWT claims:
+
+```yaml
+streams:
+  # Admins see all articles, others see only published or their own
+  articles:
+    query: |
+      SELECT * FROM articles 
+      WHERE org_id = auth.parameter('org_id')
+        AND (
+          status = 'published' 
+          OR author_id = auth.user_id()
+          OR auth.parameter('role') = 'admin'
+        )
+    auto_subscribe: true
+```
+
+### Conditional Global Data
+
+Sync data only to users who meet certain criteria. Use a subquery to check user properties:
+
+```yaml
+streams:
+  # Only sync admin settings to users who are admins
+  admin_settings:
+    query: |
+      SELECT * FROM admin_settings 
+      WHERE EXISTS (
+        SELECT 1 FROM users 
+        WHERE id = auth.user_id() AND is_admin = true
+      )
+    auto_subscribe: true
+```
+
+### User's Default or Primary Item
+
+Sync a user's default item based on a preference stored in another table:
+
+```yaml
+streams:
+  # Sync todos from the user's primary list
+  primary_list_todos:
+    query: |
+      SELECT * FROM todos 
+      WHERE list_id IN (
+        SELECT primary_list_id FROM users WHERE id = auth.user_id()
+      )
+    auto_subscribe: true
+```
+
+### Expanding JSON Arrays
+
+If your JWT contains an array of values (like project IDs), use `json_each()` to expand them:
+
+```yaml
+streams:
+  # User's JWT contains: { "project_ids": ["proj-1", "proj-2", "proj-3"] }
+  my_projects:
+    query: |
+      SELECT * FROM projects 
+      WHERE id IN (
+        SELECT value FROM json_each(auth.parameters() -> 'project_ids')
+      )
+    auto_subscribe: true
+```
+
+This syncs all projects whose IDs are listed in the user's JWT `project_ids` claim.
+
+## Complete Example
+
+A full configuration combining multiple techniques:
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # Global reference data (no parameters, auto-subscribed)
+  categories:
+    query: SELECT id, name, CAST(sort_order AS TEXT) AS sort_order FROM categories
+    auto_subscribe: true
+  
+  # User's own items with transformed fields (auth parameter, auto-subscribed)
+  my_items:
+    query: |
+      SELECT 
+        id, 
+        name,
+        metadata ->> 'status' AS status,
+        unixepoch(created_at) AS created_at,
+        base64(thumbnail) AS thumbnail
+      FROM items 
+      WHERE owner_id = auth.user_id()
+    auto_subscribe: true
+  
+  # On-demand item details (subscription parameter with auth check)
+  item_comments:
+    query: |
+      SELECT * FROM comments 
+      WHERE item_id = subscription.parameter('item_id')
+        AND item_id IN (SELECT id FROM items WHERE owner_id = auth.user_id())
+```
+
+See [Supported SQL](/sync/supported-sql) for all available operators and functions.

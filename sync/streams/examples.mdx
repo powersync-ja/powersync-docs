@@ -1,0 +1,144 @@
+---
+title: "Examples & Demos"
+description: Working demo apps and complete Sync Streams examples for common patterns.
+---
+
+Explore working demo apps that demonstrate Sync Streams in action.
+
+## Demo Apps
+
+These demo apps show how to combine auto-subscribe streams (for data that should always be available) with on-demand streams (for data loaded when needed).
+
+<Tabs>
+<Tab title="JS">
+Try the [`react-supabase-todolist-sync-streams`](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist-sync-streams) demo app by following the instructions in the README.
+
+In this demo:
+- The app syncs `lists` by default, so they're available immediately and offline (demonstrating auto-subscribe behavior).
+- The app syncs `todos` on demand when a user opens a list (demonstrating subscription parameters).
+- When the user navigates back to the same list, they won't see a loading state, because the data is cached locally (demonstrating TTL caching behavior).
+</Tab>
+<Tab title="Dart">
+Try the [`supabase-todolist`](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist) demo app, which supports Sync Streams.
+
+Deploy the following Sync Streams configuration:
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  lists:
+    query: SELECT * FROM lists
+    auto_subscribe: true
+  todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list')
+```
+
+In this demo:
+- The app syncs `lists` by default, so they're available immediately and offline (demonstrating auto-subscribe behavior).
+- The app syncs `todos` on demand when a user opens a list (demonstrating subscription parameters).
+- When the user navigates back to the same list, they won't see a loading state, because the data is cached locally (demonstrating TTL caching behavior).
+</Tab>
+<Tab title="Kotlin">
+Kotlin Sync Streams support is available. Demo app coming soon.
+</Tab>
+<Tab title="Swift">
+Swift Sync Streams support is available. Demo app coming soon.
+</Tab>
+<Tab title=".NET">
+.NET Sync Streams support is available. Demo app coming soon.
+</Tab>
+</Tabs>
+
+## Common Patterns
+
+### Todo List with On-Demand Loading
+
+A classic pattern: sync the list of lists upfront, but only sync todos when the user opens a specific list.
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # Always available - user can see their lists offline
+  lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+    auto_subscribe: true
+
+  # Loaded on demand - only sync todos for the list being viewed
+  list_todos:
+    query: |
+      SELECT * FROM todos 
+      WHERE list_id = subscription.parameter('list_id')
+        AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
+```
+
+Client usage:
+
+```js
+// Lists are already synced (auto_subscribe: true)
+const lists = await db.getAll('SELECT * FROM lists');
+
+// When user opens a list, subscribe to its todos
+const sub = await db.syncStream('list_todos', { list_id: selectedListId }).subscribe();
+await sub.waitForFirstSync();
+
+// Todos are now available locally
+const todos = await db.getAll('SELECT * FROM todos WHERE list_id = ?', [selectedListId]);
+```
+
+### Project Workspace
+
+Sync project metadata upfront, but load project contents on demand.
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # User's projects - always available for navigation
+  my_projects:
+    query: SELECT * FROM projects WHERE owner_id = auth.user_id()
+    auto_subscribe: true
+
+  # Project details - loaded when user opens a project
+  project_tasks:
+    query: |
+      SELECT * FROM tasks 
+      WHERE project_id = subscription.parameter('project_id')
+        AND project_id IN (SELECT id FROM projects WHERE owner_id = auth.user_id())
+
+  project_files:
+    query: |
+      SELECT * FROM files 
+      WHERE project_id = subscription.parameter('project_id')
+        AND project_id IN (SELECT id FROM projects WHERE owner_id = auth.user_id())
+```
+
+### Chat Application
+
+Sync conversation list upfront, load messages on demand.
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # User's conversations - always show the conversation list
+  my_conversations:
+    query: |
+      SELECT * FROM conversations 
+      WHERE id IN (SELECT conversation_id FROM participants WHERE user_id = auth.user_id())
+    auto_subscribe: true
+
+  # Messages - only load for the active conversation
+  conversation_messages:
+    query: |
+      SELECT * FROM messages 
+      WHERE conversation_id = subscription.parameter('conversation_id')
+        AND conversation_id IN (
+          SELECT conversation_id FROM participants WHERE user_id = auth.user_id()
+        )
+```

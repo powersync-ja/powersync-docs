@@ -1,463 +1,319 @@
 ---
-title: "Sync Streams (Beta)"
-description: Sync Streams will replace Sync Rules and are designed to allow for more dynamic syncing, while not compromising on existing offline-first capabilities.
-sidebarTitle: "Overview"
+title: "Sync Streams"
+description: Sync Streams enable partial sync, letting you define exactly which data from your backend syncs to each client using simple SQL-like queries.
+sidebarTitle: "Quickstart"
 ---
 
-## Motivation
+Sync Streams enable partial sync — instead of syncing entire tables, you tell PowerSync exactly which data each user should have on their device. You write simple SQL-like queries to define the data, and your client app subscribes to the streams it needs. PowerSync handles the rest, keeping data in sync in real-time and making it available offline.
 
-PowerSync's original [Sync Rules](/sync/rules/overview) system was optimized for offline-first use cases where you want to “sync everything upfront” when the client connects, so that data is available locally if a user goes offline at any point.
-
-However, many developers are building apps where users are mostly online, and you don't want to make users wait to sync a lot of data upfront. In these cases, it's more suited to sync data on-demand. This is especially true for web apps: users are mostly online and you often want to sync only the data needed for the current page. Users also frequently have multiple tabs open, each needing different subsets of data.
-
-Sync engines like PowerSync are still great for these online web app use cases, because they provide you with real-time updates, simplified state management, and ease of working with data locally.
-
-[Client Parameters](/sync/rules/client-parameters) in the current Sync Rules system support on-demand syncing across different browser tabs to some extent: For example, using a `project_ids` array as a Client Parameter to sync only specific projects. However, manually managing these arrays across different browser tabs becomes quite painful.
-
-We are introducing **Sync Streams** to provide the best of both worlds: support for dynamic on-demand syncing, as well as "syncing everything upfront".
-
-Key improvements in Sync Streams over Sync Rules include:
-
-1. **On-demand syncing**: You define Sync Streams on the PowerSync Service, and a client can then subscribe to them one or more times with different parameters.
-2. **Temporary caching-like behavior**: Each subscription includes a configurable `ttl` that keeps data active after your app unsubscribes, acting as a warm cache for recently accessed data.
-3. **Simpler developer experience**: Simplified syntax and mental model, and capabilities such as your UI components automatically managing subscriptions (for example, React hooks).
-
-If you want “sync everything upfront” behavior (like the current Sync Rules system), that’s easy too: you can configure any of your Sync Streams to be auto-subscribed by the client on connecting.
-
+For example, you might create a stream that syncs only the current user's todo items, another for shared projects they have access to, and another for reference data that everyone needs. Your app subscribes to these streams on demand, and only that data syncs to the client's local SQLite database.
 
 <Note>
-**Beta Release — Production-Ready**
+**Beta Release**
 
-Sync Streams are now in beta and production-ready. We recommend Sync Streams for all new projects.
+Sync Streams are now in beta and production-ready. We recommend Sync Streams for all new projects, and encourage existing projects to [migrate from Sync Rules](/sync/streams/migration).
 
-Sync Streams will ultimately replace the current Sync Rules system. Sync Rules will continue to be supported for existing projects, but we recommend migrating to Sync Streams.
-
-We welcome your feedback on Sync Streams — please share with us in [Discord](https://discord.gg/powersync).
+We welcome your feedback — please share with us in [Discord](https://discord.gg/powersync).
 </Note>
 
-## Requirements for Using Sync Streams
+## Defining Streams
 
-* v1.15.0 of the PowerSync Service (Cloud instances are already on this version)
-* Minimum SDK versions:
-  * JS:
-    * Web: v1.27.0
-    * React Native: v1.25.0
-    * React hooks: v1.8.0
-  * Dart: v1.16.0
-  * Kotlin: v1.7.0
-  * .NET: v0.0.8-alpha.1
-  * Swift: [In progress](https://github.com/powersync-ja/powersync-swift/pull/86).
-* Use of the [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks). The Rust-based sync client is enabled by default on the latest version of all SDKs. If you are on a lower version, follow the instructions below to enable it.
+Streams are defined in a YAML configuration file. Each stream has a **name** and a **query** that specifies which rows to sync using SQL-like syntax. The query can reference parameters like the authenticated user's ID to personalize what each user receives.
 
-  <Expandable title="Instructions for enabling Rust client on lower SDK versions">
-  <Tabs>
-    <Tab title="JS">
-        The Rust client became the default in Web SDK v1.32.0, React Native SDK v1.29.0, Node.js SDK v0.16.0, and Capacitor SDK v0.3.0. For lower versions, pass the `clientImplementation` option when connecting:
+<Tabs>
+<Tab title="PowerSync Cloud">
+In the [PowerSync Dashboard](https://dashboard.powersync.com/):
 
-        ```js
-        await db.connect(new MyConnector(), {
-            clientImplementation: SyncClientImplementation.RUST
-        });
-        ```
+1. Select your project and instance
+2. Go to the **Sync Streams** view
+3. Edit the YAML directly in the dashboard
+4. Click **Deploy** to validate and deploy
 
-        You can migrate back to the JavaScript client later by removing the option.
-    </Tab>
-    <Tab title="Dart">
-        The Rust client became the default in Flutter/Dart SDK v1.17.0. Pass the `syncImplementation` option when connecting:
-
-        ```dart
-        database.connect(
-            connector: YourConnector(),
-            options: const SyncOptions(
-                syncImplementation: SyncClientImplementation.rust,
-            ),
-        );
-        ```
-
-        You can migrate back to the Dart client later by removing the option.
-    </Tab>
-    <Tab title="Kotlin">
-        The Rust client became the default in Kotlin SDK v1.9.0. For lower versions, pass the `newClientImplementation` option when connecting:
-
-        ```kotlin
-        //@file:OptIn(ExperimentalPowerSyncAPI::class)
-        database.connect(MyConnector(), options = SyncOptions(
-            newClientImplementation = true,
-        ))
-        ```
-
-        You can migrate back to the Kotlin client later by removing the option.
-    </Tab>
-    <Tab title="Swift">
-        The Rust client became the default in Swift SDK v1.8.0. For lower versions, pass the `newClientImplementation` option when connecting:
-
-        ```swift
-        @_spi(PowerSyncExperimental) import PowerSync
-
-        try await db.connect(connector: connector, options: ConnectOptions(
-            newClientImplementation: true,
-        ))
-        ```
-
-        You can migrate back to the Swift client later by removing the option.
-    </Tab>
-    <Tab title=".NET">
-        The Rust client was introduced as the default in .NET SDK v0.0.5-alpha.1. No additional configuration is required.
-    </Tab>
-  </Tabs>  
-  </Expandable>
-* Sync Stream definitions. They are currently defined in the same YAML file as Sync Rules: `sync_rules.yaml` (PowerSync Cloud) or `config.yaml` (Open Edition/self-hosted). To enable Sync Streams, add the following configuration:
-  
-  ```yaml sync_rules.yaml
-  config:
-    # see https://docs.powersync.com/sync/advanced/compatibility
-    # this edition also deploys several backwards-incompatible fixes
-    # see the docs for details
-    edition: 2
-
-  streams:
-    ... # see 'Stream Definition Syntax' section below
-  ```
-
-## Stream Definition Syntax
-
-You specify **stream definitions** similar to bucket definitions in Sync Rules. Clients then subscribe to the defined streams one or more times, with different parameters.
-
-Syntax:
-```yaml sync_rules.yaml
-streams:
-  <stream_name>:
-    query: string # similar to Data Queries in Sync Rules, but also support limited subqueries.
-    auto_subscribe: boolean # true to subscribe to this stream by default (similar to how Sync Rules work), false (default) if clients should explicitly subscribe.
-    priority: number # sync priority, same as in Sync Rules: https://docs.powersync.com/sync/advanced/prioritized-sync
-    accept_potentially_dangerous_queries: boolean # silence warnings on dangerous queries, same as in Sync Rules.
-```
-
-Basic example:
-```yaml sync_rules.yaml
+```yaml
 config:
   edition: 2
+
 streams:
-  issue: # Define a stream to a specific issue
-    query: select * from issues where id = subscription.parameters() ->> 'id' 
-  issue_comments: # Define a stream to a specific issue's comments
-    query: select * from comments where issue_id = subscription.parameters() ->> 'id' 
-
+  todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
 ```
+</Tab>
 
+<Tab title="Self-Hosted">
+Add a `sync_config` section to your `config.yaml`:
 
-### Just Queries with Subqueries
-
-Whereas Sync Rules had separate [Parameter Queries](/sync/rules/parameter-queries) and [Data Queries](/sync/rules/data-queries), Sync Streams only have a `query`. Instead of Parameter Queries, Sync Streams can use parameters directly in the query, and support a limited form of subqueries. For example:
-
-```yaml sync_rules.yaml
-# use parameters directly in the query (see below for details on accessing parameters)
-select * from issues where id = subscription.parameters() ->> 'id' and owner_id = auth.user_id()
-
-# "in (subquery)" replaces parameter queries:
-select * from comments where issue_id in (select id from issues where owner_id = auth.user_id())
-```
-
-Under the hood, Sync Streams use the same bucket system as Sync Rules, so you get the same functionality as before with Parameter Queries, however, the Sync Streams syntax is closer to plain SQL.
-
-
-### Accessing Parameters
-
-We have streamlined how different kinds of parameters are accessed in Sync Streams [compared](/sync/rules/parameter-queries) to Sync Rules.
-
-**Subscription Parameters**: Passed from the client when it subscribes to a Sync Stream. See [Client-Side Syntax](#client-side-syntax) below. Clients can subscribe to the same stream multiple times with
-different parameters:
-
-```yaml
-subscription.parameters() # all parameters for the subscription, as JSON
-subscription.parameter('key') # shorthand for getting a single specific parameter
-```
-
-**Auth Parameters**: Claims from the JWT:
-
-```yaml
-auth.parameters() # JWT token payload, as JSON
-auth.parameter('key') # short-hand for getting a single specific token payload parameter
-auth.user_id() # same as auth.parameter('sub')
-```
-
-
-**Connection Parameters**: Specified "globally" on the connection level. These are the equivalent of [Client Parameters](/sync/rules/client-parameters) in Sync Rules:
-
-```yaml
-connection.parameters() # all parameters for the connection, as JSON
-connection.parameter('key') # shorthand for getting a single specific parameter
-```
-
-### Usage Examples: Sync Rules vs Sync Streams
-
-<Expandable title="Examples">
-
-### Global data
-**Sync Rules:**
-```yaml sync_rules.yaml
-  bucket_definitions:
-    global:
-        data:
-        # Sync all todos
-        - SELECT * FROM todos
-        # Sync all lists except archived ones
-        - SELECT * FROM lists WHERE archived = false
-```
-**Sync Streams:** "Global" data — the data you want all of your users to have by default — is also defined as streams. Specify `auto_subscribe: true` so your users subscribe to them by default.
-```yaml sync_rules.yaml
-  streams:
-    all_todos:
-        query: SELECT * FROM todos
-        auto_subscribe: true 
-    unarchived_lists:
-        query: SELECT * FROM lists WHERE archived = false
-        auto_subscribe: true     
-
-```
-
-### A user's owned lists, with a priority
-**Sync Rules:**
-```yaml sync_rules.yaml
-  bucket_definitions:
-    user_lists:
-        priority: 1 # See https://docs.powersync.com/sync/advanced/prioritized-sync  
-        parameters: SELECT request.user_id() as user_id
-        data:
-        - SELECT * FROM lists WHERE owner_id = bucket.user_id
-```
-
-**Sync Streams:** 
-```yaml sync_rules.yaml
-  streams:
-    user_lists:
-        priority: 1 # See https://docs.powersync.com/sync/advanced/prioritized-sync  
-        query: SELECT * FROM lists WHERE owner_id = auth.user_id()
-```
-
-### Grouping by `list_id`
-**Sync Rules:**
-```yaml sync_rules.yaml
-  bucket_definitions:
-    owned_lists:
-        parameters: |
-            SELECT id as list_id FROM lists WHERE
-            owner_id = request.user_id()
-        data:
-        - SELECT * FROM lists WHERE lists.id = bucket.list_id
-        - SELECT * FROM todos WHERE todos.list_id = bucket.list_id
-```
-**Sync Streams:** 
-```yaml sync_rules.yaml
-  streams:
-    owned_lists:
-        query: SELECT * FROM lists WHERE owner_id = auth.user_id()
-    list_todos:
-        query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id') AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
- 
-```
-
-### Parameters usage
-**Sync Rules:**
-```yaml sync_rules.yaml
-  bucket_definitions:
-    posts:
-        parameters: SELECT (request.parameters() ->> 'current_page') as page_number
-        data:
-        - SELECT * FROM posts WHERE page_number = bucket.page_number
-```
-**Sync Streams:** 
-```yaml sync_rules.yaml
-  streams:
-    posts:
-        query: SELECT * FROM posts WHERE page_number = subscription.parameter('page_number')
-```
-Note that the behavior here is different to Sync Rules because `subscription.parameter('page_number')` is local to the subscription, so the Sync Stream can be subscribed to multiple times with different page numbers, whereas Sync Rules only allow a single global Client Parameter value at a time. Connection Parameters (`connection.parameter()`) are available in Sync Streams as the equivalent of the global Client Parameters in Sync Rules, but Subscription Parameters are recommended because they are much more flexible.
-
-### Specific columns/fields, renames and transformations
-
-Selecting, renaming or transforming specific columns/fields is identical between Sync Rules and Sync Streams:
-
-```yaml sync_rules.yaml
-  streams:
-    todos:
-        # Example 1: Select specific columns
-        query: SELECT id, name, owner_id FROM todos 
-        
-        # Example 2: Rename columns
-        # query: SELECT id, name, created_timestamp AS created_at FROM todos 
-        
-        # Example 3: Cast number to text
-        # query: SELECT id, item_number :: text AS item_number FROM todos
-        
-        # Example 4: Alternative syntax for the same cast
-        # query: id, CAST(item_number as TEXT) AS item_number FROM todos
-        
-        # Example 5: Convert binary data (bytea) to base64
-        # query: id, base64(thumbnail) AS thumbnail_base64 FROM todos
-        
-        # Example 6: Extract field from JSON or JSONB column
-        # query: id, metadata_json ->> 'description' AS description FROM todos
-        
-        # Example 7: Convert time to epoch number
-        # query: id, unixepoch(created_at) AS created_at FROM todos
-```
-</Expandable>
-
-
-## Client-Side Syntax
-
-In general, each SDK lets you:
-
-* Use `db.syncStream(name, [subscription-params])` to get a `SyncStream` instance.
-* Call `subscribe()` on a `SyncStream` to get a `SyncStreamSubscription`. This gives you access to `waitForFirstSync()` and `unsubscribe()`.
-* Inspect `SyncStatus` for a list of `SyncSubscriptionDefinition`s describing all Sync Streams your app is subscribed to (either due to an explicit subscription or because the Sync Stream has `auto_subscribe: true`). It also reports per-stream download progress.
-* Each Sync Stream has a `ttl` (time-to-live). After you call `unsubscribe()`, or when the page/app closes, the stream keeps syncing for the `ttl` duration, enabling caching-like behavior. Each SDK lets you specify the `ttl`, or ignore the `ttl` and delete the data as soon as possible. If not specified, a default TTL of 24 hours applies.
-
-Select your language for specific examples:
-<Tabs>
-    <Tab title="JS">
-    ```js
-    const sub = await powerSync.syncStream('issues', {id: 'issue-id'}).subscribe(ttl: 3600);
-
-    // Resolve current status for subscription
-    const status = powerSync.currentStatus.forStream(sub);
-    const progress = status?.progress;
-
-    // Wait for this subscription to have synced
-    await sub.waitForFirstSync();
-
-    // When the component needing the subscription is no longer active...
-    sub.unsubscribe();
-    ```
-
-    If you're using React, you can also use hooks to automatically subscribe components to Sync Streams:
-
-    ```js
-    const stream = useSyncStream({ name: 'todo_list', parameters: { list: 'foo' } });
-    // Can then check for download progress or subscription information
-    stream?.progress;
-    stream?.subscription.hasSynced;
-    ```
-
-    This hook is useful when you want to explicitly ensure a stream is active (for example a root component) or when you need progress/hasSynced state; this makes data available for all child components without each query declaring the stream.
-
-    Additionally, the `useQuery` hook for React can wait for Sync Streams to be complete before running
-    queries. Pass `streams` only when the component knows which specific stream subscription(s) it depends on and it should wait before querying.
-
-    ```js
-    const results = useQuery(
-      'SELECT ...',
-      queryParameters,
-      // This will wait for the stream to sync before running the query
-      { streams: [{ name: 'todo_list', parameters: { list: 'foo' }, waitForStream: true }] }
-    );
-    ```
-    </Tab>
-
-    <Tab title="Dart">
-    ```dart
-    final sub = await db
-      .syncStream('issues', {'id': 'issue-id'})
-      .subscribe(ttl: const Duration(hours: 1));
-
-    // Resolve current status for subscription
-    final status = db.currentStatus.forStream(sub);
-    final progress = status?.progress;
-
-    // Wait for this subscription to have synced
-    await sub.waitForFirstSync();
-
-    // When the component needing the subscription is no longer active...
-    sub.unsubscribe();
-    ```
-    </Tab>
-
-    <Tab title="Kotlin">
-    ```Kotlin
-    val sub = database.syncStream("issues", mapOf("id" to JsonParam.String("issue-id"))).subscribe(ttl = 1.0.hours);
-
-    // Resolve current status for subscription
-    val status = database.currentStatus.forStream(sub)
-    val progress = status?.progress
-
-    // Wait for this subscription to have synced
-    sub.waitForFirstSync()
-
-    // When the component needing the subscription is no longer active...
-    sub.unsubscribe()
-    ```
-
-    If you're using Compose, you can use the `composeSyncStream` extension to subscribe to a stream while
-    a composition is active:
-
-    ```Kotlin
-    @Composable
-    fun TodoListPage(db: PowerSyncDatabase, id: String) {
-      val syncStream = db.composeSyncStream(name = "list", parameters = mapOf("list_id" to JsonParam.String(id)))
-      // Define component based on stream state
-    }
-    ```
-    </Tab>
-
-    <Tab title=".NET">
-    ```csharp
-    var sub = await db.SyncStream("issues", new() { ["id"] = "issue-id" })
-        .Subscribe(new SyncStreamSubscribeOptions { Ttl = TimeSpan.FromHours(1) });
-
-    // Resolve current status for subscription
-    var status = db.CurrentStatus.ForStream(sub);
-    var progress = status?.Progress;
-
-    // Wait for this subscription to have synced
-    await sub.WaitForFirstSync();
-
-    // When the component needing the subscription is no longer active...
-    sub.Unsubscribe();
-    ```
-    </Tab>
-
-    <Tab title="Swift - Coming soon">
-        Coming soon
-    </Tab>
-</Tabs>
-
-## Examples
-
-<Tabs>
-  <Tab title="JS">
-    Try the [`react-supabase-todolist-sync-streams`](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist-sync-streams) demo app by following the instructions in the README.
-  
-    In this demo:
-    
-    - The app syncs `lists` by default (demonstrating equivalent behavior to Sync Rules, i.e. optimized for offline-first).
-    - The app syncs `todos` on demand when a user opens a list.
-    - When the user navigates back to the same list, they won't see a loading state — demonstrating caching behavior.
-    
-  </Tab>
-  <Tab title="Dart">
-    Try the [`supabase-todolist`](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist) demo app, which we updated to use Sync Streams (Sync Rules are still supported).
-
-    Deploy the following Sync Streams:
-
-    ```yaml sync_rules.yaml
+```yaml config.yaml
+sync_config:
+  content: |
     config:
       edition: 2
+
     streams:
-      lists:
-        query: SELECT * FROM lists
-        auto_subscribe: true
       todos:
-        query: SELECT * FROM todos WHERE list_id = subscription.parameter('list')
-    ```
-
-    In this demo:
-
-    - The app syncs `lists` by default (demonstrating equivalent behavior to Sync Rules, i.e. optimized for offline-first).
-    - The app syncs `todos` on demand when a user opens a list.
-    - When the user navigates back to the same list, they won't see a loading state — demonstrating caching behavior.
-  </Tab>
-  <Tab title="Kotlin">
-    In progress, follow along: https://github.com/powersync-ja/powersync-kotlin/pull/270 
-  </Tab>
+        query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+```
+</Tab>
 </Tabs>
+
+## Basic Examples
+
+There are two independent concepts to understand:
+
+- **Data scope**: What data the stream returns
+  - *Global data*: No parameters, same data for all users (e.g. reference tables like categories)
+  - *User-scoped data*: Uses `auth.user_id()` or JWT claims, different per user
+  - *Parameterized data*: Uses `subscription.parameter()`, varies based on what the client subscribes to
+
+- **Subscription behavior**: When the client syncs the data
+  - *Auto-subscribe*: Client automatically subscribes on connect (`auto_subscribe: true`)
+  - *On-demand*: Client explicitly subscribes when needed (default behavior)
+
+### Global Data
+
+Data without parameters is "global" data, meaning the same data goes to all users. This is useful for reference tables:
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # Same categories for everyone
+  categories:
+    query: SELECT * FROM categories
+
+  # Same active products for everyone
+  products:
+    query: SELECT * FROM products WHERE active = true
+```
+
+<Note>
+Global data streams still require clients to subscribe explicitly unless you set `auto_subscribe: true`.
+</Note>
+
+### User-Scoped Data
+
+Use `auth.user_id()` or JWT claims to return different data per user:
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # Each user gets their own lists
+  my_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+
+  # Each user gets their own orders
+  my_orders:
+    query: SELECT * FROM orders WHERE user_id = auth.user_id()
+```
+
+### Parameterized Data (On-Demand)
+
+Use `subscription.parameter()` for data that clients subscribe to explicitly:
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # Sync todos for a specific list when the client subscribes with a list_id
+  list_todos:
+    query: |
+      SELECT * FROM todos 
+      WHERE list_id = subscription.parameter('list_id')
+        AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
+```
+
+### Using Auto-Subscribe
+
+Set `auto_subscribe: true` to sync data automatically when clients connect. This is useful for:
+- Reference data that all screens need
+- User data that should always be available offline
+- Maintaining [Sync Rules](/sync/rules/overview) behavior (sync everything upfront) during migration
+
+```yaml
+config:
+  edition: 2
+
+streams:
+  # Global data, synced automatically
+  categories:
+    query: SELECT * FROM categories
+    auto_subscribe: true
+
+  # User-scoped data, synced automatically
+  my_orders:
+    query: SELECT * FROM orders WHERE user_id = auth.user_id()
+    auto_subscribe: true
+
+  # Parameterized data, subscribed on-demand (no auto_subscribe)
+  order_items:
+    query: |
+      SELECT * FROM order_items 
+      WHERE order_id = subscription.parameter('order_id')
+        AND order_id IN (SELECT id FROM orders WHERE user_id = auth.user_id())
+```
+
+## Using Parameters
+
+Parameters let you filter data dynamically. The two most common types are:
+
+**Auth parameters** filter by user identity. Use `auth.user_id()` to sync data belonging to the current user:
+
+```yaml
+streams:
+  my_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+```
+
+**Subscription parameters** are passed from the client when subscribing. Use these for on-demand data:
+
+```yaml
+streams:
+  list_todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')
+```
+
+```js
+// Client subscribes with the list they want to view
+const sub = await db.syncStream('list_todos', { list_id: 'abc123' }).subscribe();
+```
+
+See [Writing Stream Queries](/sync/streams/queries) for the full parameter reference, subqueries, and more patterns.
+
+## Client-Side Usage
+
+Subscribe to streams from your client app:
+
+<Tabs>
+<Tab title="JS">
+```js
+const sub = await db.syncStream('list_todos', { list_id: 'abc123' })
+  .subscribe({ ttl: 3600 });
+
+// Wait for this subscription to have synced
+await sub.waitForFirstSync();
+
+// When the component needing the subscription is no longer active...
+sub.unsubscribe();
+```
+
+**React hooks:**
+
+```jsx
+const stream = useSyncStream({ name: 'list_todos', parameters: { list_id: 'abc123' } });
+// Check download progress or subscription information
+stream?.progress;
+stream?.subscription.hasSynced;
+```
+
+The `useQuery` hook can wait for Sync Streams before running queries:
+
+```jsx
+const { data } = useQuery(
+  'SELECT * FROM todos WHERE list_id = ?',
+  [listId],
+  { streams: [{ name: 'list_todos', parameters: { list_id: listId }, waitForStream: true }] }
+);
+```
+</Tab>
+
+<Tab title="Dart">
+```dart
+final sub = await db
+  .syncStream('list_todos', {'list_id': 'abc123'})
+  .subscribe(ttl: const Duration(hours: 1));
+
+// Wait for this subscription to have synced
+await sub.waitForFirstSync();
+
+// When the component needing the subscription is no longer active...
+sub.unsubscribe();
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val sub = database.syncStream("list_todos", mapOf("list_id" to JsonParam.String("abc123")))
+  .subscribe(ttl = 1.0.hours)
+
+// Wait for this subscription to have synced
+sub.waitForFirstSync()
+
+// When the component needing the subscription is no longer active...
+sub.unsubscribe()
+```
+
+**Compose:**
+
+```kotlin
+@Composable
+fun TodoListPage(db: PowerSyncDatabase, listId: String) {
+  val stream = db.composeSyncStream(
+    name = "list_todos", 
+    parameters = mapOf("list_id" to JsonParam.String(listId))
+  )
+  // Define component based on stream state
+}
+```
+</Tab>
+
+<Tab title="Swift">
+```swift
+let sub = try await db.syncStream("list_todos", ["list_id": "abc123"])
+  .subscribe(ttl: .hours(1))
+
+// Wait for this subscription to have synced
+try await sub.waitForFirstSync()
+
+// When the component needing the subscription is no longer active...
+sub.unsubscribe()
+```
+</Tab>
+
+<Tab title=".NET">
+```csharp
+var sub = await db.SyncStream("list_todos", new() { ["list_id"] = "abc123" })
+  .Subscribe(new SyncStreamSubscribeOptions { Ttl = TimeSpan.FromHours(1) });
+
+// Wait for this subscription to have synced
+await sub.WaitForFirstSync();
+
+// When the component needing the subscription is no longer active...
+sub.Unsubscribe();
+```
+</Tab>
+</Tabs>
+
+### TTL (Time-To-Live)
+
+Each subscription has a `ttl` that keeps data cached after unsubscribing. This enables warm cache behavior — when users return to a screen, data is already available. Default TTL is 24 hours. See [Client-Side Usage](/sync/streams/client-usage) for details.
+
+```js
+// Set TTL in seconds when subscribing
+const sub = await db.syncStream('todos', { list_id: 'abc' })
+  .subscribe({ ttl: 3600 }); // Cache for 1 hour after unsubscribe
+```
+
+## Examples & Demos
+
+See [Examples & Demos](/sync/streams/examples) for common examples and demo apps that can be used as a reference for your own project.
+
+## Developer Notes
+
+- **SQL Syntax**: Stream queries use a SQL-like syntax, but only `SELECT` statements are supported. You can use `IN (SELECT ...)` subqueries for filtering, but `JOIN`, `GROUP BY`, `ORDER BY`, and `LIMIT` are not available. See [Supported SQL](/sync/supported-sql) for the full list of supported operators and functions.
+
+- **Type Conversion**: Data types from your backend database (Postgres, MongoDB, MySQL, etc.) are converted when synced to the client's SQLite database. Most types become `text`, so you may need to parse or cast values in your app code. See [Type Mapping](/sync/types) for details on how each type is handled.
+
+- **Primary Key**: PowerSync requires every synced table to have a primary key column named `id` of type `text`. If your backend uses a different column name or type, you'll need to map it. For MongoDB, the `_id` field automatically maps to `id`. See [Client ID](/sync/advanced/client-id) for setup instructions.
+
+- **Case Sensitivity**: To avoid issues across different databases and platforms, use **lowercase identifiers** for all table and column names in your Sync Streams. If your backend uses mixed case, see [Case Sensitivity](/sync/advanced/case-sensitivity) for how to handle it.
+
+- **Bucket Limits**: PowerSync uses internal partitions called "buckets" to efficiently sync data. There's a limit of 1,000 buckets per user. Each unique combination of a stream and its parameters creates one bucket, so keep this in mind when designing streams that use subscription parameters. See [Buckets](/architecture/powersync-service#bucket-system) for more on how this works.
+
+- **Troubleshooting**: If data isn't syncing as expected, the [Sync Diagnostics Client](/tools/diagnostics-client) helps you inspect what's happening for a specific user — you can see which buckets the user has and what data is being synced.
+
+## Migrating from Sync Rules
+
+If you have an existing project using Sync Rules, see the [Migration Guide](/sync/streams/migration) for step-by-step instructions, syntax changes, and examples.

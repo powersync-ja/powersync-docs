@@ -268,6 +268,196 @@ Raw tables support advanced table constraints including foreign keys. When enabl
    rows to lower-priority data. PowerSync applies data in one transaction per priority, so these foreign keys would not work.
 3. As usual when using foreign keys, note that they need to be explicitly enabled with `pragma foreign_keys = on`.
 
+## Local-Only Columns
+
+Raw tables allow you to add columns that exist only on the client and are never synced to the backend. This is useful for client-specific state like user preferences, local notes, or UI flags that should persist across app restarts but have no equivalent in the backend database.
+
+<Note>
+  Local-only columns are not supported with PowerSync's default [JSON-based view system](/architecture/client-architecture#schema). Raw tables are required for this functionality.
+</Note>
+
+Building on the `todo_lists` example above, you can add local-only columns such as `is_pinned` and `local_notes`:
+
+```sql
+CREATE TABLE IF NOT EXISTS todo_lists (
+   id TEXT NOT NULL PRIMARY KEY,
+   -- Synced columns
+   created_by TEXT NOT NULL,
+   title TEXT NOT NULL,
+   content TEXT,
+   -- Local-only columns (not synced)
+   is_pinned INTEGER NOT NULL DEFAULT 0,
+   local_notes TEXT
+) STRICT;
+```
+
+The standard raw table setup requires three modifications to support local-only columns:
+
+### Use upsert instead of INSERT OR REPLACE
+
+The `put` statement must use `INSERT ... ON CONFLICT(id) DO UPDATE SET` instead of `INSERT OR REPLACE`. `INSERT OR REPLACE` deletes and re-inserts the row, which resets local-only columns to their defaults on every sync update. An upsert only updates the specified synced columns, leaving local-only columns intact.
+
+Only synced columns should be referenced in the `put` params. Local-only columns are omitted entirely:
+
+<Tabs>
+  <Tab title="JavaScript">
+    ```JavaScript
+    schema.withRawTables({
+      todo_lists: {
+        put: {
+          sql: `INSERT INTO todo_lists (id, created_by, title, content)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  created_by = excluded.created_by,
+                  title = excluded.title,
+                  content = excluded.content`,
+          params: ['Id', { Column: 'created_by' }, { Column: 'title' }, { Column: 'content' }]
+        },
+        delete: {
+          sql: 'DELETE FROM todo_lists WHERE id = ?',
+          params: ['Id']
+        }
+      }
+    });
+    ```
+  </Tab>
+  <Tab title="Dart">
+    ```dart
+    final schema = Schema(const [], rawTables: const [
+      RawTable(
+        name: 'todo_lists',
+        put: PendingStatement(
+          sql: '''INSERT INTO todo_lists (id, created_by, title, content)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(id) DO UPDATE SET
+                    created_by = excluded.created_by,
+                    title = excluded.title,
+                    content = excluded.content''',
+          params: [
+            PendingStatementValue.id(),
+            PendingStatementValue.column('created_by'),
+            PendingStatementValue.column('title'),
+            PendingStatementValue.column('content'),
+          ],
+        ),
+        delete: PendingStatement(
+          sql: 'DELETE FROM todo_lists WHERE id = ?',
+          params: [
+            PendingStatementValue.id(),
+          ],
+        ),
+      ),
+    ]);
+    ```
+  </Tab>
+  <Tab title="Kotlin">
+    ```Kotlin
+    val schema = Schema(listOf(
+      RawTable(
+        name = "todo_lists",
+        put = PendingStatement(
+          """INSERT INTO todo_lists (id, created_by, title, content)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               created_by = excluded.created_by,
+               title = excluded.title,
+               content = excluded.content""",
+          listOf(
+            PendingStatementParameter.Id,
+            PendingStatementParameter.Column("created_by"),
+            PendingStatementParameter.Column("title"),
+            PendingStatementParameter.Column("content")
+          )
+        ),
+        delete = PendingStatement(
+          "DELETE FROM todo_lists WHERE id = ?", listOf(PendingStatementParameter.Id)
+        )
+      )
+    ))
+    ```
+  </Tab>
+  <Tab title="Swift">
+    ```Swift
+    let lists = RawTable(
+        name: "todo_lists",
+        put: PendingStatement(
+            sql: """
+                INSERT INTO todo_lists (id, created_by, title, content)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  created_by = excluded.created_by,
+                  title = excluded.title,
+                  content = excluded.content
+                """,
+            parameters: [.id, .column("created_by"), .column("title"), .column("content")]
+        ),
+        delete: PendingStatement(
+            sql: "DELETE FROM todo_lists WHERE id = ?",
+            parameters: [.id],
+        ),
+    )
+
+    let schema = Schema(lists)
+    ```
+  </Tab>
+  <Tab title=".NET">
+    Unfortunately, raw tables are not available in the .NET SDK yet.
+  </Tab>
+</Tabs>
+
+### Exclude local-only columns from triggers
+
+The `json_object()` in both the INSERT and UPDATE triggers should only reference synced columns. Local-only columns must not appear in the CRUD payload sent to the backend.
+
+Additionally, the UPDATE trigger needs a `WHEN` clause that checks only synced columns. Without it, changes to local-only columns would fire the trigger and produce unnecessary CRUD entries that get uploaded. The `WHEN` clause must use `IS NOT` instead of `!=` for NULL-safe comparisons. `NULL != NULL` evaluates to `NULL` in SQLite, which would cause the trigger to skip legitimate changes to nullable synced columns.
+
+```SQL
+CREATE TRIGGER todo_lists_insert
+   AFTER INSERT ON todo_lists
+   FOR EACH ROW
+   BEGIN
+      INSERT INTO powersync_crud (op, id, type, data) VALUES ('PUT', NEW.id, 'todo_lists', json_object(
+         'created_by', NEW.created_by,
+         'title', NEW.title,
+         'content', NEW.content
+      ));
+   END;
+
+-- WHEN clause ensures this only fires for synced column changes.
+-- Uses IS NOT instead of != for correct NULL handling.
+CREATE TRIGGER todo_lists_update
+   AFTER UPDATE ON todo_lists
+   FOR EACH ROW
+   WHEN
+      OLD.created_by IS NOT NEW.created_by
+      OR OLD.title IS NOT NEW.title
+      OR OLD.content IS NOT NEW.content
+   BEGIN
+      INSERT INTO powersync_crud (op, id, type, data) VALUES ('PATCH', NEW.id, 'todo_lists', json_object(
+         'created_by', NEW.created_by,
+         'title', NEW.title,
+         'content', NEW.content
+      ));
+   END;
+
+CREATE TRIGGER todo_lists_delete
+   AFTER DELETE ON todo_lists
+   FOR EACH ROW
+   BEGIN
+      INSERT INTO powersync_crud (op, id, type) VALUES ('DELETE', OLD.id, 'todo_lists');
+   END;
+```
+
+With this setup, local-only columns can be queried and updated using standard SQL without affecting sync:
+
+```SQL
+-- Updating a local-only column does not produce a CRUD entry
+UPDATE todo_lists SET is_pinned = 1 WHERE id = '...';
+
+-- Local-only columns can be used in queries and ordering
+SELECT * FROM todo_lists ORDER BY is_pinned DESC, title ASC;
+```
+
 ## Migrations
 
 In PowerSync's [JSON-based view system](/architecture/client-architecture#schema) the client-side schema is applied to the schemaless data, meaning no migrations are required. Raw tables however are excluded from this, so it is the developers responsibility to manage migrations for these tables.

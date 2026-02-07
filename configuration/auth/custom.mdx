@@ -28,7 +28,7 @@ The process is as follows:
 
 Requirements for the signed JWT:
 
-1. The JWT must be signed using a key in the JWKS URL ([Option 1](#option-1:-asymmetric-jwts-—-using-jwks-url)) or the HS256 key ([Option 2](#option-2%3A-symmetric-jwts-—-using-hs256))
+1. The JWT must be signed using a key in the JWKS ([Option 1](#option-1%3A-asymmetric-jwts-—-using-jwks-recommended)) or the HS256 key ([Option 2](#option-2%3A-symmetric-jwts-—-using-hs256))
 2. JWT must have a `kid` matching that of the key.
 3. The `aud` of the JWT must match the PowerSync instance URL (for Cloud) or one of the audiences configured in `client_auth.audience` (for self-hosted).
    1. To get the instance URL when using PowerSync Cloud: In the [PowerSync Dashboard](https://dashboard.powersync.com/), click **Connect** in the top bar and copy the instance URL from the dialog.
@@ -37,18 +37,23 @@ Requirements for the signed JWT:
 2. The user ID must be used as the `sub` of the JWT.
 4. Additional fields can be added which can be referenced in Sync Rules [parameter queries](/sync/rules/parameter-queries) or Sync Streams (as [`auth.parameters()`](/sync/streams/overview#accessing-parameters)).
 
-## Option 1: Asymmetric JWTs — Using JWKS URL (Recommended)
+## Option 1: Asymmetric JWTs — Using JWKS (Recommended)
 
 <Tip>
 This is the recommended approach for production environments. Asymmetric keys provide better security by separating signing (private key) from verification (public key), making key rotation easier and more secure.
 </Tip>
 
-A key pair (private + public key) is required to sign and verify JWTs. The private key is used to sign the JWT, and the public key is advertised on a public [JWKS](https://auth0.com/docs/secure/tokens/json-web-tokens/json-web-key-sets) URL.
+A key pair (private + public key) is required to sign and verify JWTs. The private key is used to sign the JWT, and the public key is used to verify it.
 
-Requirements for the key in the JWKS URL:
+PowerSync requires the public key(s) to be specified in [JSON Web Key Set (JWKS)](https://auth0.com/docs/secure/tokens/json-web-tokens/json-web-key-sets) format. 
 
-1. The URL must be a public URL in the [JWKS](https://auth0.com/docs/secure/tokens/json-web-tokens/json-web-key-sets) format.
-   1. We have an example endpoint available [here](https://hlstmcktecziostiaplz.supabase.co/functions/v1/powersync-jwks) — ensure that your response looks similar.
+The JWKS can be configured in one of two ways:
+- Expose the JWKS on a public URL. We have an example endpoint available [here](https://hlstmcktecziostiaplz.supabase.co/functions/v1/powersync-jwks) — ensure that your response looks similar. 
+- Configure the JWKS directly on your instance. 
+
+
+Requirements for the public key in the JWKS:
+
 1. Supported signature schemes: RSA, EdDSA and ECDSA.
 2. Key type (`kty`): `RSA`, `OKP` (EdDSA) or `EC` (ECDSA).
 3. <Tooltip tip="For HS256, see Option 2 below">Algorithm</Tooltip> (`alg`):
@@ -66,22 +71,22 @@ Since there is no way to revoke a JWT once issued without rotating the key, we r
 
 ### Rotating Keys
 
-If a private key is compromised, rotate the key on the JWKS endpoint.
+If a private key is compromised, rotate the key in the JWKS.
 
 PowerSync refreshes the keys from the endpoint every couple of minutes, after which old tokens will not be accepted anymore.
 
 There is a possibility of false authentication errors until PowerSync refreshes the keys. These errors are typically retried by the client and will have little impact. However, to periodically rotate keys without any authentication failures, follow this process:
 
-1. Add a new key to the JWKS endpoint.
+1. Add a new key to the JWKS.
 2. Wait an hour (or more) to make sure PowerSync has the new key.
 3. Start signing new JWT tokens using the new key.
 4. Wait until all existing tokens have expired.
-5. Remove the old key from the JWKS endpoint (or [config file](#self-hosted-configuration) for self-hosted instances).
+5. Remove the old key from the JWKS (or [config file](#self-hosted-configuration) for self-hosted instances).
 
 ### PowerSync Cloud Configuration
 
 1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Client Auth** view.
-2. Configure your JWKS URI and audience settings.
+2. Configure your JWKS and audience settings. You can either configure the JWKS directly in JSON format (use the **JWKS** section), or configure a **JWKS URI**.
 3. Click **Save and Deploy** to apply the changes.
 
 ### Self-Hosted Configuration

@@ -13,6 +13,7 @@ import FlutterInstallation from '/snippets/flutter/installation.mdx';
 import KotlinInstallation from '/snippets/kotlin/installation.mdx';
 import SwiftInstallation from '/snippets/swift/installation.mdx';
 import DotnetInstallation from '/snippets/dotnet/installation.mdx';
+import RustInstallation from '/snippets/rust/installation.mdx';
 import DevTokenSelfHostedSteps from '/snippets/dev-token-self-hosted-steps.mdx';
 
 # 1. Configure Your Source Database
@@ -536,6 +537,10 @@ Add the PowerSync Client SDK to your app project. PowerSync provides SDKs for va
   <Tab title=".NET">
     <DotnetInstallation />
   </Tab>
+
+  <Tab title="Rust">
+    <RustInstallation />
+  </Tab>
 </Tabs>
 
 ### Define Your Client-Side Schema
@@ -570,6 +575,9 @@ import SdkInstantiateDbExamples from '/snippets/sdk-instantiate-db-examples.mdx'
 
 <SdkInstantiateDbExamples />
 
+<Note>
+  **Rust**: The snippet shows the Tokio runtime. You must call `PowerSyncEnvironment::powersync_auto_extension()` before using the SDK and spawn async tasks with `db.async_tasks().spawn_with_tokio()` (or `spawn_with` for other runtimes) before connecting. See [Rust SDK reference — Instantiate the PowerSync Database](/client-sdks/reference/rust#2-instantiate-the-powersync-database) for in-memory pools, smol, or custom runtimes.
+</Note>
 
 ### Connect to PowerSync Service Instance
 
@@ -793,6 +801,45 @@ For development, you can use the development token you generated in the [Generat
   // connect the database to PowerSync Service
   await db.Connect(new MyConnector());
   ```
+
+  ```rust Rust
+  use async_trait::async_trait;
+  use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase, SyncOptions};
+  use powersync::error::PowerSyncError;
+  use std::sync::Arc;
+
+  struct MyBackendConnector {
+      client: Arc<dyn http_client::HttpClient>,
+      db: PowerSyncDatabase,
+  }
+
+  #[async_trait]
+  impl BackendConnector for MyBackendConnector {
+      async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+          // for development: use development token
+          Ok(PowerSyncCredentials {
+              endpoint: "https://your-instance.powersync.com".to_string(),
+              token: "your-development-token-here".to_string(),
+          })
+      }
+
+      async fn upload_data(&self) -> Result<(), PowerSyncError> {
+          let mut local_writes = self.db.crud_transactions();
+          while let Some(tx) = local_writes.try_next().await? {
+              // upload to your backend API
+              tx.complete().await?;
+          }
+          Ok(())
+      }
+  }
+
+  // connect the database to PowerSync Service
+  db.connect(SyncOptions::new(MyBackendConnector {
+      client,
+      db: db.clone(),
+  }))
+  .await;
+  ```
 </CodeGroup>
 
 Once connected, you can read from and write to the client-side SQLite database. Changes from your source database will be automatically synced down into the SQLite database. For client-side mutations to be uploaded back to your source database, you need to complete the backend integration as we'll explain below.
@@ -920,6 +967,58 @@ Read data using SQL queries. The data comes from your client-side SQLite databas
       // Call query.Dispose() to stop watching for updates
       query.Dispose();
       ```
+
+      ```rust Rust
+      use rusqlite::params;
+      use futures::StreamExt; // for try_next() on the watch stream
+
+      // Get all todos
+      async fn get_all_todos(db: &PowerSyncDatabase) -> Result<(), PowerSyncError> {
+          let reader = db.reader().await?;
+          let mut stmt = reader.prepare("SELECT * FROM todos")?;
+          let mut rows = stmt.query(params![])?;
+          while let Some(row) = rows.next()? {
+              let id: String = row.get("id")?;
+              let description: String = row.get("description")?;
+              // use row data
+          }
+          Ok(())
+      }
+
+      // Get a single todo
+      async fn find_todo(db: &PowerSyncDatabase, todo_id: &str) -> Result<(), PowerSyncError> {
+          let reader = db.reader().await?;
+          let mut stmt = reader.prepare("SELECT * FROM todos WHERE id = ?")?;
+          let mut rows = stmt.query(params![todo_id])?;
+          while let Some(row) = rows.next()? {
+              let id: String = row.get("id")?;
+              let description: String = row.get("description")?;
+              println!("Found todo: {id}, {description}");
+          }
+          Ok(())
+      }
+
+      // Watch for changes
+      async fn watch_todos(db: &PowerSyncDatabase, list_id: &str) -> Result<(), PowerSyncError> {
+          let stream = db.watch_statement(
+              "SELECT * FROM todos WHERE list_id = ?".to_string(),
+              params![list_id],
+              |stmt, params| {
+                  let mut rows = stmt.query(params)?;
+                  let mut mapped = vec![];
+                  while let Some(row) = rows.next()? {
+                      mapped.push(() /* TODO: Read row into struct */);
+                  }
+                  Ok(mapped)
+              },
+          );
+          let mut stream = std::pin::pin!(stream);
+          while let Some(_event) = stream.try_next().await? {
+              // Update UI when data changes
+          }
+          Ok(())
+      }
+      ```
     </CodeGroup>
 
 <Tip>
@@ -1026,6 +1125,41 @@ Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements. PowerSync autom
 
       // Delete a todo
       await db.Execute("DELETE FROM todos WHERE id = ?", [todoId]);
+      ```
+
+      ```rust Rust
+      use rusqlite::params;
+
+      // Insert a new todo
+      async fn insert_todo(
+          db: &PowerSyncDatabase,
+          list_id: &str,
+          description: &str,
+      ) -> Result<(), PowerSyncError> {
+          let writer = db.writer().await?;
+          writer.execute(
+              "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)",
+              params![list_id, description],
+          )?;
+          Ok(())
+      }
+
+      // Update a todo
+      async fn complete_todo(db: &PowerSyncDatabase, todo_id: &str) -> Result<(), PowerSyncError> {
+          let writer = db.writer().await?;
+          writer.execute(
+              "UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?",
+              params![todo_id],
+          )?;
+          Ok(())
+      }
+
+      // Delete a todo
+      async fn delete_todo(db: &PowerSyncDatabase, todo_id: &str) -> Result<(), PowerSyncError> {
+          let writer = db.writer().await?;
+          writer.execute("DELETE FROM todos WHERE id = ?", params![todo_id])?;
+          Ok(())
+      }
       ```
 </CodeGroup>
 

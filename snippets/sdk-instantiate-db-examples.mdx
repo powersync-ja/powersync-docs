@@ -138,4 +138,37 @@
       }
   }
   ```
+
+  ```rust Rust
+  // 1. Process setup: register PowerSync extension early (e.g. in main()).
+  // 2. Open a connection pool, create env, then database. Spawn async tasks
+  //    before connecting (see Connect step). Requires powersync with tokio feature.
+
+  use powersync::{ConnectionPool, PowerSyncDatabase, error::PowerSyncError};
+  use powersync::env::PowerSyncEnvironment;
+  use std::sync::Arc;
+  use http_client::IsahcClient;
+
+  fn open_pool() -> Result<ConnectionPool, PowerSyncError> {
+      ConnectionPool::open("powersync.db")
+  }
+
+  #[tokio::main]
+  async fn main() {
+      PowerSyncEnvironment::powersync_auto_extension()
+          .expect("could not load PowerSync core extension");
+
+      let pool = open_pool().expect("open pool");
+      let client = Arc::new(IsahcClient::new());
+      let env = PowerSyncEnvironment::custom(
+          client.clone(),
+          pool,
+          Box::new(PowerSyncEnvironment::tokio_timer()),
+      );
+
+      let db = PowerSyncDatabase::new(env, app_schema());
+      db.async_tasks().spawn_with_tokio();
+      // Connect with a backend connector in the next step.
+  }
+  ```
 </CodeGroup>

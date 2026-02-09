@@ -124,9 +124,8 @@ and HTTP clients used to connect to the PowerSync service.
 These dependencies can be configured through the [`PowerSyncEnvironment`](https://docs.rs/powersync/latest/powersync/env/struct.PowerSyncEnvironment.html)
 struct, which wraps:
 
-1. An HTTP cliemt (using traits from the `http-client` crate). We recommend enabling the `curl_client` feature
-   on that crate and then using an `IsahcClient` with PowerSync. The `H1Client` is known not to work with
-   PowerSync because it can't cancel response streams properly.
+1. An HTTP client (using traits from the `http-client` crate). We recommend enabling the `curl_client` feature
+   on that crate and then using an `IsahcClient`. The `H1Client` is known not to work with PowerSync because it can't cancel response streams properly.
 2. An asynchronous pool giving out leases to SQLite connections.
 3. A timer implementation allowing the sync client to implement delayed retries on connection errors.
    This is typically provided by async runtimes like Tokio.
@@ -134,10 +133,9 @@ struct, which wraps:
 To configure PowerSync, begin by configuring a connection pool:
 
 <Tabs>
-<Tab title="File-based database">
+<Tab title="Default setup">
 
-To allow readers and writers to progress concurrently, use `ConnectionPool::wrap_connections`.
-The SDK will automatically transition the database into WAL mode.
+Use `ConnectionPool::open` to open a database file with multiple connections configured with WAL mode:
 
 ```Rust
 use powersync::{ConnectionPool, error::PowerSyncError};
@@ -153,9 +151,10 @@ fn open_pool() -> Result<ConnectionPool, PowerSyncError>{
 ```Rust
 use powersync::ConnectionPool;
 use powersync::env::PowerSyncEnvironment;
+use powersync::error::PowerSyncError;
 use rusqlite::Connection;
 
-fn open_pool() -> rusqlite::Result<ConnectionPool> {
+fn open_pool() -> Result<ConnectionPool, PowerSyncError> {
     let connection = Connection::open_in_memory()?;
     Ok(ConnectionPool::single_connection(connection))
 }
@@ -163,15 +162,15 @@ fn open_pool() -> rusqlite::Result<ConnectionPool> {
 </Tab>
 </Tabs>
 
-Next, create a database and start asynchronous tasks:
+Next, create a database and start asynchronous tasks used by the sync client when connecting.
+To be compatible with different executors, the SDK usees a model based on long-lived actors instead of
+spawning tasks dynamically. All asynchronous processes are exposed through `PowerSyncDatabase::async_tasks()`,
+these tasks must be spawned before connecting.
 
 <Tabs>
 <Tab title="Tokio">
 
 Ensure you depend on `powersync` with the `tokio` feature enabled.
-
-To avoid spawning tasks dynamically, asynchronous jobs for e.g. the sync client are exposed through
-`PowerSyncDatabase::async_tasks()`. There is a utility function to start those tasks in a tokio runtime.
 
 ```Rust
 #[tokio::main]
@@ -195,10 +194,6 @@ async fn main() {
 
 <Tab title="smol">
 Ensure you depend on `powersync` with the `smol` feature enabled.
-
-To avoid spawning tasks dynamically, asynchronous jobs for e.g. the sync client are exposed through
-`PowerSyncDatabase::async_tasks()`. These can be spawned by providing a function turning these futures
-into independent tasks, e.g. with `smol::spawn`:
 
 ```Rust
 async fn start_app() {
@@ -318,17 +313,20 @@ The most commonly used CRUD functions to interact with your SQLite data are:
 
 ### Reads
 
-The `get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `getOptional` to return a single optional result (returns `null` if no result is found).
+To obtain a connection suitable for reads, call and await `PowerSyncDatabase::reader()`.
+The returned connection leased can be used as a `rusqlite::Connection` to run queries.
 
-```kotlin
-// Find a list item by ID
-suspend fun find(id: Any): TodoList {
-    return database.get(
-                "SELECT * FROM lists WHERE id = ?", 
-                listOf(id)
-            ) { cursor ->
-                TodoList.fromCursor(cursor)
-            }
+```Rust
+async fn find(db: &PowerSyncDatabase, id: &str) -> Result<(), PowerSyncError> {
+    let reader = db.reader().await?;
+    let mut stmt = reader.prepare("SELECT * FROM lists WHERE id = ?")?;
+    let mut rows = stmt.query(params![id])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get("id")?;
+        let name: String = row.get("name")?;
+
+        println!("Found todo list: {id}, {name}");
+    }
 }
 ```
 

@@ -1,0 +1,394 @@
+---
+title: "Rust SDK (experimental)"
+description: "Full SDK guide for using PowerSync in Rust applications."
+sidebarTitle: "SDK Reference"
+---
+
+import SdkFeatures from '/snippets/sdk-features.mdx';
+import RustInstallation from '/snippets/rust/installation.mdx';
+import RustWatchQuery from '/snippets/rust/basic-watch-query.mdx';
+import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+import LocalOnly from '/snippets/local-only-escape.mdx';
+
+<Warning>
+  This SDK is currently **experimental** and is intended for gathering external feedback. It is not suitable for production use.
+  We also can't guarantee continued support for the SDK at this time.
+  If you're interested in using the PowerSync Rust SDK, please [contact us](/resources/contact-us) with details about your use case.
+</Warning>
+
+<CardGroup cols={3}>
+  <Card title="PowerSync SDK on crates.io" icon="cube" href="https://crates.io/crates/powersync">
+  The SDK is distributed via crates.io
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/powersync-ja/powersync-native/">
+  Refer to the `powersync-native` repo on GitHub
+  </Card>
+  <Card title="API Reference" icon="book" href="https://docs.rs/powersync/latest/powersync/">
+  Full API reference for the SDK
+  </Card>
+  <Card title="Example Projects" icon="code" href="/intro/examples">
+  Gallery of example projects/demo apps built with Flutter and PowerSync
+  </Card>
+  <Card title="Changelog" icon="megaphone" href="https://github.com/powersync-ja/powersync-native/blob/main/CHANGELOG.md">
+  Changelog for the SDK
+  </Card>
+</CardGroup>
+
+### SDK Features
+
+<SdkFeatures />
+
+## Installation
+
+<RustInstallation />
+
+## Getting Started
+
+**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Rules (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
+
+### 1\. Define the Client-Side Schema
+
+The first step is to define the client-side schema, which refers to the schema for the managed SQLite database exposed by the PowerSync Client SDKs, that your app can read from and write to. The client-side schema is typically mainly derived from your backend source database schema and [Sync Rules](/sync/rules/overview), but can also include other tables such as local-only tables. Note that schema migrations are not required on the SQLite database due to the schemaless nature of the [PowerSync protocol](/architecture/powersync-protocol): schemaless data is synced to the client-side SQLite database, and the client-side schema is then applied to that data using _SQLite views_ to allow for structured querying of the data. The schema is applied when the local PowerSync database is constructed (as we'll show in the next step).
+
+<GenerateSchemaAutomatically />
+
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/sync/rules/overview). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
+
+**Example**:
+
+```Rust src/schema.rs
+use powersync::schema::{Column, Schema, Table};
+
+pub fn app_schema() -> Schema {
+    let mut schema = Schema::default();
+    let todos = Table::create(
+        "todos",
+        vec![
+            Column::text("list_id"),
+            Column::text("created_at"),
+            Column::text("completed_at"),
+            Column::text("description"),
+            Column::integer("completed"),
+            Column::text("created_by"),
+            Column::text("completed_by"),
+        ],
+        |_| {},
+    );
+
+    let lists = Table::create(
+        "lists",
+        vec![
+            Column::text("created_at"),
+            Column::text("name"),
+            Column::text("owner_id"),
+        ],
+        |_| {},
+    );
+
+    schema.tables.push(todos);
+    schema.tables.push(lists);
+    schema
+}
+```
+<Note>
+    **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+</Note>
+
+### 2\. Instantiate the PowerSync Database
+
+Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Rules](/sync/rules/overview). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline.
+
+#### Process setup
+
+PowerSync is based on SQLite, and statically links a SQLite extension that needs to be enabled for the process before the SDK can be used. The SDK offers a utility to register the extension, and we recommend calling it early in `main()`:
+
+```Rust lib/main.rs
+use powersync::env::PowerSyncEnvironment;
+
+mod schema;
+
+fn main() {
+    PowerSyncEnvironment::powersync_auto_extension()
+        .expect("could not load PowerSync core extension");
+
+    // TODO: Start database and your app
+}
+```
+
+#### Database setup
+
+For maximum flexibility, the PowerSync Rust SDK can be configured with different asynchronous runtimes and HTTP clients used to connect to the PowerSync service.
+These dependencies can be configured through the [`PowerSyncEnvironment`](https://docs.rs/powersync/latest/powersync/env/struct.PowerSyncEnvironment.html)
+struct, which wraps:
+
+1. An HTTP client (using traits from the `http-client` crate). We recommend enabling the `curl_client` feature
+   on that crate and then using an `IsahcClient`. The `H1Client` is known not to work with PowerSync because it can't cancel response streams properly.
+2. An asynchronous pool giving out leases to SQLite connections.
+3. A timer implementation allowing the sync client to implement delayed retries on connection errors.
+   This is typically provided by async runtimes like Tokio.
+
+To configure PowerSync, begin by configuring a connection pool:
+
+<Tabs>
+<Tab title="Default setup">
+
+Use `ConnectionPool::open` to open a database file with multiple connections configured with WAL mode:
+
+```Rust
+use powersync::{ConnectionPool, error::PowerSyncError};
+use powersync::env::PowerSyncEnvironment;
+
+fn open_pool() -> Result<ConnectionPool, PowerSyncError>{
+    ConnectionPool::open("database.db")
+}
+```
+</Tab>
+
+<Tab title="In-memory connection">
+```Rust
+use powersync::ConnectionPool;
+use powersync::env::PowerSyncEnvironment;
+use powersync::error::PowerSyncError;
+use rusqlite::Connection;
+
+fn open_pool() -> Result<ConnectionPool, PowerSyncError> {
+    let connection = Connection::open_in_memory()?;
+    Ok(ConnectionPool::single_connection(connection))
+}
+```
+</Tab>
+</Tabs>
+
+Next, create a database and start asynchronous tasks used by the sync client when connecting.
+To be compatible with different executors, the SDK usees a model based on long-lived actors instead of
+spawning tasks dynamically. All asynchronous processes are exposed through `PowerSyncDatabase::async_tasks()`,
+these tasks must be spawned before connecting.
+
+<Tabs>
+<Tab title="Tokio">
+
+Ensure you depend on `powersync` with the `tokio` feature enabled.
+
+```Rust
+#[tokio::main]
+async fn main() {
+    PowerSyncEnvironment::powersync_auto_extension()
+        .expect("could not load PowerSync core extension");
+
+    let pool = open_pool().expect("open pool");
+    let client = Arc::new(IsahcClient::new());
+    let env = PowerSyncEnvironment::custom(
+        client.clone(),
+        pool,
+        Box::new(PowerSyncEnvironment::tokio_timer()),
+    );
+
+    let db = PowerSyncDatabase::new(env, schema::app_schema());
+    db.async_tasks().spawn_with_tokio();
+}
+```
+</Tab>
+
+<Tab title="smol">
+Ensure you depend on `powersync` with the `smol` feature enabled.
+
+```Rust
+async fn start_app() {
+    let pool = open_pool().expect("open pool");
+    let client = Arc::new(IsahcClient::new());
+    let env = PowerSyncEnvironment::custom(
+        client.clone(),
+        pool,
+        // Use the async_io crate to implement timers in PowerSync
+        Box::new(PowerSyncEnvironment::async_io_timer()),
+    );
+
+    let db = PowerSyncDatabase::new(env, schema::app_schema());
+    // TODO: Use a custom multi-threaded executor instead of the default
+    let tasks = db.async_tasks().spawn_with(smol::spawn);
+    for task in tasks {
+        // The task will automatically stop once the database is dropped, but we
+        // want to keep it running until then.
+        task.detach();
+    }
+}
+
+fn main() {
+    PowerSyncEnvironment::powersync_auto_extension()
+        .expect("could not load PowerSync core extension");
+    smol::block_on(start_app());
+}
+```
+</Tab>
+
+<Tab title="Other">
+PowerSync is executor-agnostic and supports all async Rust runtimes. You need to provide:
+
+1. A future that delays execution by scheduling its waker through a timer.
+2. A way to spawn futures as a task that is polled independently.
+
+PowerSync uses the [`Timer`](https://docs.rs/powersync/latest/powersync/env/trait.Timer.html)
+trait for timers, it can be installed by creating a `PowerSyncEnvironment` with `PowerSyncEnvironment::custom`
+and passing your custom timer implementation.
+
+Spawning tasks is only necessary once after opening the database. All tasks necessary for the sync
+client are exposed through `PowerSyncDatabase::async_tasks`. You can spawn these by providing
+a function turning these futures into independent tasks via `AsyncDatabaseTasks::spawn_with`.
+</Tab>
+</Tabs>
+
+Finally, instruct PowerSync to sync data from your backend:
+
+```Rust
+// MyBackendConnector is defined in the next step...
+db.connect(SyncOptions::new(MyBackendConnector {
+    client,
+    db: db.clone(),
+})).await;
+```
+
+<LocalOnly />
+
+### 3\. Integrate with your Backend
+
+Create a connector to integrate with your backend. The PowerSync backend connector provides the connection between your application backend and the PowerSync managed database. It is used to:
+
+1. Retrieve an auth token to connect to the PowerSync instance.
+2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend source database) when the user is connected. 
+
+Accordingly, the connector must implement two methods:
+
+1. `fetch_credentials` \- This method will be automatically invoked by the PowerSync Client SDK every couple of minutes to obtain authentication credentials. See [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
+2. `upload_data` \- This method will be automatically invoked by the PowerSync Client SDK whenever it needs to upload client-side writes to your app backend via your backend API. Therefore, in your implementation, you need to define how your backend API is called. See [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
+
+**Example**:
+
+```Rust
+struct MyBackendConnector {
+    client: Arc<dyn http_client::HttpClient>,
+    db: PowerSyncDatabase,
+}
+
+#[async_trait]
+impl BackendConnector for MyBackendConnector {
+    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+        // implement fetchCredentials to obtain the necessary credentials to connect to your backend
+        // See an example implementation in https://github.com/powersync-ja/powersync-native/blob/508193b0822b8dad1a534a16462e2fcd36a9ac68/examples/egui_todolist/src/database.rs#L119-L133
+
+        Ok(PowerSyncCredentials {
+            endpoint: "[Your PowerSync instance URL or self-hosted endpoint]".to_string(),
+            // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly) to get up and running quickly
+            token: "An authentication token".to_string(),
+        })
+    }
+
+    async fn upload_data(&self) -> Result<(), PowerSyncError> {
+        // Implement uploadData to send local changes to your backend service
+        // You can omit this method if you only want to sync data from the server to the client
+        // See an example implementation under Usage Examples (sub-page)
+        // See https://docs.powersync.com/handling-writes/writing-client-changes for considerations.
+        let  mut local_writes = self.db.crud_transactions();
+        while let Some(tx) = local_writes.try_next().await? {
+            todo!("Inspect tx.crud for local writes that need to be uploaded to your backend");
+            tx.complete().await?;
+        }
+
+        Ok(())
+    }
+}
+```
+
+## Using PowerSync: CRUD functions
+
+Once the PowerSync instance is configured you can start using the SQLite DB functions.
+
+The most commonly used CRUD functions to interact with your SQLite data are:
+
+* [reader](#reads) \- run statements reading from the database.
+* [wroter](/client-sdks/reference/kotlin#querying-items-powersync-getall) \- execute a read query every time source tables are modified.
+* [writer](#mutations) \- write to the database.
+
+### Reads
+
+To obtain a connection suitable for reads, call and await `PowerSyncDatabase::reader()`.
+The returned connection leased can be used as a `rusqlite::Connection` to run queries.
+
+```Rust
+async fn find(db: &PowerSyncDatabase, id: &str) -> Result<(), PowerSyncError> {
+    let reader = db.reader().await?;
+    let mut stmt = reader.prepare("SELECT * FROM lists WHERE id = ?")?;
+    let mut rows = stmt.query(params![id])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get("id")?;
+        let name: String = row.get("name")?;
+
+        println!("Found todo list: {id}, {name}");
+    }
+}
+```
+
+### Watching Queries
+
+The `watch_statement` method executes a read query whenever a change to a dependent table is made.
+
+<RustWatchQuery />
+
+### Mutations
+
+Local writes on tables are automatically captured with triggers. To obtain a connection suitable for
+writes, use the `PowerSyncDatabase::writer` method:
+
+The `execute` method executes a write query (INSERT, UPDATE, DELETE) and returns the results (if any).
+
+```Rust
+async fn insert_customer(
+    db: &PowerSyncDatabase,
+    name: &str,
+    email: &str,
+) -> Result<(), PowerSyncError> {
+    let writer = db.writer().await?;
+    writer.execute(
+        "INSERT INTO customers (id, name, email) VALUES (uuid(), ?, ?)",
+        params![name, email],
+    )?;
+    Ok(())
+}
+```
+
+If you're looking for transactions, use the [`transaction`](https://docs.rs/rusqlite/latest/rusqlite/struct.Connection.html#method.transaction)
+method from `rusqlite` on `writer`.
+
+## Configure Logging
+
+The Rust SDK uses the `log` crate internally, so you can configure it with any backend, e.g. with
+`env_logger`:
+
+```Rust
+fn main() {
+    env_logger::init();
+    // ...
+}
+```
+
+## Additional Usage Examples
+
+For more usage examples including accessing connection status, monitoring sync progress, and waiting for initial sync, see the [Usage Examples](/client-sdks/usage-examples) page.
+
+## ORM / SQL Library Support
+
+The Rust SDK does not currently support any higher-level SQL libraries, but we're investigating
+support for Diesel and sqlx.
+Please reach out to us if you're interested in these or other integrations.
+
+## Troubleshooting
+
+See [Troubleshooting](/debugging/troubleshooting) for pointers to debug common issues.
+
+## Supported Platforms
+
+See [Supported Platforms -> Rust SDK](/resources/supported-platforms#rust-sdk).
+
+## Upgrading the SDK
+
+To update the PowerSync SDK, run `cargo update powersync` or manually update to the
+[latest version](https://crates.io/crates/powersync/versions).

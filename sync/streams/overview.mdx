@@ -46,7 +46,7 @@ Sync Streams will be supported alongside Sync Rules for the foreseeable future, 
   * Dart: v1.16.0
   * Kotlin: v1.7.0
   * .NET: v0.0.8-alpha.1
-  * Swift: [In progress](https://github.com/powersync-ja/powersync-swift/pull/86).
+  * Swift: v1.11.0
 * Use of the [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks). The Rust-based sync client is enabled by default on the latest version of all SDKs. If you are on a lower version, follow the instructions below to enable it.
 
   <Expandable title="Instructions for enabling Rust client on lower SDK versions">
@@ -417,8 +417,60 @@ Select your language for specific examples:
     ```
     </Tab>
 
-    <Tab title="Swift - Coming soon">
-        Coming soon
+    <Tab title="Swift">
+    ```swift
+    let sub = try await db.syncStream(name: "issues", params: ["id": JsonValue.string("issue-id")]).subscribe(
+      ttl: 60 * 60, // 1 hour
+      priority: nil
+    );
+
+    // Resolve current status for subscription
+    let status = db.currentStatus.forStream(stream: sub)
+    let progress = status?.progress
+
+    // Wait for this subscription to have synced
+    try await sub.waitForFirstSync()
+
+    // When the component needing the subscription is no longer active...
+    try await sub.unsubscribe()
+    ```
+    </Tab>
+    <Tab title="Rust">
+        ```rust
+        let stream = db.sync_stream(
+            "issues",
+            Some(&{
+                let mut params = serde_json::Map::new();
+                params.insert(
+                    "id".to_string(),
+                    serde_json::Value::String("issue-id".to_string()),
+                );
+                serde_json::Value::Object(params)
+            }),
+        );
+
+        let sub = stream
+            .subscribe_with({
+                let mut options = StreamSubscriptionOptions::default();
+                options.with_ttl(Duration::from_hours(1));
+                options
+            })
+            .await
+            .expect("could not subscribe");
+
+        // Resolve current status for subscription.
+        let status = db.status();
+        let status = status.for_stream(&sub /* or &stream */);
+        let progress = status.and_then(|f| f.progress);
+
+        // Wait for this subscription to have synced
+        sub.wait_for_first_sync().await;
+
+        // When the component needing the subscription is no longer active...
+        // In Rust, simply dropping the StreamSubscription is enough too. So
+        // subscriptions should be referenced until they're no longer used.
+        sub.unsubscribe();
+        ```
     </Tab>
 </Tabs>
 
@@ -459,5 +511,8 @@ Select your language for specific examples:
   </Tab>
   <Tab title="Kotlin">
     In progress, follow along: https://github.com/powersync-ja/powersync-kotlin/pull/270 
+  </Tab>
+  <Tab title="Rust">
+    Example coming soon.
   </Tab>
 </Tabs>

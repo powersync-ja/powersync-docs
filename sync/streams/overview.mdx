@@ -1,14 +1,14 @@
 ---
 title: "Sync Streams"
-description: Sync Streams enable partial sync, letting you define exactly which data from your backend syncs to each client using simple SQL-like queries.
+description: Sync Streams enable partial syncing, letting you define exactly which data from your backend can sync to each client using simple SQL-like queries.
 sidebarTitle: "Quickstart"
 ---
 
 import StreamDefinitionReference from '/snippets/stream-definition-reference.mdx';
 
-Sync Streams enable partial sync — instead of syncing entire tables, you tell PowerSync exactly which data each user should have on their device. You write simple SQL-like queries to define the data, and your client app subscribes to the streams it needs. PowerSync handles the rest, keeping data in sync in real-time and making it available offline.
+Instead of syncing entire tables, you tell PowerSync exactly which data each user/client can sync. You write simple SQL-like queries to define streams of data, and your client app subscribes to the streams it needs. PowerSync handles the rest, keeping data in sync in real-time and making it available offline.
 
-For example, you might create a stream that syncs only the current user's todo items, another for shared projects they have access to, and another for reference data that everyone needs. Your app subscribes to these streams on demand, and only that data syncs to the client's local SQLite database.
+For example, you might create a stream that syncs only the current user's to-do items, another for shared projects they have access to, and another for reference data that everyone needs. Your app subscribes to these streams on demand, and only that data syncs to the client-side SQLite database.
 
 <Note>
 **Beta Release**
@@ -20,14 +20,14 @@ We welcome your feedback — please share with us in [Discord](https://discord.g
 
 ## Defining Streams
 
-Streams are defined in a YAML configuration file. Each stream has a **name** and a **query** that specifies which rows to sync using SQL-like syntax. The query can reference parameters like the authenticated user's ID to personalize what each user receives.
+Streams are defined in a YAML configuration file. Each stream has a **name** and a **query** that specifies which rows to sync using SQL-like syntax. The query can reference [parameters](/sync/overview#how-it-works) like the authenticated user's ID to personalize what each user receives.
 
 <Tabs>
 <Tab title="PowerSync Cloud">
 In the [PowerSync Dashboard](https://dashboard.powersync.com/):
 
 1. Select your project and instance
-2. Go to the **Sync Streams** view
+2. Go to **Sync Streams**
 3. Edit the YAML directly in the dashboard
 4. Click **Deploy** to validate and deploy
 
@@ -65,18 +65,16 @@ Available stream options:
 
 There are two independent concepts to understand:
 
-- **Data scope**: What data the stream returns
-  - *Global data*: No parameters, same data for all users (e.g. reference tables like categories)
-  - *User-scoped data*: Uses `auth.user_id()` or JWT claims, different per user
-  - *Parameterized data*: Uses `subscription.parameter()`, varies based on what the client subscribes to
-
-- **Subscription behavior**: When the client syncs the data
+- _What_ data the stream returns. For example:
+  - *Global data*: No parameters. Same data for all users (e.g. reference tables like categories).
+  - *Filtered data*: Filters the data by a parameter value. This can make use of _auth parameters_ from the JWT token (such as the user ID or other JWT claims), _subscription parameters_ (specified by the client when it subscribes to a stream at any time), or _connection parameters_ (specified at connection). Different users will get different sets of data based on the parameters. See [Using Parameters](/sync/streams/parameters) for the full reference.
+- _When_ the client syncs the data
   - *Auto-subscribe*: Client automatically subscribes on connect (`auto_subscribe: true`)
   - *On-demand*: Client explicitly subscribes when needed (default behavior)
 
 ### Global Data
 
-Data without parameters is "global" data, meaning the same data goes to all users. This is useful for reference tables:
+Data without parameters is "global" data, meaning the same data goes to all users/clients. This is useful for reference tables:
 
 ```yaml
 config:
@@ -93,12 +91,12 @@ streams:
 ```
 
 <Note>
-Global data streams still require clients to subscribe explicitly unless you set `auto_subscribe: true`.
+Global data streams still require clients to subscribe explicitly unless you set `auto_subscribe: true`
 </Note>
 
-### User-Scoped Data
+### Filtering Data by User
 
-Use `auth.user_id()` or JWT claims to return different data per user:
+Use `auth.user_id()` or other [JWT claims](/sync/streams/parameters#auth-parameters) to return different data per user:
 
 ```yaml
 config:
@@ -114,7 +112,7 @@ streams:
     query: SELECT * FROM orders WHERE user_id = auth.user_id()
 ```
 
-### Parameterized Data (On-Demand)
+### Filtering Data Based on Subscription Parameters
 
 Use `subscription.parameter()` for data that clients subscribe to explicitly:
 
@@ -131,12 +129,17 @@ streams:
         AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
 ```
 
+```js
+// Client subscribes with the list they want to view
+const sub = await db.syncStream('list_todos', { list_id: 'abc123' }).subscribe();
+```
+
 ### Using Auto-Subscribe
 
 Set `auto_subscribe: true` to sync data automatically when clients connect. This is useful for:
-- Reference data that all screens need
+- Reference data that all users need, or that are needed in many screens in the app.
 - User data that should always be available offline
-- Maintaining [Sync Rules](/sync/rules/overview) behavior (sync everything upfront) during migration
+- Maintaining [Sync Rules](/sync/rules/overview) default behavior ("sync everything upfront") when migrating to Sync Streams
 
 ```yaml
 config:
@@ -161,39 +164,13 @@ streams:
         AND order_id IN (SELECT id FROM orders WHERE user_id = auth.user_id())
 ```
 
-## Using Parameters
-
-Parameters let you filter data dynamically. The two most common types are:
-
-**Auth parameters** filter by user identity. Use `auth.user_id()` to sync data belonging to the current user:
-
-```yaml
-streams:
-  my_lists:
-    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
-```
-
-**Subscription parameters** are passed from the client when subscribing. Use these for on-demand data:
-
-```yaml
-streams:
-  list_todos:
-    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')
-```
-
-```js
-// Client subscribes with the list they want to view
-const sub = await db.syncStream('list_todos', { list_id: 'abc123' }).subscribe();
-```
-
-See [Using Parameters](/sync/streams/parameters) for the full reference on subscription, auth, and connection parameters.
 
 ## Client-Side Usage
 
 Subscribe to streams from your client app:
 
 <Tabs>
-<Tab title="JS">
+<Tab title="JavaScript/TypeScript">
 ```js
 const sub = await db.syncStream('list_todos', { list_id: 'abc123' })
   .subscribe({ ttl: 3600 });
@@ -294,7 +271,7 @@ sub.Unsubscribe();
 
 ### TTL (Time-To-Live)
 
-Each subscription has a `ttl` that keeps data cached after unsubscribing. This enables warm cache behavior — when users return to a screen, data is already available. Default TTL is 24 hours. See [Client-Side Usage](/sync/streams/client-usage) for details.
+Each subscription has a `ttl` that keeps data cached after unsubscribing. This enables warm cache behavior — when users return to a screen and you re-subscribe to relevant streams, data is already available on the client. Default TTL is 24 hours. See [Client-Side Usage](/sync/streams/client-usage) for details.
 
 ```js
 // Set TTL in seconds when subscribing
@@ -303,15 +280,15 @@ const sub = await db.syncStream('todos', { list_id: 'abc' })
 ```
 ## Developer Notes
 
-- **SQL Syntax**: Stream queries use a SQL-like syntax with `SELECT` statements. You can use subqueries, `INNER JOIN`, and [CTEs](/sync/streams/ctes) for filtering. `GROUP BY`, `ORDER BY`, and `LIMIT` are not supported. See [Writing Stream Queries](/sync/streams/queries) for details on joins, multiple queries per stream, and other features.
+- **SQL Syntax**: Stream queries use a SQL-like syntax with `SELECT` statements. You can use subqueries, `INNER JOIN`, and [CTEs](/sync/streams/ctes) for filtering. `GROUP BY`, `ORDER BY`, and `LIMIT` are not supported. See [Writing Queries](/sync/streams/queries) for details on joins, multiple queries per stream, and other features.
 
-- **Type Conversion**: Data types from your source database (Postgres, MongoDB, MySQL, SQL Server) are converted when synced to the client's SQLite database. Most types become `text`, so you may need to parse or cast values in your app code. See [Type Mapping](/sync/types) for details on how each type is handled.
+- **Type Conversion**: Data types from your source database (Postgres, MongoDB, MySQL, SQL Server) are converted when synced to the client's SQLite database. SQLite has a limited type system, so most types become `text` and you may need to parse or cast values in your app code. See [Type Mapping](/sync/types) for details on how each type is handled.
 
 - **Primary Key**: PowerSync requires every synced table to have a primary key column named `id` of type `text`. If your backend uses a different column name or type, you'll need to map it. For MongoDB, the `_id` field automatically maps to `id`. See [Client ID](/sync/advanced/client-id) for setup instructions.
 
 - **Case Sensitivity**: To avoid issues across different databases and platforms, use **lowercase identifiers** for all table and column names in your Sync Streams. If your backend uses mixed case, see [Case Sensitivity](/sync/advanced/case-sensitivity) for how to handle it.
 
-- **Bucket Limits**: PowerSync uses internal partitions called "buckets" to efficiently sync data. There's a limit of 1,000 buckets per user. Each unique combination of a stream and its parameters creates one bucket, so keep this in mind when designing streams that use subscription parameters. You can use [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream) to reduce bucket count. See [Buckets](/architecture/powersync-service#bucket-system) for background on this.
+- **Bucket Limits**: PowerSync uses internal partitions called [buckets](/architecture/powersync-service#bucket-system) to efficiently sync data. There's a default [limit of 1,000 buckets](/resources/performance-and-limits) per user/client. Each unique combination of a stream and its parameters creates one bucket, so keep this in mind when designing streams that use subscription parameters. You can use [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream) to reduce bucket count. 
 
 - **Troubleshooting**: If data isn't syncing as expected, the [Sync Diagnostics Client](/tools/diagnostics-client) helps you inspect what's happening for a specific user — you can see which buckets the user has and what data is being synced.
 
@@ -319,6 +296,6 @@ const sub = await db.syncStream('todos', { list_id: 'abc' })
 
 See [Examples & Demos](/sync/streams/examples) for working demo apps and complete application patterns.
 
-## Migrating from Sync Rules
+## Migrating from Legacy Sync Rules
 
-If you have an existing project using Sync Rules, see the [Migration Guide](/sync/streams/migration) for step-by-step instructions, syntax changes, and examples.
+If you have an existing project using legacy Sync Rules, see the [Migration Guide](/sync/streams/migration) for step-by-step instructions, syntax changes, and examples.

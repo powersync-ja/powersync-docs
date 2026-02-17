@@ -1,0 +1,1004 @@
+---
+title: "Deploy PowerSync on AWS ECS"
+sidebarTitle: "AWS ECS"
+description: "Guide to deploying PowerSync on AWS ECS with Fargate"
+---
+
+[AWS ECS](https://aws.amazon.com/ecs/) with Fargate provides a serverless container orchestration platform for running PowerSync without managing servers.
+
+## Prerequisites
+
+Before deploying PowerSync on AWS ECS, ensure you have:
+
+- AWS account with permissions for EC2, ECS, ALB, IAM and Secrets Manager
+- AWS CLI installed and configured
+- Understanding of the [deployment architecture](/maintenance-ops/self-hosting/deployment-architecture) for production vs development setup
+
+## 1. PowerSync Configuration
+
+Create your `powersync.yaml` configuration file following the [Self-Hosted Configuration Guide](/configuration/powersync-service/self-hosted-instances). 
+
+Your configuration must include:
+
+- [Sync Rules](/sync/rules/overview): Define which data to sync to clients
+- [Client Auth](/configuration/auth/overview): Your authentication provider's JWKS
+- [Source Database](/configuration/source-db/setup): Connection details for your source database
+- [Bucket Storage](/configuration/powersync-service/self-hosted-instances#bucket-storage-database): Connection details for your bucket storage database. PowerSync supports MongoDB or Postgres as bucket storage databases. In this guide, we focus on MongoDB.
+  <Tabs>
+  <Tab title="MongoDB Atlas">
+  For bucket storage, we recommend configuring an **AWS PrivateLink** to establish a secure, private connection between your ECS tasks and MongoDB Atlas that doesn't traverse the public internet.
+
+  Follow the [AWS PrivateLink guide for MongoDB Atlas](https://aws.amazon.com/blogs/apn/connecting-applications-securely-to-a-mongodb-atlas-data-plane-with-aws-privatelink/) to configure the VPC endpoint and update your MongoDB connection string to use the private endpoint. As seen in the [Secrets Manager](#5-secrets-manager) setup, use the updated connection string in your `PS_MONGO_URI` secret.
+  </Tab>
+  <Tab title="Self-Hosted MongoDB on EC2">
+
+  For self-hosting MongoDB bucket storage on an EC2 instance, refer to AWS's guides (which refer to Amazon DocumentDB, but the installation steps are applicable):
+  1. [Launch an EC2 Instance](https://docs.aws.amazon.com/dms/latest/sbs/chap-mongodb2documentdb.01.html)
+  2. [Install and Configure MongoDB](https://docs.aws.amazon.com/dms/latest/sbs/chap-mongodb2documentdb.02.html)
+  3. **Network Configuration**
+     - Place MongoDB EC2 instance in the same VPC as your ECS tasks
+     - Configure security groups to allow ECS tasks to connect to MongoDB on port 27017:
+
+     ```bash
+     # Create MongoDB security group
+     MONGO_SG=$(aws ec2 create-security-group \
+       --group-name mongodb-sg \
+       --description "MongoDB for PowerSync" \
+       --vpc-id $VPC_ID \
+       --query 'GroupId' --output text)
+
+     # Allow ECS tasks to connect to MongoDB ($ECS_SG is the ECS tasks security group created later in the Security Groups section)
+     aws ec2 authorize-security-group-ingress \
+       --group-id $MONGO_SG \
+       --protocol tcp --port 27017 --source-group $ECS_SG
+     ```
+  </Tab>
+  </Tabs>
+
+## 2. VPC and Networking Setup
+
+This guide uses bash variables throughout for easy copy-paste execution.
+
+```bash
+# Set your AWS region and account ID
+AWS_REGION="us-east-1"  # Change to your region
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+# Set your VPC ID (or create a new VPC)
+VPC_ID="vpc-xxxxx"
+# Set PowerSync version (check Docker Hub for latest: https://hub.docker.com/r/journeyapps/powersync-service/tags)
+PS_VERSION="1.19.0" 
+```
+
+### VPC Architecture Overview
+
+PowerSync on ECS requires a VPC with both **public** and **private** subnets:
+
+- **Public subnets**: Host the Application Load Balancer (ALB) and NAT Gateway with direct internet access
+- **Private subnets**: Host ECS tasks for security, with outbound-only internet access via NAT Gateway
+
+**Network Flow:**
+```
+Internet → Internet Gateway → Public Subnets (ALB, NAT) → Private Subnets (ECS Tasks)
+```
+
+<Warning>
+**Default VPC users**: The AWS default VPC only contains public subnets. You must create private subnets following the steps below.
+</Warning>
+
+### Check Existing Subnets
+
+```bash
+# List all subnets in your VPC
+aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query 'Subnets[*].[SubnetId,CidrBlock,MapPublicIpOnLaunch,AvailabilityZone]' \
+  --output table
+```
+
+If `MapPublicIpOnLaunch` is `True`, those are public subnets. Save the public subnet IDs:
+
+```bash
+# Get public subnets (for ALB and NAT Gateway)
+PUBLIC_SUBNET_1=$(aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=$VPC_ID" "Name=map-public-ip-on-launch,Values=true" \
+  --query 'Subnets[0].SubnetId' --output text)
+
+PUBLIC_SUBNET_2=$(aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=$VPC_ID" "Name=map-public-ip-on-launch,Values=true" \
+  --query 'Subnets[1].SubnetId' --output text)
+
+echo "Public Subnet 1: $PUBLIC_SUBNET_1"
+echo "Public Subnet 2: $PUBLIC_SUBNET_2"
+```
+
+### Create Private Subnets
+
+Create two private subnets in different availability zones for high availability:
+
+```bash
+# Get available zones in your region
+AZ1=$(aws ec2 describe-availability-zones --region $AWS_REGION --query 'AvailabilityZones[0].ZoneName' --output text)
+AZ2=$(aws ec2 describe-availability-zones --region $AWS_REGION --query 'AvailabilityZones[1].ZoneName' --output text)
+
+echo "Availability Zone 1: $AZ1"
+echo "Availability Zone 2: $AZ2"
+
+# Get VPC CIDR to determine available address space
+VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids $VPC_ID --query 'Vpcs[0].CidrBlock' --output text)
+echo "VPC CIDR: $VPC_CIDR"
+
+# Create first private subnet (adjust CIDR if conflicts exist)
+PRIVATE_SUBNET_1=$(aws ec2 create-subnet \
+  --vpc-id $VPC_ID \
+  --cidr-block 172.31.96.0/20 \
+  --availability-zone $AZ1 \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=powersync-private-1}]' \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+echo "Private Subnet 1: $PRIVATE_SUBNET_1"
+
+# Create second private subnet (adjust CIDR if conflicts exist)
+PRIVATE_SUBNET_2=$(aws ec2 create-subnet \
+  --vpc-id $VPC_ID \
+  --cidr-block 172.31.112.0/20 \
+  --availability-zone $AZ2 \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=powersync-private-2}]' \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+echo "Private Subnet 2: $PRIVATE_SUBNET_2"
+```
+
+<Warning>
+**CIDR Block Configuration**: The example uses `172.31.96.0/20` and `172.31.112.0/20`, which work for the default VPC (`172.31.0.0/16`). If you get a CIDR conflict error, adjust these blocks to match unused address space in your VPC. Each /20 block provides 4,096 IP addresses.
+</Warning>
+
+**Create Route Table for Private Subnets:**
+
+```bash
+# Create private route table
+PRIVATE_RTB=$(aws ec2 create-route-table \
+  --vpc-id $VPC_ID \
+  --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=powersync-private-rtb}]' \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+echo "Private Route Table: $PRIVATE_RTB"
+
+# Associate private subnets with route table
+aws ec2 associate-route-table \
+  --route-table-id $PRIVATE_RTB \
+  --subnet-id $PRIVATE_SUBNET_1
+
+aws ec2 associate-route-table \
+  --route-table-id $PRIVATE_RTB \
+  --subnet-id $PRIVATE_SUBNET_2
+
+echo "Private subnets created and associated with route table"
+```
+
+### NAT Gateway Setup
+
+ECS tasks in private subnets need outbound internet access for:
+- Pulling container images from Amazon ECR
+- Fetching JWKS for authentication (if applicable in your client authentication setup)
+- Connecting to external services
+
+**Create NAT Gateway:**
+
+```bash
+# Allocate Elastic IP
+EIP_ALLOC=$(aws ec2 allocate-address \
+  --domain vpc \
+  --query 'AllocationId' \
+  --output text)
+
+echo "Elastic IP Allocation: $EIP_ALLOC"
+
+# Create NAT Gateway in a PUBLIC subnet
+NAT_GW=$(aws ec2 create-nat-gateway \
+  --subnet-id $PUBLIC_SUBNET_1 \
+  --allocation-id $EIP_ALLOC \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+echo "NAT Gateway: $NAT_GW"
+
+# Wait for NAT Gateway to become available (takes ~2 minutes)
+echo "Waiting for NAT Gateway to become available (this takes ~2 minutes)..."
+aws ec2 wait nat-gateway-available --nat-gateway-ids $NAT_GW
+echo "NAT Gateway is now available"
+```
+
+**Add Route to Private Route Table:**
+
+```bash
+# Add default route to NAT Gateway in private route table
+aws ec2 create-route \
+  --route-table-id $PRIVATE_RTB \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id $NAT_GW
+```
+
+**Verify Setup:**
+
+```bash
+# Verify private route table
+aws ec2 describe-route-tables \
+  --route-table-ids $PRIVATE_RTB \
+  --query 'RouteTables[0].Routes' \
+  --output table
+
+# Should show:
+# - 172.31.0.0/16 -> local (VPC internal routing)
+# - 0.0.0.0/0 -> nat-xxxxx (Internet via NAT)
+```
+
+### Create Security Groups
+
+```bash
+# ALB security group (allows HTTPS from internet)
+ALB_SG=$(aws ec2 create-security-group \
+  --group-name powersync-alb-sg \
+  --description "PowerSync ALB" \
+  --vpc-id $VPC_ID \
+  --query 'GroupId' --output text)
+
+echo "ALB Security Group: $ALB_SG"
+
+aws ec2 authorize-security-group-ingress \
+  --group-id $ALB_SG \
+  --protocol tcp --port 443 --cidr 0.0.0.0/0
+
+# ECS security group (allows traffic from ALB only)
+ECS_SG=$(aws ec2 create-security-group \
+  --group-name powersync-ecs-sg \
+  --description "PowerSync ECS tasks" \
+  --vpc-id $VPC_ID \
+  --query 'GroupId' --output text)
+
+echo "ECS Security Group: $ECS_SG"
+
+aws ec2 authorize-security-group-ingress \
+  --group-id $ECS_SG \
+  --protocol tcp --port 8080 --source-group $ALB_SG
+
+echo "Security groups created successfully"
+```
+
+## 3. Application Load Balancer
+
+### Domain Setup
+
+PowerSync requires a domain name for SSL certificate provisioning. You can either:
+
+- Use an existing domain by creating a Route 53 hosted zone and updating your registrar's nameservers
+- Register a new domain directly through Route 53
+
+For detailed instructions, follow the official AWS guides:
+
+- [Configuring DNS routing for a new domain](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/dns-configuring-new-domain.html) - For existing domains
+- [Registering a new domain](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/domain-register.html) - To register through Route 53
+
+Once your hosted zone is created, export the zone ID:
+
+```bash
+export HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+  --dns-name yourdomain.com \
+  --query 'HostedZones[0].Id' \
+  --output text)
+
+echo "Hosted Zone ID: $HOSTED_ZONE_ID"
+```
+
+
+### Request SSL Certificate
+
+For secure HTTPS connections, request an SSL certificate using AWS Certificate Manager (ACM):
+
+```bash
+# Set your domain name
+POWERSYNC_DOMAIN="powersync.yourdomain.com"  # Change to your domain
+
+# Request certificate
+CERT_ARN=$(aws acm request-certificate \
+  --domain-name $POWERSYNC_DOMAIN \
+  --validation-method DNS \
+  --region $AWS_REGION \
+  --query 'CertificateArn' \
+  --output text)
+
+echo "Certificate ARN: $CERT_ARN"
+
+# Get validation record details
+VALIDATION_NAME=$(aws acm describe-certificate \
+  --certificate-arn $CERT_ARN \
+  --region $AWS_REGION \
+  --query 'Certificate.DomainValidationOptions[0].ResourceRecord.Name' \
+  --output text)
+
+VALIDATION_VALUE=$(aws acm describe-certificate \
+  --certificate-arn $CERT_ARN \
+  --region $AWS_REGION \
+  --query 'Certificate.DomainValidationOptions[0].ResourceRecord.Value' \
+  --output text)
+
+echo "Validation Name: $VALIDATION_NAME"
+echo "Validation Value: $VALIDATION_VALUE"
+```
+
+**Add DNS Validation Record:**
+
+<Tabs>
+<Tab title="External DNS Provider">
+
+Add the `CNAME` record using your DNS provider's management console:
+
+| Type | Name | Value | TTL |
+|------|------|-------|-----|
+| `CNAME` | `[VALIDATION_NAME]` | `[VALIDATION_VALUE]` | `300` |
+
+
+</Tab>
+
+
+<Tab title="Route 53 DNS">
+Add the `CNAME` record using AWS CLI:
+
+```bash
+aws route53 change-resource-record-sets \
+  --hosted-zone-id $HOSTED_ZONE_ID \
+  --change-batch '{
+    "Changes": [{
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "'$VALIDATION_NAME'",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [{"Value": "'$VALIDATION_VALUE'"}]
+      }
+    }]
+  }'
+```
+</Tab>
+</Tabs>
+
+**Wait for Certificate Validation:**
+
+```bash
+aws acm wait certificate-validated --certificate-arn $CERT_ARN --region $AWS_REGION
+```
+
+### Create ALB
+
+```bash
+# Create load balancer
+ALB_ARN=$(aws elbv2 create-load-balancer \
+  --name powersync-alb \
+  --subnets $PUBLIC_SUBNET_1 $PUBLIC_SUBNET_2 \
+  --security-groups $ALB_SG \
+  --scheme internet-facing \
+  --query 'LoadBalancers[0].LoadBalancerArn' \
+  --output text)
+
+echo "ALB ARN: $ALB_ARN"
+
+# Create target group
+TG_ARN=$(aws elbv2 create-target-group \
+  --name powersync-tg \
+  --protocol HTTP \
+  --port 8080 \
+  --vpc-id $VPC_ID \
+  --target-type ip \
+  --health-check-path /probes/liveness \
+  --health-check-interval-seconds 30 \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+
+echo "Target Group ARN: $TG_ARN"
+
+# Create HTTPS listener
+LISTENER_ARN=$(aws elbv2 create-listener \
+  --load-balancer-arn $ALB_ARN \
+  --protocol HTTPS \
+  --port 443 \
+  --certificates CertificateArn=$CERT_ARN \
+  --default-actions Type=forward,TargetGroupArn=$TG_ARN \
+  --query 'Listeners[0].ListenerArn' \
+  --output text)
+
+echo "Listener ARN: $LISTENER_ARN"
+
+# Configure WebSocket support
+# PowerSync uses long-lived WebSocket connections for real-time sync
+# Default ALB timeout is 60s, which would disconnect clients prematurely
+# Setting to 3600s (1 hour) prevents unnecessary disconnections
+aws elbv2 modify-load-balancer-attributes \
+  --load-balancer-arn $ALB_ARN \
+  --attributes Key=idle_timeout.timeout_seconds,Value=3600
+```
+
+## 4. DNS Configuration
+
+Point your domain to the load balancer:
+
+```bash
+# Get ALB DNS name
+ALB_DNS=$(aws elbv2 describe-load-balancers \
+  --names powersync-alb \
+  --query 'LoadBalancers[0].DNSName' \
+  --output text)
+
+ALB_ZONE=$(aws elbv2 describe-load-balancers \
+  --names powersync-alb \
+  --query 'LoadBalancers[0].CanonicalHostedZoneId' \
+  --output text)
+
+echo "ALB DNS: $ALB_DNS"
+echo "ALB Zone: $ALB_ZONE"
+
+```
+
+<Tabs>
+<Tab title="External DNS Provider">
+Create a `CNAME` record pointing to the ALB DNS name.
+
+| Type  | Name                      | Value      | TTL |
+|-------|---------------------------|------------|-----|
+| `CNAME` | `powersync.yourdomain.com`  | `[ALB_DNS]`  | `300` |
+
+</Tab>
+
+<Tab title="Using Route 53">
+Create an alias `A` record pointing to the ALB:
+
+```bash
+aws route53 change-resource-record-sets \
+  --hosted-zone-id $HOSTED_ZONE_ID \
+  --change-batch '{
+    "Changes": [{
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "'$POWERSYNC_DOMAIN'",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "'$ALB_ZONE'",
+          "DNSName": "'$ALB_DNS'",
+          "EvaluateTargetHealth": true
+        }
+      }
+    }]
+  }'
+```
+</Tab>
+</Tabs>
+
+## 5. Secrets Manager
+
+Store your PowerSync configuration and connection strings securely in AWS Secrets Manager. This allows you to reference them in your ECS task definition without hardcoding sensitive information.
+
+```bash
+# Store config
+aws secretsmanager create-secret \
+  --name powersync/config \
+  --secret-string file://powersync.yaml
+
+# Store connection strings
+
+# Set your source database connection string (e.g., PostgreSQL, MongoDB, MySQL, or SQL Server)
+aws secretsmanager create-secret \
+  --name powersync/data-source-uri \
+  --secret-string "postgresql://user:pass@host:5432/db" 
+
+# Set your replication bucket storage connection string (e.g., MongoDB or Postgres)
+aws secretsmanager create-secret \
+  --name powersync/storage-uri \
+  --secret-string "mongodb://user:pass@host:27017/?replicaSet=rs0" 
+
+aws secretsmanager create-secret \
+  --name powersync/jwks-url \
+  --secret-string "https://your-auth-provider.com/.well-known/jwks.json"
+```
+
+<Info>
+AWS Secrets Manager automatically appends a 6-character suffix to secret ARNs (e.g., `powersync/config-AbCdEf`).
+
+ECS task definitions support **prefix matching**, allowing you to reference secrets using just the base name:
+
+- Created as: `powersync/config-AbCdEf` (with suffix)
+- Referenced as: `arn:aws:secretsmanager:region:account:secret:powersync/config` (without suffix)
+
+This means you don't need to update task definitions when secrets are rotated.
+</Info>
+
+## 6. ECS Task Definition
+
+The ECS task definition specifies how to run the PowerSync container, including environment variables, secrets, resource limits, and health checks.
+
+### Create IAM Role
+
+```bash
+# Create execution role
+aws iam create-role \
+  --role-name PowerSyncTaskExecutionRole \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+
+# Wait for role to propagate
+sleep 10
+
+aws iam attach-role-policy \
+  --role-name PowerSyncTaskExecutionRole \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+# Add Secrets Manager access
+aws iam put-role-policy \
+  --role-name PowerSyncTaskExecutionRole \
+  --policy-name SecretsAccess \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "arn:aws:secretsmanager:'$AWS_REGION':'$AWS_ACCOUNT_ID':secret:powersync/*"
+    }]
+  }'
+
+# Save role ARN
+TASK_EXECUTION_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/PowerSyncTaskExecutionRole"
+echo "Task Execution Role ARN: $TASK_EXECUTION_ROLE_ARN"
+```
+
+### Create Cluster
+
+```bash
+aws ecs create-cluster \
+  --cluster-name powersync-cluster \
+  --capacity-providers FARGATE
+```
+
+### Register Task Definition
+
+Generate the task definition using your environment variables:
+
+```bash
+cat > task-definition.json <<EOF
+{
+  "family": "powersync-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "2048",
+  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "powersync",
+      "image": "journeyapps/powersync-service:$PS_VERSION",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 8080, "protocol": "tcp"}
+      ],
+      "environment": [
+        {"name": "PS_PORT", "value": "8080"},
+        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+      ],
+      "secrets": [
+        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+        {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
+        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+        {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/powersync",
+          "awslogs-region": "$AWS_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}
+EOF
+
+# Register the task definition
+aws ecs register-task-definition --cli-input-json file://task-definition.json
+```
+
+## 7. Deploy ECS Service
+
+Create the ECS service to run PowerSync tasks
+
+<Tabs>
+
+<Tab title="High Availability Setup">
+
+For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
+
+The task definitions below allocate **2 vCPU and 2GB memory** per container. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended baseline: 1 vCPU, 1GB memory).
+
+**Step 1: Create Replication Task Definition**
+
+```bash
+cat > replication-task-definition.json <<EOF
+{
+  "family": "powersync-replication",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "2048",
+  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "powersync-replication",
+      "image": "journeyapps/powersync-service:$PS_VERSION",
+      "command": ["start", "-r", "sync"],
+      "essential": true,
+      "environment": [
+        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+      ],
+      "secrets": [
+        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+        {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
+        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+        {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/powersync-replication",
+          "awslogs-region": "$AWS_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+aws ecs register-task-definition --cli-input-json file://replication-task-definition.json
+```
+
+**Step 2: Create API Task Definition**
+
+```bash
+cat > api-task-definition.json <<EOF
+{
+  "family": "powersync-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "2048",
+  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "powersync-api",
+      "image": "journeyapps/powersync-service:$PS_VERSION",
+      "command": ["start", "-r", "api"],
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 8080, "protocol": "tcp"}
+      ],
+      "environment": [
+        {"name": "PS_PORT", "value": "8080"},
+        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+      ],
+      "secrets": [
+        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+        {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/powersync-api",
+          "awslogs-region": "$AWS_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}
+EOF
+
+aws ecs register-task-definition --cli-input-json file://api-task-definition.json
+```
+
+**Step 3: Deploy Replication Service (1 Instance)**
+
+```bash
+aws ecs create-service \
+  --cluster powersync-cluster \
+  --service-name powersync-replication \
+  --task-definition powersync-replication \
+  --desired-count 1 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={
+    subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+    securityGroups=[$ECS_SG],
+    assignPublicIp=DISABLED
+  }" \
+  --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
+```
+
+**Step 4: Deploy API Service (2+ Instances)**
+
+```bash
+aws ecs create-service \
+  --cluster powersync-cluster \
+  --service-name powersync-api \
+  --task-definition powersync-api \
+  --desired-count 2 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={
+    subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+    securityGroups=[$ECS_SG],
+    assignPublicIp=DISABLED
+  }" \
+  --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync-api,containerPort=8080" \
+  --health-check-grace-period-seconds 120 \
+  --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+```
+
+**Verify HA Deployment:**
+
+```bash
+# Check replication service status
+aws ecs describe-services \
+  --cluster powersync-cluster \
+  --services powersync-replication \
+  --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+  --output table
+
+# Check API service status
+aws ecs describe-services \
+  --cluster powersync-cluster \
+  --services powersync-api \
+  --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+  --output table
+
+# Wait for tasks to be running (takes 2-3 minutes)
+echo "Waiting for tasks to start..."
+sleep 60
+
+# Test endpoint (replace with your domain)
+curl https://$POWERSYNC_DOMAIN/probes/liveness
+
+# View API logs
+aws logs tail /ecs/powersync-api --follow
+
+# View replication logs
+aws logs tail /ecs/powersync-replication --follow
+```
+
+</Tab>
+
+<Tab title="Basic Setup (Single Instance)">
+
+### Basic Deployment
+
+This basic setup runs both replication and API processes in the same container. Running multiple instances (`desired-count > 1`) will cause **Sync Rule lock errors during rolling updates** when deploying new task definitions.
+
+```bash
+aws ecs create-service \
+  --cluster powersync-cluster \
+  --service-name powersync-service \
+  --task-definition powersync-service \
+  --desired-count 1 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={
+    subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+    securityGroups=[$ECS_SG],
+    assignPublicIp=DISABLED
+  }" \
+  --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync,containerPort=8080" \
+  --health-check-grace-period-seconds 120 \
+  --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
+```
+
+**Verify Basic Deployment:**
+
+```bash
+# Check service status
+aws ecs describe-services \
+  --cluster powersync-cluster \
+  --services powersync-service \
+  --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+  --output table
+
+# Wait for task to be running (takes 2-3 minutes)
+echo "Waiting for tasks to start..."
+sleep 60
+
+# Test endpoint (replace with your domain)
+curl https://$POWERSYNC_DOMAIN/probes/liveness
+
+# View logs
+aws logs tail /ecs/powersync --follow
+```
+
+</Tab>
+</Tabs>
+
+## Production Enhancements
+
+For production deployments, consider adding the following enhancements:
+
+### Daily Compact Job (Recommended)
+
+PowerSync requires [daily compaction](/maintenance-ops/compacting-buckets) to optimize bucket storage. Schedule it as an ECS task with EventBridge:
+
+<Accordion title="Compact Job Configuration">
+
+Generate the compact task definition:
+
+```bash
+cat > compact-task-definition.json <<EOF
+{
+  "family": "powersync-compact",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "powersync-compact",
+      "image": "journeyapps/powersync-service:$PS_VERSION",
+      "command": ["compact"],
+      "essential": true,
+      "environment": [
+        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+      ],
+      "secrets": [
+        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/powersync-compact",
+          "awslogs-region": "$AWS_REGION",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+EOF
+```
+
+Create IAM role for EventBridge and schedule with EventBridge (daily at 2 AM UTC):
+
+```bash
+# Register compact task
+aws ecs register-task-definition --cli-input-json file://compact-task-definition.json
+
+# Create EventBridge role
+aws iam create-role \
+  --role-name ecsEventsRole \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "events.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+
+aws iam put-role-policy \
+  --role-name ecsEventsRole \
+  --policy-name ECS-Events-Policy \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": ["ecs:RunTask"],
+      "Resource": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':task-definition/powersync-compact:*"
+    }, {
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "'$TASK_EXECUTION_ROLE_ARN'"
+    }]
+  }'
+
+export EVENTS_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsEventsRole"
+
+# Create schedule rule
+aws events put-rule \
+  --name powersync-compact-daily \
+  --schedule-expression "cron(0 2 * * ? *)"
+
+# Add target
+aws events put-targets \
+  --rule powersync-compact-daily \
+  --targets '[{
+    "Id": "powersync-compact",
+    "Arn": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':cluster/powersync-cluster",
+    "RoleArn": "'$EVENTS_ROLE_ARN'",
+    "EcsParameters": {
+      "TaskDefinitionArn": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':task-definition/powersync-compact",
+      "TaskCount": 1,
+      "LaunchType": "FARGATE",
+      "NetworkConfiguration": {
+        "awsvpcConfiguration": {
+          "Subnets": ["'$PRIVATE_SUBNET_1'", "'$PRIVATE_SUBNET_2'"],
+          "SecurityGroups": ["'$ECS_SG'"],
+          "AssignPublicIp": "DISABLED"
+        }
+      }
+    }
+  }]'
+```
+
+</Accordion>
+
+### Auto Scaling
+
+<Info>
+**High Availability Setup**: If you deployed using the HA setup, configure autoscaling for the `powersync-api` service instead of `powersync-service`. The replication service (`powersync-replication`) should remain at 1 instance.
+</Info>
+
+```bash
+aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 2 \
+  --max-capacity 10
+
+aws application-autoscaling put-scaling-policy \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-name cpu-scaling \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration '{
+    "TargetValue": 70.0,
+    "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"}
+  }'
+```
+
+## Troubleshooting
+
+| Symptom | Solution |
+|---------|----------|
+| Tasks fail health checks | Check logs: `aws logs tail /ecs/powersync --follow`<br/>Increase `startPeriod` in health check to 120 |
+| 502 Bad Gateway | Verify security groups allow ALB→ECS on port 8080<br/>Check tasks are running: `aws ecs list-tasks --cluster powersync-cluster` |
+| WebSocket disconnects | Verify ALB idle timeout is 3600s (set in [Step 3](#3-application-load-balancer)) |
+| Can't pull image | Verify NAT Gateway exists and route table configured correctly<br/>Check NAT Gateway has internet access |
+| Secrets not loaded | Check IAM role has `secretsmanager:GetSecretValue` permission<br/>Verify secrets exist: `aws secretsmanager list-secrets` |
+| Sync Rule lock errors during deploy | Using multiple instances without HA setup<br/>Use [High Availability Setup](#high-availability-setup) for production |
+| CIDR block conflicts | Adjust CIDR blocks in [Step 2](#2-vpc-and-networking-setup) to match available VPC address space |
+| Certificate validation fails | Verify DNS nameservers are updated and propagated<br/>Check validation CNAME record exists in Route 53 |
+
+
+### Additional Resources
+
+- [AWS ECS Best Practices](https://docs.aws.amazon.com/AmazonECS/latest/bestpracticesguide/) - AWS's official guide covering security, networking, monitoring, and performance optimization for ECS deployments
+- [Self-Host Demo Repository](https://github.com/powersync-ja/self-host-demo) - Working example implementations of PowerSync self-hosting across different platforms and configurations

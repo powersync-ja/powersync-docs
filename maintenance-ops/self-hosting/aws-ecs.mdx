@@ -21,18 +21,15 @@ Create your `powersync.yaml` configuration file following the [Self-Hosted Confi
 Your configuration must include:
 
 - [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)): Define which data to sync to clients
-- [Client Auth](/configuration/auth/overview): Your authentication provider's JWKS URI
+- [Client Auth](/configuration/auth/overview): Your authentication provider's JWKS
 - [Source Database](/configuration/source-db/setup): Connection details for your source database
-- [Bucket Storage](/configuration/powersync-service/self-hosted-instances#bucket-storage-database): Connection details for your bucket storage database (MongoDB or Postgres)
+- [Bucket Storage](/configuration/powersync-service/self-hosted-instances#bucket-storage-database): Connection details for your bucket storage database. PowerSync supports MongoDB or Postgres as bucket storage databases. In this guide, we focus on MongoDB.
   <Tabs>
-
   <Tab title="MongoDB Atlas">
-
   For bucket storage, we recommend configuring an **AWS PrivateLink** to establish a secure, private connection between your ECS tasks and MongoDB Atlas that doesn't traverse the public internet.
 
-  Follow the [AWS PrivateLink guide for MongoDB Atlas](https://aws.amazon.com/blogs/apn/connecting-applications-securely-to-a-mongodb-atlas-data-plane-with-aws-privatelink/) to configure the VPC endpoint and update your MongoDB connection string to use the private endpoint. As seen in the [Secrets Manager setup](#5-secrets-manager), use the updated connection string in your `PS_MONGO_URI` secret.
+  Follow the [AWS PrivateLink guide for MongoDB Atlas](https://aws.amazon.com/blogs/apn/connecting-applications-securely-to-a-mongodb-atlas-data-plane-with-aws-privatelink/) to configure the VPC endpoint and update your MongoDB connection string to use the private endpoint. As seen in the [Secrets Manager](#5-secrets-manager) setup, use the updated connection string in your `PS_MONGO_URI` secret.
   </Tab>
-
   <Tab title="Self-Hosted MongoDB on EC2">
 
   For self-hosting MongoDB bucket storage on an EC2 instance, refer to AWS's guides (which refer to Amazon DocumentDB, but the installation steps are applicable):
@@ -55,9 +52,7 @@ Your configuration must include:
        --group-id $MONGO_SG \
        --protocol tcp --port 27017 --source-group $ECS_SG
      ```
-
   </Tab>
-
   </Tabs>
 
 ## 2. VPC and Networking Setup
@@ -187,7 +182,7 @@ echo "Private subnets created and associated with route table"
 
 ECS tasks in private subnets need outbound internet access for:
 - Pulling container images from Amazon ECR
-- Fetching JWKS for authentication
+- Fetching JWKS for authentication (if applicable in your client authentication setup)
 - Connecting to external services
 
 **Create NAT Gateway:**
@@ -342,7 +337,7 @@ Add the `CNAME` record using your DNS provider's management console:
 
 | Type | Name | Value | TTL |
 |------|------|-------|-----|
-| CNAME | [VALIDATION_NAME] | [VALIDATION_VALUE] | 300 |
+| `CNAME` | `[VALIDATION_NAME]` | `[VALIDATION_VALUE]` | `300` |
 
 
 </Tab>
@@ -451,7 +446,7 @@ Create a `CNAME` record pointing to the ALB DNS name.
 
 | Type  | Name                      | Value      | TTL |
 |-------|---------------------------|------------|-----|
-| CNAME | powersync.yourdomain.com  | [ALB_DNS]  | 300 |
+| `CNAME` | `powersync.yourdomain.com`  | `[ALB_DNS]`  | `300` |
 
 </Tab>
 
@@ -580,7 +575,7 @@ cat > task-definition.json <<EOF
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
-  "memory": "4096",
+  "memory": "2048",
   "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
   "containerDefinitions": [
     {
@@ -592,7 +587,7 @@ cat > task-definition.json <<EOF
       ],
       "environment": [
         {"name": "PS_PORT", "value": "8080"},
-        {"name": "NODE_OPTIONS", "value": "--max-old-space-size=3200"}
+        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
       ],
       "secrets": [
         {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
@@ -646,7 +641,7 @@ cat > replication-task-definition.json <<EOF
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
-  "memory": "4096",
+  "memory": "2048",
   "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
   "containerDefinitions": [
     {
@@ -689,7 +684,7 @@ cat > api-task-definition.json <<EOF
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
-  "memory": "4096",
+  "memory": "2048",
   "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
   "containerDefinitions": [
     {

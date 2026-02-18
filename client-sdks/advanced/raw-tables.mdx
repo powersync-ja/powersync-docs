@@ -20,25 +20,24 @@ This eliminates overhead associated with extracting values from the JSON data an
 <Note>
   **Availability**
 
-  Raw tables were introduced in the following versions of our client SDKs:
+  Features describes on this page were introduced in the following versions of our client SDKs:
 
-  - **JavaScript** (Node: `0.8.0`, React-Native: `1.23.0`, Web: `1.24.0`)
-  - **Dart**: Version 1.15.0 of `package:powersync`.
-  - **Kotlin**: Version 1.3.0
-  - **Swift**: Version 1.3.0
-  - **Rust**: Supported since the initial release.
-
-  Also note that raw tables are only supported by the new [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks), which is currently opt-in.
+  - **JavaScript** (Node: `TODO`, React-Native: `TODO`, Web: `TODO`)
+  - **Dart**: Version 1.18.0 of `package:powersync`.
+  - **Kotlin**: Version 1.11.0.
+  - **Swift**: Version 1.12.0.
+  - **Rust**: Version 0.0.4.
+  - This feature is not yet available on our .NET SDK.
 </Note>
 
 ## When to Use Raw Tables
 
 Consider raw tables when you need:
 
-- **Indexes** - PowerSync's default schema has basic support for indexes on columns, while raw tables give you complete control to create indexes on expressions, use `GENERATED` columns, etc
-- **Improved performance** for complex queries (e.g., `SELECT SUM(value) FROM transactions`) - raw tables more efficiently get these values directly from the SQLite column, instead of extracting the value from the JSON object on every row
-- **Reduced storage overhead** - eliminate JSON object overhead for each row in `ps_data__<table>.data` column
-- **To manually create tables** - Sometimes you need full control over table creation, for example when implementing custom triggers
+- **Indexes** - PowerSync's default schema has basic support for indexes on columns, while raw tables give you complete control to create indexes on expressions, use `GENERATED` columns, etc.
+- **Improved performance** for complex queries (e.g., `SELECT SUM(value) FROM transactions`) - raw tables more efficiently get these values directly from the SQLite column, instead of extracting the value from the JSON object on every row.
+- **Reduced storage overhead** - eliminate JSON object overhead for each row in `ps_data__<table>.data` column.
+- **To manually create tables** - Sometimes you need full control over table creation, for example when implementing custom triggers.
 
 <Warning>
   **Advanced SQLite features** like `FOREIGN KEY` and `ON DELETE CASCADE` constraints need [special consideration](#using-foreign-keys).
@@ -50,8 +49,8 @@ Consider raw tables when you need:
 
 Currently the sync system involves two general steps:
 
-1. Download bucket operations from the PowerSync Service
-2. Once the client has a complete checkpoint and no pending local changes in the upload queue, sync the local database with the bucket operations
+1. Download bucket operations from the PowerSync Service.
+2. Once the client has a complete checkpoint and no pending local changes in the upload queue, sync the local database with the bucket operations.
 
 The bucket operations use JSON to store the individual operation data. The local database uses tables with a simple schemaless `ps_data__<table_name>` structure containing only an `id` (TEXT) and `data` (JSON) column.
 
@@ -77,16 +76,133 @@ CREATE TABLE todo_lists (
 ) STRICT;
 ```
 
-#### Define sync mapping for raw tables
+### Define sync mapping for raw tables
 
-To sync into the raw `todo_lists` table instead of `ps_data__`, PowerSync needs the SQL statements extracting columns from the untyped JSON protocol used during syncing. This involves specifying two SQL statements:
+To sync into the raw `todo_lists` table instead of `ps_data__`, PowerSync needs the SQL statements extracting columns from the untyped JSON protocol used during syncing.
+Internally, this involves two SQL statements:
 
 1. A `put` SQL statement for upserts, responsible for creating a `todo_list` row or updating it based on its `id` and data columns.
 2. A `delete` SQL statement responsible for deletions.
 
 The PowerSync client as part of our SDKs will automatically run these statements in response to sync lines being sent from the PowerSync Service.
+In most cases, these statements can be inferred automatically. However, the statements can also be given explicitly if customization is needed.
 
-To reference the ID or extract values, prepared statements with parameters are used. `delete` statements can reference the id of the affected row, while `put` statements can also reference individual column values. Declaring these statements and parameters happens as part of the schema passed to PowerSync databases:
+#### Inferring sync statements
+
+In most cases, the `put` and `delete` statements are obvious when looking at the structure of the table.
+With the `todo_list` example, a delete statement would `DELETE FROM todo_lists WHERE id = $row_id_to_delete`.
+Similarly, a `put` statement would use a straightforward upsert to create or update rows.
+
+When the SDK knows the name of the local table you're inserting into, it can infer statements automatically
+by analyzing the `CREATE TABLE` structure.
+The name of raw tables can be provided with the `RawTableSchema` type:
+
+<CodeGroup>
+  ```javascript JavaScript
+  // Raw tables are not included in the regular Schema() object.
+  // Instead, add them afterwards using withRawTables().
+  const mySchema = new Schema({
+    // Define your PowerSync-managed schema here
+    // ...
+  });
+  mySchema.withRawTables({
+    // The key here doesn't have to match the name of the table in SQL. Instead, it's used to match
+    // the table name from the backend source database as sent by the PowerSync Service.
+    todo_lists: {
+      // The tableName here is the name of the table in your local schema.
+      tableName: 'todo_lists',
+    }
+  });
+  ```
+
+  ```dart Dart
+  // Raw tables are not part of the regular tables list and can be defined with the optional rawTables parameter.
+  const schema = Schema([], rawTables: [
+    RawTable.inferred(
+      // The name here doesn't have to match the name of the table in SQL. Instead, it's used to match
+      // the table name from the backend source database as sent by the PowerSync Service.
+      name: 'todo_lists',
+      schema: RawTableSchema(
+        // The name on RawTableSchema is the name of the table in your local schema.
+        tableName: 'todo_lists',
+      ),
+    ),
+  ]);
+  ```
+
+  ```kotlin Kotlin
+  // To define a raw table, include it in the list of tables passed to the Schema
+  val schema = Schema(listOf(
+    RawTable(
+      // The name here doesn't have to match the name of the table in SQL. Instead, it's used to match
+      // the table name from the backend database as sent by the PowerSync service.
+      name = "todo_lists",
+      // The name on RawTableSchema is the name of the table in your local schema.
+      schema = RawTableSchema("todo_lists"),
+    )
+  ))
+  ```
+
+  ```swift Swift
+  // To define a raw table, include it in the list of tables passed to the Schema
+  let lists = RawTable(
+      // The name here specifies the name of the table in your backend database or sync configuration.
+      name: "todo_lists",
+      schema: RawTableSchema(
+        // This is the name of the table in your local schema.
+        tableName: "todo_lists"
+      )
+  )
+
+  let schema = Schema(lists)
+  ```
+
+  ```csharp .NET
+    Unfortunately, raw tables are not yet available in the .NET SDK.
+  ```
+
+  ```rust Rust
+  use powersync::schema::{RawTable, RawTableSchema, Schema};
+
+  pub fn app_schema() -> Schema {
+      let mut schema = Schema::default();
+      // The name here specifies the name of the table in your backend database or sync configuration.
+      let table = RawTable::with_schema("todo_lists", {
+        // The name on RawTableSchema is the name of the table in your local schema.
+        RawTableSchema::new("todo_lists")
+      });
+
+      schema.raw_tables.push(table);
+      schema
+  }
+  ```
+</CodeGroup>
+
+<Tip>
+**When to use inferred statements**
+
+If you have a local table that directly corresponds to the schema of a synced output table,
+inferred statements greatly simplify the schema setup.
+
+You will need explicit sync statements if, for instance:
+
+- you want to apply transformations on synced values before inserting them into your local database.
+- you need custom default values for synced `NULL` values.
+- you're using the [rest column pattern](#the-_extra-column-pattern) to help with migrations.
+- you have a custom setup where a raw table stores data from multiple source tables.
+</Tip>
+
+#### Explicit sync statements
+
+To pass statements explicitly, use the `put` and `delete` parameters available in each SDK.
+A statement consists of two parts:
+
+1. An SQL string of the statement to run. It should use positional parameters (`?`) as placeholders for values from the synced row.
+2. An array describing the instantiation of positional parameter.
+   `delete` statements can reference the id of the affected row, while `put` statements can also reference individual column values.
+   A `rest` parameter is also available, see [migrations](#the-_extra-column-pattern) for details on how that can be useful.
+
+Declaring these statements and parameters happens as part of the schema passed to PowerSync databases:
 
 <CodeGroup>
   ```javascript JavaScript
@@ -126,16 +242,16 @@ To reference the ID or extract values, prepared statements with parameters are u
       put: PendingStatement(
         sql: 'INSERT OR REPLACE INTO todo_lists (id, created_by, title, content) VALUES (?, ?, ?, ?)',
         params: [
-          PendingStatementValue.id(),
-          PendingStatementValue.column('created_by'),
-          PendingStatementValue.column('title'),
-          PendingStatementValue.column('content'),
+          .id(),
+          .column('created_by'),
+          .column('title'),
+          .column('content'),
         ],
       ),
       delete: PendingStatement(
         sql: 'DELETE FROM todo_lists WHERE id = ?',
         params: [
-          PendingStatementValue.id(),
+          .id(),
         ],
       ),
     ),
@@ -191,38 +307,39 @@ To reference the ID or extract values, prepared statements with parameters are u
 
   pub fn app_schema() -> Schema {
       let mut schema = Schema::default();
+      let lists = RawTable::with_statements(
+        "todo_lists",
+        PendingStatement {
+            sql: "INSERT OR REPLACE INTO todo_lists (id, created_by, title, content) VALUES (?, ?, ?, ?)".into(),
+            params: vec![
+                PendingStatementValue::Id,
+                PendingStatementValue::Column("created_by".into()),
+                PendingStatementValue::Column("title".into()),
+                PendingStatementValue::Column("content".into()),
+            ]
+        },
+        PendingStatement {
+            sql: "DELETE FROM todo_lists WHERE id = ?".into(),
+            params:vec![PendingStatementValue::Id]
+        }
+      );
 
-      let lists = RawTable {
-          name: "todo_lists".into(),
-          put: PendingStatement {
-              sql: "INSERT OR REPLACE INTO todo_lists (id, created_by, title, content) VALUES (?, ?, ?, ?)".into(),
-              params: vec![
-                  PendingStatementValue::Id,
-                  PendingStatementValue::Column("created_by".into()),
-                  PendingStatementValue::Column("title".into()),
-                  PendingStatementValue::Column("content".into()),
-              ]
-          },
-          delete: PendingStatement {
-              sql: "DELETE FROM todo_lists WHERE id = ?".into(),
-              params:vec![PendingStatementValue::Id]
-          },
-      };
       schema.raw_tables.push(lists);
       schema
   }
   ```
-  </CodeGroup>
+</CodeGroup>
 
 After adding raw tables to the schema, you're also responsible for creating them by executing the corresponding `CREATE TABLE` statement before `connect()`-ing the database.
 
-#### Capture local writes with triggers
+### Capture local writes with triggers
 
 PowerSync uses an internal SQLite table to collect local writes. For PowerSync-managed views, a trigger for insertions, updates and deletions automatically forwards local mutations into this table. When using raw tables, defining those triggers is your responsibility.
 
 The [PowerSync SQLite extension](https://github.com/powersync-ja/powersync-sqlite-core) creates an insert-only virtual table named `powersync_crud` with these columns:
 
 ```sql
+-- This table is part of the PowerSync SQLite core extension
 CREATE VIRTUAL TABLE powersync_crud(
    -- The type of operation: 'PUT' or 'DELETE'
    op TEXT,
@@ -238,7 +355,135 @@ CREATE VIRTUAL TABLE powersync_crud(
 );
 ```
 
-The virtual table associates local mutations with the current transaction and ensures writes made during the sync process (applying server-side changes) don't count as local writes. This means that triggers can be defined on raw tables like so:
+The virtual table associates local mutations with the current transaction and ensures writes made during the sync process (applying server-side changes) don't count as local writes.
+
+The role of triggers is to insert into `powersync_crud` to record writes on raw tables.
+Like [with statements](#inferring-sync-statements), these triggers can usually be inferred from the schema of the table.
+
+#### Inferred triggers
+
+The `powersync_create_raw_table_crud_trigger` SQL function is available in migrations to create triggers for
+raw tables. It takes three arguments:
+
+1. A JSON description of the raw table with options, which our SDKs can generate for you.
+2. The name of the trigger to create.
+3. The type of write for which to generate a trigger (`INSERT`, `UPDATE` or `DELETE`). Typically, you'd generate all three.
+
+`powersync_create_raw_table_crud_trigger` parses the structure of tables from the database schema, so it
+must be called _after_ the raw table has been created.
+
+<CodeGroup>
+  ```javascript JavaScript
+  const table: RawTable = { name: 'todo_lists', tableName: 'todo_lists' };
+  await database.execute("CREATE TABLE todo_lists (...)");
+
+  for (const write of ["INSERT", "UPDATE", "DELETE"]) {
+    await database.execute(
+      "SELECT powersync_create_raw_table_crud_trigger(?, ?, ?)",
+      [JSON.stringify(Schema.rawTableToJson(table)), `users_${write}`, write],
+    );
+  }
+  ```
+
+  ```dart Dart
+  const table = RawTable.inferred(
+    name: 'todo_lists',
+    schema: RawTableSchema(
+      tableName: 'todo_lists',
+    ),
+  );
+
+  await database.execute("CREATE TABLE todo_lists (...)");
+  for (final write in ["INSERT", "UPDATE", "DELETE"]) {
+    await database.execute(
+      "SELECT powersync_create_raw_table_crud_trigger(?, ?, ?)",
+      [json.encode(table), "users_$write", write],
+    );
+  }
+  ```
+
+  ```kotlin Kotlin
+  // To define a raw table, include it in the list of tables passed to the Schema
+  val table = RawTable(
+    name = "todo_lists",
+    schema = RawTableSchema("todo_lists"),
+  )
+
+  database.execute("CREATE TABLE todo_lists (...)")
+  for (write in listOf("INSERT", "UPDATE", "DELETE)) {
+    database.execute(
+      "SELECT powersync_create_raw_table_crud_trigger(?, ?, ?)",
+      listOf(table.jsonDescription(), "users_$write", write),
+    )
+  }
+  ```
+
+  ```swift Swift
+  let lists = RawTable(
+      // The name here specifies the name of the table in your backend database or sync configuration.
+      name: "todo_lists",
+      schema: RawTableSchema(
+        // This is the name of the table in your local schema.
+        tableName: "todo_lists"
+      )
+  )
+
+  try await database.execute("CREATE TABLE todo_lists (...)")
+  for write in ["INSERT", "UPDATE", "DELETE"] {
+    try await database.execute(
+      sql: "SELECT powersync_create_raw_table_crud_trigger(?, ?, ?)",
+      parameters: [
+        lists.jsonDescription(),
+        "todo_lists_\(write)",
+        write,
+      ]
+    )
+  }
+  ```
+
+  ```csharp .NET
+    Unfortunately, raw tables are not yet available in the .NET SDK.
+  ```
+
+  ```rust Rust
+  use powersync::schema::{RawTable, RawTableSchema};
+
+  pub async fn configure_raw_tables(db: &PowerSyncDatabase) -> Result<(), PowerSyncError> {
+      let raw_table = RawTable::with_schema("todo_lists", RawTableSchema::new("todo_lists"));
+      let serialized_table = serde_json::to_string(&raw_table).unwrap();
+
+      let mut writer = db.writer().await?;
+      writer.execute("CREATE TABLE todo_lists (...);")?;
+
+      let mut trigger_stmt = writer.prepare("SELECT powersync_create_raw_table_crud_trigger(?, ?, ?)");
+      for write in &["INSERT", "UPDATE", "DELETE"] {
+        trigger_stmt.query_one(
+          params![serialized_table, format!("todo_lists_{write}", write)],
+          |_| Ok(()),
+        )?;
+      }
+      Ok(())
+  }
+  ```
+</CodeGroup>
+
+Note that these triggers are created just once! It is your responsibility to drop and re-create them after
+altering the table.
+
+<Tip>
+Regular JSON-based tables include [advanced options](/client-sdks/advanced/custom-types-arrays-and-json#advanced-schema-options-to-process-writes).
+These are also available on raw tables and they affect the generated trigger.
+
+You can track previous values, mark a raw table as insert-only or configure the trigger to ignore
+empty updates by passing an `options` parameter (Rust, Swift, Dart, Kotlin)
+or set the options on the object literal when defining raw tables (JavaScript).
+</Tip>
+
+#### Explicit triggers
+
+Triggers on raw tables can also be defined explicitly instead of using `powersync_create_raw_table_crud_trigger`.
+
+It is your responsibility to setup and migrate these triggers along with the table:
 
 ```sql
 CREATE TRIGGER todo_lists_insert
@@ -311,9 +556,73 @@ CREATE TABLE IF NOT EXISTS todo_lists (
 ) STRICT;
 ```
 
-The standard raw table setup requires three modifications to support local-only columns:
+### With inferred statements and triggers
 
-### Use upsert instead of INSERT OR REPLACE
+Both the inferred `put` and `delete` statements as well as triggers generated by `powersync_create_raw_table_crud_trigger`
+support local-only columns.
+To configure this, include a `syncedColumns` array on the `RawTableSchema`:
+
+<CodeGroup>
+  ```javascript JavaScript
+  const table: RawTable = {
+    name: 'todo_lists',
+    tableName: 'todo_lists',
+    syncedColumns: ['created_by', 'title', 'content'],
+  };
+  ```
+
+  ```dart Dart
+  const table = RawTable.inferred(
+    name: 'todo_lists',
+    schema: RawTableSchema(
+      tableName: 'todo_lists',
+      syncedColumns: ['created_by', 'title', 'content'],
+    ),
+  );
+  ```
+
+  ```kotlin Kotlin
+  // To define a raw table, include it in the list of tables passed to the Schema
+  val table = RawTable(
+    name = "todo_lists",
+    schema = RawTableSchema(
+      tableName = "todo_lists",
+      syncedColumns = listOf("created_by", "title", "content"),
+    ),
+  )
+  ```
+
+  ```swift Swift
+  let lists = RawTable(
+    name: "todo_lists",
+    schema: RawTableSchema(
+      tableName: "todo_lists",
+      syncedColumns: ["created_by", "title", "content"]
+    )
+  )
+  ```
+
+  ```csharp .NET
+    Unfortunately, raw tables are not yet available in the .NET SDK.
+  ```
+
+  ```rust Rust
+  use powersync::schema::{RawTable, RawTableSchema};
+
+  let raw_table = RawTable::with_schema("todo_lists", {
+    let mut info = RawTableSchema::new("todo_lists");
+    // Columns not included in this list will not be synced.
+    info.synced_columns = Some(vec!["created_by", "title", "content"]);
+    info
+  });
+  ```
+</CodeGroup>
+
+### With explicit statements
+
+The standard raw table setup requires modifications to support local-only columns:
+
+#### Use upsert instead of INSERT OR REPLACE
 
 The `put` statement must use `INSERT ... ON CONFLICT(id) DO UPDATE SET` instead of `INSERT OR REPLACE`. `INSERT OR REPLACE` deletes and re-inserts the row, which resets local-only columns to their defaults on every sync update. An upsert only updates the specified synced columns, leaving local-only columns intact.
 
@@ -417,11 +726,7 @@ Only synced columns should be referenced in the `put` params. Local-only columns
   ```
 </CodeGroup>
 
-<Note>
-  Raw tables are not yet available in the .NET SDK.
-</Note>
-
-### Exclude local-only columns from triggers
+#### Exclude local-only columns from triggers
 
 The `json_object()` in both the INSERT and UPDATE triggers should only reference synced columns. Local-only columns must not appear in the CRUD payload sent to the backend.
 
@@ -502,10 +807,172 @@ To migrate from PowerSync-managed tables to raw tables, first:
 
 ### Migrations on raw tables
 
-When adding new columns to raw tables, there currently isn't a way to re-sync that table to add those columns from the server - we are investigating possible workarounds and encourage users to try out if they need this.
+For JSON-based tables, migrations are trivial since all rows are stored as complete JSON objects.
+Adding or removing columns only affects views over unchanged JSON data, making the schema a stateless structure.
 
-To ensure the column values are accurate, you'd have to delete all data after a migration and wait for the next complete sync.
+For raw tables, the situation is different. When adding a new column for instance, existing rows would
+not have a default value even if one could have been synced already.
+Suppose a new column is added with a simple migration: `ALTER TABLE todo_list ADD COLUMN priority INTEGER`.
+This adds the new column on the client, with null values for each existing row.
+
+If the client updates the schema before the server and then syncs the changes, every row effectively
+resyncs and reflects populated values for the new column. So clients observe a consistent state after the sync.
+
+If new values have been synced before the client updates, existing rows may not receive the new column
+until those rows are synced again! This is why special approaches are needed when migrating synced
+tables.
+
+#### Deleting data on migrations
+
+One option that makes migrations safe (with obvious downsides) is to simply reset the database before
+migrating: `await db.disconnectAndClear(soft: true)` deletes materialized sync rows while keeping
+downloaded data active. Afterwards, migrations can migrate the schema in any way before you reconnect.
+
+In a soft clear, data doesn't have to be downloaded again in most cases. This might reduce the downtime
+in which no data is available, but a network connection is necessary for data to become
+available again.
+
+#### Triggering resync on migrations
+
+An alternative to the approach of deleting data could be to trigger a re-sync _without_ clearing tables.
+For example:
+
+```sql
+-- We need an (optimistic) default value for existing rows
+ALTER TABLE todo_list ADD COLUMN priority INTEGER DEFAULT 1 NOT NULL;
+SELECT powersync_trigger_resync(TRUE);
+```
+
+The optimistic default value would be overridden on the next completed sync (depending on when
+the user is online again).
+This means that the app is still usable offline after an update, but having optimistic state
+on the client is a caveat because PowerSync normally has [stronger consistency guarantees](architecture/consistency#consistency).
+There may be cases where the approach of deleting data is a safer choice.
+
+#### The `_extra` column pattern
+
+Another option to avoid data inconsistencies in migrations is to ensure the raw table stores
+a full row as expected by PowerSync.
+To do that, you can introduce an extra column on your table designed to hold values from the backend
+database that a client is not yet aware of:
+
+```sql
+CREATE TABLE todo_lists (
+   id TEXT NOT NULL PRIMARY KEY,
+   created_by TEXT NOT NULL,
+   title TEXT NOT NULL,
+   content TEXT,
+   _extra TEXT
+) STRICT;
+```
+
+The `_extra` column is not used in the app, but the sync service can be informed about it using
+the `Rest` column source:
+
+<CodeGroup>
+  ```javascript JavaScript
+  mySchema.withRawTables({
+    // The name here doesn't have to match the name of the table in SQL. Instead, it's used to match
+    // the table name from the backend source database as sent by the PowerSync Service.
+    todo_lists: {
+      put: {
+        sql: 'INSERT OR REPLACE INTO todo_lists (id, created_by, title, content, _extra) VALUES (?, ?, ?, ?, ?)',
+        params: ['Id', { Column: 'created_by' }, { Column: 'title' }, { Column: 'content' }, 'Rest']
+      },
+      delete: ...
+    }
+  });
+  ```
+
+  ```dart Dart
+  final schema = Schema(const [], rawTables: const [
+    RawTable(
+      name: 'todo_lists',
+      put: PendingStatement(
+        sql: 'INSERT OR REPLACE INTO todo_lists (id, created_by, title, content, _extra) VALUES (?, ?, ?, ?, ?)',
+        params: [
+          .id(),
+          .column('created_by'),
+          .column('title'),
+          .column('content'),
+          .rest(),
+        ],
+      ),
+      delete: PendingStatement(...),
+    ),
+  ]);
+  ```
+
+  ```kotlin Kotlin
+  val schema = Schema(listOf(
+    RawTable(
+      name = "todo_lists",
+      put = PendingStatement(
+        "INSERT OR REPLACE INTO todo_lists (id, created_by, title, content, _extra) VALUES (?, ?, ?, ?, ?)",
+        listOf(
+          PendingStatementParameter.Id,
+          PendingStatementParameter.Column("created_by"),
+          PendingStatementParameter.Column("title"),
+          PendingStatementParameter.Column("content"),
+          PendingStatementParameter.Rest,
+        )
+      ),
+      delete = PendingStatement(...)
+    )
+  ))
+  ```
+
+  ```swift Swift
+  let lists = RawTable(
+      name: "todo_lists",
+      put: PendingStatement(
+          sql: "INSERT OR REPLACE INTO todo_lists (id, created_by, title, content, _extra) VALUES (?, ?, ?, ?, ?)",
+          parameters: [.id, .column("created_by"), .column("title"), .column("content"), .rest]
+      ),
+      delete: ...
+  )
+  ```
+
+  ```csharp .NET
+    Unfortunately, raw tables are not yet available in the .NET SDK.
+  ```
+
+  ```rust Rust
+  use powersync::schema::{PendingStatement, PendingStatementValue, RawTable, Schema};
+
+  let lists = RawTable::with_statements(
+      "todo_lists",
+      PendingStatement {
+          sql: "INSERT OR REPLACE INTO todo_lists (id, created_by, title, content, _extra) VALUES (?, ?, ?, ?, ?)".into(),
+          params: vec![
+              PendingStatementValue::Id,
+              PendingStatementValue::Column("created_by".into()),
+              PendingStatementValue::Column("title".into()),
+              PendingStatementValue::Column("content".into()),
+              PendingStatementValue::Rest,
+          ]
+      },
+      ...
+  );
+  ```
+</CodeGroup>
+
+If PowerSync then syncs a row like `{"created_by": "User", "title": "title", "content": "content", "tags": "Important"}`,
+this put statement would set `_extra` to `{"tags":"Important"}`, ensuring that the entire source row
+can be recovered from a row in the raw table.
+
+This then allows writing migrations:
+
+1. Adding new columns by using `json_extract(_extra, '$.newColumnName')` as a default value.
+2. Removing existing columns by updating `_extra = json_set(_extra, '$.droppedColumnName', droppedColumnName)` before dropping
+   the column.
+
+Don't forget to delete triggers before running these statements in migrations, since these updates
+shouldn't result in `ps_crud` writes.
 
 ## Deleting data and raw tables
 
 APIs that clear an entire PowerSync database, like e.g. `disconnectAndClear()`, don't affect raw tables by default. You can use the `clear` parameter on the `RawTable` constructor to set an SQL statement to run when clearing the database. Typically, something like `DELETE FROM $tableName` would be a reasonable statement to run.
+`clear` statements are not inferred automatically and must always be set explicitly.
+
+Raw tables themselves are not managed by PowerSync and need to be dropped to delete them.

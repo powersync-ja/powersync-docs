@@ -6,7 +6,7 @@ description: Keep files out of your database and handle attachments in an entire
 ## Introduction
 
 <Warning>
-The `@powersync/attachments` package (JavaScript/TypeScript) and `powersync_attachments_helper` package (Flutter/Dart) are deprecated. Attachment functionality is now built-in to the PowerSync SDKs. Please use the [built-in attachment helpers](#sdk-%26-demo-reference) instead.
+The `@powersync/attachments` package (JavaScript/TypeScript) and `powersync_attachments_helper` package (Flutter/Dart) are deprecated. Attachment functionality is now built-in to the PowerSync SDKs. Please use the [built-in attachment helpers](#sdk-%26-demo-reference) instead, and see the [migration notes](#migrating-from-deprecated-packages).
 </Warning>
 
 While PowerSync excels at syncing structured data, storing large files (images, videos, PDFs) directly in SQLite is not recommended. Embedding files as base64-encoded data or binary blobs in database rows can lead to many issues.
@@ -2070,6 +2070,42 @@ The attachment queue is designed for offline-first apps:
 - **Queue persistence** - Queue state survives app restarts
 - **Conflict-free** - Files are immutable, identified by UUID
 - **Bandwidth efficient** - Only syncs when needed, respects network conditions
+
+## Migrating From Deprecated Packages
+
+If you are migrating from the now deprecated attachment helpers for Dart or JavaScript, follow the notes below:
+
+<Tabs>
+  <Tab title="powersync_attachments_helper (Dart)">
+    A fairly simple migration from `powersync_attachments_helper` to the new utilities would be to adopt the new library with a different Attachment Queue table name and drop the legacy package. This means existing attachments are lost, but will be re-downloaded automatically.
+  </Tab>
+  <Tab title="@powersync/attachments (JS)">
+    Import `AttachmentTable` and `AttachmentQueue` directly from your platform SDK (`@powersync/web`, `@powersync/node`, or `@powersync/react-native`), then remove `@powersync/attachments` from your dependencies.
+
+    **React Native only:** also install `@powersync/attachments-storage-react-native` plus either `expo-file-system` (Expo 54+) or `@dr.pogodin/react-native-fs`.
+
+    **What changed:**
+
+    | Before (`@powersync/attachments`) | After (platform SDK) |
+    |---|---|
+    | `AbstractAttachmentQueue` subclass | `AttachmentQueue` instantiated directly |
+    | `onAttachmentIdsChange(ids: string[])` | `watchAttachments` — items must be `{ id, fileExtension }`, not just IDs |
+    | `newAttachmentRecord()` + `saveToQueue()` | `saveFile({ data, fileExtension, updateHook })` |
+    | `init()` | `startSync()` |
+    | `powersync` constructor option | `db` |
+    | Single `storage` adapter | `localStorage` + `remoteStorage` (two separate adapters) |
+    | `syncInterval` | `syncIntervalMs` |
+    | `cacheLimit` | `archivedCacheLimit` |
+    | `AttachmentTable` option: `name` | `viewName` |
+    | `AttachmentTable` option: `additionalColumns` | Removed — use the built-in `meta_data` column (JSON string) instead |
+    | Error handlers return `{ retry: boolean }` | Return `Promise<boolean>`; `onDeleteError` is now also required |
+
+    **Tip:** use a different `viewName` (e.g. `attachment_queue`) to avoid a SQLite conflict with the old `attachments` table during the transition.
+
+    **Data on existing users:** the new local attachments table starts empty. Files already in remote storage will re-download automatically once referenced by your `watchAttachments` query. Files that were only ever stored locally and never uploaded have no remote copy and will not be recoverable.
+  </Tab>
+</Tabs>
+
 
 ## Related Resources
 

@@ -72,6 +72,7 @@ We use the following icons for supported backend databases and SDKs:
 - Swift: `icon="swift"`
 - Node.js: `icon="node-js"`
 - .NET: `icon="microsoft"`
+- Rust: `icon="rust"`
 
 ### Useful References
 

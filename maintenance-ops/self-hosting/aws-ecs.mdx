@@ -566,59 +566,172 @@ aws ecs create-cluster \
 
 ### Register Task Definition
 
-Generate the task definition using your environment variables:
+The task definitions below allocate **2 vCPU and 2GB memory** per container. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended baseline: 1 vCPU, 1GB memory).
 
-```bash
-cat > task-definition.json <<EOF
-{
-  "family": "powersync-service",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "2048",
-  "memory": "2048",
-  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
-  "containerDefinitions": [
-    {
-      "name": "powersync",
-      "image": "journeyapps/powersync-service:$PS_VERSION",
-      "essential": true,
-      "portMappings": [
-        {"containerPort": 8080, "protocol": "tcp"}
-      ],
-      "environment": [
-        {"name": "PS_PORT", "value": "8080"},
-        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
-      ],
-      "secrets": [
-        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
-        {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
-        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
-        {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "/ecs/powersync",
-          "awslogs-region": "$AWS_REGION",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
+<Tabs>
+
+  <Tab title="High Availability Setup">
+
+  For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
+
+  **Create Replication Task Definition**
+
+  ```bash
+  cat > replication-task-definition.json <<EOF
+  {
+    "family": "powersync-replication",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "2048",
+    "memory": "2048",
+    "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+    "containerDefinitions": [
+      {
+        "name": "powersync-replication",
+        "image": "journeyapps/powersync-service:$PS_VERSION",
+        "command": ["start", "-r", "sync"],
+        "essential": true,
+        "environment": [
+          {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+        ],
+        "secrets": [
+          {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+          {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
+          {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+          {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/powersync-replication",
+            "awslogs-region": "$AWS_REGION",
+            "awslogs-stream-prefix": "ecs",
+            "awslogs-create-group": "true"
+          }
         }
-      },
-      "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
-        "interval": 30,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 60
       }
-    }
-  ]
-}
-EOF
+    ]
+  }
+  EOF
 
-# Register the task definition
-aws ecs register-task-definition --cli-input-json file://task-definition.json
-```
+  aws ecs register-task-definition --cli-input-json file://replication-task-definition.json
+  ```
+
+  **Create API Task Definition**
+
+  ```bash
+  cat > api-task-definition.json <<EOF
+  {
+    "family": "powersync-api",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "2048",
+    "memory": "2048",
+    "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+    "containerDefinitions": [
+      {
+        "name": "powersync-api",
+        "image": "journeyapps/powersync-service:$PS_VERSION",
+        "command": ["start", "-r", "api"],
+        "essential": true,
+        "portMappings": [
+          {"containerPort": 8080, "protocol": "tcp"}
+        ],
+        "environment": [
+          {"name": "PS_PORT", "value": "8080"},
+          {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+        ],
+        "secrets": [
+          {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+          {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+          {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/powersync-api",
+            "awslogs-region": "$AWS_REGION",
+            "awslogs-stream-prefix": "ecs",
+            "awslogs-create-group": "true"
+          }
+        },
+        "healthCheck": {
+          "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
+          "interval": 30,
+          "timeout": 5,
+          "retries": 3,
+          "startPeriod": 60
+        }
+      }
+    ]
+  }
+  EOF
+
+  aws ecs register-task-definition --cli-input-json file://api-task-definition.json
+  ```
+
+  </Tab>
+
+  <Tab title="Basic Setup (Single Instance)">
+
+  This basic setup runs both replication and API processes in the same container. This is not recommended for production.
+
+  Generate the task definition using your environment variables:
+
+  ```bash
+  cat > task-definition.json <<EOF
+  {
+    "family": "powersync-service",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "2048",
+    "memory": "2048",
+    "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+    "containerDefinitions": [
+      {
+        "name": "powersync",
+        "image": "journeyapps/powersync-service:$PS_VERSION",
+        "essential": true,
+        "portMappings": [
+          {"containerPort": 8080, "protocol": "tcp"}
+        ],
+        "environment": [
+          {"name": "PS_PORT", "value": "8080"},
+          {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+        ],
+        "secrets": [
+          {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+          {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
+          {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+          {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/powersync",
+            "awslogs-region": "$AWS_REGION",
+            "awslogs-stream-prefix": "ecs",
+            "awslogs-create-group": "true"
+          }
+        },
+        "healthCheck": {
+          "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
+          "interval": 30,
+          "timeout": 5,
+          "retries": 3,
+          "startPeriod": 60
+        }
+      }
+    ]
+  }
+  EOF
+
+  # Register the task definition
+  aws ecs register-task-definition --cli-input-json file://task-definition.json
+  ```
+
+  </Tab>
+</Tabs>
 
 ## 7. Deploy ECS Service
 
@@ -626,222 +739,122 @@ Create the ECS service to run PowerSync tasks
 
 <Tabs>
 
-<Tab title="High Availability Setup">
+  <Tab title="High Availability Setup">
 
-For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
+  For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
 
-The task definitions below allocate **2 vCPU and 2GB memory** per container. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended baseline: 1 vCPU, 1GB memory).
+  **Deploy Replication Service (1 Instance)**
 
-**Step 1: Create Replication Task Definition**
+  ```bash
+  aws ecs create-service \
+    --cluster powersync-cluster \
+    --service-name powersync-replication \
+    --task-definition powersync-replication \
+    --desired-count 1 \
+    --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={
+      subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+      securityGroups=[$ECS_SG],
+      assignPublicIp=DISABLED
+    }" \
+    --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
+  ```
 
-```bash
-cat > replication-task-definition.json <<EOF
-{
-  "family": "powersync-replication",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "2048",
-  "memory": "2048",
-  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
-  "containerDefinitions": [
-    {
-      "name": "powersync-replication",
-      "image": "journeyapps/powersync-service:$PS_VERSION",
-      "command": ["start", "-r", "sync"],
-      "essential": true,
-      "environment": [
-        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
-      ],
-      "secrets": [
-        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
-        {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
-        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
-        {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "/ecs/powersync-replication",
-          "awslogs-region": "$AWS_REGION",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
-        }
-      }
-    }
-  ]
-}
-EOF
+  **Deploy API Service (2+ Instances)**
 
-aws ecs register-task-definition --cli-input-json file://replication-task-definition.json
-```
+  ```bash
+  aws ecs create-service \
+    --cluster powersync-cluster \
+    --service-name powersync-api \
+    --task-definition powersync-api \
+    --desired-count 2 \
+    --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={
+      subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+      securityGroups=[$ECS_SG],
+      assignPublicIp=DISABLED
+    }" \
+    --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync-api,containerPort=8080" \
+    --health-check-grace-period-seconds 120 \
+    --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+  ```
 
-**Step 2: Create API Task Definition**
+  **Verify HA Deployment:**
 
-```bash
-cat > api-task-definition.json <<EOF
-{
-  "family": "powersync-api",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "2048",
-  "memory": "2048",
-  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
-  "containerDefinitions": [
-    {
-      "name": "powersync-api",
-      "image": "journeyapps/powersync-service:$PS_VERSION",
-      "command": ["start", "-r", "api"],
-      "essential": true,
-      "portMappings": [
-        {"containerPort": 8080, "protocol": "tcp"}
-      ],
-      "environment": [
-        {"name": "PS_PORT", "value": "8080"},
-        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
-      ],
-      "secrets": [
-        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
-        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
-        {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "/ecs/powersync-api",
-          "awslogs-region": "$AWS_REGION",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
-        }
-      },
-      "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
-        "interval": 30,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 60
-      }
-    }
-  ]
-}
-EOF
+  ```bash
+  # Check replication service status
+  aws ecs describe-services \
+    --cluster powersync-cluster \
+    --services powersync-replication \
+    --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+    --output table
 
-aws ecs register-task-definition --cli-input-json file://api-task-definition.json
-```
+  # Check API service status
+  aws ecs describe-services \
+    --cluster powersync-cluster \
+    --services powersync-api \
+    --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+    --output table
 
-**Step 3: Deploy Replication Service (1 Instance)**
+  # Wait for tasks to be running (takes 2-3 minutes)
+  echo "Waiting for tasks to start..."
+  sleep 60
 
-```bash
-aws ecs create-service \
-  --cluster powersync-cluster \
-  --service-name powersync-replication \
-  --task-definition powersync-replication \
-  --desired-count 1 \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={
-    subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
-    securityGroups=[$ECS_SG],
-    assignPublicIp=DISABLED
-  }" \
-  --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
-```
+  # Test endpoint (replace with your domain)
+  curl https://$POWERSYNC_DOMAIN/probes/liveness
 
-**Step 4: Deploy API Service (2+ Instances)**
+  # View API logs
+  aws logs tail /ecs/powersync-api --follow
 
-```bash
-aws ecs create-service \
-  --cluster powersync-cluster \
-  --service-name powersync-api \
-  --task-definition powersync-api \
-  --desired-count 2 \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={
-    subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
-    securityGroups=[$ECS_SG],
-    assignPublicIp=DISABLED
-  }" \
-  --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync-api,containerPort=8080" \
-  --health-check-grace-period-seconds 120 \
-  --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
-```
+  # View replication logs
+  aws logs tail /ecs/powersync-replication --follow
+  ```
 
-**Verify HA Deployment:**
+  </Tab>
 
-```bash
-# Check replication service status
-aws ecs describe-services \
-  --cluster powersync-cluster \
-  --services powersync-replication \
-  --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
-  --output table
+  <Tab title="Basic Setup (Single Instance)">
 
-# Check API service status
-aws ecs describe-services \
-  --cluster powersync-cluster \
-  --services powersync-api \
-  --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
-  --output table
+  This basic setup runs both replication and API processes in the same container. Running multiple instances (`desired-count > 1`) will cause **Sync Rule lock errors during rolling updates** when deploying new task definitions. A single-instance setup is not recommended for production.
 
-# Wait for tasks to be running (takes 2-3 minutes)
-echo "Waiting for tasks to start..."
-sleep 60
+  ```bash
+  aws ecs create-service \
+    --cluster powersync-cluster \
+    --service-name powersync-service \
+    --task-definition powersync-service \
+    --desired-count 1 \
+    --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={
+      subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+      securityGroups=[$ECS_SG],
+      assignPublicIp=DISABLED
+    }" \
+    --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync,containerPort=8080" \
+    --health-check-grace-period-seconds 120 \
+    --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
+  ```
 
-# Test endpoint (replace with your domain)
-curl https://$POWERSYNC_DOMAIN/probes/liveness
+  **Verify Basic Deployment:**
 
-# View API logs
-aws logs tail /ecs/powersync-api --follow
+  ```bash
+  # Check service status
+  aws ecs describe-services \
+    --cluster powersync-cluster \
+    --services powersync-service \
+    --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+    --output table
 
-# View replication logs
-aws logs tail /ecs/powersync-replication --follow
-```
+  # Wait for task to be running (takes 2-3 minutes)
+  echo "Waiting for tasks to start..."
+  sleep 60
 
-</Tab>
+  # Test endpoint (replace with your domain)
+  curl https://$POWERSYNC_DOMAIN/probes/liveness
 
-<Tab title="Basic Setup (Single Instance)">
+  # View logs
+  aws logs tail /ecs/powersync --follow
+  ```
 
-### Basic Deployment
-
-This basic setup runs both replication and API processes in the same container. Running multiple instances (`desired-count > 1`) will cause **Sync Rule lock errors during rolling updates** when deploying new task definitions.
-
-```bash
-aws ecs create-service \
-  --cluster powersync-cluster \
-  --service-name powersync-service \
-  --task-definition powersync-service \
-  --desired-count 1 \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={
-    subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
-    securityGroups=[$ECS_SG],
-    assignPublicIp=DISABLED
-  }" \
-  --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync,containerPort=8080" \
-  --health-check-grace-period-seconds 120 \
-  --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
-```
-
-**Verify Basic Deployment:**
-
-```bash
-# Check service status
-aws ecs describe-services \
-  --cluster powersync-cluster \
-  --services powersync-service \
-  --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
-  --output table
-
-# Wait for task to be running (takes 2-3 minutes)
-echo "Waiting for tasks to start..."
-sleep 60
-
-# Test endpoint (replace with your domain)
-curl https://$POWERSYNC_DOMAIN/probes/liveness
-
-# View logs
-aws logs tail /ecs/powersync --follow
-```
-
-</Tab>
+  </Tab>
 </Tabs>
 
 ## Production Enhancements
@@ -958,23 +971,23 @@ aws events put-targets \
 
 </Accordion>
 
-### Auto Scaling
+### Auto Scaling (High-Availability Setup)
 
-<Info>
-**High Availability Setup**: If you deployed using the HA setup, configure autoscaling for the `powersync-api` service instead of `powersync-service`. The replication service (`powersync-replication`) should remain at 1 instance.
-</Info>
+<Note>
+  The auto-scaling configuration below only scales basd on CPU usage. We are working on expanding this page with additional details on how to also auto-scale based on the number of concurrent connections per API pod. As seen in the [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) documentation, it is recommended to have 1 API pod per 100 concurrent client connections.
+</Note>
 
 ```bash
 aws application-autoscaling register-scalable-target \
   --service-namespace ecs \
-  --resource-id service/powersync-cluster/powersync-service \
+  --resource-id service/powersync-cluster/powersync-api \
   --scalable-dimension ecs:service:DesiredCount \
   --min-capacity 2 \
   --max-capacity 10
 
 aws application-autoscaling put-scaling-policy \
   --service-namespace ecs \
-  --resource-id service/powersync-cluster/powersync-service \
+  --resource-id service/powersync-cluster/powersync-api \
   --scalable-dimension ecs:service:DesiredCount \
   --policy-name cpu-scaling \
   --policy-type TargetTrackingScaling \

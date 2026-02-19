@@ -74,6 +74,72 @@ You can use [this example](https://github.com/powersync-ja/powersync-dotnet/blob
 
 The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/sync/rules/overview). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
 
+#### Schema definition syntax
+
+There are two supported syntaxes for defining the schema:
+
+**Attribute-based (recommended)** — Annotate a C# class with `[Table]`, `[Column]`, and `[Index]` attributes. The same class can then be used directly as the result type in queries, so you define your data structure once:
+
+```cs
+using PowerSync.Common.DB.Schema;
+using PowerSync.Common.DB.Schema.Attributes;
+
+[Table("todos"), Index("list", ["list_id"])]
+public class Todo
+{
+    [Column("id")]
+    public string TodoId { get; set; }
+
+    [Column("list_id")]
+    public string ListId { get; set; }
+
+    [Column("created_at")]
+    public string CreatedAt { get; set; }
+
+    [Column("completed")]
+    public bool Completed { get; set; }
+    // ... other columns
+}
+
+public static Schema PowerSyncSchema = new Schema(typeof(Todo));
+
+// The same Todo class is used for queries:
+var todos = await db.GetAll<Todo>("SELECT * FROM todos");
+```
+
+<Note>
+  Unlike the other syntaxes where PowerSync automatically creates an `id` column, the attribute-based syntax requires you to explicitly declare it. The SDK identifies the `id` property by looking for either a property named `id`, or any property with a `[Column("id")]` attribute (case-insensitive). Having none or more than one is an error.
+</Note>
+
+<Accordion title="Alternative: object initializer syntax">
+  If you prefer to keep your schema definition separate from your data classes, you can use the object initializer syntax instead:
+
+  ```cs
+  using PowerSync.Common.DB.Schema;
+
+  class AppSchema
+  {
+      public static Table Todos = new Table
+      {
+          Name = "todos",
+          Columns =
+          {
+              ["list_id"] = ColumnType.Text,
+              ["created_at"] = ColumnType.Text,
+              ["completed"] = ColumnType.Integer,
+              // ... other columns
+          },
+          Indexes =
+          {
+              ["list"] = ["list_id"]
+          }
+      };
+
+      public static Schema PowerSyncSchema = new Schema(Todos);
+  }
+  ```
+</Accordion>
+
 ### 2. Instantiate the PowerSync Database
 
 Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Rules](/sync/rules/overview). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline. 
@@ -302,10 +368,7 @@ var lists = await db.GetAll<ListResult>("SELECT * FROM lists");
 
 The `Watch` method executes a read query whenever a change to a dependent table is made.
 
-```cs
-// Use db.Watch() to watch queries for changes (await is used to wait for initialization):
 <DotNetWatch />
-```
 
 ### Mutations (PowerSync.Execute)
 

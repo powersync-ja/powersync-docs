@@ -7,7 +7,7 @@ This page documents the SQL syntax and functions supported in Sync Streams and S
 
 ## Query Syntax
 
-The supported SQL is based on a subset of the SQL standard syntax. Sync Streams support more SQL features than legacy Sync Rules.
+The supported SQL is based on a subset of the SQL standard syntax. Sync Streams support more SQL features than the legacy Sync Rules.
 
 <Tabs>
 	<Tab title="Sync Streams">
@@ -15,8 +15,10 @@ The supported SQL is based on a subset of the SQL standard syntax. Sync Streams 
 	2. [Subqueries](/sync/streams/queries#using-subqueries) with `IN (SELECT ...)`, including nested subqueries.
 	3. [`JOIN` / `INNER JOIN`](/sync/streams/queries#using-joins) for traversing relationships (selected columns must come from a single table).
 	4. [Common Table Expressions (CTEs)](/sync/streams/ctes) via the `with:` block.
-	5. Table-valued functions like `json_each()` for [expanding arrays](/sync/streams/parameters#expanding-json-arrays).
-	6. A limited set of operators and functions — see below.
+	5. Multiple queries per stream via `queries:`.
+	6. Table-valued functions like `json_each()` for [expanding arrays](/sync/streams/parameters#expanding-json-arrays).
+	7. `BETWEEN` and `CASE` expressions.
+	8. A limited set of operators and functions — see below.
 
 	No aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.).
 
@@ -60,6 +62,7 @@ Some fundamental restrictions on these operators and functions are:
 | Cast:<br/> `CAST(x AS type)`<br/>`x :: type`  | Cast to `text`, `numeric`, `integer`, `real` or `blob`. See [Type Mapping](/sync/types) and [SQLite types](https://www.sqlite.org/datatype3.html) |
 | JSON:<br/> `json -> 'path'`<br/>`json ->> 'path'`  | `->` Returns the value as a JSON string.<br/> `->>` Returns the extracted value. |
 | Text concatenation:<br/> `\|\|` | Joins two text values together.                                                                          |
+| Range (Sync Streams only):<br/>`x BETWEEN a AND b`<br/>`x NOT BETWEEN a AND b` | Returns true if `x` is within the range `[a, b]` (inclusive). Can be used in `WHERE` or as a `SELECT` column expression. If any operand is `null`, the result is `null`.<br/><br/>Example:<br/>`WHERE price BETWEEN 10 AND 100`<br/>`WHERE price NOT BETWEEN 1 AND 10` |
 | Arrays:<br/>`<left> IN <right>` | Returns true if `left` is present in the `right` JSON array. Differs from the standard SQLite `IN` in that it works directly on a JSON array value.<br/><br/>**Sync Streams**: `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` can be a parameter and `right` a row JSON array column (e.g. `auth.user_id() IN table.allowed_users`). Can also be used with a subquery on the right: `id IN (SELECT ...)`.<br/><br/>**Sync Rules**: In data queries, `left` must be a row column — the right side cannot be a bucket parameter. In parameter queries, either side may be a parameter. |
 | Array overlap (Sync Streams only):<br/>`<left> && <right>` | Returns true if the JSON array `left` and the set `right` share at least one common value. Use this when the row itself stores an array and you want to match any element in it — for example, a `tagged_users` column containing `["user-1", "user-2"]`.<br/><br/>`left` must be a row column containing a JSON array. `right` must be a subquery or a parameter array.<br/><br/>Example — sync a comment to every user tagged in it:<br/>`WHERE tagged_users && (SELECT id FROM org_members WHERE org_id = auth.parameter('org_id'))`<br/><br/>Contrast with `IN`: use `IN` when the row has a single value to check against a set; use `&&` when the row has an array and you want to match on any element. |
 
@@ -126,10 +129,19 @@ Supported for simple conditions on row values:
 ```sql
 WHERE status != 'archived'
 WHERE deleted_at IS NOT NULL
-WHERE category NOT IN ('draft', 'hidden')
 ```
 
-Cannot negate an `IN` subquery or a parameter array expansion:
+`NOT IN` with a JSON array string is supported:
+
+```sql
+WHERE category NOT IN '["draft", "hidden"]'
+```
+
+<Note>
+`NOT IN '["draft", "hidden"]'` (JSON array string syntax) is currently affected by a bug and may not work as expected. This will be fixed in an upcoming release.
+</Note>
+
+`NOT` cannot negate a subquery or a parameter array expansion:
 
 ```sql
 -- Not supported
@@ -138,8 +150,6 @@ WHERE issue_id NOT IN (SELECT id FROM issues WHERE owner_id = auth.user_id())
 -- Not supported
 WHERE id NOT IN subscription.parameter('excluded_ids')
 ```
-
-<Note>`NOT IN` with a fixed value list (e.g. `NOT IN ('a', 'b')`) works. `NOT IN` with a subquery or parameter does not.</Note>
 
   </Tab>
   <Tab title="Sync Rules (Legacy)">
@@ -231,3 +241,54 @@ WHERE NOT users.id = request.user_id()
 | [ST\_Y(point)](/client-sdks/advanced/gis-data-postgis)                             | Get the Y coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres)                                                                                                                                                                                                                                                                                                                    |
 
 Most of these functions are based on the [built-in SQLite functions](https://www.sqlite.org/lang_corefunc.html) and [SQLite JSON functions](https://www.sqlite.org/json1.html).
+
+### CASE Expressions (Sync Streams only)
+
+`CASE` expressions can be used anywhere an expression is allowed — in `SELECT` columns or `WHERE` clauses. Two forms are supported:
+
+**Searched CASE** — each `WHEN` is an independent boolean condition:
+
+```sql
+CASE
+  WHEN <condition> THEN <result>
+  WHEN <condition> THEN <result>
+  ELSE <default>
+END
+```
+
+```sql
+-- Compute a label based on a column value
+SELECT id,
+  CASE
+    WHEN score >= 90 THEN 'A'
+    WHEN score >= 70 THEN 'B'
+    ELSE 'C'
+  END AS grade
+FROM results
+
+-- Filter using CASE in WHERE
+WHERE CASE WHEN is_trial THEN trial_expires_at > '2025-01-01' ELSE true END
+```
+
+**Simple CASE** — compares one expression against a list of values:
+
+```sql
+CASE <expression>
+  WHEN <value> THEN <result>
+  WHEN <value> THEN <result>
+  ELSE <default>
+END
+```
+
+```sql
+SELECT id,
+  CASE status
+    WHEN 1 THEN 'pending'
+    WHEN 2 THEN 'active'
+    WHEN 3 THEN 'closed'
+    ELSE 'unknown'
+  END AS status_label
+FROM tasks
+```
+
+`ELSE` is optional — if omitted and no `WHEN` matches, the result is `null`.

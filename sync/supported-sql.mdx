@@ -24,7 +24,7 @@ The supported SQL is based on a subset of the SQL standard syntax. Sync Streams 
 	</Tab>
 	<Tab title="Sync Rules (Legacy)">
 	1. Simple `SELECT` statements with column selection.
-	2. `WHERE` filtering with `=`, `IN`, and `IS NULL` on parameters.
+	2. `WHERE` filtering on parameters — see [WHERE Clause Support](#where-clause-support) for what's supported.
 	3. A limited set of operators and functions — see below.
 
 	No subqueries, JOINs, CTEs, aggregation, or sorting.
@@ -36,11 +36,9 @@ The supported SQL is based on a subset of the SQL standard syntax. Sync Streams 
 
 ## Operators and Functions
 
-Operators and functions can be used to transform columns/fields before being synced to a client. These work the same in both Sync Streams and Sync Rules.
+Operators and functions can be used to transform columns/fields before being synced to a client.
 
-When filtering on parameters, operators can only be used in a limited way. Typically only `=`, `IN` and `IS NULL` are allowed on the parameters, and special limits apply when combining clauses with `AND`, `OR` or `NOT`.
-
-When transforming output columns/fields, or filtering on row/document values, those restrictions do not apply.
+When filtering on row/document values, or transforming output columns/fields, there are no special restrictions beyond the fundamentals below. For `WHERE` clause support and restrictions when filtering on parameters, see [WHERE Clause Support](#where-clause-support) below.
 
 If a specific operator or function is needed, please [contact us](/resources/contact-us) so that we can consider inclusion in our roadmap.
 
@@ -58,11 +56,151 @@ Some fundamental restrictions on these operators and functions are:
 | Comparison:<br/> `= != < > <= >=`      | If either parameter is `null`, this evaluates to `null`. |
 | Null:<br/> `IS NULL`, `IS NOT NULL` |  |
 | Mathematical:<br/> `+ - * /` |  |
-| Logical:<br/> `AND`, `OR`, `NOT` |   |
+| Logical:<br/> `AND`, `OR`, `NOT` | Some restrictions apply — see [WHERE Clause Support](#where-clause-support) below. |
 | Cast:<br/> `CAST(x AS type)`<br/>`x :: type`  | Cast to `text`, `numeric`, `integer`, `real` or `blob`. See [Type Mapping](/sync/types) and [SQLite types](https://www.sqlite.org/datatype3.html) |
 | JSON:<br/> `json -> 'path'`<br/>`json ->> 'path'`  | `->` Returns the value as a JSON string.<br/> `->>` Returns the extracted value. |
 | Text concatenation:<br/> `\|\|` | Joins two text values together.                                                                          |
-| Arrays:<br/> `<left> IN <right>` | Returns true if the `left` value is present in the `right` JSON array.<br/>In data queries, only the `left` value may be a bucket parameter. In parameter queries, the `left` or `right` value may be a bucket parameter.<br/>Differs from the SQLite operator in that it can be used directly on a JSON array. |
+| Arrays:<br/>`<left> IN <right>` | Returns true if `left` is present in the `right` JSON array. Differs from the standard SQLite `IN` in that it works directly on a JSON array value.<br/><br/>**Sync Streams**: `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` can be a parameter and `right` a row JSON array column (e.g. `auth.user_id() IN table.allowed_users`). Can also be used with a subquery on the right: `id IN (SELECT ...)`.<br/><br/>**Sync Rules**: In data queries, `left` must be a row column — the right side cannot be a bucket parameter. In parameter queries, either side may be a parameter. |
+| Array overlap (Sync Streams only):<br/>`<left> && <right>` | Returns true if the JSON array `left` and the set `right` share at least one common value. Use this when the row itself stores an array and you want to match any element in it — for example, a `tagged_users` column containing `["user-1", "user-2"]`.<br/><br/>`left` must be a row column containing a JSON array. `right` must be a subquery or a parameter array.<br/><br/>Example — sync a comment to every user tagged in it:<br/>`WHERE tagged_users && (SELECT id FROM org_members WHERE org_id = auth.parameter('org_id'))`<br/><br/>Contrast with `IN`: use `IN` when the row has a single value to check against a set; use `&&` when the row has an array and you want to match on any element. |
+
+
+### WHERE Clause Support
+
+Sync queries support a subset of standard SQL `WHERE` clause syntax. The allowed operators and combinations differ between Sync Streams and Sync Rules, and are more restrictive than standard SQL.
+
+<Tabs>
+  <Tab title="Sync Streams">
+
+**`=` and `IS NULL`**
+
+Compare a row column against a static value, a parameter, or another column:
+
+```sql
+-- Static value
+WHERE status = 'active'
+WHERE deleted_at IS NULL
+
+-- Parameter
+WHERE owner_id = auth.user_id()
+WHERE region = connection.parameter('region')
+```
+
+**`AND`**
+
+Fully supported. Each condition is independent — you can mix parameter comparisons, subqueries, and row-value conditions freely in the same clause.
+
+```sql
+-- Two independent parameter conditions
+WHERE owner_id = auth.user_id()
+  AND org_id = auth.parameter('org_id')
+
+-- Parameter condition + row-value condition
+WHERE owner_id = auth.user_id()
+  AND status = 'active'
+
+-- Parameter condition + subquery
+WHERE list_id = subscription.parameter('list_id')
+  AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
+```
+
+**`OR`**
+
+Supported, including `OR` nested inside `AND`. PowerSync automatically rewrites combinations like `A AND (B OR C)` into separate branches before evaluating.
+
+```sql
+-- Top-level OR
+WHERE owner_id = auth.user_id()
+   OR shared_with = auth.user_id()
+
+-- OR nested inside AND
+WHERE status = 'active'
+  AND (owner_id = auth.user_id() OR shared_with = auth.user_id())
+```
+
+Each `OR` branch must be a valid filter on its own — you cannot have a branch that only makes sense in combination with the other branch.
+
+**`NOT`**
+
+Supported for simple conditions on row values:
+
+```sql
+WHERE status != 'archived'
+WHERE deleted_at IS NOT NULL
+WHERE category NOT IN ('draft', 'hidden')
+```
+
+Cannot negate an `IN` subquery or a parameter array expansion:
+
+```sql
+-- Not supported
+WHERE issue_id NOT IN (SELECT id FROM issues WHERE owner_id = auth.user_id())
+
+-- Not supported
+WHERE id NOT IN subscription.parameter('excluded_ids')
+```
+
+<Note>`NOT IN` with a fixed value list works. `NOT IN` with a subquery or parameter does not.</Note>
+
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+
+**`=` and `IS NULL`**
+
+Compare a row column against a static value or a bucket parameter:
+
+```sql
+-- Static value
+WHERE status = 'active'
+WHERE deleted_at IS NULL
+
+-- Bucket parameter
+WHERE owner_id = bucket.user_id
+```
+
+**`AND`**
+
+Supported in both parameter queries and data queries. In parameter queries, each condition may match a different parameter. However, you cannot combine two `IN` expressions on parameters in the same `AND` — split them into separate parameter queries instead.
+
+```sql
+-- Supported: parameter condition + row-value condition
+WHERE users.id = request.user_id()
+  AND users.is_admin = true
+
+-- Not supported: two IN expressions on parameters in the same AND
+WHERE bucket.list_id IN lists.allowed_ids
+  AND bucket.org_id IN lists.allowed_org_ids
+```
+
+**`OR`**
+
+Supported in parameter queries only when both sides of the `OR` reference the exact same set of parameters. In practice this is rarely useful — use separate parameter queries instead.
+
+```sql
+-- Supported: both sides reference the same parameter
+WHERE lists.owner_id = request.user_id()
+   OR lists.shared_with = request.user_id()
+
+-- Not supported: sides reference different parameters
+WHERE lists.owner_id = request.user_id()
+   OR lists.org_id = bucket.org_id
+```
+
+**`NOT`**
+
+Supported for simple row-value conditions in data queries. Not supported on parameter-matching expressions in parameter queries.
+
+```sql
+-- Supported in data queries
+WHERE status != 'archived'
+WHERE deleted_at IS NOT NULL
+WHERE category NOT IN ('draft', 'hidden')
+
+-- Not supported in parameter queries
+WHERE NOT users.is_admin = true
+```
+
+  </Tab>
+</Tabs>
 
 ### Functions
 
@@ -72,24 +210,24 @@ Some fundamental restrictions on these operators and functions are:
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [upper(text)](https://www.sqlite.org/lang_corefunc.html#upper)                 | Convert text to upper case.                                                                                                                                                                                                                                                                                                                                                                      |
 | [lower(text)](https://www.sqlite.org/lang_corefunc.html#lower)                 | Convert text to lower case.                                                                                                                                                                                                                                                                                                                                                                      |
-| [substring(text, start, length)](https://sqlite.org/lang_corefunc.html#substr)   | Extracts a portion of a string based on specified start index and length. Start index is 1-based. Example: `substring(created_at, 1, 10)` returns the `YYYY-MM-DD` portion of an ISO8601 timestamp string. |
+| [substring(text, start, length)](https://www.sqlite.org/lang_corefunc.html#substr)   | Extracts a portion of a string based on specified start index and length. Start index is 1-based. Example: `substring(created_at, 1, 10)` returns the `YYYY-MM-DD` portion of an ISO8601 timestamp string. |
 | [hex(data)](https://www.sqlite.org/lang_corefunc.html#hex)                     | Convert `blob` or `text` data to hexadecimal text.                                                                                                                                                                                                                                                                                                                                                   |
-| **base64(data)**                                                               | Convert `blob` or `text` data to base64 text.                                                                                                                                                                                                                                                                                                                                                        |
+| **base64(data)**                                       | Convert `blob` or `text` data to base64 text.                                                                                                                                                                                                                                                                                                                                                        |
 | [length(data)](https://www.sqlite.org/lang_corefunc.html#length)               | For `text`, return the number of characters. For `blob`, return the number of bytes. For `null`, return `null`. For `integer` and `real`, convert to `text` and return the number of characters.                                                                                                                                                                                                               |
 | [typeof(data)](https://www.sqlite.org/lang_corefunc.html#typeof)               | `text`, `integer`, `real`, `blob` or `null`                                                                                                                                                                                                                                                                                                                                                                |
-| [json\_each(data)](https://www.sqlite.org/json1.html#jeach)         | Expands a JSON array into rows. **Sync Streams**: Can be used as a [table-valued function](/sync/streams/parameters#expanding-json-arrays) with `JOIN` syntax (e.g., `JOIN json_each(auth.parameter('ids')) AS t`). Only works with auth/connection parameters, not on columns from joined tables. **Sync Rules**: Used in Parameter Queries to [expand an array](/sync/rules/parameter-queries#expanding-json-array-into-multiple-parameters) in an _Authentication Parameter_ or _Client Parameter_.  |
+| [json\_each(data)](https://www.sqlite.org/json1.html#jeach)         | Expands a JSON array into rows.<br/><br/>**Sync Streams**: Used as a [table-valued function](/sync/streams/parameters#expanding-json-arrays) with `JOIN` syntax (e.g. `JOIN json_each(auth.parameter('ids')) AS t`). Only works with auth/connection parameters, not on columns from joined tables.<br/><br/>**Sync Rules**: Used in parameter queries to [expand an array parameter](/sync/rules/parameter-queries#expanding-json-array-into-multiple-parameters) into multiple rows. |
 | [json\_extract(data, path)](https://www.sqlite.org/json1.html#jex)               | Same as `->>` operator, but the path must start with `$.`                                                                                                                                                                                                                                                                                                                                         |
 | [json\_array\_length(data)](https://www.sqlite.org/json1.html#jarraylen)         | Given a JSON array (as text), returns the length of the array. If data is `null`, returns `null`. If the value is not a JSON array, returns `0`.                                                                                                                                                                                                                                                        |
 | [json\_valid(data)](https://www.sqlite.org/json1.html#jvalid)                    | Returns `1` if the data can be parsed as JSON, `0` otherwise.                                                                                                                                                                                                                                                                                                                                        |
-| **json\_keys(data)**                    | Returns the set of keys of a JSON object as a JSON array.   |
+| **json\_keys(data)**                   | Returns the set of keys of a JSON object as a JSON array.   |
 | [ifnull(x,y)](https://www.sqlite.org/lang_corefunc.html#ifnull)                | Returns x if non-null, otherwise returns y.                                                                                                                                                                                                                                                                                                                                                      |
 | [iif(x,y,z)](https://www.sqlite.org/lang_corefunc.html#iif)                | Returns y if x is true, otherwise returns z.                                                                                                                                                                                                                                                                                                                                                      |
 | [uuid_blob(id)](https://sqlite.org/src/file/ext/misc/uuid.c)                             | Convert a UUID string to bytes.                                                                                                                                                                                                                                                                                                                    |
 | [unixepoch(time-value, \[modifier\])](https://www.sqlite.org/lang_datefunc.html) | Returns a [time-value](https://sqlite.org/lang_datefunc.html#tmval) as Unix timestamp. If modifier is ["subsec"](https://sqlite.org/lang_datefunc.html#subsec), the result is a floating point number, with milliseconds including in the fraction. The time-value argument is required — this function cannot be used to get the current time.                                                                                                                                                     |
 | [datetime(time-value, \[modifier\])](https://www.sqlite.org/lang_datefunc.html)  | Returns a [time-value](https://sqlite.org/lang_datefunc.html#tmval) as a date and time string, in the format YYYY-MM-DD HH:MM:SS. If the specifier is ["subsec"](https://sqlite.org/lang_datefunc.html#subsec), milliseconds are also included. If the modifier is "unixepoch", the argument is interpreted as a Unix timestamp. Both modifiers can be included: `datetime(timestamp, 'unixepoch', 'subsec')`. The time-value argument is required — this function cannot be used to get the current time. |
-| [ST\_AsGeoJSON(geometry)](/client-sdks/advanced/gis-data-postgisdocs/ST_AsGeoJSON.html)          | Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to GeoJSON. Combine with JSON operators to extract specific fields.                                                                                                                                                                                                                                                      |
-| [ST\_AsText(geometry)](/client-sdks/advanced/gis-data-postgisdocs/ST_AsText.html)                | Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to Well-Known Text (WKT).                                                                                                                                                                                                                                                                                                |
-| [ST\_X(point)](/client-sdks/advanced/gis-data-postgisdocs/ST_X.html)                             | Get the X coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres)                                                                                                                                                                                                                                                                                                                    |
-| [ST\_Y(point)](/client-sdks/advanced/gis-data-postgisdocs/ST_Y.html)                             | Get the Y coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres)                                                                                                                                                                                                                                                                                                                    |
+| [ST\_AsGeoJSON(geometry)](/client-sdks/advanced/gis-data-postgis)          | Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to GeoJSON. Combine with JSON operators to extract specific fields.                                                                                                                                                                                                                                                      |
+| [ST\_AsText(geometry)](/client-sdks/advanced/gis-data-postgis)                | Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to Well-Known Text (WKT).                                                                                                                                                                                                                                                                                                |
+| [ST\_X(point)](/client-sdks/advanced/gis-data-postgis)                             | Get the X coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres)                                                                                                                                                                                                                                                                                                                    |
+| [ST\_Y(point)](/client-sdks/advanced/gis-data-postgis)                             | Get the Y coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres)                                                                                                                                                                                                                                                                                                                    |
 
 Most of these functions are based on the [built-in SQLite functions](https://www.sqlite.org/lang_corefunc.html) and [SQLite JSON functions](https://www.sqlite.org/json1.html).

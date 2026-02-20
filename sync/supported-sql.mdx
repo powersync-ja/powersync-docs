@@ -40,15 +40,17 @@ The supported SQL is based on a subset of the SQL standard syntax. Sync Streams 
 
 Operators and functions can be used to transform columns/fields before being synced to a client.
 
-When filtering on row/document values, or transforming output columns/fields, there are no special restrictions beyond the fundamentals below. For `WHERE` clause support and restrictions when filtering on parameters, see [WHERE Clause Support](#where-clause-support) below.
-
-If a specific operator or function is needed, please [contact us](/resources/contact-us) so that we can consider inclusion in our roadmap.
-
-Some fundamental restrictions on these operators and functions are:
+Some fundamental restrictions on the usage of these operators and functions are:
 
 1. It must be deterministic — no random or time-based functions.
 2. No external state can be used.
 3. It must operate on data available within a single row/document. For example, no aggregation functions allowed.
+
+When filtering on _row/document values_, or transforming output columns/fields, there are no special restrictions other than the fundamentals above. 
+
+For `WHERE` clause support and restrictions when filtering on _parameters_, see [WHERE Clause Support](#where-clause-support).
+
+If a specific operator or function is needed, please [contact us](/resources/contact-us) so that we can consider inclusion in our roadmap.
 
 
 ### Operators
@@ -62,9 +64,9 @@ Some fundamental restrictions on these operators and functions are:
 | Cast:<br/> `CAST(x AS type)`<br/>`x :: type`  | Cast to `text`, `numeric`, `integer`, `real` or `blob`. See [Type Mapping](/sync/types) and [SQLite types](https://www.sqlite.org/datatype3.html) |
 | JSON:<br/> `json -> 'path'`<br/>`json ->> 'path'`  | `->` Returns the value as a JSON string.<br/> `->>` Returns the extracted value. |
 | Text concatenation:<br/> `\|\|` | Joins two text values together.                                                                          |
-| Range (Sync Streams only):<br/>`x BETWEEN a AND b`<br/>`x NOT BETWEEN a AND b` | Returns true if `x` is within the range `[a, b]` (inclusive). Can be used in `WHERE` or as a `SELECT` column expression. If any operand is `null`, the result is `null`.<br/><br/>Example:<br/>`WHERE price BETWEEN 10 AND 100`<br/>`WHERE price NOT BETWEEN 1 AND 10` |
-| Arrays:<br/>`<left> IN <right>` | Returns true if `left` is present in the `right` JSON array. Differs from the standard SQLite `IN` in that it works directly on a JSON array value.<br/><br/>**Sync Streams**: `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` can be a parameter and `right` a row JSON array column (e.g. `auth.user_id() IN table.allowed_users`). Can also be used with a subquery on the right: `id IN (SELECT ...)`.<br/><br/>**Sync Rules**: In data queries, `left` must be a row column — the right side cannot be a bucket parameter. In parameter queries, either side may be a parameter. |
-| Array overlap (Sync Streams only):<br/>`<left> && <right>` | Returns true if the JSON array `left` and the set `right` share at least one common value. Use this when the row itself stores an array and you want to match any element in it — for example, a `tagged_users` column containing `["user-1", "user-2"]`.<br/><br/>`left` must be a row column containing a JSON array. `right` must be a subquery or a parameter array.<br/><br/>Example — sync a comment to every user tagged in it:<br/>`WHERE tagged_users && (SELECT id FROM org_members WHERE org_id = auth.parameter('org_id'))`<br/><br/>Contrast with `IN`: use `IN` when the row has a single value to check against a set; use `&&` when the row has an array and you want to match on any element. |
+| `<left> IN <right>` | **Sync Streams**: `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` can be a parameter and `right` a row JSON array column (e.g. `auth.user_id() IN table.allowed_users`). Can also be used with a subquery on the right: `id IN (SELECT ...)`.<br/><br/>**Sync Rules**: Returns true if `left` is present in the `right` JSON array. Differs from the standard SQLite `IN` in that it works directly on a JSON array value. In [Data Queries](/sync/rules/data-queries), `left` must be a row column, and `right` cannot be a bucket parameter. In [Parameter Queries](/sync/rules/parameter-queries), either side may be a parameter. |
+| Range <br/>(**Sync Streams only**):<br/>`x BETWEEN a AND b`<br/>`x NOT BETWEEN a AND b` | Returns true if `x` is within the range `[a, b]` (inclusive). Can be used in `WHERE` or as a `SELECT` column expression. If any operand is `null`, the result is `null`.<br/><br/>Example:<br/>`WHERE price BETWEEN 10 AND 100`<br/>`WHERE price NOT BETWEEN 1 AND 10` |
+| Array overlap <br/>(**Sync Streams only**):<br/>`<left> && <right>` | Returns true if the JSON array `left` and the set `right` share at least one common value. Use this when the row itself stores an array and you want to match any element in it — for example, a `tagged_users` column containing `["user-1", "user-2"]`.<br/><br/>`left` must be a row column containing a JSON array. `right` must be a subquery or a parameter array.<br/><br/>Example — sync a comment to every user tagged in it:<br/>`WHERE tagged_users && (SELECT id FROM org_members WHERE org_id = auth.parameter('org_id'))`<br/><br/>Contrast with `IN`: use `IN` when the row has a single value to check against a set; use `&&` when the row has an array and you want to match on any element. |
 
 
 ### WHERE Clause Support
@@ -169,7 +171,7 @@ WHERE owner_id = bucket.user_id
 
 **`AND`**
 
-Supported in both parameter queries and data queries. In parameter queries, each condition may match a different parameter. However, you cannot combine two `IN` expressions on parameters in the same `AND` — split them into separate parameter queries instead.
+Supported in both Parameter Queries and Data Queries. In Parameter Queries, each condition may match a different parameter. However, you cannot combine two `IN` expressions on parameters in the same `AND` — split them into separate Parameter Queries instead.
 
 ```sql
 -- Supported: parameter condition + row-value condition
@@ -183,7 +185,7 @@ WHERE bucket.list_id IN lists.allowed_ids
 
 **`OR`**
 
-Supported in both parameter queries and data queries, when both sides of the `OR` reference the exact same set of parameters. In practice this is rarely useful — use separate parameter queries instead.
+Supported in both Parameter Queries and Data Queries, when both sides of the `OR` reference the exact same set of parameters. In practice this is rarely useful — use separate parameter queries instead.
 
 ```sql
 -- Supported: both sides reference the same parameter
@@ -225,7 +227,7 @@ WHERE NOT users.id = request.user_id()
 | **base64(data)**                                       | Convert `blob` or `text` data to base64 text.                                                                                                                                                                                                                                                                                                                                                        |
 | [length(data)](https://www.sqlite.org/lang_corefunc.html#length)               | For `text`, return the number of characters. For `blob`, return the number of bytes. For `null`, return `null`. For `integer` and `real`, convert to `text` and return the number of characters.                                                                                                                                                                                                               |
 | [typeof(data)](https://www.sqlite.org/lang_corefunc.html#typeof)               | `text`, `integer`, `real`, `blob` or `null`                                                                                                                                                                                                                                                                                                                                                                |
-| [json\_each(data)](https://www.sqlite.org/json1.html#jeach)         | Expands a JSON array into rows.<br/><br/>**Sync Streams**: Used as a [table-valued function](/sync/streams/parameters#expanding-json-arrays) with `JOIN` syntax (e.g. `JOIN json_each(auth.parameter('ids')) AS t`). Only works with auth/connection parameters, not on columns from joined tables.<br/><br/>**Sync Rules**: Used in parameter queries to [expand an array parameter](/sync/rules/parameter-queries#expanding-json-array-into-multiple-parameters) into multiple rows. |
+| [json\_each(data)](https://www.sqlite.org/json1.html#jeach)         | Expands a JSON array into rows.<br/><br/>**Sync Streams**: Used as a [table-valued function](/sync/streams/parameters#expanding-json-arrays) with `JOIN` syntax (e.g. `JOIN json_each(auth.parameter('ids')) AS t`). Only works with auth/connection parameters, not on columns from joined tables.<br/><br/>**Sync Rules**: Used in Parameter Queries to [expand an array parameter](/sync/rules/parameter-queries#expanding-json-array-into-multiple-parameters) into multiple rows. |
 | [json\_extract(data, path)](https://www.sqlite.org/json1.html#jex)               | Same as `->>` operator, but the path must start with `$.`                                                                                                                                                                                                                                                                                                                                         |
 | [json\_array\_length(data)](https://www.sqlite.org/json1.html#jarraylen)         | Given a JSON array (as text), returns the length of the array. If data is `null`, returns `null`. If the value is not a JSON array, returns `0`.                                                                                                                                                                                                                                                        |
 | [json\_valid(data)](https://www.sqlite.org/json1.html#jvalid)                    | Returns `1` if the data can be parsed as JSON, `0` otherwise.                                                                                                                                                                                                                                                                                                                                        |

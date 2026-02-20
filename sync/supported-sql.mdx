@@ -3,99 +3,67 @@ title: "Supported SQL"
 description: SQL syntax, operators, and functions supported in Sync Streams and Sync Rules queries.
 ---
 
-This page documents the SQL syntax and functions supported in Sync Streams and Sync Rules (legacy).
+This page documents the SQL supported in [Sync Streams](/sync/streams/overview) and [Sync Rules (legacy)](/sync/rules/overview).
+
+<Warning>
+  Some fundamental restrictions on the usage of SQL expressions are:
+
+  1. They must be deterministic — no random or time-based functions.
+  2. No external state can be used.
+  3. They must operate on data available within a single row/document. For example, no aggregation functions are allowed.
+
+  For parameter-specific WHERE restrictions, see [Filtering: WHERE Clause](#filtering-where-clause).
+</Warning>
 
 ## Query Syntax
 
-The supported SQL is based on a subset of the SQL standard syntax. Sync Streams support more SQL features than the legacy Sync Rules.
+The supported SQL is based on a subset of the standard SQL syntax. Sync Streams support more SQL features than the legacy Sync Rules.
 
 <Tabs>
-	<Tab title="Sync Streams">
-	1. `SELECT` statements with column selection and `WHERE` filtering.
-	2. [Subqueries](/sync/streams/queries#using-subqueries) with `IN (SELECT ...)`, including nested subqueries.
-	3. [`JOIN` / `INNER JOIN`](/sync/streams/queries#using-joins) for traversing relationships (selected columns must come from a single table).
-	4. [Common Table Expressions (CTEs)](/sync/streams/ctes) via the `with:` block.
-	5. Multiple queries per stream via `queries:`.
-	6. Table-valued functions like `json_each()` for [expanding arrays](/sync/streams/parameters#expanding-json-arrays).
-	7. `BETWEEN` and `CASE` expressions.
-	8. A limited set of operators and functions — see below.
+  <Tab title="Sync Streams">
+  - `SELECT` with column selection and [`WHERE` filtering](#filtering-where-clause)
+  - [Subqueries](/sync/streams/queries#using-subqueries) with `IN (SELECT ...)` and nested subqueries
+  - [`INNER JOIN`](#join-syntax-sync-streams-only) (selected columns must come from a single table)
+  - [CTEs](#cte-and-with-syntax-sync-streams-only) via the `with:` block
+  - Multiple queries per stream via `queries:`
+  - Table-valued functions such as `json_each()` for [expanding arrays](/sync/streams/parameters#expanding-json-arrays)
+  - `BETWEEN` and `CASE` expressions
+  - A limited set of [operators](#operators) and [functions](#functions)
 
-	No aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.).
+  **Not supported**: aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.). See [Writing Queries](/sync/streams/queries) for details.
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+  - Simple `SELECT` with column selection
+  - `WHERE` filtering on parameters (see [Filtering: WHERE Clause](#filtering-where-clause))
+  - A limited set of [operators](#operators) and [functions](#functions)
 
-	See [Writing Queries](/sync/streams/queries) for details and examples.
-	</Tab>
-	<Tab title="Sync Rules (Legacy)">
-	1. Simple `SELECT` statements with column selection.
-	2. `WHERE` filtering on parameters — see [WHERE Clause Support](#where-clause-support) for what's supported.
-	3. A limited set of operators and functions — see below.
-
-	No subqueries, JOINs, CTEs, aggregation, or sorting.
-
-	See [Sync Rules documentation](/sync/rules/overview) for details.
-	</Tab>
+  **Not supported**: subqueries, JOINs, CTEs, aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.).
+  </Tab>
 </Tabs>
 
+## Filtering: WHERE Clause
 
-## Operators and Functions
-
-Operators and functions can be used to transform columns/fields before being synced to a client.
-
-Some fundamental restrictions on the usage of these operators and functions are:
-
-1. It must be deterministic — no random or time-based functions.
-2. No external state can be used.
-3. It must operate on data available within a single row/document. For example, no aggregation functions allowed.
-
-When filtering on _row/document values_, or transforming output columns/fields, there are no special restrictions other than the fundamentals above. 
-
-For `WHERE` clause support and restrictions when filtering on _parameters_, see [WHERE Clause Support](#where-clause-support).
-
-If a specific operator or function is needed, please [contact us](/resources/contact-us) so that we can consider inclusion in our roadmap.
-
-
-### Operators
-
-| Operator  | Notes  |
-| --------- | ------ |
-| Comparison:<br/> `= != < > <= >=`      | If either parameter is `null`, this evaluates to `null`. |
-| Null:<br/> `IS NULL`, `IS NOT NULL` |  |
-| Mathematical:<br/> `+ - * /` |  |
-| Logical:<br/> `AND`, `OR`, `NOT` | Some restrictions apply — see [WHERE Clause Support](#where-clause-support) below. |
-| Cast:<br/> `CAST(x AS type)`<br/>`x :: type`  | Cast to `text`, `numeric`, `integer`, `real` or `blob`. See [Type Mapping](/sync/types) and [SQLite types](https://www.sqlite.org/datatype3.html) |
-| JSON:<br/> `json -> 'path'`<br/>`json ->> 'path'`  | `->` Returns the value as a JSON string.<br/> `->>` Returns the extracted value. |
-| Text concatenation:<br/> `\|\|` | Joins two text values together.                                                                          |
-| `<left> IN <right>` | **Sync Streams**: `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` can be a parameter and `right` a row JSON array column (e.g. `auth.user_id() IN table.allowed_users`). Can also be used with a subquery on the right: `id IN (SELECT ...)`.<br/><br/>**Sync Rules**: Returns true if `left` is present in the `right` JSON array. Differs from the standard SQLite `IN` in that it works directly on a JSON array value. In [Data Queries](/sync/rules/data-queries), `left` must be a row column, and `right` cannot be a bucket parameter. In [Parameter Queries](/sync/rules/parameter-queries), either side may be a parameter. |
-| Range <br/>(**Sync Streams only**):<br/>`x BETWEEN a AND b`<br/>`x NOT BETWEEN a AND b` | Returns true if `x` is within the range `[a, b]` (inclusive). Can be used in `WHERE` or as a `SELECT` column expression. If any operand is `null`, the result is `null`.<br/><br/>Example:<br/>`WHERE price BETWEEN 10 AND 100`<br/>`WHERE price NOT BETWEEN 1 AND 10` |
-| Array overlap <br/>(**Sync Streams only**):<br/>`<left> && <right>` | Returns true if the JSON array `left` and the set `right` share at least one common value. Use this when the row itself stores an array and you want to match any element in it — for example, a `tagged_users` column containing `["user-1", "user-2"]`.<br/><br/>`left` must be a row column containing a JSON array. `right` must be a subquery or a parameter array.<br/><br/>Example — sync a comment to every user tagged in it:<br/>`WHERE tagged_users && (SELECT id FROM org_members WHERE org_id = auth.parameter('org_id'))`<br/><br/>Contrast with `IN`: use `IN` when the row has a single value to check against a set; use `&&` when the row has an array and you want to match on any element. |
-
-
-### WHERE Clause Support
-
-Sync queries support a subset of standard SQL `WHERE` clause syntax. The allowed operators and combinations differ between Sync Streams and Sync Rules, and are more restrictive than standard SQL.
+Sync queries support a subset of SQL `WHERE` syntax. Allowed operators and combinations differ between Sync Streams and Sync Rules, and are more restrictive than standard SQL.
 
 <Tabs>
   <Tab title="Sync Streams">
 
-**`=` and `IS NULL`**
-
-Compare a row column against a static value, a parameter, or another column:
+**`=` and `IS NULL`** — Compare a row column to a static value, a parameter, or another column:
 
 ```sql
 -- Static value
 WHERE status = 'active'
 WHERE deleted_at IS NULL
 
--- Parameter
+-- Parameter (auth, connection, or subscription)
 WHERE owner_id = auth.user_id()
 WHERE region = connection.parameter('region')
 ```
 
-**`AND`**
-
-Fully supported. Each condition is independent — you can mix parameter comparisons, subqueries, and row-value conditions freely in the same clause.
+**`AND`** — Fully supported. You can mix parameter comparisons, subqueries, and row-value conditions in the same clause.
 
 ```sql
--- Two independent parameter conditions
+-- Two parameter conditions
 WHERE owner_id = auth.user_id()
   AND org_id = auth.parameter('org_id')
 
@@ -108,9 +76,7 @@ WHERE list_id = subscription.parameter('list_id')
   AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
 ```
 
-**`OR`**
-
-Supported, including `OR` nested inside `AND`. PowerSync automatically rewrites combinations like `A AND (B OR C)` into separate branches before evaluating.
+**`OR`** — Supported, including `OR` nested inside `AND`. PowerSync rewrites combinations like `A AND (B OR C)` into separate branches before evaluating. Each `OR` branch must be a valid filter on its own; you cannot have a branch that only makes sense when combined with the other.
 
 ```sql
 -- Top-level OR
@@ -122,43 +88,27 @@ WHERE status = 'active'
   AND (owner_id = auth.user_id() OR shared_with = auth.user_id())
 ```
 
-Each `OR` branch must be a valid filter on its own — you cannot have a branch that only makes sense in combination with the other branch.
-
-**`NOT`**
-
-Supported for simple conditions on row values:
+**`NOT`** — Supported for simple conditions on row values. `NOT IN` with a JSON array string is supported. You cannot negate a subquery or a parameter array expansion.
 
 ```sql
+-- Simple row-value conditions
 WHERE status != 'archived'
 WHERE deleted_at IS NOT NULL
-```
 
-`NOT IN` with a JSON array string is supported:
-
-```sql
+-- NOT IN with JSON array string
 WHERE category NOT IN '["draft", "hidden"]'
-```
 
-<Note>
-`NOT IN '["draft", "hidden"]'` (JSON array string syntax) is currently affected by a bug and may not work as expected. This will be fixed in an upcoming release.
-</Note>
+-- Not supported: negating a subquery
+-- WHERE issue_id NOT IN (SELECT id FROM issues WHERE owner_id = auth.user_id())
 
-`NOT` cannot negate a subquery or a parameter array expansion:
-
-```sql
--- Not supported
-WHERE issue_id NOT IN (SELECT id FROM issues WHERE owner_id = auth.user_id())
-
--- Not supported
-WHERE id NOT IN subscription.parameter('excluded_ids')
+-- Not supported: negating a parameter array
+-- WHERE id NOT IN subscription.parameter('excluded_ids')
 ```
 
   </Tab>
   <Tab title="Sync Rules (Legacy)">
 
-**`=` and `IS NULL`**
-
-Compare a row column against a static value or a bucket parameter:
+**`=` and `IS NULL`** — Compare a row column to a static value or a bucket parameter:
 
 ```sql
 -- Static value
@@ -169,9 +119,7 @@ WHERE deleted_at IS NULL
 WHERE owner_id = bucket.user_id
 ```
 
-**`AND`**
-
-Supported in both Parameter Queries and Data Queries. In Parameter Queries, each condition may match a different parameter. However, you cannot combine two `IN` expressions on parameters in the same `AND` — split them into separate Parameter Queries instead.
+**`AND`** — Supported in both Parameter Queries and Data Queries. In Parameter Queries, each condition may match a different parameter. However, you cannot combine two `IN` expressions on parameters in the same `AND`; split them into separate Parameter Queries instead.
 
 ```sql
 -- Supported: parameter condition + row-value condition
@@ -179,13 +127,11 @@ WHERE users.id = request.user_id()
   AND users.is_admin = true
 
 -- Not supported: two IN expressions on parameters in the same AND
-WHERE bucket.list_id IN lists.allowed_ids
-  AND bucket.org_id IN lists.allowed_org_ids
+-- WHERE bucket.list_id IN lists.allowed_ids
+--   AND bucket.org_id IN lists.allowed_org_ids
 ```
 
-**`OR`**
-
-Supported in both Parameter Queries and Data Queries, when both sides of the `OR` reference the exact same set of parameters. In practice this is rarely useful — use separate parameter queries instead.
+**`OR`** — Supported when both sides of the `OR` reference the exact same set of parameters. If the two sides use different parameters, use separate parameter queries instead.
 
 ```sql
 -- Supported: both sides reference the same parameter
@@ -193,13 +139,11 @@ WHERE lists.owner_id = request.user_id()
    OR lists.shared_with = request.user_id()
 
 -- Not supported: sides reference different parameters
-WHERE lists.owner_id = request.user_id()
-   OR lists.org_id = bucket.org_id
+-- WHERE lists.owner_id = request.user_id()
+--    OR lists.org_id = bucket.org_id
 ```
 
-**`NOT`**
-
-Supported for simple row-value conditions. Not supported on parameter-matching expressions.
+**`NOT`** — Supported for simple row-value conditions. Not supported on parameter-matching expressions.
 
 ```sql
 -- Supported
@@ -208,47 +152,150 @@ WHERE deleted_at IS NOT NULL
 WHERE NOT users.is_admin = true
 
 -- Not supported in parameter queries
-WHERE NOT users.id = request.user_id()
+-- WHERE NOT users.id = request.user_id()
 ```
 
   </Tab>
 </Tabs>
 
-### Functions
+## Operators
 
-<Note>`text`, `integer`, `real`, `blob` and `null` below refer to [SQLite types](https://www.sqlite.org/datatype3.html).</Note>
+Operators can be used in `WHERE` clauses and in `SELECT` expressions. When filtering on parameters (e.g. `auth.user_id()`, `subscription.parameter('id')`), some combinations are restricted — see [Filtering: WHERE Clause](#filtering-where-clause). 
 
-| Function                                                                         | Description                                                                                                                                                                                                                                                                                                                                                                                      |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [upper(text)](https://www.sqlite.org/lang_corefunc.html#upper)                 | Convert text to upper case.                                                                                                                                                                                                                                                                                                                                                                      |
-| [lower(text)](https://www.sqlite.org/lang_corefunc.html#lower)                 | Convert text to lower case.                                                                                                                                                                                                                                                                                                                                                                      |
-| [substring(text, start, length)](https://www.sqlite.org/lang_corefunc.html#substr)   | Extracts a portion of a string based on specified start index and length. Start index is 1-based. Example: `substring(created_at, 1, 10)` returns the `YYYY-MM-DD` portion of an ISO8601 timestamp string. |
-| [hex(data)](https://www.sqlite.org/lang_corefunc.html#hex)                     | Convert `blob` or `text` data to hexadecimal text.                                                                                                                                                                                                                                                                                                                                                   |
-| **base64(data)**                                       | Convert `blob` or `text` data to base64 text.                                                                                                                                                                                                                                                                                                                                                        |
-| [length(data)](https://www.sqlite.org/lang_corefunc.html#length)               | For `text`, return the number of characters. For `blob`, return the number of bytes. For `null`, return `null`. For `integer` and `real`, convert to `text` and return the number of characters.                                                                                                                                                                                                               |
-| [typeof(data)](https://www.sqlite.org/lang_corefunc.html#typeof)               | `text`, `integer`, `real`, `blob` or `null`                                                                                                                                                                                                                                                                                                                                                                |
-| [json\_each(data)](https://www.sqlite.org/json1.html#jeach)         | Expands a JSON array into rows.<br/><br/>**Sync Streams**: Used as a [table-valued function](/sync/streams/parameters#expanding-json-arrays) with `JOIN` syntax (e.g. `JOIN json_each(auth.parameter('ids')) AS t`). Only works with auth/connection parameters, not on columns from joined tables.<br/><br/>**Sync Rules**: Used in Parameter Queries to [expand an array parameter](/sync/rules/parameter-queries#expanding-json-array-into-multiple-parameters) into multiple rows. |
-| [json\_extract(data, path)](https://www.sqlite.org/json1.html#jex)               | Same as `->>` operator, but the path must start with `$.`                                                                                                                                                                                                                                                                                                                                         |
-| [json\_array\_length(data)](https://www.sqlite.org/json1.html#jarraylen)         | Given a JSON array (as text), returns the length of the array. If data is `null`, returns `null`. If the value is not a JSON array, returns `0`.                                                                                                                                                                                                                                                        |
-| [json\_valid(data)](https://www.sqlite.org/json1.html#jvalid)                    | Returns `1` if the data can be parsed as JSON, `0` otherwise.                                                                                                                                                                                                                                                                                                                                        |
-| **json\_keys(data)**                   | Returns the set of keys of a JSON object as a JSON array.   |
-| [ifnull(x,y)](https://www.sqlite.org/lang_corefunc.html#ifnull)                | Returns x if non-null, otherwise returns y.                                                                                                                                                                                                                                                                                                                                                      |
-| [iif(x,y,z)](https://www.sqlite.org/lang_corefunc.html#iif)                | Returns y if x is true, otherwise returns z.                                                                                                                                                                                                                                                                                                                                                      |
-| [uuid_blob(id)](https://sqlite.org/src/file/ext/misc/uuid.c)                             | Convert a UUID string to bytes.                                                                                                                                                                                                                                                                                                                    |
-| [unixepoch(time-value, \[modifier\])](https://www.sqlite.org/lang_datefunc.html) | Returns a [time-value](https://sqlite.org/lang_datefunc.html#tmval) as Unix timestamp. If modifier is ["subsec"](https://sqlite.org/lang_datefunc.html#subsec), the result is a floating point number, with milliseconds including in the fraction. The time-value argument is required — this function cannot be used to get the current time.                                                                                                                                                     |
-| [datetime(time-value, \[modifier\])](https://www.sqlite.org/lang_datefunc.html)  | Returns a [time-value](https://sqlite.org/lang_datefunc.html#tmval) as a date and time string, in the format YYYY-MM-DD HH:MM:SS. If the specifier is ["subsec"](https://sqlite.org/lang_datefunc.html#subsec), milliseconds are also included. If the modifier is "unixepoch", the argument is interpreted as a Unix timestamp. Both modifiers can be included: `datetime(timestamp, 'unixepoch', 'subsec')`. The time-value argument is required — this function cannot be used to get the current time. |
-| [ST\_AsGeoJSON(geometry)](/client-sdks/advanced/gis-data-postgis)          | Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to GeoJSON. Combine with JSON operators to extract specific fields.                                                                                                                                                                                                                                                      |
-| [ST\_AsText(geometry)](/client-sdks/advanced/gis-data-postgis)                | Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to Well-Known Text (WKT).                                                                                                                                                                                                                                                                                                |
-| [ST\_X(point)](/client-sdks/advanced/gis-data-postgis)                             | Get the X coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres)                                                                                                                                                                                                                                                                                                                    |
-| [ST\_Y(point)](/client-sdks/advanced/gis-data-postgis)                             | Get the Y coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres)                                                                                                                                                                                                                                                                                                                    |
+<AccordionGroup>
+  <Accordion title="Comparison and null" defaultOpen={true}>
+  - **Comparison:** `=`, `!=`, `<`, `>`, `<=`, `>=` — If either side is `null`, the result is `null`.
+  - **Null:** `IS NULL`, `IS NOT NULL`
+  </Accordion>
+  <Accordion title="Logical and mathematical">
+  - **Logical:** `AND`, `OR`, `NOT` — See [Filtering: WHERE Clause](#filtering-where-clause) for restrictions when filtering on parameters.
+  - **Mathematical:** `+`, `-`, `*`, `/`
+  </Accordion>
+  <Accordion title="Text concatenation">
+  - `||` — Joins two text values together.
+  </Accordion>
+  <Accordion title="JSON">
+  - `json -> 'path'` - Returns the value as a JSON string.
+  - `json ->> 'path'` — Returns the extracted value.
+  </Accordion>
+  <Accordion title="IN (Arrays)">
+  - **Sync Streams:** `left IN right` — `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` a parameter and `right` a row JSON array column. Also supports subqueries: `id IN (SELECT ...)`.
+  - **Sync Rules:** Returns true if `left` is in the `right` JSON array. In Data Queries, `left` must be a row column and `right` cannot be a bucket parameter. In Parameter Queries, either side may be a parameter.
+  </Accordion>
+  <Accordion title="BETWEEN (Sync Streams only)">
+  - `x BETWEEN a AND b`, `x NOT BETWEEN a AND b` — True if `x` is in the inclusive range `[a, b]`. Usable in `WHERE` or as a `SELECT` expression. If any operand is `null`, the result is `null`.
 
-Most of these functions are based on the [built-in SQLite functions](https://www.sqlite.org/lang_corefunc.html) and [SQLite JSON functions](https://www.sqlite.org/json1.html).
+  Example: `WHERE price BETWEEN 10 AND 100`
+  </Accordion>
+  <Accordion title="&& (Array overlap - Sync Streams only)">
+  - `<left> && <right>` — True if the JSON array in `left` and the set `right` share at least one value. Use when the row stores an array (e.g. a `tagged_users` column). `left` must be a row column (JSON array); `right` must be a subquery or parameter array.
 
-### CASE Expressions (Sync Streams only)
+  Example: `WHERE tagged_users && (SELECT id FROM org_members WHERE org_id = auth.parameter('org_id'))`
 
-`CASE` expressions can be used anywhere an expression is allowed — in `SELECT` columns or `WHERE` clauses. Two forms are supported:
+  Use `IN` when the row has a single value to check against a set; use `&&` when the row has an array and you want to match any element.
+  </Accordion>
+</AccordionGroup>
 
-**Searched CASE** — each `WHEN` is an independent boolean condition:
+## Functions
+
+Functions can be used to transform columns/fields before being synced to a client. They operate on row data or parameters. Type names below (`text`, `integer`, `real`, `blob`, `null`) refer to [SQLite storage classes](https://www.sqlite.org/datatype3.html).
+
+Most functions are from [SQLite built-in functions](https://www.sqlite.org/lang_corefunc.html) and [SQLite JSON functions](https://www.sqlite.org/json1.html).
+
+<AccordionGroup>
+  <Accordion title="String and binary">
+  - **[upper(text)](https://www.sqlite.org/lang_corefunc.html#upper)** — Convert text to upper case.
+  - **[lower(text)](https://www.sqlite.org/lang_corefunc.html#lower)** — Convert text to lower case.
+  - **[substring(text, start, length)](https://www.sqlite.org/lang_corefunc.html#substr)** — Extracts a portion of a string based on specified start index and length. Start index is 1-based. Example: `substring(created_at, 1, 10)` returns the date portion of the timestamp.
+  - **[hex(data)](https://www.sqlite.org/lang_corefunc.html#hex)** — Convert blob or text data to hexadecimal text.
+  - **base64(data)** — Convert blob or text data to base64 text.
+  - **[length(data)](https://www.sqlite.org/lang_corefunc.html#length)** — For text, return the number of characters. For blob, return the number of bytes. For null, return null. For integer and real, convert to text and return the number of characters.
+  </Accordion>
+  <Accordion title="Cast and types">
+  - `CAST(x AS type)` or `x :: type` — Cast to `text`, `numeric`, `integer`, `real`, or `blob`. See [Type mapping](/sync/types) and [SQLite types](https://www.sqlite.org/datatype3.html).
+  - **[typeof(data)](https://www.sqlite.org/lang_corefunc.html#typeof)** — Returns `text`, `integer`, `real`, `blob`, or `null`.
+  </Accordion>
+  <Accordion title="JSON">
+  - **[json_each(data)](https://www.sqlite.org/json1.html#jeach)** — Expands a JSON array into rows.
+    - **Sync Streams:** Use with auth or connection parameters only. Valid patterns: (1) table-valued function in `JOIN` syntax (e.g. `JOIN json_each(auth.parameter('ids')) AS t`), or (2) subquery with `IN` (e.g. `WHERE id IN (SELECT value FROM json_each(auth.parameter('ids')))`). See [Expanding JSON arrays](/sync/streams/parameters#expanding-json-arrays).
+    - **Sync Rules:** Expands a JSON array or object from a request or token parameter into a set of parameter rows. Example: `SELECT value AS project_id FROM json_each(request.jwt() -> 'project_ids')`.
+  - **[json_extract(data, path)](https://www.sqlite.org/json1.html#jex)** — Same as `->>` operator, but the path must start with `$.`
+  - **[json_array_length(data)](https://www.sqlite.org/json1.html#jarraylen)** — Given a JSON array (as text), returns the length of the array. If data is null, returns null. If the value is not a JSON array, returns 0.
+  - **[json_valid(data)](https://www.sqlite.org/json1.html#jvalid)** — Returns 1 if the data can be parsed as JSON, 0 otherwise.
+  - **json_keys(data)** — Returns the set of keys of a JSON object as a JSON array. Example: `SELECT * FROM items WHERE bucket.user_id IN json_keys(permissions_json)`.
+  </Accordion>
+  <Accordion title="Null handling">
+  - **[ifnull(x, y)](https://www.sqlite.org/lang_corefunc.html#ifnull)** — Returns x if non-null, otherwise returns y.
+  </Accordion>
+  <Accordion title="Conditional">
+  - **[iif(x, y, z)](https://www.sqlite.org/lang_corefunc.html#iif)** — Returns y if x is true, otherwise returns z.
+  </Accordion>
+  <Accordion title="Date/time and UUID">
+  - **[unixepoch(time-value, [modifier])](https://www.sqlite.org/lang_datefunc.html)** — Returns a time-value as Unix timestamp. If modifier is "subsec", the result is a floating point number, with milliseconds included in the fraction. The time-value argument is required — this function cannot be used to get the current time.
+  - **[datetime(time-value, [modifier])](https://www.sqlite.org/lang_datefunc.html)** — Returns a time-value as a date and time string, in the format YYYY-MM-DD HH:MM:SS. If the specifier is "subsec", milliseconds are also included. If the modifier is "unixepoch", the argument is interpreted as a Unix timestamp. Both modifiers can be included: `datetime(timestamp, 'unixepoch', 'subsec')`. The time-value argument is required — this function cannot be used to get the current time.
+  - **[uuid_blob(id)](https://sqlite.org/src/file/ext/misc/uuid.c)** — Convert a UUID string to bytes.
+  </Accordion>
+  <Accordion title="GIS (PostGIS)">
+  - **[ST_AsGeoJSON(geometry)](/client-sdks/advanced/gis-data-postgis)** — Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to GeoJSON. Combine with JSON operators to extract specific fields.
+  - **[ST_AsText(geometry)](/client-sdks/advanced/gis-data-postgis)** — Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to Well-Known Text (WKT).
+  - **[ST_X(point)](/client-sdks/advanced/gis-data-postgis)** — Get the X coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres).
+  - **[ST_Y(point)](/client-sdks/advanced/gis-data-postgis)** — Get the Y coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres).
+  </Accordion>
+</AccordionGroup>
+
+If you need an operator or function not listed, [contact us](/resources/contact-us) so we can consider adding it.
+
+
+## JOIN Syntax (Sync Streams only)
+
+Sync Streams support a subset of join syntax. The following rules define what is valid:
+
+- **Only inner joins:** Use `JOIN` or `INNER JOIN`. `LEFT`, `RIGHT`, and `OUTER` joins are not supported.
+- **Single output table:** All selected columns must come from one table. Use `table.*` or list columns from that table (e.g. `comments.*`, `comments.id`). Selecting columns from multiple tables is invalid.
+- **Simple join conditions:** Join conditions must be equality comparisons of the form `table1.column = table2.column`. Other comparisons (e.g. `a.x > b.y`) are not supported.
+- **Table-valued functions in JOINs:** `json_each()` and similar table-valued functions may only be used with auth or connection parameters (e.g. `json_each(auth.parameter('ids'))`). They cannot be used on columns from joined tables.
+
+```sql
+-- Valid: columns from one table
+SELECT comments.* FROM comments INNER JOIN issues ON comments.issue_id = issues.id
+
+-- Invalid: columns from multiple tables
+SELECT comments.*, issues.title FROM comments JOIN issues ON comments.issue_id = issues.id
+
+-- Invalid: non-equality join condition
+SELECT * FROM a JOIN b ON a.x > b.y
+```
+
+For how to use JOINs in your stream queries (when to use them, patterns, and examples), see [Using Joins](/sync/streams/queries#using-joins).
+
+## CTE and WITH Syntax (Sync Streams only)
+
+CTEs are defined in a `with:` block. Each CTE is a name and a single `SELECT` query. The following rules apply:
+
+- **CTEs cannot reference other CTEs.** Each CTE must be self-contained. To chain logic (e.g. orgs → projects), use nested subqueries in your stream query and reference only the CTE at the leaf level.
+- **CTE names take precedence over table names.** If a CTE has the same name as a database table, the CTE is used. Use distinct names to avoid confusion.
+
+```yaml
+# Valid: one CTE, used in stream query
+with:
+  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+streams:
+  projects:
+    query: SELECT * FROM projects WHERE org_id IN user_orgs
+
+# Invalid: CTE referencing another CTE
+# with:
+#   user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+#   project_ids: SELECT id FROM projects WHERE org_id IN user_orgs  # Error
+```
+
+For how to use CTEs, see [Common Table Expressions (CTEs)](/sync/streams/ctes).
+
+## CASE Expressions (Sync Streams Only)
+
+`CASE` is allowed anywhere an expression is allowed — in `SELECT` columns or `WHERE` clauses.
+
+**Searched CASE** — Each `WHEN` is an independent boolean condition:
 
 ```sql
 CASE
@@ -267,12 +314,9 @@ SELECT id,
     ELSE 'C'
   END AS grade
 FROM results
-
--- Filter using CASE in WHERE
-WHERE CASE WHEN is_trial THEN trial_expires_at > '2025-01-01' ELSE true END
 ```
 
-**Simple CASE** — compares one expression against a list of values:
+**Simple CASE** — Compares one expression against a list of values:
 
 ```sql
 CASE <expression>
@@ -283,6 +327,7 @@ END
 ```
 
 ```sql
+-- Map numeric status codes to readable labels
 SELECT id,
   CASE status
     WHEN 1 THEN 'pending'
@@ -293,4 +338,4 @@ SELECT id,
 FROM tasks
 ```
 
-`ELSE` is optional — if omitted and no `WHEN` matches, the result is `null`.
+`ELSE` is optional. If omitted and no `WHEN` matches, the result is `null`.

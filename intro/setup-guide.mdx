@@ -213,16 +213,35 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
       <Tab title="Self-Hosted">
         **Docker plugin (CLI)**
 
-        The [PowerSync CLI](/tools/cli) includes a Docker plugin that handles the Docker setup for you. Install the CLI (requires Node.js/npm), then scaffold the config directory and start the service:
+        The [PowerSync CLI](/tools/cli) includes a Docker plugin that handles the Docker setup for you. Install the CLI (requires Node.js/npm), scaffold the config directory, and generate the Docker Compose setup:
 
         ```bash
         npm install -g powersync
         powersync init self-hosted
         powersync docker configure --database postgres --storage postgres
+        ```
+
+        The plugin sets up Postgres for both the source database and bucket storage and creates `powersync/docker/docker-compose.yaml`. Other databases are supported as well, you will learn more about this in the next step. Before starting, replace `powersync/sync.yaml` with this minimal sync config:
+
+        ```yaml
+        streams:
+          lists:
+            # Streams without parameters sync the same data to all users
+            auto_subscribe: true
+            query:
+              # Sync all rows
+              - SELECT * FROM todos
+        ```
+
+        You'll update this with your actual tables/collections in a later step.
+
+        Then start the PowerSync Service:
+
+        ```bash
         powersync docker start
         ```
 
-        The Docker plugin sets up Postgres for both the source database and bucket storage, creates the Docker Compose configuration, and starts the PowerSync Service. Run `powersync fetch status` to verify it's running.
+        Run `powersync fetch status` to verify it's running.
 
         ---
 
@@ -300,8 +319,8 @@ PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be sel
           **Learn More**
           * [Self-Hosting Introduction](/intro/self-hosting)
           * [Self-Host Demo App](https://github.com/powersync-ja/self-host-demo) for complete working examples.
+          * [CLI documentation](/tools/cli).
           * [Self-Hosted Service Configuration](/configuration/powersync-service/self-hosted-instances) for more details on the config file structure.
-          * [CLI documentation](/tools/cli) for Docker plugin usage and all available commands.
         </Tip>
       </Tab>
     </Tabs>
@@ -393,13 +412,15 @@ The next step is to connect your PowerSync Service instance to your source datab
   <Tab title="Self-Hosted">
     **Docker plugin (CLI)**
 
-    If you set up your instance using the Docker plugin in the previous step, `powersync docker configure` already merged connection config into `powersync/service.yaml`. Update the values with your actual credentials, then apply the changes:
+    If you used the Docker plugin in the previous step, the source database connection is already configured. `service.yaml` reads the connection URI from `!env PS_DATA_SOURCE_URI`. The Docker-managed Postgres (`pg-db`) was also pre-configured with `wal_level=logical` and a `powersync` publication by the init scripts.
+
+    If you want to use an **external database** instead, update `PS_DATA_SOURCE_URI` in `powersync/docker/.env` with your connection details, then restart:
 
     ```bash
     powersync docker reset
     ```
 
-    If you're connecting to an external database (not the Docker-managed Postgres), update the `replication.connections` section in `powersync/service.yaml` with your connection URI — same format as the examples below.
+    You'll also need to complete the source database setup from Step 1 (replication user, publication) on your external database before this will work.
 
     ---
 
@@ -532,9 +553,10 @@ We recommend starting with a simple **global bucket** that syncs data to all use
       <Tab title="Self-Hosted">
         **Docker plugin (CLI)**
 
-        Edit `powersync/sync.yaml` with your sync config, then apply the changes by resetting the stack:
+        Edit `powersync/sync.yaml` with your sync config. The default file has a placeholder (`SELECT * FROM todos`) — replace it with your actual table/collection names. Then apply the changes:
 
         ```bash
+        powersync validate
         powersync docker reset
         ```
 
@@ -542,7 +564,7 @@ We recommend starting with a simple **global bucket** that syncs data to all use
 
         **Manual Docker setup**
 
-        Add the sync rules to your `config.yaml`:
+        Add the sync rules to your `config.yaml`, for example:
 
         ```yaml
         sync_rules:
@@ -621,13 +643,42 @@ You'll use this token for two purposes:
   <Tab title="Self-Hosted">
     **Docker plugin (CLI)**
 
-    Generate a development token with:
+    `powersync generate token` signs a JWT using the client auth key from `service.yaml`. The default template doesn't include one, so add an HMAC key first.
+
+    Generate a random secret (base64url-encoded):
 
     ```bash
+    openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+    ```
+    
+    Add the secret to `powersync/docker/.env`:
+
+    ```bash
+    PS_CLIENT_AUTH_KEY=<your-generated-secret>
+    ```
+
+    Add the key to `powersync/service.yaml`:
+
+    ```yaml
+    client_auth:
+      jwks:
+        keys:
+          - kty: oct
+            alg: HS256
+            kid: dev-key
+            k: !env PS_CLIENT_AUTH_KEY
+    ```
+
+    Apply the changes and generate the token:
+
+    ```bash
+    powersync docker reset
     powersync generate token --subject=test-user
     ```
 
-    Replace `test-user` with a user ID of your choice. The CLI signs the token using the shared secret from your instance config.
+    Replace test-user with the user ID you want to authenticate:
+    - If you’re using global Sync Rules, you can use any value (e.g., test-user) since all data syncs to all users
+    - If you’re using user-specific Sync Rules, use a user ID that matches a user in your database (this will be used as request.user_id() in your Sync Rules)
 
     <Note>
       Development tokens expire after 12 hours.

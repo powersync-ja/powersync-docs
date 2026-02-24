@@ -148,7 +148,6 @@ Renaming an unsynced collection to a name that is included in the Sync Rules tri
 
 Circular renames (e.g., renaming `todos` → `todos_old` → `todos`) are not directly supported. To reprocess the database after such changes, a Sync Rules update must be deployed.
 
-
 ## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL (Beta) Specifics
 
 PowerSync keeps the [buckets](/architecture/powersync-service#bucket-system) up to date with any incremental data changes as recorded in the MySQL [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html).
@@ -219,6 +218,92 @@ Removing a column will not have the values automatically removed for existing ro
 
 Changing a column type, and/or changing the default value of a column using an `ALTER TABLE` statement, will not be automatically replicated to PowerSync.
 In some cases, the change will have no effect on PowerSync (for example, changing between `VARCHAR` and `TEXT` types). When the values are expected to change, make an update to every existing row to propagate the changes.
+
+## <Icon icon="database" iconType="solid" size={32} /> SQL Server (Alpha) Specifics
+
+SQL Server CDC replication is designed to protect downstream consumers from schema changes. This means some schema changes, like changing the data type of a primary key column are blocked on the database level if CDC is enabled on a table.
+Other schema changes are allowed but are not automatically propagated to the capture instance for a table. This means that the only sure-fire way to update a capture instance with the latest schema changes is to drop and recreate it, or to create a new capture instance.
+PowerSync will automatically detect and use the new capture instance for the source table. Note that SQL Server CDC allows a maximum of 2 [capture instances](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-ver17#capture-instance) per table.
+
+#### Dropping and Recreating a Capture Instance
+
+```sql
+-- Disable CDC for the source table
+EXEC sys.sp_cdc_disable_table
+      @source_schema = N'dbo',
+      @source_name = N'<YOUR_TABLE_NAME>',
+      @capture_instance = 'all'; -- This drops all capture instances for the source table. If you only want to drop a specific capture instance, use the capture instance name instead of 'all'.
+
+-- Re-enable CDC for the source table
+EXEC sys.sp_cdc_enable_table
+        @source_schema = N'dbo',
+        @source_name   = N'<YOUR_TABLE_NAME>',
+        @role_name     = N'cdc_reader',
+        @supports_net_changes = 0;
+```
+
+#### Creating a New Capture Instance
+
+```sql
+-- Create a new capture instance for the source table by specifying a new capture instance name
+EXEC sys.sp_cdc_enable_table
+        @source_schema = N'dbo',
+        @source_name   = N'<YOUR_TABLE_NAME>',
+        @role_name     = N'cdc_reader',
+        @supports_net_changes = 0,
+        @capture_instance = N'<NEW_CAPTURE_INSTANCE_NAME>'; -- If a capture instance for the table already exists, you have to specify a different name for the new capture instance.
+```
+
+### Supported SQL Server schema changes:
+
+#### CREATE table
+
+Table creation is automatically detected when a new capture instance for a source table that matches the Sync Rules is created. The table is snapshotted before replication can resume.
+
+#### DROP table
+
+PowerSync can detect a table drop by checking for the table existence when the capture instance for a table is dropped. This only works if PowerSync is running at the time of the table drop.
+
+<Warning>
+  PowerSync cannot detect that a table has been dropped if it happened while the
+  PowerSync service was stopped. The Sync Rules will need to be redeployed
+  ensure that corresponding table's buckets are removed.
+</Warning>
+
+#### RENAME table
+
+Renaming a table is automatically detected and results in the removal of the bucket data for the old table, followed by a snapshot of the newly renamed table.
+Once the snapshot is completed, replication will resume.
+
+#### Column changes
+
+Some column changes are blocked on the database level if CDC is enabled on a table. These include:
+
+- column renames
+- changing the primary key
+- changing the data type of the primary key column
+
+To perform these changes, CDC needs to be disabled and then re-enabled for the table.
+
+Column changes that are not blocked:
+
+- adding a new column: Until the capture instance has been recreated, the new column will not be replicated.
+- dropping a column: Until the capture instance has been recreated, replicated rows will contain a NULL value for the dropped column.
+- changing the data type of a column to another compatible type: PowerSync will replicate updated rows with the new data type, but historic rows will not be updated. To propagate the changes, make an update to every existing row to propagate the changes.
+
+PowerSync will automatically detect and warn about the above changes, but to update the capture instance with the latest schema changes, CDC needs to be disabled and then re-enabled for the table.
+See the [Dropping and Recreating a Capture Instance](#dropping-and-recreating-a-capture-instance) section for more details.
+
+#### New Capture Instance
+
+New capture instances are automatically detected for tables in the Sync Rules. If a capture instance is newer than the one currently in use, PowerSync will automatically use the new capture instance.
+Switching to a new capture instance requires re-snapshotting the source table before replication can resume.
+
+#### Capture instance missing or deleted
+
+If a table in the sync rules is not enabled for CDC, the table cannot be replicated and PowerSync will log a warning.
+If a table in the sync rules is being replicated and the capture instance is dropped, PowerSync logs a warning and stops replication for that table. Existing data will not be removed but
+if CDC is enabled on the table again, the data will be removed and the table re-snapshotted.
 
 ## See Also
 

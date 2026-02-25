@@ -7,7 +7,7 @@ PowerSync supports JSON/JSONB and array columns. They are synced as JSON text an
 
 ## JSON and JSONB
 
-The PowerSync Service treats JSON and JSONB columns as text and provides many helpers for working with JSON in Sync Rules.
+The PowerSync Service treats JSON and JSONB columns as text and provides many helpers for working with JSON in [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)).
 
 **Note:** Native Postgres arrays, JSON arrays, and JSONB arrays are effectively all equivalent in PowerSync.
 
@@ -20,18 +20,35 @@ ALTER TABLE todos
 ADD COLUMN custom_payload json;
 ```
 
-### Sync Rules
+### Sync Streams / Sync Rules
 
-PowerSync treats JSON columns as text and provides transformation functions in Sync Rules such as `json_extract()`.
+<Tabs>
+  <Tab title="Sync Streams">
+    PowerSync treats JSON columns as text. Use `json_extract()` and other JSON functions in stream queries. Subscribe per list to sync only that list's todos:
 
-```yaml
-bucket_definitions:
-  my_json_todos:
-    # Separate bucket per To-Do list
-    parameters: SELECT id AS list_id FROM lists WHERE owner_id = request.user_id()
-    data:
-      - SELECT * FROM todos WHERE json_extract(custom_payload, '$.json_list') = bucket.list_id
-```
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      my_json_todos:
+        query: SELECT * FROM todos WHERE json_extract(custom_payload, '$.json_list') = subscription.parameter('list_id')
+    ```
+
+    The client subscribes once per list (e.g. `db.syncStream('my_json_todos', { list_id: listId }).subscribe()`).
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    PowerSync treats JSON columns as text and provides transformation functions in Sync Rules such as `json_extract()`.
+
+    ```yaml
+    bucket_definitions:
+      my_json_todos:
+        # Separate bucket per To-Do list
+        parameters: SELECT id AS list_id FROM lists WHERE owner_id = request.user_id()
+        data:
+          - SELECT * FROM todos WHERE json_extract(custom_payload, '$.json_list') = bucket.list_id
+    ```
+  </Tab>
+</Tabs>
 
 ### Client SDK
 
@@ -178,7 +195,7 @@ You can write the entire updated column value as a string, or, with `trackPrevio
 
 PowerSync treats array columns as JSON text. This means that the SQLite JSON operators can be used on any array columns.
 
-Additionally, some helper methods such as array membership are available in Sync Rules.
+Additionally, array membership is supported in [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) so you can sync rows based on whether a parameter value appears in an array column.
 
 **Note:** Native Postgres arrays, JSON arrays, and JSONB arrays are effectively all equivalent in PowerSync.
 
@@ -188,11 +205,10 @@ Array columns are defined in Postgres using the following syntax:
 
 ```sql
 ALTER TABLE todos
-
 ADD COLUMN unique_identifiers text[];
 ```
 
-### Sync Rules
+### Sync Streams / Sync Rules
 
 Array columns are converted to text by the PowerSync Service. A text array as defined above would be synced to clients as the following string:
 
@@ -200,16 +216,33 @@ Array columns are converted to text by the PowerSync Service. A text array as de
 
 **Array Membership**
 
-It's possible to sync rows dynamically based on the contents of array columns using the `IN` operator. For example:
+<Tabs>
+  <Tab title="Sync Streams">
+    Sync rows where a subscription parameter value is in the row's array column using `IN`:
 
-```yaml
-bucket_definitions:
-  custom_todos:
-    # Separate bucket per To-Do list
-    parameters: SELECT id AS list_id FROM lists WHERE owner_id = request.user_id()
-    data:
-      - SELECT * FROM todos WHERE bucket.list_id IN unique_identifiers
-```
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      custom_todos:
+        query: SELECT * FROM todos WHERE subscription.parameter('list_id') IN unique_identifiers
+    ```
+
+    The client subscribes per list (e.g. `db.syncStream('custom_todos', { list_id: listId }).subscribe()`).
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    It's possible to sync rows dynamically based on the contents of array columns using the `IN` operator:
+
+    ```yaml
+    bucket_definitions:
+      custom_todos:
+        # Separate bucket per To-Do list
+        parameters: SELECT id AS list_id FROM lists WHERE owner_id = request.user_id()
+        data:
+          - SELECT * FROM todos WHERE bucket.list_id IN unique_identifiers
+    ```
+  </Tab>
+</Tabs>
 
 <Tip>
 See these additional details when using the `IN` operator: [Operators](/sync/supported-sql#operators)
@@ -363,7 +396,7 @@ You can write the entire updated column value as a string, or, with `trackPrevio
 
 ## Custom Types
 
-PowerSync serializes custom types as text. For details, see [types in Sync Rules](/sync/types).
+PowerSync respects Postgres custom types: DOMAIN types sync as their inner type, custom type columns as JSON objects, arrays of custom types as JSON arrays, and ranges (and multi-ranges) as structured JSON. This behavior is the default for Sync Streams. For configuration and legacy behavior, see [Compatibility](/sync/advanced/compatibility#custom-postgres-types). For type handling in queries, see [Types](/sync/types).
 
 ### Postgres
 
@@ -378,18 +411,33 @@ create type location_address AS (
 );
 ```
 
-### Sync Rules
+### Sync Streams / Sync Rules
 
-Custom type columns are converted to text by the PowerSync Service.
-Depending on whether the `custom_postgres_types` [compatibility option](/sync/advanced/compatibility) is enabled,
-PowerSync would sync the row as:
+<Tabs>
+  <Tab title="Sync Streams">
+    The custom type column is serialized as JSON and you can use `json_extract()` and other JSON functions in stream queries:
 
-- `{"street":"1000 S Colorado Blvd.","city":"Denver","state":"CO","zip":80211}` if the option is enabled.
-- `("1000 S Colorado Blvd.",Denver,CO,80211)` if the option is disabled.
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      todos_by_city:
+        query: SELECT * FROM todos WHERE json_extract(location, '$.city') = subscription.parameter('city')
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    Custom type columns are converted to text by the PowerSync Service.
+    Depending on whether the `custom_postgres_types` [compatibility option](/sync/advanced/compatibility) is enabled,
+    PowerSync would sync the row as:
 
-You can use regular string and JSON manipulation functions in Sync Rules. This means that individual values of the type
-can be synced with `json_extract` if the `custom_postgres_types` compatibility option is enabled.
-Without the option, the entire column must be synced as text.
+    - `{"street":"1000 S Colorado Blvd.","city":"Denver","state":"CO","zip":80211}` if the option is enabled.
+    - `("1000 S Colorado Blvd.",Denver,CO,80211)` if the option is disabled.
+
+    You can use regular string and JSON manipulation functions in Sync Rules. This means that individual values of the type
+    can be synced with `json_extract` if the `custom_postgres_types` compatibility option is enabled.
+    Without the option, the entire column must be synced as text.
+  </Tab>
+</Tabs>
 
 ### Client SDK
 

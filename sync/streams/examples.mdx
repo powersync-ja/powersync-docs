@@ -22,12 +22,21 @@ streams:
   # Tasks for a specific project (sync on-demand)
   project_tasks:
     query: |
-      SELECT * FROM tasks 
+      SELECT * FROM tasks
       WHERE project_id = subscription.parameter('project_id')
         AND project_id IN (SELECT id FROM projects WHERE org_id = auth.parameter('org_id'))
 ```
 
-The `org_projects` stream syncs automatically on connect, giving users immediate access to their project list. The `project_tasks` stream loads on-demand when the user opens a specific project, and the subquery ensures they can only access tasks from projects in their organization.
+Your backend should include the `org_id` in the JWT payload when issuing tokens — e.g. `{ "sub": "user-123", "org_id": "org-456" }`. Clients auto-subscribe to `org_projects` when they connect, so the project list is available offline immediately. Subscribe to `project_tasks` when the user opens a project:
+
+```js
+// When the user opens a project view
+const sub = await db.syncStream('project_tasks', { project_id: projectId }).subscribe();
+await sub.waitForFirstSync();
+
+// Unsubscribe when the user navigates away
+sub.unsubscribe();
+```
 
 For more complex organization structures where users can belong to multiple organizations, see [Expanding JSON Arrays](/sync/streams/parameters#expanding-json-arrays).
 
@@ -40,17 +49,17 @@ streams:
   # Admins see all articles, others see only published or their own
   articles:
     query: |
-      SELECT * FROM articles 
+      SELECT * FROM articles
       WHERE org_id = auth.parameter('org_id')
         AND (
-          status = 'published' 
+          status = 'published'
           OR author_id = auth.user_id()
           OR auth.parameter('role') = 'admin'
         )
     auto_subscribe: true
 ```
 
-This query syncs articles that match any of three conditions: the article is published (visible to everyone), the user is the author (can see their own drafts), or the user is an admin (can see everything). The `role` claim comes from the JWT, so users can't escalate their own privileges.
+Your backend should include both `org_id` and `role` in the JWT — e.g. `{ "sub": "user-123", "org_id": "org-456", "role": "admin" }`. The `role` claim is set by your backend so users can't escalate their own privileges. In this example, Clients auto-subscribe to `articles` when they connect — no client-side subscription call needed.
 
 ### Shared Resources
 
@@ -60,40 +69,42 @@ For apps where users can share items with each other (like documents or folders)
 streams:
   my_documents:
     query: |
-      SELECT * FROM documents 
+      SELECT * FROM documents
       WHERE owner_id = auth.user_id()
          OR id IN (SELECT document_id FROM document_shares WHERE shared_with = auth.user_id())
     auto_subscribe: true
 ```
 
-The `OR` clause checks two conditions: either the user owns the document, or the document appears in the `document_shares` table with the user as the recipient. Both sets of documents sync together in one stream.
+Clients auto-subscribe to `my_documents` when they connect, so the user's documents (owned and shared) are available immediately.
 
 ### Syncing Related Data
 
-When a detail view needs data from multiple tables (like an issue and its comments), create separate streams that use the same subscription parameter. This lets you subscribe to all related data at once when the user opens the view.
+When a detail view needs data from multiple tables (like an issue and its comments), use a [CTE](/sync/streams/ctes) to define the authorization check once and reference it across streams. This avoids repeating the same subquery in every stream.
 
 ```yaml
+with:
+  my_projects:
+    SELECT project_id FROM project_members WHERE user_id = auth.user_id()
+
 streams:
   issue:
     query: |
-      SELECT * FROM issues 
+      SELECT * FROM issues
       WHERE id = subscription.parameter('issue_id')
-        AND project_id IN (SELECT project_id FROM project_members WHERE user_id = auth.user_id())
+        AND project_id IN my_projects
 
   issue_comments:
     query: |
-      SELECT * FROM comments 
-      WHERE issue_id = subscription.parameter('issue_id')
-        AND issue_id IN (
-          SELECT id FROM issues WHERE project_id IN (
-            SELECT project_id FROM project_members WHERE user_id = auth.user_id()
-          )
-        )
+      SELECT c.* FROM comments c
+        INNER JOIN issues i ON c.issue_id = i.id
+      WHERE c.issue_id = subscription.parameter('issue_id')
+        AND i.project_id IN my_projects
 ```
 
-Both streams filter by `issue_id` and include authorization checks to ensure the user has access. Subscribe to both when the user opens an issue:
+Subscribe to both streams when the user opens an issue:
 
 ```js
+// When the user opens an issue view
 const issueSub = await db.syncStream('issue', { issue_id: issueId }).subscribe();
 const commentsSub = await db.syncStream('issue_comments', { issue_id: issueId }).subscribe();
 
@@ -101,6 +112,10 @@ await Promise.all([
   issueSub.waitForFirstSync(),
   commentsSub.waitForFirstSync()
 ]);
+
+// Unsubscribe when the user navigates away
+issueSub.unsubscribe();
+commentsSub.unsubscribe();
 ```
 
 <Tip>
@@ -116,14 +131,14 @@ streams:
   # Sync todos from the user's primary list
   primary_list_todos:
     query: |
-      SELECT * FROM todos 
+      SELECT * FROM todos
       WHERE list_id IN (
         SELECT primary_list_id FROM users WHERE id = auth.user_id()
       )
     auto_subscribe: true
 ```
 
-The subquery looks up the user's `primary_list_id` from the `users` table, then syncs all `todos` from that list. When the user changes their primary list in the database, the synced data updates automatically.
+The subquery looks up the user's `primary_list_id` from the `users` table, then syncs all `todos` from that list. When the user changes their primary list in the database, the synced data updates automatically. Clients auto-subscribe to `primary_list_todos` when they connect — no client-side subscription call needed.
 
 ### Hierarchical Data
 
@@ -143,7 +158,7 @@ User membership
 streams:
   org_tasks:
     query: |
-      SELECT * FROM tasks 
+      SELECT * FROM tasks
       WHERE project_id IN (
         SELECT id FROM projects WHERE org_id IN (
           SELECT org_id FROM org_members WHERE user_id = auth.user_id()
@@ -161,17 +176,17 @@ streams:
   org_tasks:
     query: |
       SELECT t.* FROM tasks t
-        JOIN projects p ON t.project_id = p.id
-        JOIN org_members om ON p.org_id = om.org_id
+        INNER JOIN projects p ON t.project_id = p.id
+        INNER JOIN org_members om ON p.org_id = om.org_id
       WHERE om.user_id = auth.user_id()
     auto_subscribe: true
 ```
 
-Both queries produce the same result. PowerSync handles these nested relationships efficiently, so you don't need to denormalize your database or add redundant foreign keys.
+Both queries produce the same result. PowerSync handles these nested relationships efficiently, so you don't need to denormalize your database or add redundant foreign keys. Clients auto-subscribe to `org_tasks` when they connect — no client-side subscription call needed.
 
 ### Many-to-Many Relationships
 
-Many-to-many relationships (like users subscribing to boards) typically use a join table. Sync Streams support JOINs, so you can traverse these relationships directly without denormalizing your schema.
+Many-to-many relationships (like users subscribing to boards) typically use a join table. Sync Streams support `INNER JOIN`s, so you can traverse these relationships directly without denormalizing your schema.
 
 Consider a social app where users subscribe to message boards:
 
@@ -185,7 +200,7 @@ streams:
   board_posts:
     query: |
       SELECT p.* FROM posts p
-        JOIN board_subscriptions bs ON p.board_id = bs.board_id
+        INNER JOIN board_subscriptions bs ON p.board_id = bs.board_id
       WHERE bs.user_id = auth.user_id()
     auto_subscribe: true
 
@@ -193,22 +208,23 @@ streams:
   board_comments:
     query: |
       SELECT c.* FROM comments c
-        JOIN posts p ON c.post_id = p.id
-        JOIN board_subscriptions bs ON p.board_id = bs.board_id
+        INNER JOIN posts p ON c.post_id = p.id
+        INNER JOIN board_subscriptions bs ON p.board_id = bs.board_id
       WHERE bs.user_id = auth.user_id()
     auto_subscribe: true
 
-  # User profiles for board subscribers
+  # User profiles for co-subscribers (people who share a board with me)
   board_users:
     query: |
       SELECT u.* FROM users u
-        JOIN board_subscriptions bs ON u.id = bs.user_id
-        JOIN board_subscriptions my_boards ON bs.board_id = my_boards.board_id
-      WHERE my_boards.user_id = auth.user_id()
+        INNER JOIN board_subscriptions bs ON u.id = bs.user_id
+      WHERE bs.board_id IN (
+        SELECT board_id FROM board_subscriptions WHERE user_id = auth.user_id()
+      )
     auto_subscribe: true
 ```
 
-Each query joins through the `board_subscriptions` table to find relevant data. The `board_comments` query chains two joins (comments → posts → subscriptions), and the `board_users` query finds other users who subscribe to the same boards.
+Clients auto-subscribe to all three streams when they connect. Each query joins through `board_subscriptions` to find relevant data: posts in the user's boards, comments on those posts, and other users sharing those boards.
 
 Unlike with legacy [Sync Rules](/sync/rules/many-to-many-join-tables), you don't need to denormalize your schema or maintain array columns to handle these relationships.
 
@@ -233,23 +249,26 @@ streams:
   # Loaded on demand - only sync todos for the list being viewed
   list_todos:
     query: |
-      SELECT * FROM todos 
+      SELECT * FROM todos
       WHERE list_id = subscription.parameter('list_id')
         AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
 ```
 
-Client usage:
+Clients auto-subscribe to `lists` when they connect. Subscribe to `list_todos` when the user opens a list:
 
 ```js
 // Lists are already synced (auto_subscribe: true)
 const lists = await db.getAll('SELECT * FROM lists');
 
-// When user opens a list, subscribe to its todos
+// When user opens a list
 const sub = await db.syncStream('list_todos', { list_id: selectedListId }).subscribe();
 await sub.waitForFirstSync();
 
 // Todos are now available locally
 const todos = await db.getAll('SELECT * FROM todos WHERE list_id = ?', [selectedListId]);
+
+// Unsubscribe when user navigates back to the list overview
+sub.unsubscribe();
 ```
 
 ### Chat Application
@@ -264,21 +283,35 @@ streams:
   # User's conversations - always show the conversation list
   my_conversations:
     query: |
-      SELECT * FROM conversations 
+      SELECT * FROM conversations
       WHERE id IN (SELECT conversation_id FROM participants WHERE user_id = auth.user_id())
     auto_subscribe: true
 
   # Messages - only load for the active conversation
   conversation_messages:
     query: |
-      SELECT * FROM messages 
+      SELECT * FROM messages
       WHERE conversation_id = subscription.parameter('conversation_id')
         AND conversation_id IN (
           SELECT conversation_id FROM participants WHERE user_id = auth.user_id()
         )
 ```
 
-The `my_conversations` stream finds conversations through the `participants` join table. The `conversation_messages` stream requires both a subscription parameter (which conversation to load) and an authorization check (user must be a participant).
+Clients auto-subscribe to `my_conversations` when they connect. Subscribe to `conversation_messages` when the user opens a conversation:
+
+```js
+// Conversations are already synced (auto_subscribe: true)
+const conversations = await db.getAll('SELECT * FROM conversations');
+
+// When user opens a conversation
+const sub = await db.syncStream('conversation_messages', {
+  conversation_id: conversationId
+}).subscribe();
+await sub.waitForFirstSync();
+
+// Unsubscribe when user closes the conversation
+sub.unsubscribe();
+```
 
 ### Project Management App
 
@@ -291,7 +324,7 @@ config:
 with:
   # CTE for user's accessible projects
   user_projects: |
-    SELECT id FROM projects 
+    SELECT id FROM projects
     WHERE org_id = auth.parameter('org_id')
       AND (is_public = true OR id IN (
         SELECT project_id FROM project_members WHERE user_id = auth.user_id()
@@ -311,18 +344,34 @@ streams:
   # Project details - on demand when user opens a project
   project_tasks:
     query: |
-      SELECT * FROM tasks 
+      SELECT * FROM tasks
       WHERE project_id = subscription.parameter('project_id')
         AND project_id IN user_projects
 
   project_files:
     query: |
-      SELECT * FROM files 
+      SELECT * FROM files
       WHERE project_id = subscription.parameter('project_id')
         AND project_id IN user_projects
 ```
 
-The `user_projects` CTE combines two access rules: public projects in the org, and projects where the user is a member. The auto-subscribed streams sync navigation data immediately, while task and file details load when the user opens a specific project.
+Your backend should include `org_id` in the JWT — e.g. `{ "sub": "user-123", "org_id": "org-456" }`. Clients auto-subscribe to `org_info` and `projects` when they connect. Subscribe to project details when the user opens a project:
+
+```js
+// org_info and projects are already synced (auto_subscribe: true)
+const projects = await db.getAll('SELECT * FROM projects');
+
+// When user opens a project
+const [tasksSub, filesSub] = await Promise.all([
+  db.syncStream('project_tasks', { project_id: projectId }).subscribe(),
+  db.syncStream('project_files', { project_id: projectId }).subscribe(),
+]);
+await Promise.all([tasksSub.waitForFirstSync(), filesSub.waitForFirstSync()]);
+
+// Unsubscribe when user navigates away
+tasksSub.unsubscribe();
+filesSub.unsubscribe();
+```
 
 ### Organization Workspace (Using Multiple Queries)
 
@@ -354,7 +403,21 @@ streams:
       - SELECT * FROM comments WHERE project_id = subscription.parameter('project_id') AND project_id IN accessible_projects
 ```
 
-The `org_data` stream combines three queries that all filter by the user's organizations. They sync together as one unit. The `project_details` stream uses a [stream-scoped CTE](/sync/streams/ctes#stream-scoped-ctes) and groups tasks, files, and comments for a specific project into a single subscription.
+The `user_orgs` CTE looks up org membership from the database using `auth.user_id()`. Clients auto-subscribe to `org_data` when they connect. Subscribe to `project_details` when the user opens a project:
+
+```js
+// org_data is already synced (auto_subscribe: true)
+const projects = await db.getAll('SELECT * FROM projects');
+
+// When user opens a project
+const sub = await db.syncStream('project_details', { project_id: projectId }).subscribe();
+await sub.waitForFirstSync();
+
+// Unsubscribe when user navigates away
+sub.unsubscribe();
+```
+
+The `project_details` stream uses a [stream-scoped CTE](/sync/streams/ctes#stream-scoped-ctes) and groups tasks, files, and comments for a specific project into a single subscription.
 
 ## Demo Apps
 
@@ -380,10 +443,13 @@ config:
 
 streams:
   lists:
-    query: SELECT * FROM lists
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
     auto_subscribe: true
   todos:
-    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list')
+    query: |
+      SELECT * FROM todos
+      WHERE list_id = subscription.parameter('list')
+        AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
 ```
 
 In this demo:

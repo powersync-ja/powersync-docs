@@ -34,7 +34,7 @@ Upon successful integration of Neon + PowerSync, your system architecture will l
   <img src="/images/integration-guides/neon/powersync-docs-diagram-neon-integration.png"/>
 </Frame>
 
-The local SQLite database embedded in the PowerSync SDK is automatically kept in sync with the Neon Postgres database (based on configured Sync Rules as you will see later in this guide). Client-side data modifications are persisted in the local SQLite database as well as stored in an upload queue that gets processed via the Neon Data API when network connectivity is available. Therefore reads and writes can happen in the app regardless of whether the user is online or offline, by using the local SQLite database.
+The local SQLite database embedded in the PowerSync SDK is automatically kept in sync with the Neon Postgres database (based on your Sync Streams as you will see later in this guide). Client-side data modifications are persisted in the local SQLite database as well as stored in an upload queue that gets processed via the Neon Data API when network connectivity is available. Therefore reads and writes can happen in the app regardless of whether the user is online or offline, by using the local SQLite database.
 
 <Info>
   For more details on PowerSync's general architecture, [see here](/architecture/architecture-overview).
@@ -53,7 +53,7 @@ We will follow these steps to get an offline-first 'Notes' demo app up and runni
   <Step title="Configure PowerSync:">
     * Create connection to Neon
     * Configure authentication
-    * Configure Sync Rules
+    * Configure Sync Streams
   </Step>
   <Step title="Test the configuration">
     Test the configuration using our provided PowerSync-Neon 'Notes' demo app.
@@ -135,38 +135,65 @@ PowerSync uses logical replication to sync data from your Neon database.
 ### Connect PowerSync to Your Neon Database
 <NeonConnection />
 
-### Configure Sync Rules
+### Configure Sync Streams
 
-[Sync Rules](/sync/rules/overview) allow developers to control which data gets synced to which user devices using a SQL-like syntax in a YAML file. For the demo app, we're going to specify that each user can only see their own notes (plus any shared notes).
+[Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) allow developers to control which data gets synced to which user devices using a SQL-like syntax in a YAML file. For the demo app, we're going to specify that each user can only see their own notes (plus any shared notes).
 
-1. In the PowerSync Dashboard, select your project and instance and go to the **Sync Rules** view.
+1. In the PowerSync Dashboard, select your project and instance and go to the **Sync Streams** view (shown as **Sync Rules** if using legacy Sync Rules).
 
-2. Edit the Sync Rules in the editor and replace the contents with the below:
+2. Edit the sync config in the editor and replace the contents with the below:
 
-```yaml
-config:
-  edition: 2
+<Tabs>
+  <Tab title="Sync Streams (Recommended)">
+    ```yaml
+    config:
+      edition: 3
 
-bucket_definitions:
-  by_user:
-    # Only sync rows belonging to the user
-    parameters: SELECT id as note_id FROM notes WHERE owner_id = request.user_id()
-    data:
-      - SELECT * FROM notes WHERE id = bucket.note_id
-      - SELECT * FROM paragraphs WHERE note_id = bucket.note_id
-  # Sync all shared notes to all users (not recommended for production)
-  shared_notes:
-    parameters: SELECT id as note_id from notes where shared = TRUE
-    data:
-      - SELECT * FROM notes WHERE id = bucket.note_id
-      - SELECT * FROM paragraphs WHERE note_id = bucket.note_id
-```
+    streams:
+      user_notes:
+        # Sync notes and paragraphs belonging to the authenticated user
+        queries:
+          - SELECT * FROM notes WHERE owner_id = auth.user_id()
+          - SELECT p.* FROM paragraphs p
+              INNER JOIN notes n ON n.id = p.note_id
+              WHERE n.owner_id = auth.user_id()
+      shared_notes:
+        # Sync all shared notes to all users (not recommended for production)
+        queries:
+          - SELECT * FROM notes WHERE shared = TRUE
+          - SELECT p.* FROM paragraphs p
+              INNER JOIN notes n ON n.id = p.note_id
+              WHERE n.shared = TRUE
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    config:
+      edition: 2
 
-3. Click **"Validate"** and ensure there are no errors. This validates your Sync Rules against your Postgres database.
-4. Click **"Deploy"** to deploy your Sync Rules.
+    bucket_definitions:
+      by_user:
+        # Only sync rows belonging to the user
+        parameters: SELECT id as note_id FROM notes WHERE owner_id = request.user_id()
+        data:
+          - SELECT * FROM notes WHERE id = bucket.note_id
+          - SELECT * FROM paragraphs WHERE note_id = bucket.note_id
+      # Sync all shared notes to all users (not recommended for production)
+      shared_notes:
+        parameters: SELECT id as note_id from notes where shared = TRUE
+        data:
+          - SELECT * FROM notes WHERE id = bucket.note_id
+          - SELECT * FROM paragraphs WHERE note_id = bucket.note_id
+    ```
+  </Tab>
+</Tabs>
+
+3. Click **"Validate"** and ensure there are no errors. This validates your sync config against your Postgres database.
+4. Click **"Deploy"** to deploy your sync config.
 
 <Tip>
-For additional information on PowerSync's Sync Rules, refer to the [Sync Rules](/sync/rules/overview) documentation.
+- For additional information on PowerSync's Sync Streams, refer to the [Sync Streams](/sync/streams/overview) documentation.
+- For legacy Sync Rules, refer to the [Sync Rules](/sync/rules/overview) documentation.
 </Tip>
 
 ## Test Everything (Using Our Demo App)

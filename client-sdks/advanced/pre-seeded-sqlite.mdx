@@ -20,20 +20,36 @@ If you're interested in seeing an end-to-end example, we've prepared a demo repo
 # Main Concepts
 
 ## Generate a scoped JWT token
-In most cases you'd want to pre-seed the SQLite database with user specific data and not all data from the source database, as you normally would when using PowerSync. For this you would need to generate a JWT tokens that include the necessary properties to satisfy the conditions of the parameter queries in your Sync Rules. 
+In most cases you'd want to pre-seed the SQLite database with user specific data and not all data from the source database, as you normally would when using PowerSync. For this you would need to generate JWT tokens that include the necessary properties to satisfy the conditions of the queries in your Sync Streams (or legacy Sync Rules).
 
-Let's say we have Sync Rules that look like this:
-```yaml
-sync_config:
-  content: |
-    bucket_definitions:
-      store_products:
-        parameters: SELECT id as store_id FROM stores WHERE id = request.jwt() ->> 'store_id'
-        data:
-          - SELECT * FROM products WHERE store_id = bucket.store_id
-```
+Let's say we have the following sync config:
 
-In the example above the `store_id` is part of the JWT payload and is used in a parameter query to filter products by store for a user. Given this we would want to do the following:
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    sync_config:
+      content: |
+        config:
+          edition: 3
+        streams:
+          store_products:
+            query: SELECT * FROM products WHERE store_id = auth.parameter('store_id')
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    sync_config:
+      content: |
+        bucket_definitions:
+          store_products:
+            parameters: SELECT id as store_id FROM stores WHERE id = request.jwt() ->> 'store_id'
+            data:
+              - SELECT * FROM products WHERE store_id = bucket.store_id
+    ```
+  </Tab>
+</Tabs>
+
+In the example above the `store_id` is part of the JWT payload and is used to filter products by store for a user. Given this we would want to do the following:
 1. Query the source database, directly from the Node.js application, for all the store ids you'd want a pre-seeded SQLite database for. 
 2. Generate a JWT token for each store and include the `store_id` in the payload.
 3. In the Node.js application which implements the PowerSync SDK, return the JWT token in the `fetchCredentials()` function.

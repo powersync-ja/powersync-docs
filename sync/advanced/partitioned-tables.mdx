@@ -3,25 +3,52 @@ title: "Partitioned Tables (Postgres)"
 description: "Partitioned tables and wildcard table name matching"
 ---
 
-For partitioned tables in Postgres, each individual partition is replicated and processed using Sync Rules.
+For partitioned tables in Postgres, each individual partition is replicated and processed using [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)).
 
 To use the same queries and same output table name for each partition, use `%` for wildcard suffix matching of the table name:
-```yaml
-  by_user:
-    # Use wildcard in a parameter query
-    parameters: SELECT id AS user_id FROM "users_%"
-    data:
-      # Use wildcard in a data query
-      - SELECT * FROM "todos_%" AS todos WHERE user_id = bucket.user_id
-```
+
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    streams:
+      user_todos:
+        queries:
+          # Wildcard matches all user partition tables (e.g. users_2024, users_2025)
+          - SELECT * FROM "users_%" WHERE id = auth.user_id()
+          # Wildcard matches all todo partition tables (e.g. todos_2024, todos_2025)
+          - SELECT * FROM "todos_%" AS todos WHERE user_id = auth.user_id()
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+      by_user:
+        # Use wildcard in a parameter query
+        parameters: SELECT id AS user_id FROM "users_%"
+        data:
+          # Use wildcard in a data query
+          - SELECT * FROM "todos_%" AS todos WHERE user_id = bucket.user_id
+    ```
+  </Tab>
+</Tabs>
 
 The wildcard character can only be used as the last character in the table name.
 
-When using wildcard table names, the original table suffix is available in the special `_table_suffix` column:
+When using wildcard table names, the original table suffix is available in the special `_table_suffix` column. This works the same way in both Sync Streams and Sync Rules:
 
-```sql
-SELECT * FROM "todos_%" AS todos WHERE _table_suffix != 'archived'
-```
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    streams:
+      active_todos:
+        query: SELECT * FROM "todos_%" AS todos WHERE _table_suffix != 'archived'
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```sql
+    SELECT * FROM "todos_%" AS todos WHERE _table_suffix != 'archived'
+    ```
+  </Tab>
+</Tabs>
 
 When no table alias is provided, the original table name is preserved.
 

@@ -28,8 +28,8 @@ Before we get started, let's outline the changes we will have to make:
         Add two triggers that will map the UUID to the integer ID and vice versa.
     </Step>
 
-    <Step title={"Update Sync Rules"}>
-        Update the Sync Rules to use the new integer ID instead of the UUID column.
+    <Step title={"Update Sync Streams"}>
+        Update your Sync Streams (or legacy Sync Rules) to use the UUID column instead of the integer ID.
     </Step>
 
     <Step title={"Update client to use UUIDs."}>
@@ -183,30 +183,46 @@ We will create the following two triggers that cover either scenario of updating
 </AccordionGroup>
 
 We now have triggers in place that will handle the mapping for our updated schema and
-can move on to updating the Sync Rules to use the UUID column instead of the integer ID.
+can move on to updating your Sync Streams (or legacy Sync Rules) to use the UUID column instead of the integer ID.
 
-## Update Sync Rules
+## Update Sync Streams
 
-As sequential IDs can only be created on the backend source database, we need to use UUIDs in the client. This can be done by updating both the `parameters` and `data` queries to use the new `uuid` columns.
-The `parameters` query is updated by removing the `list_id` alias (this is removed to avoid any confusion between the `list_id` column in the `todos` table), and
-the `data` query is updated to use the `uuid` column as the `id` column for the `lists` and `todos` tables. We also explicitly define which columns to select, as `list_id` is no longer required in the client.
+As sequential IDs can only be created on the backend source database, we need to use UUIDs in the client. The sync config is updated to use the `uuid` column as the `id` column for the `lists` and `todos` tables, explicitly defining which columns to select so that `list_id` (the integer ID) is no longer exposed to the client.
 
-```yaml sync_config.yaml {4, 7-8}
-bucket_definitions:
-  user_lists:
-    # Separate bucket per todo list
-    parameters: select id from lists where owner_id = request.user_id()
-    data:
-    # Explicitly define all the columns
-      - select uuid as id, created_at, name, owner_id from lists where id = bucket.id
-      - select uuid as id, created_at, completed_at, description, completed, created_by, list_uuid from todos where list_id = bucket.id
-```
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      user_lists:
+        auto_subscribe: true
+        with:
+          user_lists_param: SELECT id FROM lists WHERE owner_id = auth.user_id()
+        queries:
+          - "SELECT lists.uuid AS id, lists.created_at, lists.name, lists.owner_id FROM lists,user_lists_param AS bucket WHERE lists.id = bucket.id"
+          - "SELECT todos.uuid AS id, todos.created_at, todos.completed_at, todos.description, todos.completed, todos.created_by, todos.list_uuid FROM todos,user_lists_param AS bucket WHERE todos.list_id = bucket.id"
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml sync_config.yaml {4, 7-8}
+    bucket_definitions:
+      user_lists:
+        # Separate bucket per todo list
+        parameters: select id from lists where owner_id = request.user_id()
+        data:
+        # Explicitly define all the columns
+          - select uuid as id, created_at, name, owner_id from lists where id = bucket.id
+          - select uuid as id, created_at, completed_at, description, completed, created_by, list_uuid from todos where list_id = bucket.id
+    ```
+  </Tab>
+</Tabs>
 
-With the Sync Rules updated, we can now move on to updating the client to use UUIDs.
+We can now move on to updating the client to use UUIDs.
 
 ## Update Client to Use UUIDs
 
-With our Sync Rules updated, we no longer have the `list_id` column in the `todos` table.
+With Sync Streams updated, we no longer have the `list_id` column in the `todos` table.
 We start by updating `AppSchema.ts` and replacing `list_id` with `list_uuid` in the `todos` table.
 ```typescript AppSchema.ts {3, 11}
 const todos = new Table(

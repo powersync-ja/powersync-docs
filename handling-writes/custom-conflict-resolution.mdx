@@ -36,7 +36,7 @@ When data changes on the server:
 
 1. **Source database updates** - Direct writes or changes from other clients
 2. **PowerSync Service detects changes** - Through replication stream
-3. **Clients download updates** - Based on their Sync Rules
+3. **Clients download updates** - Based on their Sync Streams (or legacy Sync Rules)
 4. **Local SQLite updates** - Changes merge into the client's database
 
 **Conflicts arise when**: Multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
@@ -507,17 +507,32 @@ CREATE TABLE write_conflicts (
 
 ### Step 2: Sync Conflicts to Clients
 
-**Sync Rules configuration:**
+**Sync Streams / Sync Rules configuration:**
 
-```yaml
-bucket_definitions:
-  user_data:
-    parameters:
-      - SELECT request.user_id() as user_id
-    data:
-      - SELECT * FROM tasks WHERE user_id = bucket.user_id
-      - SELECT * FROM write_conflicts WHERE user_id = bucket.user_id AND resolved = FALSE
-```
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      user_data:
+        queries:
+          - SELECT * FROM tasks WHERE user_id = auth.user_id()
+          - SELECT * FROM write_conflicts WHERE user_id = auth.user_id() AND resolved = FALSE
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    bucket_definitions:
+      user_data:
+        parameters:
+          - SELECT request.user_id() as user_id
+        data:
+          - SELECT * FROM tasks WHERE user_id = bucket.user_id
+          - SELECT * FROM write_conflicts WHERE user_id = bucket.user_id AND resolved = FALSE
+    ```
+  </Tab>
+</Tabs>
 
 ### Step 3: Record Conflicts in Backend
 

@@ -3,27 +3,46 @@ title: "Multiple Client Versions"
 description: "In some cases, different client versions may need different output schemas."
 ---
 
-When schema changes are additive, old clients would just ignore the new tables and columns, and no special handling is required. However, in some cases, the schema changes may be more drastic and may need separate Sync Rules based on the client version.
+When schema changes are additive, old clients would just ignore the new tables and columns, and no special handling is required. However, in some cases, the schema changes may be more drastic and may need separate Sync Streams (or Sync Rules) based on the client version.
 
-To distinguish between client versions, we can pass in an additional[ client parameter](/sync/rules/client-parameters) from the client to the PowerSync Service instance. These parameters could be used to implement different logic based on the client version.
+To distinguish between client versions, clients can pass version information to the PowerSync Service. In [Sync Streams](/sync/streams/overview), these are called connection parameters (accessed via `connection.parameter()`). In legacy [Sync Rules](/sync/rules/overview), these are called [client parameters](/sync/rules/client-parameters).
 
 Example to use different table names based on the client's `schema_version`:
 
-```yaml
-# Client passes in: "params": {"schema_version": <version>}
-  assets_v1:
-    parameters: SELECT request.user_id() AS user_id
-      WHERE request.parameters() ->> 'schema_version' = '1'
-    data:
-      - SELECT * FROM assets AS assets_v1 WHERE user_id = bucket.user_id
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    # Client passes connection params: {"schema_version": <version>}
+    streams:
+      assets_v1:
+        query: SELECT * FROM assets AS assets_v1
+               WHERE user_id = auth.user_id()
+               AND connection.parameter('schema_version') = '1'
 
-  assets_v2:
-    parameters: SELECT request.user_id() AS user_id
-      WHERE request.parameters() ->> 'schema_version' = '2'
-    data:
-      - SELECT * FROM assets AS assets_v2 WHERE user_id = bucket.user_id
-```
+      assets_v2:
+        query: SELECT * FROM assets AS assets_v2
+               WHERE user_id = auth.user_id()
+               AND connection.parameter('schema_version') = '2'
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    # Client passes in: "params": {"schema_version": <version>}
+      assets_v1:
+        parameters: SELECT request.user_id() AS user_id
+          WHERE request.parameters() ->> 'schema_version' = '1'
+        data:
+          - SELECT * FROM assets AS assets_v1 WHERE user_id = bucket.user_id
+
+      assets_v2:
+        parameters: SELECT request.user_id() AS user_id
+          WHERE request.parameters() ->> 'schema_version' = '2'
+        data:
+          - SELECT * FROM assets AS assets_v2 WHERE user_id = bucket.user_id
+    ```
+  </Tab>
+</Tabs>
 
 <Warning>
-  Handle queries based on parameters set by the client with care. The client can send any value for these parameters, so it's not a good place to do authorization. If the parameter must be authenticated, use parameters from the JWT instead. Read more: [Security consideration](/sync/rules/client-parameters#security-consideration)
+  Handle queries based on parameters set by the client with care. The client can send any value for these parameters, so it's not a good place to do authorization. If the parameter must be authenticated, use parameters from the JWT instead.
 </Warning>

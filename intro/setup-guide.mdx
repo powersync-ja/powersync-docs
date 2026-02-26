@@ -1,7 +1,7 @@
 ---
 title: "PowerSync Setup Guide"
 sidebarTitle: "Setup Guide"
-description: "This guide walks you through adding PowerSync to your app project step-by-step. "
+description: "This guide walks you through adding PowerSync to your app project step-by-step."
 ---
 
 import LocalOnly from '/snippets/local-only-escape.mdx';
@@ -19,6 +19,10 @@ import DevTokenSelfHostedSteps from '/snippets/dev-token-self-hosted-steps.mdx';
 # 1. Configure Your Source Database
 
 PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or SQL Server) to replicate data. Before setting up PowerSync, you need to configure your database with the appropriate permissions and replication settings.
+
+<Tip>
+Using the [PowerSync CLI](/tools/cli) and want a managed Postgres instance? You can skip to [Step 2](#2-set-up-powersync-service-instance) and set one up automatically with the **CLI (Self-Hosted)** tab.
+</Tip>
 
 <Tabs>
       <Tab title="Postgres">
@@ -176,98 +180,163 @@ PowerSync needs to connect to your source database (Postgres, MongoDB, MySQL or 
 PowerSync is available as a cloud-hosted service (PowerSync Cloud) or can be self-hosted (PowerSync Open Edition or PowerSync Enterprise Self-Hosted Edition).
 
 <Tabs>
-      <Tab title="PowerSync Cloud">
-        If you haven't yet, sign up for a free PowerSync Cloud account [here](https://accounts.powersync.com/portal/powersync-signup?s=docs).
+  <Tab title="Dashboard (Cloud)">
+    If you haven't yet, sign up for a free PowerSync Cloud account [here](https://accounts.powersync.com/portal/powersync-signup?s=docs).
 
-        After signing up, you will be taken to the [PowerSync Dashboard](https://dashboard.powersync.com/). 
-        
-        Here, create a new project. _Development_ and _Production_ instances of the PowerSync Service will be created by default in the project. 
-      </Tab>
+    After signing up, you will be taken to the [PowerSync Dashboard](https://dashboard.powersync.com/).
 
-      <Tab title="Self-Hosted">
-        Self-hosted PowerSync runs via Docker. 
-        
-        Below is a minimal example of setting up the PowerSync Service with Postgres as the bucket storage database and example Sync Rules. MongoDB is also supported as a bucket storage database (docs are linked at the end of this step), and you will learn more about Sync Rules in a next step.
+    Here, create a new project. _Development_ and _Production_ instances of the PowerSync Service will be created by default in the project.
+  </Tab>
 
-        ```bash
-        # 1. Create a directory for your config
-        mkdir powersync-service && cd powersync-service
+  <Tab title="CLI (Cloud)">
+    If you haven't yet, sign up for a free PowerSync Cloud account [here](https://accounts.powersync.com/portal/powersync-signup?s=docs).
 
-        # 2. Set up bucket storage (Postgres and MongoDB are supported)
-        docker run -d \
-          --name powersync-postgres-storage \
-          --network powersync-network \
-          -p 5433:5432 \
-          -e POSTGRES_PASSWORD="my_secure_storage_password" \
-          -e POSTGRES_DB=powersync_storage \
-          postgres:18
+    Install the [PowerSync CLI](/tools/cli) (requires Node.js/npm), then log in and scaffold the config directory:
 
-        ## Set up Postgres storage user
-        docker exec -it powersync-postgres-storage psql -U postgres -d powersync_storage -c "
-        CREATE USER powersync_storage_user WITH PASSWORD 'my_secure_user_password';
-        GRANT CREATE ON DATABASE powersync_storage TO powersync_storage_user;"
+    ```bash
+    npm install -g powersync
+    powersync login
+    powersync init cloud
+    ```
 
-        # 3. Create config.yaml (see below)
+    This creates a `powersync/` directory with `service.yaml` (instance name, region, connection, auth) and `sync-config.yaml` (sync config). Edit `powersync/service.yaml` to set your instance name and region — you'll configure the database connection in the next step.
 
-        # 4. Run PowerSync Service
-        # The Service config can be specified as an environment variable (shown below), as a filepath, or as a command line parameter
-        # See these docs for more details: https://docs.powersync.com/configuration/powersync-service/self-hosted-instances
-        docker run -d \
-          --name powersync \
-          --network powersync-network \
-          -p 8080:8080 \
-          -e POWERSYNC_CONFIG_B64="$(base64 -i ./config.yaml)" \
-          journeyapps/powersync-service:latest
-        ```
+    Then create the Cloud instance:
 
-        **Basic `config.yaml` structure:**
+    ```bash
+    powersync link cloud --create --project-id=<project-id>
+    ```
 
-        ```yaml
-        # Source database connection (see the next step for more details)
-        replication:
-          connections:
-            - type: postgresql # or mongodb, mysql, mssql
-              uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres
-              sslmode: disable  # Only for local/private networks
+    Find your project ID in the [PowerSync Dashboard](https://dashboard.powersync.com) URL, or run `powersync fetch instances` after logging in.
+  </Tab>
 
-        # Connection settings for bucket storage (Postgres and MongoDB are supported)   
-        storage:   
-          type: postgresql
-          uri: postgresql://powersync_storage_user:my_secure_user_password@powersync-postgres-storage:5432/powersync_storage
-          sslmode: disable  # Use 'disable' only for local/private networks
+  <Tab title="CLI (Self-Hosted)">
+    Recommended for getting started: the CLI scaffolds your config directory and generates the Docker Compose stack (including a managed Postgres instance) so you can run PowerSync locally with minimal setup. For custom setups use the **Manual (Self-Hosted)** tab. Install the [PowerSync CLI](/tools/cli) (requires Node.js/npm), then run:
 
-        # Sync Rules (defined in a later step)
-        sync_rules:
-          content: |
-            bucket_definitions:
-              global:
-                data:
-                  - SELECT * FROM lists
-                  - SELECT * FROM todos
-        ```
+    ```bash
+    npm install -g powersync
+    powersync init self-hosted
+    powersync docker configure --database postgres --storage postgres
+    ```
 
-        <Warning>
-          **Note**: This example assumes you've configured your source database with the required user and publication (see the previous step) 
-          and are running it via Docker in the 'powersync-network' network. 
-          
-          If you are not using Docker, you will need to specify the connection details in the `config.yaml` file manually (see next step for more details).
-        </Warning>
+    Docker sets up Postgres for both the source database and bucket storage and creates `powersync/docker/docker-compose.yaml`. Other databases are supported as well, you will learn more about this in the next step. Before starting, replace `powersync/sync-config.yaml` with this minimal sync config:
 
-        <Tip>
-          **Learn More**
-          * [Self-Hosting Introduction](/intro/self-hosting)
-          * [Self-Host Demo App](https://github.com/powersync-ja/self-host-demo) for complete working examples.
-          * [Self-Hosted Service Configuration](/configuration/powersync-service/self-hosted-instances) for more details on the config file structure.
-        </Tip>
-      </Tab>
-    </Tabs>
+    ```yaml
+    config:
+      edition: 2
+
+    streams:
+      todos:
+        # Streams without parameters sync the same data to all users
+        auto_subscribe: true
+        query: "SELECT * FROM todos"
+    ```
+
+    You'll update this with your actual tables/collections in a later step.
+
+    Then start the PowerSync Service:
+
+    ```bash
+    powersync docker start
+    ```
+
+    Run `powersync status` to verify it's running.
+
+    <Tip>
+      **Learn More**
+      * [Self-Hosting Introduction](/intro/self-hosting)
+      * [Self-Host Demo App](https://github.com/powersync-ja/self-host-demo) for complete working examples.
+      * [Self-Hosted Service Configuration](/configuration/powersync-service/self-hosted-instances) for more details on the config file structure.
+      * [CLI documentation](/tools/cli)
+    </Tip>
+  </Tab>
+
+  <Tab title="Manual (Self-Hosted)">
+    Self-hosted PowerSync runs via Docker. The commands below illustrate the basic PowerSync Service requirements.
+
+    Below is a minimal example using Postgres for bucket storage. MongoDB is also supported as bucket storage. The source database connection is configured in the next step — you can use the Docker-managed Postgres from Step 1 or point to an external database instead.
+
+    ```bash
+    # 1. Create a directory for your config
+    mkdir powersync-service && cd powersync-service
+
+    # 2. Set up bucket storage (Postgres and MongoDB are supported)
+    docker run -d \
+      --name powersync-postgres-storage \
+      --network powersync-network \
+      -p 5433:5432 \
+      -e POSTGRES_PASSWORD="my_secure_storage_password" \
+      -e POSTGRES_DB=powersync_storage \
+      postgres:18
+
+    ## Set up Postgres storage user
+    docker exec -it powersync-postgres-storage psql -U postgres -d powersync_storage -c "
+    CREATE USER powersync_storage_user WITH PASSWORD 'my_secure_user_password';
+    GRANT CREATE ON DATABASE powersync_storage TO powersync_storage_user;"
+
+    # 3. Create config.yaml (see below)
+
+    # 4. Run PowerSync Service
+    # The Service config can be specified as an environment variable (shown below), as a filepath, or as a command line parameter
+    # See these docs for more details: https://docs.powersync.com/configuration/powersync-service/self-hosted-instances
+    docker run -d \
+      --name powersync \
+      --network powersync-network \
+      -p 8080:8080 \
+      -e POWERSYNC_CONFIG_B64="$(base64 -i ./config.yaml)" \
+      journeyapps/powersync-service:latest
+    ```
+
+    **Basic `config.yaml` structure:**
+
+    ```yaml
+    # Source database connection (see the next step for more details)
+    replication:
+      connections:
+        - type: postgresql # or mongodb, mysql, mssql
+          uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres
+          sslmode: disable  # Only for local/private networks
+
+    # Connection settings for bucket storage (Postgres and MongoDB are supported)
+    storage:
+      type: postgresql
+      uri: postgresql://powersync_storage_user:my_secure_user_password@powersync-postgres-storage:5432/powersync_storage
+      sslmode: disable  # Use 'disable' only for local/private networks
+
+    # Sync Rules (defined in a later step)
+    sync_rules:
+      content: |
+        bucket_definitions:
+          global:
+            data:
+              - SELECT * FROM lists
+              - SELECT * FROM todos
+    ```
+
+    <Warning>
+      **Note**: This example assumes you've configured your source database with the required user and publication (see the previous step)
+      and are running it via Docker in the 'powersync-network' network.
+
+      If you are not using Docker, you will need to specify the connection details in the `config.yaml` file manually (see next step for more details).
+    </Warning>
+
+    <Tip>
+      **Learn More**
+      * [Self-Hosting Introduction](/intro/self-hosting)
+      * [Self-Host Demo App](https://github.com/powersync-ja/self-host-demo) for complete working examples.
+      * [Self-Hosted Service Configuration](/configuration/powersync-service/self-hosted-instances) for more details on the config file structure.
+      * [CLI documentation](/tools/cli)
+    </Tip>
+
+  </Tab>
+</Tabs>
 
 # 3. Connect PowerSync to Your Source Database
 
 The next step is to connect your PowerSync Service instance to your source database.
 
 <Tabs>
-  <Tab title="PowerSync Cloud">
+  <Tab title="Dashboard (Cloud)">
     In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, then go to **Database Connections**:
 
     1. Click **Connect to Source Database**
@@ -287,13 +356,13 @@ The next step is to connect your PowerSync Service instance to your source datab
 
     <Tip>
       **Learn More**
-      
+
       For more details on database connections, including provider-specific connection details (Supabase, AWS RDS, MongoDB Atlas, etc.), see [Source Database Connection](/configuration/source-db/connection).
     </Tip>
   </Tab>
 
-  <Tab title="Self-Hosted">
-    For self-hosted setups, configure the source database connection in your `config.yaml` file (as you did in the previous step). Examples for the different database types are below.
+  <Tab title="CLI (Cloud)">
+    Edit `powersync/service.yaml` (created in the previous step) with your connection details. Use `!env` for secrets:
 
     <Note>
       **Note**: Use the username (e.g., `powersync_role`) and password you created in Step 1: Configure your Source Database.
@@ -302,9 +371,71 @@ The next step is to connect your PowerSync Service instance to your source datab
     <CodeGroup>
       ```yaml Postgres
       replication:
-          connections:
-            - type: postgresql # or mongodb, mysql, mssql
-              uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres # The connection URI or individual parameters can be specified.
+        connections:
+          - type: postgresql
+            uri: postgresql://powersync_role:myhighlyrandompassword@host:5432/postgres
+            sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
+            # Note: 'disable' is only suitable for local/private networks
+      ```
+
+      ```yaml MongoDB
+      replication:
+        connections:
+          - type: mongodb
+            uri: mongodb+srv://user:password@cluster.mongodb.net/database
+            post_images: auto_configure
+      ```
+
+      ```yaml MySQL
+      replication:
+        connections:
+          - type: mysql
+            uri: mysql://repl_user:password@host:3306/database
+      ```
+
+      ```yaml SQL Server
+      replication:
+        connections:
+          - type: mssql
+            uri: mssql://user:password@host:1433/database
+            schema: dbo
+      ```
+    </CodeGroup>
+
+    You will run `powersync deploy` in a later step to deploy your config to the PowerSync Cloud instance.
+
+    <Tip>
+      **Learn More**
+
+      For more details on database connections, including provider-specific connection details (Supabase, AWS RDS, MongoDB Atlas, etc.), see [Source Database Connection](/configuration/source-db/connection).
+    </Tip>
+  </Tab>
+
+  <Tab title="CLI (Self-Hosted)">
+    If you used Docker in the previous step, the source database connection is already configured. `service.yaml` reads the connection URI from `!env PS_DATA_SOURCE_URI`. The Docker-managed Postgres (`pg-db`) was also pre-configured with `wal_level=logical` and a `powersync` publication by the init scripts.
+
+    If you want to use an **external database** instead, update `PS_DATA_SOURCE_URI` in `powersync/docker/.env` with your connection details, then restart:
+
+    ```bash
+    powersync docker reset
+    ```
+
+    You'll also need to complete the source database setup from Step 1 (replication user, publication) on your external database before this will work.
+  </Tab>
+
+  <Tab title="Manual (Self-Hosted)">
+    Configure the source database connection in your `config.yaml` file (as you did in the previous step). Examples for the different database types are below.
+
+    <Note>
+      **Note**: Use the username (e.g., `powersync_role`) and password you created in Step 1: Configure your Source Database.
+    </Note>
+
+    <CodeGroup>
+      ```yaml Postgres
+      replication:
+        connections:
+          - type: postgresql
+            uri: postgresql://powersync_role:myhighlyrandompassword@powersync-postgres:5432/postgres
             sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
             # Note: 'disable' is only suitable for local/private networks, not for public networks
       ```
@@ -339,7 +470,7 @@ The next step is to connect your PowerSync Service instance to your source datab
 
     <Tip>
       **Learn More**
-      
+
       See the [self-host-demo app](https://github.com/powersync-ja/self-host-demo) for complete working examples of the different database types.
     </Tip>
   </Tab>
@@ -393,29 +524,49 @@ We recommend starting with a simple **global bucket** that syncs data to all use
 ### Deploy Sync Rules
 
 <Tabs>
-      <Tab title="PowerSync Cloud">
-        In the [PowerSync Dashboard](https://dashboard.powersync.com/):
+  <Tab title="Dashboard (Cloud)">
+    In the [PowerSync Dashboard](https://dashboard.powersync.com/):
 
-        1. Select your project and instance
-        2. Go to the **Sync Rules** view
-        3. Edit the YAML directly in the dashboard
-        4. Click **Deploy** to validate and deploy your Sync Rules
-      </Tab>
+    1. Select your project and instance
+    2. Go to the **Sync Rules** view
+    3. Edit the YAML directly in the dashboard
+    4. Click **Deploy** to validate and deploy your Sync Rules
+  </Tab>
 
-      <Tab title="Self-Hosted">
-        Add to your `config.yaml`:
+  <Tab title="CLI (Cloud)">
+    Edit `powersync/sync-config.yaml` with your sync config, then validate and deploy to the linked Cloud instance:
 
-        ```yaml
-        sync_rules:
-          content: |
-            bucket_definitions:
-              global:
-                data:
-                  - SELECT * FROM todos
-                  - SELECT * FROM lists WHERE archived = false
-        ```
-      </Tab>
-    </Tabs>
+    ```bash
+    powersync validate
+    powersync deploy
+    ```
+
+    This deploys your full config (connection, auth, and sync config). For subsequent sync-only changes, use `powersync deploy sync-config` instead.
+  </Tab>
+
+  <Tab title="CLI (Self-Hosted)">
+    Edit `powersync/sync-config.yaml` with your sync config. The default file has a placeholder (`SELECT * FROM todos`) — replace it with your actual table/collection names. Then apply the changes:
+
+    ```bash
+    powersync validate
+    powersync docker reset
+    ```
+  </Tab>
+
+  <Tab title="Manual (Self-Hosted)">
+    Add the sync rules to your `config.yaml`, for example:
+
+    ```yaml
+    sync_rules:
+      content: |
+        bucket_definitions:
+          global:
+            data:
+              - SELECT * FROM todos
+              - SELECT * FROM lists WHERE archived = false
+    ```
+  </Tab>
+</Tabs>
 
 <Note>
   **Note**: Table/collection names within your Sync Rules must match the table names defined in your client-side schema (defined in a later step below).
@@ -437,7 +588,7 @@ You'll use this token for two purposes:
 - **Connecting your app** (in a later step) to test the client SDK integration
 
 <Tabs>
-  <Tab title="PowerSync Cloud">
+  <Tab title="Dashboard (Cloud)">
     1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance
     2. Go to the **Client Auth** view
     3. Check the **Development tokens** setting and save your changes
@@ -450,17 +601,37 @@ You'll use this token for two purposes:
     </Note>
   </Tab>
 
-  <Tab title="Self-Hosted">
-    For self-hosted setups, you can generate development tokens using the [powersync-service test-client](https://github.com/powersync-ja/powersync-service/tree/main/test-client):
+  <Tab title="CLI (Cloud)">
+    Generate a development token with:
 
-    
+    ```bash
+    powersync generate token --subject=test-user
+    ```
+
+    Replace `test-user` with a user ID of your choice (this would normally be the user ID you want to test with).
+
+    Requires `allow_temporary_tokens` to be enabled on the instance. Add it to `powersync/service.yaml` if you haven't already, then redeploy:
+
+    ```yaml
+    client_auth:
+      allow_temporary_tokens: true
+    ```
+
+    ```bash
+    powersync deploy
+    ```
+
+    <Note>
+      Development tokens expire after 12 hours.
+    </Note>
+  </Tab>
+
+  <Tab title="Self-Hosted">
+    Follow the steps below. Steps 1 and 2 configure signing keys and your PowerSync config; in Step 3 you can use the **CLI (recommended)** or the test-client to generate the token.
 
     <DevTokenSelfHostedSteps />
-
-    
   </Tab>
 </Tabs>
-
 
 # 6. [Optional] Test Sync with the Sync Diagnostics Client
 

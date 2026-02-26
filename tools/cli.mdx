@@ -1,53 +1,158 @@
 ---
-title: "CLI (Beta)"
-description: "Manage your PowerSync Cloud environment programmatically"
+title: "CLI"
+description: "Manage PowerSync Cloud and self-hosted instances from the command line with config-as-code."
 ---
 
-You can use the [PowerSync CLI](https://www.npmjs.com/package/powersync) to manage your PowerSync Cloud instances from your machine. Specifically, you can:
+The PowerSync CLI lets you manage PowerSync Service instances, deploy sync config (your Sync Streams or Sync Rules), generate client schemas, run diagnostics, and more. It is distributed as the [powersync](https://www.npmjs.com/package/powersync) npm package.
 
-* Manage your [PowerSync instances ](/architecture/powersync-service)(PowerSync Cloud)
-* Validate and deploy [Sync Rules](/sync/rules/overview) to an instance from a local file
-* Generate the [client-side schema](/intro/setup-guide#define-your-client-side-schema)
+**Cloud:** Full support for PowerSync Cloud. Log in with a personal access token, then define your instance config in a `powersync/` directory (`service.yaml`, `sync-config.yaml`) in your project and deploy with `powersync deploy`.
+
+**Self-hosted:** You can link to an existing PowerSync Service instance and run a subset of commands (e.g. `powersync status`, `powersync generate schema`, `powersync validate`). The CLI does not provision or deploy to a remote server; for development, you can use **Docker** to run a local PowerSync Service (and optional DB/storage) on your machine.
+
+<Tip>
+  For a full step-by-step flow using the CLI, use the [Setup Guide](/intro/setup-guide): choose the **CLI (Cloud)** or **CLI (Self-Hosted)** tab in steps 2–5 to configure your instance, connect the source database, deploy sync config, and generate development tokens.
+</Tip>
 
 <Note>
-  The PowerSync CLI is not yet compatible with managing self-hosted PowerSync instances (PowerSync Open Edition and PowerSync Enterprise Self-Hosted Edition). This is on our roadmap.
+  The PowerSync CLI was overhauled in version TODO. The redesign is based on this [design proposal](https://docs.google.com/document/d/1iqpJF2gog2jB-ZWeN8TBEjcad8aBKNKbue2yJ21q_-s/edit). 
+  
+  Main improvements: **self-hosted support** (link to your own PowerSync Service and run commands such as fetch status, generate schema, validate); **open source**; and **improved DX**, including validated config files (`service.yaml`, `sync-config.yaml`) used for creating and deploying changes to PowerSync instances instead of long command-line flags. 
+  
+  See [Migrating from the previous CLI](#migrating-from-the-previous-cli) if you used the older flow.
 </Note>
 
-### Getting started
+## Installation
 
-To begin, initialize the CLI via `npx`:
-
-```bash
-npx powersync init
-```
-
-### Personal Access Token
+Install globally or run via `npx`:
 
 ```bash
-npx powersync init
-
-? Enter your API token: [hidden]
+npm install -g powersync
 ```
 
-You need to provide an access (API) token to initialize the CLI. These can be created in your [Account Settings](https://dashboard.powersync.com/account/access-tokens) in the PowerSync Dashboard.
+```bash
+npx powersync --version
+```
 
-Here you can also revoke access by deleting the token.
+## Authentication (Cloud)
 
-### Usage
+Cloud commands require a PowerSync **personal access token (PAT)**.
 
-For more information on the CLI's available commands, please refer to:
-<Card
-  title="npm: powersync"
-  icon="npm"
-  href="https://www.npmjs.com/package/powersync"
-  horizontal
->
-npm
-</Card>
+**Interactive login (recommended for local use):**
 
-### Deploying Sync Rules with GitHub Actions
+```bash
+powersync login
+```
 
-You can automate sync rule deployments using the PowerSync CLI in your CI/CD pipeline. This is useful for ensuring your sync rules are automatically deployed whenever changes are pushed to a repository.
+You can open a browser to [create a token in the PowerSync Dashboard](https://dashboard.powersync.com/account/access-tokens) or paste an existing token. The CLI stores the token in secure storage when available (e.g. macOS Keychain), or in a config file after confirmation.
+
+**CI and scripts:** Set the `PS_ADMIN_TOKEN` environment variable. The CLI uses `PS_ADMIN_TOKEN` when set; otherwise it uses the token from `powersync login`.
+
+```bash
+export TOKEN=your-personal-access-token
+powersync fetch instances --project-id=<project-id>
+```
+
+To clear stored credentials: `powersync logout`.
+
+## Config-as-code
+
+The CLI uses a **config directory** (default `powersync/`) that holds:
+
+| File | Purpose |
+|------|---------|
+| `service.yaml` | Instance configuration: name, region, replication DB connection, client auth |
+| `sync-config.yaml` | Sync Streams (or Sync Rules) configuration |
+| `cli.yaml` | Link file (written by `powersync link`); ties this directory to an instance |
+
+All YAML files support the **`!env`** custom tag for secrets and environment-specific values, e.g. `uri: !env PS_DATABASE_URI`. Use `!env VAR::number` or `!env VAR::boolean` for typed substitution. For using one config directory across multiple instances (e.g. dev/staging/prod) via `!env` in `cli.yaml`, see the [CLI usage docs](https://github.com/powersync-ja/powersync-cli/blob/main/docs/usage.md#configuring-multiple-instances-eg-dev-staging-production).
+
+Edit these files in your IDE, then run `powersync validate` and `powersync deploy`.
+
+## Cloud workflows
+
+### Create a new instance
+
+```bash
+# Step 1: Log in and scaffold the config directory
+powersync login
+powersync init cloud
+
+# Step 2: Edit powersync/service.yaml (name, region, replication, auth) and sync config in sync-config.yaml; use !env for secrets
+
+# Step 3: Create a new Cloud instance from your config and save its ID to cli.yaml
+powersync link cloud --create --project-id=<project-id>
+# If your token has multiple orgs: add --org-id=<org-id>
+
+# Step 4: Validate your config and deploy it to the new Cloud instance
+powersync validate
+powersync deploy
+```
+
+Use `--directory=<path>` for a different config folder (e.g. `--directory=powersync-prod`).
+
+### Use an existing instance (pull config)
+
+For an instance that already exists (e.g. created in the Dashboard), pull its config into a local directory:
+
+```bash
+powersync login
+powersync pull instance --project-id=<project-id> --instance-id=<instance-id>
+# Edit powersync/service.yaml and powersync/sync-config.yaml as needed
+powersync validate
+powersync deploy
+```
+
+This creates the config directory, writes `cli.yaml`, and downloads `service.yaml` and `sync-config.yaml`. Run `powersync pull instance` again (without IDs if already linked) to refresh local config from the cloud.
+
+### Run commands without local config
+
+You can run commands (e.g. `powersync generate schema`, `powersync generate token`, `powersync status`) against an instance whose config is managed elsewhere (e.g. the Dashboard). Either link once with `powersync link cloud --instance-id=<id> --project-id=<id>`, or pass `--instance-id` and `--project-id` (and `--org-id` when your token has multiple orgs) on each command. You can also set `INSTANCE_ID`, `PROJECT_ID`, and optionally `ORG_ID` in the environment. For how the CLI resolves context (flags vs environment variables vs `cli.yaml`), and for multiple instances (e.g. dev/staging/prod with separate directories or `!env`), see the [CLI usage docs](https://github.com/powersync-ja/powersync-cli/blob/main/docs/usage.md#supplying-linking-information-for-cloud-and-self-hosted-commands) in the PowerSync CLI repository.
+
+## Self-hosted workflows
+
+Run **`powersync init self-hosted`** to scaffold a config directory. Edit `service.yaml` with your instance details and use **`powersync link self-hosted --api-url <url>`** to link to an existing running PowerSync Service. The CLI does not create or deploy to self-hosted instances; you manage the server and its config yourself.
+
+Supported self-hosted commands include: `powersync status`, `powersync generate schema`, `powersync generate token`, `powersync validate`. Cloud-only commands (`powersync deploy`, `powersync pull instance`, `powersync fetch instances`, etc.) do not apply.
+
+### Docker (local development)
+
+The CLI can start a PowerSync Service via **Docker**: it runs the service (and optionally a source database and bucket storage) in containers on your machine. That gives you a real API to develop against without deploying to any server.
+
+```bash
+powersync init self-hosted
+powersync docker configure
+powersync docker start
+```
+
+After `powersync docker start`, link to the local API (e.g. `powersync link self-hosted --api-url http://localhost:8080`) and use the same commands as for any self-hosted instance (`powersync status`, `powersync generate schema`, etc.). Use **`powersync docker reset`** when you need a clean state (stop and remove, then start). For the full workflow, flags (`--database`, `--storage`, `--remove`, `--remove-volumes`), and how the Docker setup uses templates and init scripts, see the [Docker usage docs](https://github.com/powersync-ja/powersync-cli/blob/main/docs/usage-docker.md) in the PowerSync CLI repository. You can also run `powersync docker --help` for command options.
+
+## Common commands
+
+| Command | Description |
+|---------|-------------|
+| `powersync login` | Store PAT for Cloud (interactive or paste token) |
+| `powersync logout` | Remove stored token |
+| `powersync init cloud` | Scaffold Cloud config directory |
+| `powersync init self-hosted` | Scaffold self-hosted config directory |
+| `powersync link cloud --project-id=<id>` | Link to an existing Cloud instance |
+| `powersync link cloud --create --project-id=<id>` | Create a new Cloud instance and link |
+| `powersync pull instance --project-id=<id> --instance-id=<id>` | Download Cloud config into local files |
+| `powersync deploy` | Deploy local config to linked Cloud instance |
+| `powersync deploy sync-config` | Deploy only sync config |
+| `powersync validate` | Validate config and sync rules/streams |
+| `powersync fetch instances` | List Cloud instances (optionally by project/org) |
+| `powersync fetch config` | Print linked Cloud instance config (YAML/JSON) |
+| `powersync status` | Instance diagnostics (connections, replication) |
+| `powersync generate schema --output=ts --output-path=schema.ts` | Generate client-side schema |
+| `powersync generate token --subject=user-123` | Generate a development JWT |
+
+For full usage and flags, run `powersync --help` or `powersync <command> --help`. A complete [command reference](https://github.com/powersync-ja/powersync-cli/blob/main/cli/README.md#commands) is available in the PowerSync CLI repository; see also the [powersync npm package](https://www.npmjs.com/package/powersync).
+
+## Deploying from CI (e.g. GitHub Actions)
+
+You can automate sync config (and full config) deployments using the CLI in CI. Use the config directory as the source of truth: keep `service.yaml` and `sync-config.yaml` in the repo (with secrets via `!env` and CI secrets), then run `powersync deploy` (or `powersync deploy sync-config`).
+
+**Secrets:** Set `PS_ADMIN_TOKEN` to your PowerSync personal access token. If the workflow does not use a linked directory, also set `INSTANCE_ID` and `PROJECT_ID` (and `ORG_ID` only if your token has multiple organizations).
 
 <Card
   title="GitHub Actions Demo"
@@ -55,15 +160,69 @@ You can automate sync rule deployments using the PowerSync CLI in your CI/CD pip
   href="https://github.com/powersync-community/github-actions-demo"
   horizontal
 >
-See a complete example of deploying sync rules with GitHub Actions
+  Example: deploy sync config on push to main
 </Card>
 
-The example repository demonstrates how to:
-* Set up a GitHub Actions workflow to deploy sync rules on push to the `main` branch
-* Configure required repository secrets (`POWERSYNC_AUTH_TOKEN`, `POWERSYNC_INSTANCE_ID`, `POWERSYNC_PROJECT_ID`, `POWERSYNC_ORG_ID`)
-* Automatically deploy `sync-rules.yaml` changes
+The demo shows how to configure repository secrets and run the CLI in a workflow. With the new CLI, you typically use a `powersync/` directory in the repo and run `powersync deploy` or `powersync deploy sync-config` with `PS_ADMIN_TOKEN` (and optionally `INSTANCE_ID`, `PROJECT_ID`, `ORG_ID`) set in the environment.
 
-### Known issues and limitations
+## Migrating from the previous CLI
 
-* Certificates cannot currently be managed from the CLI.
-* The PowerSync CLI is not yet compatible with managing self-hosted PowerSync instances (PowerSync Open Edition and PowerSync Enterprise Self-Hosted Edition). This is on our roadmap.
+If you used the older PowerSync CLI (e.g. `npx powersync init` to set token and org/project, then `powersync instance set`, `powersync instance deploy`, etc.), the new CLI uses a different flow. Upgrade to the latest **powersync** npm version and follow the mapping below.
+
+| Previous CLI | New CLI |
+|--------------|---------|
+| `npx powersync init` (enter token, org, project) | **`powersync login`** (token only). Then **`powersync init cloud`** to scaffold config, or **`powersync pull instance --project-id=... --instance-id=...`** to pull an existing instance. |
+| `powersync instance set --instanceId=<id>` | **`powersync link cloud --instance-id=<id> --project-id=<id>`** (writes `cli.yaml` in config directory). Or use `--directory` for a specific folder. |
+| `powersync instance deploy` (interactive or long flag list) | Edit **`powersync/service.yaml`** and **`powersync/sync-config.yaml`**, then **`powersync deploy`**. Config is in files, not command args. |
+| `powersync instance config` | **`powersync fetch config`** (output as YAML or JSON with `--output`). |
+| Deploy only sync rules | **`powersync deploy sync-config`**. |
+| `powersync instance schema` | **`powersync generate schema --output=... --output-path=...`** (and/or **`powersync status`** for diagnostics). |
+| Org/project stored by init | Pass **`--org-id`** and **`--project-id`** when needed, or use **`powersync link cloud`** so they are stored in **`powersync/cli.yaml`**. For CI, use env vars: **`PS_ADMIN_TOKEN`**, **`INSTANCE_ID`**, **`PROJECT_ID`**, **`ORG_ID`** (optional). |
+
+**Summary:** Authenticate with **`powersync login`** (or `PS_ADMIN_TOKEN` in CI). Use a **config directory** with `service.yaml` and `sync-config.yaml` as the source of truth. **Link** with **`powersync link cloud`** or **`powersync pull instance`**, then run **`powersync deploy`** or **`powersync deploy sync-config`**. No more setting “current instance” separately from config—the directory and `cli.yaml` define the target.
+
+## Additional documentation (CLI Repository)
+
+More information is available in the [PowerSync CLI repository](https://github.com/powersync-ja/powersync-cli).
+
+| Resource | Description |
+|----------|-------------|
+| [CLI README](https://github.com/powersync-ja/powersync-cli/blob/main/cli/README.md) | Getting started, Cloud and self-hosted overview, and full **command reference** with all flags. |
+| [General usage](https://github.com/powersync-ja/powersync-cli/blob/main/docs/usage.md) | **How the CLI works**: local config vs linking, resolution order (flags → env vars → `cli.yaml`), and **configuring multiple instances** (e.g. dev/staging/prod with separate directories or `!env` in `cli.yaml`). |
+| [Docker (local development)](https://github.com/powersync-ja/powersync-cli/blob/main/docs/usage-docker.md) | Self-hosted Docker workflow, configure/start/stop/reset, database and storage modules, and template layout. |
+| [Examples](https://github.com/powersync-ja/powersync-cli/blob/main/examples/README.md) | Sample projects initialized with the CLI (e.g. Cloud pull, self-hosted Postgres, self-hosted Supabase). |
+
+## Known limitations
+
+* Certificates cannot be managed from the CLI.
+* When secure storage is unavailable, `powersync login` may store the token in a plaintext config file after explicit confirmation.
+* Self-hosted: the CLI does not create or manage instances on your server, or deploy config to it; it only links to an existing API and runs a subset of commands (status, generate schema/token, validate). The sole exception is **Docker**: it starts a local PowerSync Service (and optional DB/storage) in containers on your machine for development — not a remote or production instance.
+
+## Reference
+
+<Card
+  title="npm: powersync"
+  icon="npm"
+  href="https://www.npmjs.com/package/powersync"
+  horizontal
+>
+  Package and version history
+</Card>
+
+<Card
+  title="Manage your access tokens"
+  icon="key"
+  href="https://dashboard.powersync.com/account/access-tokens"
+  horizontal
+>
+  Create or revoke tokens in the PowerSync Dashboard
+</Card>
+
+<Card
+  title="PowerSync CLI (source and advanced docs)"
+  icon="github"
+  href="https://github.com/powersync-ja/powersync-cli"
+  horizontal
+>
+  CLI repository: usage docs, Docker usage, examples
+</Card>

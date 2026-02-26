@@ -16,8 +16,8 @@ For apps where users belong to an organization (or company, team, workspace, etc
 streams:
   # All projects in the user's organization (auto-sync on connect)
   org_projects:
-    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')
     auto_subscribe: true
+    query: SELECT * FROM projects WHERE org_id = auth.parameter('org_id')
 
   # Tasks for a specific project (sync on-demand)
   project_tasks:
@@ -48,6 +48,7 @@ When different users should see different data based on their role, use JWT clai
 streams:
   # Admins see all articles, others see only published or their own
   articles:
+    auto_subscribe: true
     query: |
       SELECT * FROM articles
       WHERE org_id = auth.parameter('org_id')
@@ -56,7 +57,6 @@ streams:
           OR author_id = auth.user_id()
           OR auth.parameter('role') = 'admin'
         )
-    auto_subscribe: true
 ```
 
 Your backend should include both `org_id` and `role` in the JWT — e.g. `{ "sub": "user-123", "org_id": "org-456", "role": "admin" }`. The `role` claim is set by your backend so users can't escalate their own privileges. In this example, Clients auto-subscribe to `articles` when they connect — no client-side subscription call needed.
@@ -68,11 +68,11 @@ For apps where users can share items with each other (like documents or folders)
 ```yaml
 streams:
   my_documents:
+    auto_subscribe: true
     query: |
       SELECT * FROM documents
       WHERE owner_id = auth.user_id()
          OR id IN (SELECT document_id FROM document_shares WHERE shared_with = auth.user_id())
-    auto_subscribe: true
 ```
 
 Clients auto-subscribe to `my_documents` when they connect, so the user's documents (owned and shared) are available immediately.
@@ -95,10 +95,10 @@ streams:
 
   issue_comments:
     query: |
-      SELECT c.* FROM comments c
-        INNER JOIN issues i ON c.issue_id = i.id
-      WHERE c.issue_id = subscription.parameter('issue_id')
-        AND i.project_id IN my_projects
+      SELECT comments.* FROM comments
+        INNER JOIN issues ON comments.issue_id = issues.id
+      WHERE comments.issue_id = subscription.parameter('issue_id')
+        AND issues.project_id IN my_projects
 ```
 
 Subscribe to both streams when the user opens an issue:
@@ -130,12 +130,12 @@ When users have a "default" or "primary" item stored in their profile, you can s
 streams:
   # Sync todos from the user's primary list
   primary_list_todos:
+    auto_subscribe: true
     query: |
       SELECT * FROM todos
       WHERE list_id IN (
         SELECT primary_list_id FROM users WHERE id = auth.user_id()
       )
-    auto_subscribe: true
 ```
 
 The subquery looks up the user's `primary_list_id` from the `users` table, then syncs all `todos` from that list. When the user changes their primary list in the database, the synced data updates automatically. Clients auto-subscribe to `primary_list_todos` when they connect — no client-side subscription call needed.
@@ -157,6 +157,7 @@ User membership
 ```yaml
 streams:
   org_tasks:
+    auto_subscribe: true
     query: |
       SELECT * FROM tasks
       WHERE project_id IN (
@@ -164,7 +165,6 @@ streams:
           SELECT org_id FROM org_members WHERE user_id = auth.user_id()
         )
       )
-    auto_subscribe: true
 ```
 
 The query reads from inside out: find the user's organizations, then find projects in those organizations, then find tasks in those projects.
@@ -174,12 +174,12 @@ The query reads from inside out: find the user's organizations, then find projec
 ```yaml
 streams:
   org_tasks:
-    query: |
-      SELECT t.* FROM tasks t
-        INNER JOIN projects p ON t.project_id = p.id
-        INNER JOIN org_members om ON p.org_id = om.org_id
-      WHERE om.user_id = auth.user_id()
     auto_subscribe: true
+    query: |
+      SELECT tasks.* FROM tasks
+        INNER JOIN projects ON tasks.project_id = projects.id
+        INNER JOIN org_members ON projects.org_id = org_members.org_id
+      WHERE org_members.user_id = auth.user_id()
 ```
 
 Both queries produce the same result. PowerSync handles these nested relationships efficiently, so you don't need to denormalize your database or add redundant foreign keys. Clients auto-subscribe to `org_tasks` when they connect — no client-side subscription call needed.
@@ -198,30 +198,30 @@ Users ←→ board_subscriptions ←→ Boards → Posts → Comments
 streams:
   # Posts from boards the user subscribes to
   board_posts:
-    query: |
-      SELECT p.* FROM posts p
-        INNER JOIN board_subscriptions bs ON p.board_id = bs.board_id
-      WHERE bs.user_id = auth.user_id()
     auto_subscribe: true
+    query: |
+      SELECT posts.* FROM posts
+        INNER JOIN board_subscriptions ON posts.board_id = board_subscriptions.board_id
+      WHERE board_subscriptions.user_id = auth.user_id()
 
   # Comments on those posts (no denormalization needed)
   board_comments:
-    query: |
-      SELECT c.* FROM comments c
-        INNER JOIN posts p ON c.post_id = p.id
-        INNER JOIN board_subscriptions bs ON p.board_id = bs.board_id
-      WHERE bs.user_id = auth.user_id()
     auto_subscribe: true
+    query: |
+      SELECT comments.* FROM comments
+        INNER JOIN posts ON comments.post_id = posts.id
+        INNER JOIN board_subscriptions ON posts.board_id = board_subscriptions.board_id
+      WHERE board_subscriptions.user_id = auth.user_id()
 
   # User profiles for co-subscribers (people who share a board with me)
   board_users:
+    auto_subscribe: true
     query: |
-      SELECT u.* FROM users u
-        INNER JOIN board_subscriptions bs ON u.id = bs.user_id
-      WHERE bs.board_id IN (
+      SELECT users.* FROM users
+        INNER JOIN board_subscriptions ON users.id = board_subscriptions.user_id
+      WHERE board_subscriptions.board_id IN (
         SELECT board_id FROM board_subscriptions WHERE user_id = auth.user_id()
       )
-    auto_subscribe: true
 ```
 
 Clients auto-subscribe to all three streams when they connect. Each query joins through `board_subscriptions` to find relevant data: posts in the user's boards, comments on those posts, and other users sharing those boards.
@@ -243,8 +243,8 @@ config:
 streams:
   # Always available - user can see their lists offline
   lists:
-    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
     auto_subscribe: true
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
 
   # Loaded on demand - only sync todos for the list being viewed
   list_todos:
@@ -282,10 +282,10 @@ config:
 streams:
   # User's conversations - always show the conversation list
   my_conversations:
+    auto_subscribe: true
     query: |
       SELECT * FROM conversations
       WHERE id IN (SELECT conversation_id FROM participants WHERE user_id = auth.user_id())
-    auto_subscribe: true
 
   # Messages - only load for the active conversation
   conversation_messages:
@@ -333,13 +333,13 @@ with:
 streams:
   # Organization data - always available
   org_info:
-    query: SELECT * FROM organizations WHERE id = auth.parameter('org_id')
     auto_subscribe: true
+    query: SELECT * FROM organizations WHERE id = auth.parameter('org_id')
 
   # All accessible projects - always available for navigation
   projects:
-    query: SELECT * FROM projects WHERE id IN user_projects
     auto_subscribe: true
+    query: SELECT * FROM projects WHERE id IN user_projects
 
   # Project details - on demand when user opens a project
   project_tasks:
@@ -387,11 +387,11 @@ with:
 streams:
   # All org-level data syncs together in one bucket
   org_data:
+    auto_subscribe: true
     queries:
       - SELECT * FROM organizations WHERE id IN user_orgs
       - SELECT * FROM projects WHERE org_id IN user_orgs
       - SELECT * FROM team_members WHERE org_id IN user_orgs
-    auto_subscribe: true
 
   # Project details - on demand
   project_details:
@@ -443,8 +443,8 @@ config:
 
 streams:
   lists:
-    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
     auto_subscribe: true
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
   todos:
     query: |
       SELECT * FROM todos

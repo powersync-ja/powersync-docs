@@ -24,7 +24,7 @@ The supported SQL is based on a subset of the standard SQL syntax. Sync Streams 
   - `SELECT` with column selection and [`WHERE` filtering](#filtering-where-clause)
   - [Subqueries](/sync/streams/queries#using-subqueries) with `IN (SELECT ...)` and nested subqueries
   - [`INNER JOIN`](#join-syntax) (selected columns must come from a single table)
-  - [CTEs](#cte-and-with-syntax) via the `with:` block
+  - [Common Table Expressions (CTEs)](#cte-and-with-syntax) via the `with:` block
   - Multiple queries per stream via `queries:`
   - Table-valued functions such as `json_each()` for [expanding arrays](/sync/streams/parameters#expanding-json-arrays)
   - `BETWEEN` and `CASE` expressions
@@ -88,15 +88,17 @@ WHERE status = 'active'
   AND (owner_id = auth.user_id() OR shared_with = auth.user_id())
 ```
 
-**`NOT`** — Supported for simple conditions on row values. `NOT IN` with a JSON array string is supported. You cannot negate a subquery or a parameter array expansion.
+**`NOT`** — Supported for simple conditions on row values. `NOT IN` with a literal set of values is supported: use a JSON array string (e.g. `'["draft", "hidden"]'`), or the `ARRAY['draft', 'hidden']` and `ROW('draft', 'hidden')` forms. You cannot negate a subquery or a parameter array expansion.
 
 ```sql
 -- Simple row-value conditions
 WHERE status != 'archived'
 WHERE deleted_at IS NOT NULL
 
--- NOT IN with JSON array string
+-- NOT IN with JSON array string (any of these forms)
 WHERE category NOT IN '["draft", "hidden"]'
+WHERE category NOT IN ARRAY['draft', 'hidden']
+WHERE category NOT IN ROW('draft', 'hidden')
 
 -- Not supported: negating a subquery
 -- WHERE issue_id NOT IN (SELECT id FROM issues WHERE owner_id = auth.user_id())
@@ -277,7 +279,7 @@ For how to use JOINs in your stream queries (when to use them, patterns, and exa
 
 <Info>Supported in Sync Streams only. Not available in Sync Rules.</Info>
 
-CTEs are defined in a `with:` block inside a stream. Each CTE is a name and a single `SELECT` query. The following rules apply:
+Common Table Expressions (CTEs) are defined in a `with:` block inside a stream. Each CTE is a name and a single `SELECT` query. The following rules apply:
 
 - **CTEs cannot reference other CTEs.** Each CTE must be self-contained. To chain logic (e.g. orgs → projects), use nested subqueries in your stream query and reference only the CTE at the leaf level.
 - **CTE names take precedence over table names.** If a CTE has the same name as a database table, the CTE is used. Use distinct names to avoid confusion.

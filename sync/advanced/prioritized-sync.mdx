@@ -5,7 +5,9 @@ description: "In some scenarios, you may want to sync tables using different pri
 
 ## Overview
 
-PowerSync supports defining sync priorities, which allows you to control the sync order for different buckets of data. This is particularly useful when certain data should be available sooner than others.
+PowerSync supports defining sync priorities, which allows you to control the sync order for different data. This is particularly useful when certain data should be available sooner than others.
+
+In Sync Streams, priorities are assigned to streams and PowerSync manages the underlying buckets internally. (In legacy Sync Rules, priorities were assigned to buckets explicitly.)
 
 <Note>
 **Availability**
@@ -36,27 +38,93 @@ Each bucket is assigned a priority value between 0 and 3, where:
 - 3 is the default and lowest priority.
 - Lower numbers indicate higher priority.
 
-Buckets with higher priorities sync first, and lower-priority buckets sync later. It's worth noting that if you only use a single priority, there is no difference between priorities 1-3. The difference only comes in if you use multiple different priorities.
+Higher-priority data syncs first, and lower-priority data syncs later. If you only use a single priority, there is no difference between priorities 1-3. The difference only comes in when you use multiple different priorities.
+
+<Tabs>
+<Tab title="Sync Streams">
+In Sync Streams, you assign priorities directly to streams. PowerSync manages buckets internally, so you don't need to think about bucket structure. Each stream with a given priority will have its data synced at that priority level.
+
+```yaml
+streams:
+  lists:
+    auto_subscribe: true
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+    priority: 1  # Syncs first
+
+  todos:
+    auto_subscribe: true
+    query: SELECT * FROM todos WHERE list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
+    priority: 2  # Syncs after lists
+```
+
+Clients can also override the priority when subscribing:
+
+```js
+// Override the stream's default priority for this subscription
+const sub = await db.syncStream('todos', { list_id: 'abc' }).subscribe({ priority: 1 });
+```
+
+This allows the same stream to be subscribed with different priorities. When multiple subscriptions resolve to the same underlying bucket, the highest priority among them is used.
+</Tab>
+<Tab title="Sync Rules (Legacy)">
+In Sync Rules, you assign priorities to bucket definitions. The priority determines when data in that bucket syncs relative to other buckets.
+
+```yaml
+bucket_definitions:
+  user_lists:
+    priority: 1  # Syncs first
+    parameters: SELECT id AS list_id FROM lists WHERE user_id = request.user_id()
+    data:
+      - SELECT * FROM lists WHERE id = bucket.list_id
+
+  user_todos:
+    priority: 2  # Syncs after lists
+    parameters: SELECT id AS list_id FROM lists WHERE user_id = request.user_id()
+    data:
+      - SELECT * FROM todos WHERE list_id = bucket.list_id
+```
+</Tab>
+</Tabs>
 
 ## Syntax and Configuration
 
-Priorities can be defined for a bucket using the `priority` YAML key, or with the `_priority` attribute inside parameter queries:
+<Tabs>
+<Tab title="Sync Streams">
+In Sync Streams, set the `priority` option on the stream definition:
+
+```yaml
+streams:
+  high_priority_data:
+    auto_subscribe: true
+    query: SELECT * FROM important_table WHERE user_id = auth.user_id()
+    priority: 1
+
+  low_priority_data:
+    auto_subscribe: true
+    query: SELECT * FROM background_table WHERE user_id = auth.user_id()
+    priority: 2
+```
+</Tab>
+<Tab title="Sync Rules (Legacy)">
+In Sync Rules, priorities can be defined using the `priority` YAML key on bucket definitions, or with the `_priority` attribute inside parameter queries:
 
 ```yaml
 bucket_definitions:
   # Using the `priority` YAML key
   user_data:
     priority: 1
-    parameters: SELECT request.user_id() as id where...;
+    parameters: SELECT request.user_id() AS id WHERE ...
     data: 
       # ...
   
-  # Using the `_priority` attribute
+  # Using the `_priority` attribute (useful for multiple parameter queries with different priorities)
   project_data:
-    parameters: select id as project_id, 2 as _priority from projects where ...; # This approach is useful when you have multiple parameter queries with different priorities.
+    parameters: SELECT id AS project_id, 2 AS _priority FROM projects WHERE ...
     data: 
       # ...
-```    
+```
+</Tab>
+</Tabs>
 
 <Note>
 Priorities must be static and cannot depend on row values within a parameter query.
@@ -64,38 +132,57 @@ Priorities must be static and cannot depend on row values within a parameter que
 
 ## Example: Syncing Lists Before Todos
 
-Consider a scenario where you want to display lists immediately while loading todos in the background. This approach allows users to view and interact with lists right away without waiting for todos to sync. Here's how to configure sync priorities in your Sync Rules to achieve this:
+Consider a scenario where you want to display lists immediately while loading todos in the background. This approach allows users to view and interact with lists right away without waiting for todos to sync.
 
+<Tabs>
+<Tab title="Sync Streams">
+```yaml
+config:
+  edition: 3
+
+streams:
+  lists:
+    auto_subscribe: true
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+    priority: 1  # Syncs first
+
+  todos:
+    auto_subscribe: true
+    query: |
+      SELECT * FROM todos
+      WHERE list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
+    priority: 2  # Syncs after lists
+```
+
+The `lists` stream syncs first (priority 1), allowing users to see and interact with their lists immediately. The `todos` stream syncs afterward (priority 2), loading in the background.
+</Tab>
+<Tab title="Sync Rules (Legacy)">
 ```yaml
 bucket_definitions:
   user_lists:
-    # Sync the user's lists with a higher priority
-    priority: 1
-    parameters: select id as list_id from lists where user_id = request.user_id()
+    priority: 1  # Syncs first
+    parameters: SELECT id AS list_id FROM lists WHERE user_id = request.user_id()
     data:
-      - select * from lists where id = bucket.list_id
+      - SELECT * FROM lists WHERE id = bucket.list_id
 
   user_todos:
-    # Sync the user's todos with a lower priority
-    priority: 2
-    parameters: select id as list_id from lists where user_id = request.user_id()
+    priority: 2  # Syncs after lists
+    parameters: SELECT id AS list_id FROM lists WHERE user_id = request.user_id()
     data:
-      - select * from todos where list_id = bucket.list_id
+      - SELECT * FROM todos WHERE list_id = bucket.list_id
 ```
 
-In this configuration:
-
-The `lists` bucket has the default priority of 1, meaning it syncs first.
-
-The `todos` bucket is assigned a priority of 2, meaning it may sync only after the lists have been synced.
+The `user_lists` bucket syncs first (priority 1), allowing users to see and interact with their lists immediately. The `user_todos` bucket syncs afterward (priority 2), loading in the background.
+</Tab>
+</Tabs>
 
 
 ## Behavioral Considerations
 
-- **Interruption for Higher Priority Data**: Syncing lower-priority buckets _may_ be interrupted if new data for higher-priority buckets arrives.
-- **Local Changes & Consistency**: If local writes fail due to validation or permission issues, they are only reverted after _all_ buckets sync.
-- **Deleted Data**: Deleted data may only be removed after _all_ buckets have synced. Future updates may improve this behavior.
-- **Data Ordering**: Data in lower-priority buckets will never appear before higher-priority data.
+- **Interruption for Higher Priority Data**: Syncing lower-priority data _may_ be interrupted if new data for higher-priority streams/buckets arrives.
+- **Local Changes & Consistency**: If local writes fail due to validation or permission issues, they are only reverted after _all_ data has synced.
+- **Deleted Data**: Deleted data may only be removed after _all_ priorities have completed syncing. Future updates may improve this behavior.
+- **Data Ordering**: Lower-priority data will never appear before higher-priority data.
 
 ## Special Case: Priority 0
 
@@ -107,9 +194,9 @@ Caution: If misused, Priority 0 may cause flickering or inconsistencies, as upda
 
 ## Consistency Considerations
 
-PowerSync's full consistency guarantees only apply once all buckets have completed syncing.
+PowerSync's full consistency guarantees only apply once all priorities have completed syncing.
 
-When higher-priority buckets are synced, all inserts and updates within the buckets for the specific priority will be consistent. However, deletes are only applied when the full sync completes, so you may still have some stale data within those buckets.
+When higher-priority data is synced, all inserts and updates at that priority level will be consistent. However, deletes are only applied when the full sync completes, so you may still have some stale data at those priority levels.
 
 Consider the following example:
 
@@ -132,7 +219,7 @@ PowerSync's client SDKs provide APIs to allow applications to track sync status 
 Using the above we can render a lists component only once the user's lists (with priority 1) have completed syncing, else display a message indicating that the sync is still in progress:
 
 ```dart
-  // Define the priority level of the lists bucket
+  // Define the priority level for lists
   static final _listsPriority = BucketPriority(1);
 
   @override

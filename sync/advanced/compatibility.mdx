@@ -10,7 +10,7 @@ At the same time, we want to fix bugs or other inaccuracies that have accumulate
 
 To make this trade‑off explicit, you choose whether to keep the existing behavior or turn on newer fixes that slightly change how data is processed.
 
-Use the `config` block in your Sync Rules YAML file to choose the behavior. There are two ways to turn fixes on:
+Use the `config` block in your sync config YAML to choose the behavior. There are two ways to turn fixes on:
 
 1. Set an `edition` to enable the full set of fixes for that edition. This is the recommended approach for new projects.
 2. Toggle individual options for more fine‑grained control.
@@ -21,23 +21,41 @@ For older projects, the previous behavior remains the default. New projects shou
 
 For new projects, it is recommended to enable all current fixes by setting `edition: <edition>`:
 
-```yaml sync_rules.yaml
+```yaml
 config:
-  edition: 2 # Recommended to set to the latest available edition (see 'Supported fixes' table below)
+  edition: 3 # Recommended to set to the latest available edition (see 'Supported fixes' table below)
 
-bucket_definitions:
+streams:
   # ...
 ```
 
 Or, specify options individually:
 
-```yaml sync_rules.yaml
+```yaml
 config:
   timestamps_iso8601: true
   versioned_bucket_ids: true
   fixed_json_extract: true
   custom_postgres_types: true
 ```
+
+## Sync Streams Requirement
+
+**New Sync Streams configurations should use `edition: 3`**, which enables the new compiler with an expanded SQL feature set (including `JOIN`, CTEs, multiple queries per stream, `BETWEEN`, `CASE`, and more):
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  my_stream:
+    query: SELECT * FROM my_table WHERE user_id = auth.user_id()
+```
+
+<Note>
+**Upgrading from alpha**: If you have existing Sync Streams using `edition: 2`, updgrade to `edition: 3` to enable the new compiler with an expanded SQL feature set (including `JOIN`, CTEs, multiple queries per stream, `BETWEEN`, `CASE`, and more). See [Supported SQL](/sync/supported-sql) for the full list of supported features.
+</Note>
+
 
 ## Supported fixes
 
@@ -72,9 +90,9 @@ You can use the `timestamp_max_precision` option to configure the actual precisi
 For instance, a Postgres timestamp value would sync as `2025-09-22T14:29:30.000000` by default.
 If you don't want that level of precision, you can use the following options to make it sync as `2025-09-22T14:29:30.000`:
 
-```yaml sync_rules.yaml
+```yaml sync-config.yaml
 config:
-  edition: 2
+  edition: 3
   timestamp_max_precision: milliseconds
 ```
 
@@ -106,7 +124,7 @@ downloaded twice.
 
 ### `fixed_json_extract`
 
-This fixes the `json_extract` functions as well as the `->` and `->>` operators in sync rules to behave similar
+This fixes the `json_extract` functions as well as the `->` and `->>` operators in Sync Rules to behave similar
 to recent SQLite versions: We only split on `.` if the path starts with `$.`.
 
 For instance, `'json_extract({"foo.bar": "baz"}', 'foo.bar')` would evaluate to:

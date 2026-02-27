@@ -6,15 +6,15 @@ title: "Implementing Schema Changes"
 
 The [PowerSync protocol](/architecture/powersync-protocol) is schemaless, and not directly affected by schema changes.
 
-Replicating data from the source database to [buckets](/sync/rules/overview) may be affected by server-side changes to the schema (in the case of Postgres), and may need [reprocessing](/maintenance-ops/compacting-buckets) in some cases.
+Replicating data from the source database to [buckets](/architecture/powersync-service#bucket-system) may be affected by server-side changes to the schema (in the case of Postgres), and may need [reprocessing](/maintenance-ops/compacting-buckets) in some cases.
 
 The [client-side schema](/intro/setup-guide#define-your-client-side-schema) is just a view on top of the schemaless data. Updating this client-side schema is immediate when the new version of the app runs, with no client-side migrations required.
 
 The developer is responsible for keeping client-side schema changes backwards-compatible with older versions of client apps. PowerSync has some functionality to assist with this:
 
-1. [Different Sync Rules](/sync/advanced/multiple-client-versions) can be applied based on [parameters](/sync/rules/client-parameters) such as client version.
+1. [Different stream queries](/sync/advanced/multiple-client-versions) can be applied based on [connection parameters](/sync/streams/parameters#connection-parameters) such as client version. (In Sync Rules, this uses [client parameters](/sync/rules/client-parameters).)
 
-2. Sync Rules can apply simple [data transformations](/sync/rules/data-queries) to keep data in a format compatible with older clients.
+2. Stream queries can apply simple data transformations to keep data in a format compatible with older clients, for example by aliasing or casting columns. (In Sync Rules, this is done via [data query expressions](/sync/rules/data-queries).)
 
 ## Client-Side Impact of Schema and Sync Rule Changes
 
@@ -42,7 +42,7 @@ The schema as supplied on the client is only a view on top of the schemaless dat
 
 Nothing in PowerSync will fail hard if there are incompatible schema changes. But depending on how the app uses the data, app logic may break. For example, removing a table/collection that the app actively uses may break workflows in the app.
 
-To avoid certain types of breaking changes on older clients, Sync Rule [transformations](/sync/rules/data-queries) may be used.
+To avoid certain types of breaking changes on older clients, data transformations may be used — via column aliasing/casting in [Sync Streams](/sync/streams/queries#selecting-columns), or [data query expressions](/sync/rules/data-queries) in Sync Rules.
 
 ## <Icon icon="elephant" iconType="solid" size={32} /> Postgres Specifics
 
@@ -58,11 +58,11 @@ However, this does not include DDL (Data Definition Language), which includes:
 
 4. Changing the type of a column.
 
-### Postgres schema changes affecting Sync Rules
+### Postgres schema changes affecting Sync Streams / Sync Rules
 
 #### DROP table
 
-Dropping a table is not directly detected by PowerSync, and previous data may be preserved. To make sure the data is removed, `TRUNCATE` the table before dropping, or remove the table from [Sync Rules](/sync/rules/overview).
+Dropping a table is not directly detected by PowerSync, and previous data may be preserved. To make sure the data is removed, `TRUNCATE` the table before dropping, or remove the table from your [Sync Streams](/sync/streams/overview) (or [Sync Rules](/sync/rules/overview)).
 
 #### CREATE table
 
@@ -100,7 +100,7 @@ The latter can happen if:
 
 When the replica identity changes, the entire table is re-replicated again. This may be a slow operation if the table is large, and all other replication will be blocked until the table is replicated again.
 
-Sync rules affected by schema changes will fail "soft" — an alert would be generated, but the system will continue processing changes.
+Sync Streams / Sync Rules affected by schema changes will fail "soft" — an alert would be generated, but the system will continue processing changes.
 
 #### Column changes
 
@@ -142,11 +142,11 @@ Due to a limitation in the replication process, dropping a collection does not i
 
 ### Renaming Collections
 
-Renaming a synced collection to a name that _is not included_ in the Sync Rules has the same effect as dropping the collection.
+Renaming a synced collection to a name that _is not included_ in Sync Streams (or legacy Sync Rules) has the same effect as dropping the collection.
 
-Renaming an unsynced collection to a name that is included in the Sync Rules triggers an initial snapshot replication. The time required for this process depends on the collection size.
+Renaming an unsynced collection to a name that is included in your [Sync Streams](/sync/streams/overview) or [Sync Rules](/sync/rules/overview) triggers an initial snapshot replication. The time required for this process depends on the collection size.
 
-Circular renames (e.g., renaming `todos` → `todos_old` → `todos`) are not directly supported. To reprocess the database after such changes, a Sync Rules update must be deployed.
+Circular renames (e.g., renaming `todos` → `todos_old` → `todos`) are not directly supported. To reprocess the database after such changes, a [Sync Streams](/sync/streams/overview) update (or [Sync Rules](/sync/rules/overview)) must be deployed.
 
 
 ## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL (Beta) Specifics
@@ -164,9 +164,9 @@ The binary log also provides DDL (Data Definition Language) query updates, which
 
 For MySQL, PowerSync detects schema changes by parsing the DDL queries in the binary log. It may not always be possible to parse the DDL queries correctly, especially if they are complex or use non-standard syntax.
 In such cases, PowerSync will ignore the schema change, but will log a warning with the schema change query. If required, the schema change would then need to be manually
-handled by redeploying the sync rules. This triggers a re-replication.
+handled by redeploying your [Sync Streams](/sync/streams/overview) (or [Sync Rules](/sync/rules/overview)). This triggers a re-replication.
 
-### MySQL schema changes affecting Sync Rules
+### MySQL schema changes affecting Sync Streams / Sync Rules
 
 #### DROP table
 
@@ -205,7 +205,7 @@ The latter can happen if:
 
 When the replication identity changes, the entire table is replicated again. This may be a slow operation if the table is large, and all other replication will be blocked until the table is replicated again.
 
-Sync rules affected by schema changes will fail "soft" — an alert would be generated, but the system will continue processing changes.
+Sync Streams / Sync Rules affected by schema changes will fail "soft" — an alert would be generated, but the system will continue processing changes.
 
 #### Column changes
 

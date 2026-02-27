@@ -1,0 +1,379 @@
+---
+title: "Client-Side Usage"
+description: Subscribe to Sync Streams from your client app, manage subscriptions, and track sync progress.
+---
+
+After [defining your streams](/sync/streams/overview#defining-streams) on the server-side, your client app subscribes to them to start syncing data (this is an explicit operation unless streams are configured to [auto-subscribe](/sync/streams/overview#using-auto-subscribe)). This page covers everything you need to use Sync Streams from your client code.
+
+## Quick Start
+
+Streams that are configured to [auto-subscribe](/sync/streams/overview#using-auto-subscribe) will automatically start syncing as soon as you connect to your PowerSync instance in your client-side application.
+
+For any other streams, the basic pattern is: **subscribe** to a stream, **wait** for data to sync, then **unsubscribe** when done.
+
+<Tabs>
+<Tab title="TypeScript/JavaScript">
+```js
+// Subscribe to a stream with parameters
+const sub = await db.syncStream('list_todos', { list_id: 'abc123' }).subscribe();
+
+// Wait for initial data to sync
+await sub.waitForFirstSync();
+
+// Your data is now available - query it normally
+const todos = await db.getAll('SELECT * FROM todos WHERE list_id = ?', ['abc123']);
+
+// When leaving the screen or component...
+sub.unsubscribe();
+```
+</Tab>
+
+<Tab title="Dart">
+```dart
+// Subscribe to a stream with parameters
+final sub = await db.syncStream('list_todos', {'list_id': 'abc123'}).subscribe();
+
+// Wait for initial data to sync
+await sub.waitForFirstSync();
+
+// Your data is now available - query it normally
+final todos = await db.getAll('SELECT * FROM todos WHERE list_id = ?', ['abc123']);
+
+// When leaving the screen or component...
+sub.unsubscribe();
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+// Subscribe to a stream with parameters
+val sub = database.syncStream("list_todos", mapOf("list_id" to JsonParam.String("abc123")))
+  .subscribe()
+
+// Wait for initial data to sync
+sub.waitForFirstSync()
+
+// Your data is now available - query it normally
+val todos = database.getAll("SELECT * FROM todos WHERE list_id = ?", listOf("abc123"))
+
+// When leaving the screen or component...
+sub.unsubscribe()
+```
+</Tab>
+
+<Tab title="Swift">
+```swift
+// Subscribe to a stream with parameters
+let sub = try await db.syncStream(name: "list_todos", params: ["list_id": JsonValue.string("abc123")]).subscribe()
+
+// Wait for initial data to sync
+try await sub.waitForFirstSync()
+
+// Your data is now available - query it normally
+let todos = try await db.getAll(sql: "SELECT * FROM todos WHERE list_id = ?", parameters: ["abc123"])
+
+// When leaving the screen or component...
+try await sub.unsubscribe()
+```
+</Tab>
+
+<Tab title=".NET">
+```csharp
+// Subscribe to a stream with parameters
+var sub = await db.SyncStream("list_todos", new() { ["list_id"] = "abc123" }).Subscribe();
+
+// Wait for initial data to sync
+await sub.WaitForFirstSync();
+
+// Your data is now available - query it normally
+var todos = await db.GetAll<Todo>("SELECT * FROM todos WHERE list_id = ?", new[] { "abc123" });
+
+// When leaving the screen or component...
+sub.Unsubscribe();
+```
+</Tab>
+</Tabs>
+
+## Framework Integrations
+
+Most developers use framework-specific hooks that handle subscription lifecycle automatically.
+
+<Tabs>
+<Tab title="React Hooks">
+  The `useSyncStream` hook automatically subscribes when the component mounts and unsubscribes when it unmounts:
+  ```jsx
+  function TodoList({ listId }) {
+    // Automatically subscribes/unsubscribes based on component lifecycle
+    const stream = useSyncStream({ name: 'list_todos', parameters: { list_id: listId } });
+    
+    // Check if data has synced
+    if (!stream?.subscription.hasSynced) {
+      return <LoadingSpinner />;
+    }
+    
+    // Data is ready - query and render
+    const { data: todos } = useQuery('SELECT * FROM todos WHERE list_id = ?', [listId]);
+    return <TodoItems todos={todos} />;
+  }
+  ```
+
+  You can also have `useQuery` wait for a stream before running:
+
+  ```jsx
+  // This query waits for the stream to sync before executing
+  const { data: todos } = useQuery(
+    'SELECT * FROM todos WHERE list_id = ?',
+    [listId],
+    { streams: [{ name: 'list_todos', parameters: { list_id: listId }, waitForStream: true }] }
+  );
+  ```
+</Tab>
+<Tab title="TanStack Query">
+ Example coming soon.
+</Tab>
+<Tab title="Vue">
+ Example coming soon.
+</Tab>
+<Tab title="Nuxt">
+ Example coming soon.
+</Tab>
+</Tabs>
+
+## Checking Sync Status
+
+You can check whether a subscription has synced and monitor download progress:
+
+<Tabs>
+<Tab title="TypeScript/JavaScript">
+```js
+const sub = await db.syncStream('list_todos', { list_id: 'abc123' }).subscribe();
+
+// Check if this subscription has completed initial sync
+const status = db.currentStatus.forStream(sub);
+console.log(status?.subscription.hasSynced);  // true/false
+console.log(status?.progress);                // download progress
+```
+</Tab>
+
+<Tab title="Dart">
+```dart
+final sub = await db.syncStream('list_todos', {'list_id': 'abc123'}).subscribe();
+
+// Check if this subscription has completed initial sync
+final status = db.currentStatus.forStream(sub);
+print(status?.subscription.hasSynced);  // true/false
+print(status?.progress);                 // download progress
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val sub = database.syncStream("list_todos", mapOf("list_id" to JsonParam.String("abc123")))
+  .subscribe()
+
+// Check if this subscription has completed initial sync
+val status = database.currentStatus.forStream(sub)
+println(status?.subscription?.hasSynced)  // true/false
+println(status?.progress)                  // download progress
+```
+</Tab>
+
+<Tab title="Swift">
+```swift
+let sub = try await db.syncStream(name: "list_todos", params: ["list_id": JsonValue.string("abc123")]).subscribe()
+
+// Check if this subscription has completed initial sync
+let status = db.currentStatus.forStream(stream: sub)
+print(status?.subscription.hasSynced ?? false)  // true/false
+print(status?.progress)                          // download progress
+```
+</Tab>
+
+<Tab title=".NET">
+```csharp
+var sub = await db.SyncStream("list_todos", new() { ["list_id"] = "abc123" }).Subscribe();
+
+// Check if this subscription has completed initial sync
+var status = db.CurrentStatus.ForStream(sub);
+Console.WriteLine(status?.Subscription.HasSynced);  // true/false
+Console.WriteLine(status?.Progress);                 // download progress
+```
+</Tab>
+</Tabs>
+
+## TTL (Time-To-Live)
+
+TTL controls how long data remains cached after you unsubscribe. This enables "warm cache" behavior — when users navigate back to a screen, data may already be available without waiting for a sync.
+
+**Default behavior:** Data is cached for 24 hours after unsubscribing. For most apps, this default works well.
+
+### Setting a Custom TTL
+
+<Tabs>
+<Tab title="TypeScript/JavaScript">
+```js
+// Cache for 1 hour after unsubscribe (TTL in seconds)
+const sub = await db.syncStream('todos', { list_id: 'abc' })
+  .subscribe({ ttl: 3600 });
+
+// Cache indefinitely (data never expires)
+const sub = await db.syncStream('todos', { list_id: 'abc' })
+  .subscribe({ ttl: Infinity });
+
+// No caching (remove data immediately on unsubscribe)
+const sub = await db.syncStream('todos', { list_id: 'abc' })
+  .subscribe({ ttl: 0 });
+```
+</Tab>
+
+<Tab title="Dart">
+```dart
+// Cache for 1 hour after unsubscribe
+final sub = await db.syncStream('todos', {'list_id': 'abc'})
+  .subscribe(ttl: const Duration(hours: 1));
+
+// Cache for 7 days
+final sub = await db.syncStream('todos', {'list_id': 'abc'})
+  .subscribe(ttl: const Duration(days: 7));
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+// Cache for 1 hour after unsubscribe
+val sub = database.syncStream("todos", mapOf("list_id" to JsonParam.String("abc")))
+  .subscribe(ttl = 1.hours)
+
+// Cache for 7 days
+val sub = database.syncStream("todos", mapOf("list_id" to JsonParam.String("abc")))
+  .subscribe(ttl = 7.days)
+```
+</Tab>
+
+<Tab title="Swift">
+```swift
+// Cache for 1 hour after unsubscribe (TTL in seconds)
+let sub = try await db.syncStream(name: "todos", params: ["list_id": JsonValue.string("abc")])
+  .subscribe(ttl: 60 * 60, priority: nil)
+
+// Cache for 7 days
+let sub = try await db.syncStream(name: "todos", params: ["list_id": JsonValue.string("abc")])
+  .subscribe(ttl: 60 * 60 * 24 * 7, priority: nil)
+```
+</Tab>
+
+<Tab title=".NET">
+```csharp
+// Cache for 1 hour after unsubscribe
+var sub = await db.SyncStream("todos", new() { ["list_id"] = "abc" })
+  .Subscribe(new SyncStreamSubscribeOptions { Ttl = TimeSpan.FromHours(1) });
+
+// Cache for 7 days
+var sub = await db.SyncStream("todos", new() { ["list_id"] = "abc" })
+  .Subscribe(new SyncStreamSubscribeOptions { Ttl = TimeSpan.FromDays(7) });
+```
+</Tab>
+</Tabs>
+
+### How TTL Works
+
+- **Per-subscription**: Each `(stream name, parameters)` pair has its own TTL.
+- **First subscription wins**: If you subscribe to the same stream with the same parameters multiple times, the TTL from the first subscription is used.
+- **After unsubscribe**: Data continues syncing for the TTL duration, then is removed from the client-side SQLite database.
+
+```js
+// Example: User opens two lists with different TTLs
+const subA = await db.syncStream('todos', { list_id: 'A' }).subscribe({ ttl: 43200 }); // 12h
+const subB = await db.syncStream('todos', { list_id: 'B' }).subscribe({ ttl: 86400 }); // 24h
+
+// Each subscription is independent
+// List A data cached for 12h after unsubscribe
+// List B data cached for 24h after unsubscribe
+```
+
+## Priority Override
+
+Streams can have a default priority set in the YAML sync configuration (see [Prioritized Sync](/sync/advanced/prioritized-sync)). When subscribing, you can override this priority for a specific subscription:
+
+```js
+// Override the stream's default priority
+const sub = await db.syncStream('todos', { list_id: 'abc' }).subscribe({ priority: 1 });
+```
+
+This allows the same stream to be subscribed with different priorities for different use cases. When multiple subscriptions resolve to the same underlying data, the highest priority among them is used for syncing.
+
+## Connection Parameters
+
+Connection parameters are a more advanced feature for values that apply to all streams in a session. They're the Sync Streams equivalent of [Client Parameters](/sync/rules/client-parameters) in legacy Sync Rules.
+
+<Note>
+For most use cases, **subscription parameters** (passed when subscribing) are more flexible and recommended. Use connection parameters only when you need a single global value across all streams, like an environment flag.
+</Note>
+
+Define streams that use connection parameters:
+
+```yaml
+streams:
+  config:
+    auto_subscribe: true
+    query: SELECT * FROM config WHERE env = connection.parameter('environment')
+```
+
+Set connection parameters when connecting:
+
+<Tabs>
+<Tab title="TypeScript/JavaScript">
+```js
+await db.connect(connector, {
+  params: { environment: 'production' }
+});
+```
+</Tab>
+
+<Tab title="Dart">
+```dart
+await db.connect(
+  connector: connector,
+  params: {'environment': 'production'},
+);
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+database.connect(
+  connector,
+  params = mapOf("environment" to JsonParam.String("production"))
+)
+```
+</Tab>
+
+<Tab title="Swift">
+```swift
+try await db.connect(
+  connector: connector,
+  options: ConnectOptions(params: ["environment": JsonValue.string("production")])
+)
+```
+</Tab>
+
+<Tab title=".NET">
+```csharp
+await db.Connect(connector, new ConnectOptions {
+  Params = new() { ["environment"] = "production" }
+});
+```
+</Tab>
+</Tabs>
+
+## API Reference
+
+For quick reference, here are the key methods available in each SDK:
+
+| Method | Description |
+|--------|-------------|
+| `db.syncStream(name, params)` | Get a `SyncStream` instance for a stream with optional parameters |
+| `stream.subscribe(options)` | Subscribe to the stream. Returns a `SyncStreamSubscription` |
+| `subscription.waitForFirstSync()` | Wait until the subscription has completed its initial sync |
+| `subscription.unsubscribe()` | Unsubscribe from the stream (data [remains cached](/sync/streams/client-usage#how-ttl-works) for TTL duration) |
+| `db.currentStatus.forStream(sub)` | Get sync status and progress for a subscription |

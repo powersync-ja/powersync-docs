@@ -1,13 +1,14 @@
 ---
 title: "Client Architecture"
+description: Learn how the PowerSync Client SDK manages connections, authentication, and the local SQLite database.
 ---
 
 The [PowerSync Client SDK](/client-sdks/overview) is embedded into a software application. 
 
-The Client SDK manages the client connection to the [PowerSync Service](/architecture/powersync-service), authenticating via a [JWT](/configuration/auth/overview). The connection between the client and the PowerSync Service is encrypted, and either uses HTTP streams or WebSockets (depending on the specific [Client SDK](/client-sdks/overview) being used)
+The Client SDK manages the client connection to your [PowerSync Service](/architecture/powersync-service) instance, authenticating via a [JWT](/configuration/auth/overview). The connection between the client and the PowerSync Service is encrypted, and either uses HTTP streams or WebSockets (depending on the specific [Client SDK](/client-sdks/overview) being used)
 
 
-The Client SDK provides access to a managed [SQLite](/resources/faq#why-does-powersync-use-sqlite-as-the-client-side-database) database that is automatically kept in sync with the backend source database via the PowerSync Service, based on the [Sync Rules](/sync/rules/overview) that are active on the PowerSync Service instance.
+The Client SDK provides access to a managed [SQLite](/resources/faq#why-does-powersync-use-sqlite-as-the-client-side-database) database that is automatically kept in sync with the backend source database via the PowerSync Service, based on the [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) that are active on the PowerSync Service instance.
 
 <Frame>
   <img src="/images/architecture/powersync-docs-diagram-client-architecture-002.png" />
@@ -16,39 +17,106 @@ The Client SDK provides access to a managed [SQLite](/resources/faq#why-does-pow
 
 ## Reading Data (SQLite)
 
-App clients always read data from the client-side [SQLite](https://sqlite.org/) database. When the user is online and the app is connected to the PowerSync Service, changes on the source database reflect in real-time in the SQLite database, and [Live Queries / Watch Queries](/client-sdks/watch-queries) allows the app UI to have real-time reactivity too.
+App clients always read data from the client-side [SQLite](https://sqlite.org/) database, regardless of whether the user is online or offline.
+
+When the user is online and the app is connected to the PowerSync Service, changes on the source database reflect in real-time in the SQLite database.
+
+[Live Queries / Watch Queries](/client-sdks/watch-queries) allows the app UI to have real-time reactivity too.
 
 
 ## Client-Side Schema and SQLite Database Structure
 
-When you implement the PowerSync Client SDK in your application, you need to define a [client-side schema](/intro/setup-guide#define-your-client-side-schema) with tables, columns and indexes that correspond to your [Sync Rules](/sync/rules/overview). You provide this schema when the PowerSync-managed SQLite database is [instantiated](/intro/setup-guide#instantiate-the-powersync-database).
+When you implement the PowerSync Client SDK in your application, you need to define a [client-side schema](/intro/setup-guide#define-your-client-side-schema) with tables, columns and indexes that correspond to your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). You provide this schema when the PowerSync-managed SQLite database is [instantiated](/intro/setup-guide#instantiate-the-powersync-database).
 
 The tables defined in your client-side schema are usable in SQL queries as if they were actual SQLite tables, while in reality they are created as _SQLite views_ based on the schemaless JSON data being synced (see [PowerSync Protocol](/architecture/powersync-protocol)).
 
 
 The PowerSync Client SDK automatically maintains the following tables in the SQLite database:
 
-1. `ps_data__<table>` - This contains the data for each "table", in JSON format. Since JSON is being used, this table's schema does not change when columns are added, removed or changed in the Sync Rules and client-side schema.
-
-2. `ps_data_local__<table>` - Same as the previous point, but for [local-only](/client-sdks/advanced/local-only-usage) tables.
-
-3. `<table>` (`VIEW`) - These are views on the above `ps_data` tables, with each defined column in the client-side schema extracted from the JSON. For example, a `description` text column would be `CAST(data ->> '$.description' as TEXT)`.
-
-4. `ps_untyped` - Any synced table that does is not defined in the client-side schema is placed here. If the table is added to the schema at a later point, the data is then migrated to `ps_data__<table>`.
-
-5. `ps_oplog` - This is operation history data as received from the [PowerSync Service](/architecture/powersync-service), grouped per bucket.
-
-6. `ps_crud` - The client-side upload queue (see [Writing Data](#writing-data) below)
-
-7. `ps_buckets` - A small amount of metadata for each bucket.
-
-8. `ps_migrations` - Table keeping track of Client SDK schema migrations.
+<table>
+  <thead>
+    <tr>
+      <th width="25%">
+        Table
+      </th>
+      <th>
+        Description
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        `ps_data__<table>`
+      </td>
+      <td>
+        This contains the data for each "table", in JSON format. Since JSON is being used, this table's schema does not change when columns are added, removed or changed in the Sync Streams (or legacy Sync Rules) and client-side schema.
+      </td>
+    </tr>
+    <tr>
+      <td>
+        `ps_data_local__<table>`
+      </td>
+      <td>
+        Same as the previous point, but for [local-only](/client-sdks/advanced/local-only-usage) tables.
+      </td>
+    </tr>
+    <tr>
+      <td>
+        `<table>` (`VIEW`)
+      </td>
+      <td>
+        These are views on the above `ps_data` tables, with each defined column in the client-side schema extracted from the JSON. For example, a `description` text column would be `CAST(data ->> '$.description' as TEXT)`.
+      </td>
+    </tr>
+    <tr>
+      <td>
+        `ps_untyped`
+      </td>
+      <td>
+        Any synced table that is not defined in the client-side schema is placed here. If the table is added to the schema at a later point, the data is then migrated to `ps_data__<table>`.
+      </td>
+    </tr>
+    <tr>
+      <td>
+        `ps_oplog`
+      </td>
+      <td>
+        This is the operation history data as received from the [PowerSync Service](/architecture/powersync-service), grouped per bucket.
+      </td>
+    </tr>
+    <tr>
+      <td>
+        `ps_crud`
+      </td>
+      <td>
+        The client-side upload queue (see [Writing Data](#writing-data-via-sqlite-database-and-upload-queue) below)
+      </td>
+    </tr>
+    <tr>
+      <td>
+        `ps_buckets`
+      </td>
+      <td>
+        A small amount of metadata for each bucket.
+      </td>
+    </tr>
+    <tr>
+      <td>
+        `ps_migrations`
+      </td>
+      <td>
+        Table keeping track of Client SDK schema migrations.
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 Most rows will be present in at least two tables — the `ps_data__<table>` table, and in `ps_oplog`. 
 
 The copy of the row in `ps_oplog` may be newer than the one in `ps_data__<table>`. This is because of the checkpoint system in PowerSync that gives the system its consistency properties. When a full [checkpoint](/architecture/consistency) has been downloaded, data is copied over from `ps_oplog` to the individual `ps_data__<table>` tables. 
 
-It is possible for different [buckets](/architecture/powersync-service#bucket-system) in Sync Rules to include overlapping data (for example, if multiple buckets query data from the same table). If rows with the same table and ID have been synced via multiple buckets, it may be present multiple times in `ps_oplog`, but only one will be preserved in the `ps_data__<table>` table (the one with the highest `op_id`).
+It is possible for different [buckets](/architecture/powersync-service#bucket-system) to include overlapping data (for example, if multiple buckets contain data from the same table). If rows with the same table and ID have been synced via multiple buckets, it may be present multiple times in `ps_oplog`, but only one will be preserved in the `ps_data__<table>` table (the one with the highest `op_id`).
 
 
 <Note>
@@ -68,7 +136,7 @@ The Client SDK processes the upload queue by invoking an `uploadData()` function
 
 The reason why we designed PowerSync this way is that it allows you to apply your own backend business logic, validations and authorization to any mutations going to your source database.
 
-The PowerSync Client SDK automatically takes care of network failures and retries. If processing the upload queue fails (e.g. because the user is offline), it is automatically retried.
+The PowerSync Client SDK automatically takes care of network failures and retries. If processing mutations in the upload queue fails (e.g. because the user is offline), it is automatically retried.
 
 <Frame>
   <img src="/images/architecture/powersync-docs-diagram-client-architecture-003.png" />

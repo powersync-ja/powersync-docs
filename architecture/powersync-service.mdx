@@ -1,28 +1,44 @@
 ---
 title: "PowerSync Service"
+description: Understand the PowerSync Service architecture, including the bucket system, data replication, and real-time streaming sync.
 ---
 
-When we say "PowerSync instance" we are referring to an instance of the [PowerSync Service](https://github.com/powersync-ja/powersync-service), which is the server-side component of the sync engine responsible for the _read path_ from the source database to client-side SQLite databases: The primary purposes of the PowerSync Service are (1) replicating data from your source database (Postgres, MongoDB, MySQL, SQL Server), and (2) streaming data to clients. Both of these happen based on your _Sync Rules_ or _Sync Streams_ configuration.
+When we say "PowerSync instance" we are referring to an instance of the [PowerSync Service](https://github.com/powersync-ja/powersync-service), which is the server-side component of the sync engine responsible for the _read path_ from the source database to client-side SQLite databases: The primary purposes of the PowerSync Service are (1) replicating data from your source database (Postgres, MongoDB, MySQL, SQL Server), and (2) streaming data to clients. Both of these happen based on your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)).
 
 
 ## Bucket System
 
 The concept of _buckets_ is core to PowerSync and its scalability.
 
-_Buckets_ are basically partitions of data that allows the PowerSync Service to efficiently query the correct data that a specific client needs to sync. 
+_Buckets_ are basically partitions of data that allow the PowerSync Service to efficiently query the correct data that a specific client needs to sync.
 
-When you define [Sync Rules](/sync/rules/overview), you define the <Tooltip tip="The term 'Sync Rules' basically refers to the set of all your bucket definitions.">different buckets that exist</Tooltip>, and you define which [parameters](/sync/rules/parameter-queries) are used for each bucket. 
+<Tabs>
+  <Tab title="Sync Streams">
+    With [Sync Streams](/sync/streams/overview), buckets are created **implicitly** based on your stream definitions, their queries, and subqueries. You don't need to understand or manage buckets directly — the PowerSync Service handles this automatically.
 
-<Note>**Sync Streams: Implicit Buckets**: In our new [Sync Streams](/sync/streams) system which is in [early alpha](/sync/overview), buckets and parameters are not explicitly defined, and are instead implicit based on the streams, their queries and subqueries.</Note>
+    For example, if you define a stream like:
+    ```yaml
+    streams:
+      user_lists:
+        auto_subscribe: true
+        query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+    ```
+    
+    PowerSync automatically creates the appropriate buckets internally based on the query parameters.
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    With legacy [Sync Rules](/sync/rules/overview), you explicitly define the <Tooltip tip="The term 'Sync Rules' basically refers to the set of all your bucket definitions.">buckets</Tooltip> using `bucket_definitions` and specify which [parameters](/sync/rules/overview#parameters) are used for each bucket.
+  </Tab>
+</Tabs>
 
-For example, let's say you have a bucket named `user_todo_lists` that contains the to-do lists for a user, and that bucket utilizes a `user_id` parameter (which will be embedded in the JWT) to scope those to-do lists. 
+### How Buckets Work
 
-Now let's say users with IDs `1`, `2` and `3` exist in the source database. PowerSync will then replicate data from the source database and create individual buckets with bucket IDs of `user_todo_lists["1"]`, `user_todo_lists["2"]` and `user_todo_lists["3"]`. 
+To understand how buckets enable efficient syncing, consider this example: Let's say you have data scoped to users — the to-do lists for each user. Based on the data that exists in your source database, PowerSync will create individual buckets for each user. If users with IDs `1`, `2`, and `3` exist in your source database, PowerSync will create buckets with IDs `user_todo_lists["1"]`, `user_todo_lists["2"]`, and `user_todo_lists["3"]`.
 
-If a user with `user_id=1` in its JWT connects to the PowerSync Service and syncs data, PowerSync can very efficiently look up the appropriate bucket to sync, i.e. `user_todo_lists["1"]`.
+When a user with `user_id=1` in their JWT connects to the PowerSync Service, PowerSync can very efficiently look up the appropriate bucket to sync, i.e. `user_todo_lists["1"]`.
 
 <Note>
-As you can see above, a bucket's definition name and set of parameter values together form its _bucket ID_, for example `user_todo_lists["1"]`. If a bucket makes use of multiple parameters, they are comma-separated in the bucket ID, for example `user_todos["user1","admin"]`
+With legacy Sync Rules, a bucket ID is formed from the bucket definition name and its parameter values, for example `user_todo_lists["1"]`. With Sync Streams, the bucket IDs are generated automatically based on your stream queries — you don't need to define and name buckets explicitly.
 </Note>
 
 
@@ -39,21 +55,21 @@ This also means that the PowerSync Service has to keep track of less state per-u
 
 Each bucket stores the _recent history_ of operations on each <Tooltip tip="PowerSync supports NoSQL source databases like MongoDB that have 'documents' rather than 'rows', but we often refer just to 'row' for brevity.">row</Tooltip>, not just the latest state of the row. 
 
-This is another core part of the PowerSync architecure — the PowerSync Service can efficiently query the _operations_ that each client needs to receive in order to be up to date. Tracking of operation history is also key to the data integrity and [consistency](/architecture/consistency) properties of PowerSync.
+This is another core part of the PowerSync architecture — the PowerSync Service can efficiently query the _operations_ that each client needs to receive in order to be up to date. Tracking of operation history is also key to the data integrity and [consistency](/architecture/consistency) properties of PowerSync.
 
-When a change occurs in the source database that affects a certain bucket (based on the Sync Rules or Sync Streams configuration), that change will be appended to the operation history in that bucket. Buckets are therefore treated as "append-only" data structures. That being said, to avoid an ever-growing operation history, the buckets can be [compacted](/maintenance-ops/compacting-buckets) (this is automatically done on PowerSync Cloud).
+When a change occurs in the source database that affects a certain bucket (based on your Sync Streams, or legacy Sync Rules), that change will be appended to the operation history in that bucket. Buckets are therefore treated as "append-only" data structures. That being said, to avoid an ever-growing operation history, the buckets can be [compacted](/maintenance-ops/compacting-buckets) (this is automatically done on PowerSync Cloud).
 
 
 ## Bucket Storage
 
-The PowerSync Service persists the bucket state in durable storage: there is a pluggable storage layer for bucket data, and MongoDB and Postgres are currently supported. We refer to this as the _bucket storage_ database and it is separate from the connection to your _source database_ (Postgres, MongoDB, MySQL or SQL Server). Our cloud-hosting offering (PowerSync Cloud) uses MongoDB Atlas as the _bucket storage_ database.
+The PowerSync Service persists the bucket state in durable storage: there is a pluggable storage layer for bucket data, and MongoDB and Postgres are currently supported as _bucket storage_ databases. The _bucket storage_ database is separate from the connection to your _source database_ (Postgres, MongoDB, MySQL or SQL Server). Our cloud-hosting offering (PowerSync Cloud) uses MongoDB Atlas as the _bucket storage_ database.
 
 Persisting the bucket state in a database is also part of how PowerSync achieves high scalability: it means that the PowerSync Service can have a low memory footprint even as you scale to very large volumes of synced data and users/clients.
 
 
 ## Replication From the Source Database
 
-As mentioned above, one of the primary purposes of the PowerSync Service is replicating data from the source database, based on the Sync Rules or Sync Streams configuration:
+As mentioned above, one of the primary purposes of the PowerSync Service is replicating data from the source database, based on your Sync Streams (or legacy Sync Rules):
 
 <Frame>
   <img src="/images/architecture/powersync-docs-diagram-client-architecture-001.png" />
@@ -61,13 +77,13 @@ As mentioned above, one of the primary purposes of the PowerSync Service is repl
 
 When the PowerSync Service replicates data from the source database, it:
 
-1. Pre-processes the data according to the [Sync Rules](/sync/rules/overview) or [Sync Streams](/sync/streams/overview), splitting data into _buckets_ (as explained above) and transforming the data if required.
+1. Pre-processes the data according to your [Sync Streams](/sync/streams/overview) (or [Sync Rules](/sync/rules/overview)), splitting data into _buckets_ (as explained above) and transforming the data if required.
 2. Persists each operation into the relevant buckets, ready to be streamed to clients.
 
 
 ### Initial Replication vs. Incremental Replication
 
-Whenever a new version of Sync Rules or Sync Streams are deployed, initial replication takes place by means of taking a snapshot of all tables/collections referenced in the Sync Rules / Streams.
+Whenever a new version of Sync Streams (or legacy Sync Rules) is deployed, initial replication takes place by means of taking a snapshot of all tables/collections they reference.
 
 After that, data is incrementally replicated using a change data capture stream (the specific mechanism depends on the source database type: Postgres logical replication, MongoDB change streams, the MySQL binlog, or SQL Server Change Data Capture).
 
@@ -78,7 +94,7 @@ As mentioned above, the other primary purpose of the PowerSync Service is stream
 
 The PowerSync Service authenticates clients/users using [JWTs](/configuration/auth/overview). Once a client/user is authenticated:
 
-1. The PowerSync Service calculates a list of buckets for the user to sync using [Parameter Queries](/sync/rules/parameter-queries).
+1. The PowerSync Service calculates a list of buckets for the user to sync based on their Sync Stream subscriptions (or [Parameter Queries](/sync/rules/parameter-queries) in legacy Sync Rules).
 2. The Service streams any operations added to those buckets since the last time the client/user connected.
 
 The Service then continuously monitors for buckets that are added or removed, as well as for new operations within those buckets, and streams those changes.
@@ -92,6 +108,5 @@ For more details on exactly how streaming sync works, see [PowerSync Protocol](/
 
 The repo for the PowerSync Service can be found here:
 
-<Card title="GitHub - powersync-service" horizontal icon="github" href="https://github.com/powersync-ja/powersync-service">
-</Card>
+<Card title="GitHub - powersync-service" horizontal icon="github" href="https://github.com/powersync-ja/powersync-service" />
 

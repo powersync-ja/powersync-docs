@@ -79,43 +79,35 @@ Clients auto-subscribe to `my_documents` when they connect, so the user's docume
 
 ### Syncing Related Data
 
-When a detail view needs data from multiple tables (like an issue and its comments), use a [CTE](/sync/streams/ctes) to define the authorization check once and reference it across streams. This avoids repeating the same subquery in every stream.
+When a detail view needs data from multiple tables (like an issue and its comments), use a [CTE](/sync/streams/ctes) and [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream) to define the authorization check once and sync both tables in one subscription.
 
 ```yaml
-with:
-  my_projects:
-    SELECT project_id FROM project_members WHERE user_id = auth.user_id()
-
 streams:
-  issue:
-    query: |
-      SELECT * FROM issues
-      WHERE id = subscription.parameter('issue_id')
-        AND project_id IN my_projects
-
-  issue_comments:
-    query: |
-      SELECT comments.* FROM comments
-        INNER JOIN issues ON comments.issue_id = issues.id
-      WHERE comments.issue_id = subscription.parameter('issue_id')
-        AND issues.project_id IN my_projects
+  issue_with_comments:
+    with:
+      my_projects: SELECT project_id FROM project_members WHERE user_id = auth.user_id()
+    queries:
+      - |
+        SELECT * FROM issues
+        WHERE id = subscription.parameter('issue_id')
+          AND project_id IN my_projects
+      - |
+        SELECT comments.* FROM comments
+          INNER JOIN issues ON comments.issue_id = issues.id
+        WHERE comments.issue_id = subscription.parameter('issue_id')
+          AND issues.project_id IN my_projects
 ```
 
-Subscribe to both streams when the user opens an issue:
+Subscribe once when the user opens an issue:
 
 ```js
 // When the user opens an issue view
-const issueSub = await db.syncStream('issue', { issue_id: issueId }).subscribe();
-const commentsSub = await db.syncStream('issue_comments', { issue_id: issueId }).subscribe();
+const issueSub = await db.syncStream('issue_with_comments', { issue_id: issueId }).subscribe();
 
-await Promise.all([
-  issueSub.waitForFirstSync(),
-  commentsSub.waitForFirstSync()
-]);
+await issueSub.waitForFirstSync();
 
 // Unsubscribe when the user navigates away
 issueSub.unsubscribe();
-commentsSub.unsubscribe();
 ```
 
 <Tip>
@@ -315,20 +307,11 @@ sub.unsubscribe();
 
 ### Project Management App
 
-This example shows a multi-tenant project management app where users can access public projects or projects they're members of. A CTE defines the "accessible projects" logic once, then reuses it across multiple streams.
+This example shows a multi-tenant project management app where users can access public projects or projects they're members of. Each stream that needs "accessible projects" defines a CTE in that stream (Sync Streams do not support a top-level `with` block).
 
 ```yaml
 config:
   edition: 3
-
-with:
-  # CTE for user's accessible projects
-  user_projects: |
-    SELECT id FROM projects
-    WHERE org_id = auth.parameter('org_id')
-      AND (is_public OR id IN (
-        SELECT project_id FROM project_members WHERE user_id = auth.user_id()
-      ))
 
 streams:
   # Organization data - always available
@@ -339,20 +322,33 @@ streams:
   # All accessible projects - always available for navigation
   projects:
     auto_subscribe: true
+    with:
+      user_projects: |
+        SELECT id FROM projects
+        WHERE org_id = auth.parameter('org_id')
+          AND (is_public OR id IN (
+            SELECT project_id FROM project_members WHERE user_id = auth.user_id()
+          ))
     query: SELECT * FROM projects WHERE id IN user_projects
 
-  # Project details - on demand when user opens a project
-  project_tasks:
-    query: |
-      SELECT * FROM tasks
-      WHERE project_id = subscription.parameter('project_id')
-        AND project_id IN user_projects
-
-  project_files:
-    query: |
-      SELECT * FROM files
-      WHERE project_id = subscription.parameter('project_id')
-        AND project_id IN user_projects
+  # Project details - on demand when user opens a project (one CTE, multiple queries)
+  project_details:
+    with:
+      user_projects: |
+        SELECT id FROM projects
+        WHERE org_id = auth.parameter('org_id')
+          AND (is_public OR id IN (
+            SELECT project_id FROM project_members WHERE user_id = auth.user_id()
+          ))
+    queries:
+      - |
+        SELECT * FROM tasks
+        WHERE project_id = subscription.parameter('project_id')
+          AND project_id IN user_projects
+      - |
+        SELECT * FROM files
+        WHERE project_id = subscription.parameter('project_id')
+          AND project_id IN user_projects
 ```
 
 Your backend should include `org_id` in the JWT — e.g. `{ "sub": "user-123", "org_id": "org-456" }`. Clients auto-subscribe to `org_info` and `projects` when they connect. Subscribe to project details when the user opens a project:
@@ -362,48 +358,46 @@ Your backend should include `org_id` in the JWT — e.g. `{ "sub": "user-123", "
 const projects = await db.getAll('SELECT * FROM projects');
 
 // When user opens a project
-const [tasksSub, filesSub] = await Promise.all([
-  db.syncStream('project_tasks', { project_id: projectId }).subscribe(),
-  db.syncStream('project_files', { project_id: projectId }).subscribe(),
-]);
-await Promise.all([tasksSub.waitForFirstSync(), filesSub.waitForFirstSync()]);
+const sub = await db.syncStream('project_details', { project_id: projectId }).subscribe();
+await sub.waitForFirstSync();
 
 // Unsubscribe when user navigates away
-tasksSub.unsubscribe();
-filesSub.unsubscribe();
+sub.unsubscribe();
 ```
 
 ### Organization Workspace (Using Multiple Queries)
 
-When several tables share the same access pattern, you can group them into a single stream using multiple queries. A single stream syncs data more efficiently and the client only needs to manage one subscription instead of multiple.
+When several tables share the same access pattern, you can group them into a single stream using multiple queries and a CTE. Sync is more efficient and the client only needs to manage one subscription instead of multiple.
 
 ```yaml
 config:
   edition: 3
 
-with:
-  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
-
 streams:
   # All org-level data syncs together in one stream
   org_data:
     auto_subscribe: true
+    with:
+      user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
     queries:
       - SELECT * FROM organizations WHERE id IN user_orgs
       - SELECT * FROM projects WHERE org_id IN user_orgs
       - SELECT * FROM team_members WHERE org_id IN user_orgs
 
-  # Project details - on demand
+  # Project details - on demand. CTE includes subscription.parameter so queries stay simple.
   project_details:
     with:
-      accessible_projects: SELECT id FROM projects WHERE org_id IN user_orgs
+      selected_project: |
+        SELECT projects.id FROM projects
+        INNER JOIN org_members ON org_members.org_id = projects.org_id AND org_members.user_id = auth.user_id()
+        WHERE projects.id = subscription.parameter('project_id')
     queries:
-      - SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id') AND project_id IN accessible_projects
-      - SELECT * FROM files WHERE project_id = subscription.parameter('project_id') AND project_id IN accessible_projects
-      - SELECT * FROM comments WHERE project_id = subscription.parameter('project_id') AND project_id IN accessible_projects
+      - SELECT * FROM tasks WHERE project_id IN selected_project
+      - SELECT * FROM files WHERE project_id IN selected_project
+      - SELECT * FROM comments WHERE project_id IN selected_project
 ```
 
-The `user_orgs` CTE looks up org membership from the database using `auth.user_id()`. Clients auto-subscribe to `org_data` when they connect. Subscribe to `project_details` when the user opens a project:
+The `user_orgs` CTE in `org_data` looks up org membership using `auth.user_id()`. In `project_details`, the CTE can include `subscription.parameter('project_id')` so it both authorizes (user must be in the project's org) and applies the selected project — the queries then just filter by `project_id IN selected_project`. Clients auto-subscribe to `org_data` when they connect. Subscribe to `project_details` when the user opens a project:
 
 ```js
 // org_data is already synced (auto_subscribe: true)
@@ -417,7 +411,7 @@ await sub.waitForFirstSync();
 sub.unsubscribe();
 ```
 
-The `project_details` stream uses a [stream-scoped CTE](/sync/streams/ctes#stream-scoped-ctes) and groups tasks, files, and comments for a specific project into a single subscription.
+The `project_details` stream uses a [CTE](/sync/streams/ctes) and groups tasks, files, and comments for a specific project into a single subscription.
 
 ## Demo Apps
 

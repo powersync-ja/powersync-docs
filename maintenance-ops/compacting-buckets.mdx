@@ -1,0 +1,185 @@
+---
+title: "Compacting Buckets"
+description: "[Buckets](/architecture/powersync-service#bucket-system) store data as a history of changes, not only the current state."
+---
+
+This allows clients to download incremental changes efficiently — only changed rows have to be downloaded. However, over time this history can grow large, causing new clients to potentially take a long time to download the initial set of data. To handle this, we compact the history of each bucket.
+
+## Compacting
+
+### PowerSync Cloud
+
+The cloud-hosted version of PowerSync will automatically compact all buckets once per day.
+
+Support to manually trigger compacting is available in the [PowerSync Dashboard](https://dashboard.powersync.com/): Select your project and instance, go to the **Settings** view, and click the **Compact** button in the "Compact operation history" section. Support to trigger compacting from the [CLI](/tools/cli) will be added soon.
+
+[Defragmenting](/maintenance-ops/compacting-buckets#defragmenting) may still be required.
+
+### Self-hosted PowerSync
+
+For self-hosted setups (PowerSync Open Edition & PowerSync Enterprise Self-Hosted Edition), the `compact` command in the Docker image can be used to compact all buckets. This can be run manually, or on a regular schedule using Kubernetes [CronJob](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/) or similar scheduling functionality.
+
+[Defragmenting](/maintenance-ops/compacting-buckets#defragmenting) may still be required.
+
+## Background
+
+### Bucket operations
+
+Each bucket is an ordered list of `PUT`, `REMOVE`, `MOVE` and `CLEAR` operations. In normal operation, only `PUT` and `REMOVE` operations are created.
+
+A simplified view of a bucket may look like this:
+
+```bash
+(1, PUT, row1, <data>)
+(2, PUT, row2, <data>)
+(3, PUT, row1, <data>)
+(4, REMOVE, row2)
+```
+
+### Compacting step 1 - MOVE operations
+
+The first step of compacting involves `MOVE` operations. This just indicates that an operation is not needed anymore, since a later `PUT` or `REMOVE` operation replaces the row.
+
+After this compact step, the bucket may look like this:
+
+```bash
+(1, MOVE)
+(2, MOVE)
+(3, PUT, row1, <data>)
+(4, REMOVE, row2)
+```
+
+This does not reduce the number of operations to download, but can reduce the amount of data to download.
+
+### Compacting step 2 - CLEAR operations
+
+The second step of compacting takes a sequence of `CLEAR`, `MOVE` and/or `REMOVE` operations at the start of the bucket, and replaces them all with a single `CLEAR` operation. The `CLEAR` operation indicates to the client that "this is the start of the bucket, delete any prior operations that you may have".
+
+After this compacting step, the bucket may look like this:
+
+```bash
+(2, CLEAR)
+(3, PUT, row1, <data>)
+(4, REMOVE, row2)
+```
+
+This reduces the number of operations for new clients to download in some cases.
+
+The `CLEAR` operation can only remove operations at the start of the bucket, not in the middle of the bucket, which leads us to the next step.
+
+### Defragmenting
+
+There are cases that the above compacting steps cannot optimize efficiently. The key factor is that the oldest PUT operation in a bucket determines how much of the history can be compacted. This means:
+
+1. If a row has never been updated since its initial creation, its original PUT operation remains at the start of the bucket
+2. All operations that come after this oldest PUT cannot be fully compacted
+3. This is particularly problematic when you have:
+   - A small number of rarely-changed rows in the same bucket as frequently-updated rows
+   - The rarely-changed rows' original PUT operations "block" compacting of the entire bucket
+   - The frequently-updated rows continue to accumulate operations that can't be fully compacted
+
+For example, imagine this sequence of statements:
+
+```sql
+-- Insert a single row that rarely changes
+INSERT INTO lists(name) VALUES('a');
+-- Insert 50k rows that change frequently
+INSERT INTO lists (name) SELECT 'b' FROM generate_series(1, 50000);
+-- Delete those 50k rows, but keep 'a'
+DELETE FROM lists WHERE name = 'b';
+```
+
+After compacting, the bucket looks like this:
+
+```bash
+(1, PUT, row_1, <data>)  -- This original PUT blocks further compacting
+(2, MOVE)
+(3, MOVE)
+...
+(50001, MOVE)
+(50002, REMOVE, row2)
+(50003, REMOVE, row3)
+...
+(100001, REMOVE, row50000)
+```
+
+This is inefficient because:
+1. The original PUT operation for row 'a' remains at the start
+2. All subsequent operations can't be fully compacted
+3. We end up with over 100k operations for what should be a simple bucket
+
+To handle this case, we "defragment" the bucket by updating existing rows in the source database. This creates new PUT operations at the end of the bucket, allowing the compact steps to efficiently compact the entire history:
+
+```sql
+-- Touch all rows to create new PUT operations
+UPDATE lists SET name = name;
+-- OR touch specific rows at the start of the bucket
+UPDATE lists SET name = name WHERE name = 'a';
+```
+
+After defragmenting and compacting, the bucket looks like this:
+
+```bash
+(100001, CLEAR)
+(100002, PUT, row_1, <data>)
+```
+
+The bucket is now back to two operations, allowing new clients to sync efficiently.
+
+<Note>
+Note: All rows in the bucket must be updated for this to be effective. If some rows are never updated, they will continue to block compacting of the entire bucket.
+</Note>
+
+<Tip>
+**Bucket Design Tip**: If you have a mix of frequently-updated and rarely-changed rows, consider splitting them into separate buckets. This prevents the rarely-changed rows from blocking compacting of the frequently-updated ones.
+</Tip>
+
+### When to Defragment
+
+You should consider defragmenting your buckets when:
+
+1. **High Operations-to-Rows Ratio**: If you notice that the number of operations significantly exceeds the number of rows in a bucket. You can inspect this using the [Sync Diagnostics Client](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app).
+2. **Frequent Updates**: Tables that are frequently updated (e.g., status fields, counters, or audit logs)
+3. **Large Data Churn**: Tables where you frequently insert and delete many rows
+
+### Defragmenting Strategies
+
+There are manual and automated approaches to defragmenting:
+
+1. **Manual Defragmentation**
+   - Use the [PowerSync Dashboard](https://dashboard.powersync.com/) to manually trigger defragmentation: Select your project and instance, go to the **Settings** view, and click the **Defragment** button in the "Compact operation history" section
+   - Best for one-time cleanup or after major data changes
+
+2. **Scheduled Defragmentation**
+   - Set up a cron job to regularly update rows
+   - Recommended for frequently updated tables or tables with large churn
+   - Example using pg_cron:
+   ```sql
+   -- Daily defragmentation for high-churn tables
+   UPDATE audit_logs SET last_updated = now() 
+   WHERE last_updated < now() - interval '1 day';
+   
+   -- Weekly defragmentation for other tables
+   UPDATE users SET last_updated = now() 
+   WHERE last_updated < now() - interval '1 week';
+   ```
+   - This will cause clients to re-sync each updated row, while preventing the number of operations from growing indefinitely. Depending on how often rows in the bucket are modified, the interval can be increased or decreased.
+
+### Defragmenting Trade-offs
+
+Defragmenting + compacting as described above can significantly reduce the number of operations in a bucket, at the cost of existing clients needing to re-sync that data. When and how to do this depends on the specific use-case and data update patterns.
+
+Key considerations:
+1. **Frequency**: More frequent defragmentation means fewer operations per sync but more frequent re-syncs
+2. **Scope**: Defragmenting all rows at once is more efficient but causes a larger sync cycle
+3. **Monitoring**: Use the [Sync Diagnostics Client](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) to track operations-to-rows ratio
+
+## Sync Rule deployments
+
+Whenever modifications to [Sync Rules](/sync/rules/overview) are deployed, all buckets are re-created from scratch. This has a similar effect to fully defragmenting and compacting all buckets. This was recommended as a workaround before explicit compacting became available ([released July 26, 2024](https://releases.powersync.com/announcements/bucket-compacting)).
+
+In the future, we may use [incremental sync rule reprocessing](https://roadmap.powersync.com/c/85-more-efficient-sync-reprocessing) to process changed bucket definitions only.
+
+## Technical details
+
+See the [documentation](https://github.com/powersync-ja/powersync-service/blob/main/docs/compacting-operations.md) in the `powersync-service` repo for more technical details on compacting.

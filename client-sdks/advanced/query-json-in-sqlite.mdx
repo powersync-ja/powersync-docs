@@ -1,0 +1,454 @@
+---
+title: "Querying JSON Data in SQLite"
+description: "How to query JSON data synced from your backend and stored as strings in SQLite"
+---
+
+# Overview
+
+When syncing data from your backend source database to PowerSync, JSON columns (whether from MongoDB documents, PostgreSQL JSONB columns, or other JSON data types) are stored as `TEXT` in SQLite. See the [type mapping guide](/sync/types) for more details. This guide shows you how to effectively query and filter JSON data using SQLite's powerful JSON functions on the client.
+
+## Understanding JSON Storage in PowerSync
+
+Your backend source database might store structured data as JSON in various ways:
+- **MongoDB**: Nested documents and arrays
+- **PostgreSQL**: JSONB, JSON, array, or custom types
+- **MySQL**: JSON columns
+- **SQL Server**: JSON columns
+
+Regardless of the source, PowerSync syncs these JSON structures to SQLite as `TEXT` columns. On the client side, you can query this data using SQLite's built-in JSON functions without needing to parse it yourself. Learn more about [how PowerSync handles JSON, arrays, and custom types](/client-sdks/advanced/custom-types-arrays-and-json#javascript).
+
+## Example Data Structure
+
+Let's use a task management system where tasks have nested metadata:
+```json
+{
+  "id": "task_123",
+  "title": "Redesign homepage",
+  "assignees": [
+    {
+      "user_id": "user_001",
+      "role": "designer",
+      "hours_allocated": 20
+    },
+    {
+      "user_id": "user_002", 
+      "role": "developer",
+      "hours_allocated": 40
+    }
+  ],
+  "tags": ["urgent", "frontend", "design"],
+  "metadata": {
+    "priority": 1,
+    "sprint": "2024-Q1",
+    "dependencies": ["task_100", "task_101"]
+  }
+}
+```
+
+In SQLite, the `assignees`, `tags`, and `metadata` columns are stored as JSON strings. For details on how different backend types map to SQLite, see [database types and mapping](/sync/types).
+
+## JSON Extraction Basics
+
+### Standard [`json_extract()`](https://sqlite.org/json1.html#jex) Function
+
+Extract values from JSON using path expressions:
+```sql
+SELECT 
+  id,
+  title,
+  json_extract(metadata, '$.priority') AS priority,
+  json_extract(metadata, '$.sprint') AS sprint
+FROM tasks;
+```
+
+**Path syntax:**
+- `$` - root element
+- `.` - object member access
+- `[index]` - array element access
+
+### Shorthand: The -> and ->> Operators
+
+SQLite provides convenient [shorthand operators](https://sqlite.org/json1.html#jptr) for JSON extraction:
+
+```sql
+SELECT 
+  id,
+  title,
+  metadata -> '$.dependencies' AS dependencies_array,  -- maintains JSON array
+  metadata ->> '$.sprint' AS sprint
+FROM tasks;
+```
+
+**The difference between [-> and ->>](https://sqlite.org/json1.html#jptr):**
+- `->` returns JSON (preserves type information, quotes strings)
+- `->>` extracts the value unquoted (strings as TEXT, numbers/booleans as their native types)
+```sql
+-- Using -> (returns JSON)
+SELECT metadata -> '$.priority' FROM tasks;
+-- Result: 1 (as a SQLite TEXT value)
+
+-- Using ->> (returns parsed value)   
+SELECT metadata ->> '$.priority' FROM tasks;
+-- Result: 1 (as a SQLite INTEGER value)
+
+-- For strings, the difference is clearer:
+SELECT metadata -> '$.sprint' FROM tasks;
+-- Result: "2024-Q1" (with quotes, as JSON)
+
+SELECT metadata ->> '$.sprint' FROM tasks;
+-- Result: 2024-Q1 (without quotes, as text)
+```
+
+<Tip>
+**When to use which:**
+- Use `->>` when extracting **final values** for display or comparison
+- Use `->` when extracting **intermediate JSON** for further processing
+- `->>` preserves data types (numbers stay numbers, not strings)
+</Tip>
+
+### Nested Path Access
+
+Access deeply nested values:
+```sql
+-- All three are equivalent:
+json_extract(metadata, '$.dependencies[0]')
+metadata -> '$.dependencies[0]'
+metadata -> '$.dependencies' -> '$[0]'
+```
+
+## Querying Arrays with [`json_each()`](https://sqlite.org/json1.html#jeach)
+
+### Flattening Simple Arrays
+
+For the `tags` array, use `json_each()` to create one row per element:
+```sql
+SELECT 
+  t.id,
+  t.title,
+  tag.value AS tag
+FROM tasks t,
+     json_each(t.tags) AS tag
+WHERE tag.value = 'urgent';
+```
+
+**What's happening:**
+- `json_each(t.tags)` creates a virtual table with one row per tag
+- `tag.value` contains each individual tag string
+- You can filter, join, or aggregate these expanded rows
+
+### Querying Nested Objects in Arrays
+
+For complex objects like `assignees`:
+```sql
+SELECT 
+  t.id,
+  t.title,
+  assignee.value ->> '$.user_id' AS user_id,
+  assignee.value ->> '$.role' AS role,
+  assignee.value -> '$.hours_allocated' AS hours
+FROM tasks t,
+     json_each(t.assignees) AS assignee
+WHERE (assignee.value ->> '$.role') = 'developer';
+```
+
+**Key points:**
+- Each `assignee.value` is a JSON object representing one assignee
+- Use `->>` to extract text values for comparison
+- Use `->` when you need numeric values for calculations
+
+## Real-World Query Examples
+
+### Example 1: Finding Tasks by Assignee
+
+**Use case:** Show all tasks assigned to a specific user.
+```sql
+SELECT DISTINCT
+  t.id,
+  t.title,
+  t.metadata ->> '$.priority' AS priority
+FROM tasks t,
+     json_each(t.assignees) AS assignee
+WHERE (assignee.value ->> '$.user_id') = 'user_001'
+ORDER BY t.metadata ->> '$.priority';
+```
+
+### Example 2: Calculating Total Hours by Role
+
+**Use case:** Aggregate hours across all tasks grouped by role.
+```sql
+SELECT 
+  assignee.value ->> '$.role' AS role,
+  SUM(assignee.value ->> '$.hours_allocated') AS total_hours,
+  COUNT(DISTINCT t.id) AS task_count
+FROM tasks t,
+     json_each(t.assignees) AS assignee
+GROUP BY role
+ORDER BY total_hours DESC;
+```
+
+### Example 3: Tasks with Specific Tags
+
+**Use case:** Find tasks tagged with multiple specific tags.
+```sql
+-- Tasks with BOTH 'urgent' AND 'frontend' tags
+SELECT DISTINCT t.*
+FROM tasks t
+WHERE EXISTS (
+  SELECT 1 FROM json_each(t.tags) 
+  WHERE value = 'urgent'
+)
+AND EXISTS (
+  SELECT 1 FROM json_each(t.tags)
+  WHERE value = 'frontend'
+);
+```
+
+Or using a simpler approach for single tags:
+```sql
+-- Tasks with 'urgent' tag
+SELECT *
+FROM tasks t,
+     json_each(t.tags) AS tag
+WHERE tag.value = 'urgent';
+```
+
+### Example 4: Filtering by Array Contents
+
+**Use case:** Find tasks that depend on a specific task ID.
+```sql
+SELECT *
+FROM tasks t,
+     json_each(t.metadata -> '$.dependencies') AS dep
+WHERE dep.value = 'task_100';
+```
+
+### Example 5: Checking for Array Membership
+
+**Use case:** Check if a task has any dependencies.
+```sql
+SELECT 
+  id,
+  title,
+  json_array_length(metadata -> '$.dependencies') AS dep_count
+FROM tasks
+WHERE json_array_length(metadata -> '$.dependencies') > 0;
+```
+
+## Working with Comma or Delimiter-Separated Values
+
+Sometimes JSON strings contain delimiter-separated values (like `"NYC;LAX;MIA"`). Here's how to query them efficiently:
+```sql
+-- Assume tasks have a field: "approved_by": "user_001;user_002;user_003"
+
+-- Find tasks approved by a specific user
+SELECT *
+FROM tasks
+WHERE instr(
+  ';' || (metadata ->> '$.approved_by') || ';',
+  ';user_001;'
+) > 0;
+```
+
+**Why this pattern works:**
+- Wraps the value: `";user_001;user_002;user_003;"`
+- Searches for `;user_001;` ensuring exact delimiter-bounded match
+- Prevents false matches (won't match "user_0011" when searching for "user_001")
+
+**Avoid `LIKE` for delimited strings:**
+```sql
+-- ❌ WRONG - can match partial values
+WHERE (metadata ->> '$.approved_by') LIKE '%user_001%'
+-- This would incorrectly match "user_0011" or "user_001_archive"
+
+-- ✅ CORRECT - exact delimiter match
+WHERE instr(';' || (metadata ->> '$.approved_by') || ';', ';user_001;') > 0
+```
+
+## Advanced Techniques
+
+### Using CTEs for Cleaner Queries
+
+Common Table Expressions make complex JSON queries more readable:
+```sql
+WITH task_assignees AS (
+  SELECT 
+    t.id,
+    t.title,
+    assignee.value ->> '$.user_id' AS user_id,
+    assignee.value ->> '$.role' AS role,
+    assignee.value ->> '$.hours_allocated' AS hours
+  FROM tasks t,
+       json_each(t.assignees) AS assignee
+)
+SELECT 
+  user_id,
+  role,
+  SUM(hours) AS total_hours,
+  COUNT(*) AS assignment_count
+FROM task_assignees
+WHERE hours > 10
+GROUP BY user_id, role;
+```
+
+### Combining Multiple JSON Arrays
+
+Query across multiple nested arrays:
+```sql
+SELECT DISTINCT
+  t.id,
+  t.title,
+  assignee.value ->> '$.user_id' AS assigned_to,
+  tag.value AS tag
+FROM tasks t,
+     json_each(t.assignees) AS assignee,
+     json_each(t.tags) AS tag
+WHERE tag.value IN ('urgent', 'high-priority')
+  AND assignee.value ->> '$.role' = 'developer';
+```
+
+<Warning>
+**Cartesian product warning:** When using multiple `json_each()` calls, you create a Cartesian product. A task with 3 assignees and 4 tags creates 12 rows. Use `DISTINCT` when needed and filter early to minimize row expansion.
+</Warning>
+
+### Checking for Key Existence
+
+Verify if a JSON key exists:
+```sql
+-- Check if 'sprint' key exists
+SELECT *
+FROM tasks
+WHERE json_extract(metadata, '$.sprint') IS NOT NULL;
+
+-- Or using shorthand
+SELECT *
+FROM tasks  
+WHERE metadata -> '$.sprint' IS NOT NULL;
+```
+
+## Performance Optimization
+
+**Important Performance Considerations**
+
+1. **Index JSON columns for better performance**: If you frequently query JSON fields, add indexes to the JSON string columns in your `AppSchema`:
+```typescript
+const tasks = new Table(
+  {
+    id: column.text,
+    title: column.text,
+    metadata: column.text,
+    tags: column.text,
+  },
+  { 
+    indexes: { 
+      tagsIndex: ['tags']
+    } 
+  }
+);
+```
+
+2. **Minimize `json_each()` usage**: Each `json_each()` call expands rows. For a table with 10,000 tasks averaging 5 assignees each, you're processing 50,000 rows.
+
+3. **Use EXISTS for membership checks**: More efficient than joining:
+```sql
+-- ✅ BETTER for large datasets
+SELECT * FROM tasks t
+WHERE EXISTS (
+  SELECT 1 FROM json_each(t.tags) WHERE value = 'urgent'
+);
+
+-- vs joining which creates all row combinations
+```
+
+4. **Cache extracted values in CTEs**: Extract once, use multiple times:
+```sql
+WITH task_metrics AS (
+  SELECT 
+    t.id,
+    t.title,
+    t.metadata,
+    COUNT(assignee.value) AS assignee_count,
+    SUM(assignee.value ->> '$.hours_allocated') AS total_hours
+  FROM tasks t,
+       json_each(t.assignees) AS assignee
+  GROUP BY t.id, t.title, t.metadata
+)
+SELECT *
+FROM task_metrics
+WHERE metadata ->> '$.sprint' = '2024-Q1' 
+  AND assignee_count > 1
+ORDER BY total_hours DESC;
+```
+
+## Useful JSON Functions
+
+Beyond extraction, SQLite offers many JSON utilities:
+```sql
+-- Get array length
+SELECT json_array_length(tags) FROM tasks;
+
+-- Check JSON validity
+SELECT json_valid(metadata) FROM tasks;
+
+-- Get all object keys
+SELECT json_each.key, json_each.value
+FROM tasks,
+     json_each(tasks.metadata)
+WHERE id = 'task_123';
+
+-- Get JSON type of a value
+SELECT json_type(metadata -> '$.priority') FROM tasks;
+-- Returns: 'integer', 'text', 'array', 'object', 'null', etc.
+
+-- Aggregate JSON arrays
+SELECT json_group_array(tag.value)
+FROM tasks t,
+     json_each(t.tags) AS tag
+WHERE t.id = 'task_123';
+```
+
+## Common Gotchas
+
+**Watch out for these common issues:**
+
+1. **NULL vs missing keys**: `json_extract()` returns `NULL` for non-existent paths. Always check for NULL:
+```sql
+WHERE COALESCE(metadata ->> '$.priority', 999) = 1
+```
+
+2. **Type mismatches**:
+```sql
+-- ❌ String comparison (wrong!)
+WHERE metadata -> '$.priority' > 5
+
+-- ✅ BEST: Use ->> for direct numeric extraction
+WHERE metadata ->> '$.priority' > 5
+```
+
+3. **Array index bounds**: Out-of-bounds array access returns NULL, not an error:
+```sql
+SELECT metadata -> '$.dependencies[99]' -- Returns NULL if not enough elements
+```
+
+4. **Quotes in JSON strings**: Use `->>` to get unquoted text, not `->`:
+```sql
+-- ❌ Returns: "2024-Q1" (with quotes)
+WHERE metadata -> '$.sprint' = '2024-Q1' 
+
+-- ✅ Returns: 2024-Q1 (without quotes)  
+WHERE metadata ->> '$.sprint' = '2024-Q1'
+```
+
+5. **Performance on large arrays**: `json_each()` on arrays with thousands of elements can be slow. Consider data restructuring for such cases.
+
+## Summary
+
+Querying JSON data in SQLite effectively requires:
+- Understanding that JSON is stored as strings but queryable with built-in functions
+- Using `json_extract()` or the shorthand `->` and `->>` operators
+- Leveraging `json_each()` to flatten arrays for filtering and aggregation
+- Being mindful of type conversions and NULL handling
+- Optimizing queries by filtering early and considering denormalization for critical paths
+
+With these techniques, you can query complex nested data structures synced from your backend while maintaining good performance on mobile and edge devices.
+
+For complete SQLite JSON function reference, see the [SQLite JSON documentation](https://www.sqlite.org/json1.html).

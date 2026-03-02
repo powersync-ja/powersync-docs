@@ -64,6 +64,7 @@ We use the following icons for supported backend databases and SDKs:
 - Postgres: `icon="elephant"`
 - MongoDB: `icon="leaf"`
 - MySQL: `icon="dolphin"`
+- SQL Server: `icon="server"`
 - Flutter: `icon="flutter"`
 - React Native: `icon="react"`
 - Web: `icon="js"`
@@ -71,6 +72,7 @@ We use the following icons for supported backend databases and SDKs:
 - Swift: `icon="swift"`
 - Node.js: `icon="node-js"`
 - .NET: `icon="microsoft"`
+- Rust: `icon="rust"`
 
 ### Useful References
 

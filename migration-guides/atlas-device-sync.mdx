@@ -1,0 +1,137 @@
+---
+title: "MongoDB Atlas Device Sync Migration Guide"
+description: "This guide lays out all the steps of migrating from MongoDB Atlas Device Sync to PowerSync."
+sidebarTitle: "MongoDB Atlas Device Sync Migration Guide"
+---
+
+## Introduction
+
+Migrating from the deprecated MongoDB Atlas Device Sync to PowerSync allows you to benefit from efficient data synchronization using open and proven technologies. Users get always-available, instantly-responsive offline-first apps that also stream data updates in real-time when online.
+
+## Why PowerSync?
+
+PowerSync’s [history](https://www.powersync.com/company) goes as far back as 2009, when the original version of the sync engine was developed as part of an app development platform used by some of the world’s largest industrial companies to power offline-capable apps deployed in harsh environments.
+
+PowerSync was spun off as a standalone product in 2023, and gives engineering teams a proven, open and robust sync engine with a familiar **server-client** [architecture](/architecture/architecture-overview).
+
+PowerSync’s MongoDB connector has been **developed in collaboration with MongoDB** to provide an easy setup process. It reached **General Availability (GA) status** with its [V1 release](https://www.powersync.com/blog/powersyncs-mongodb-connector-hits-ga-with-version-1-0) and is fully supported for production use. Multiple MongoDB customers currently use PowerSync in production environments.
+
+The server-side [PowerSync Service](/architecture/powersync-service) connects to MongoDB and pre-processes and pre-indexes data to be efficiently synced to users based on defined _Sync Rules_. Client applications embedding the _PowerSync Client SDK_ connect to the PowerSync Service to sync only a relevant subset of data to each user, based on the Sync Rules. Incremental updates in MongoDB are synced to clients in real-time.
+
+Client applications get a SQLite database that they can read from and write to. PowerSync provides for bi-directional syncing so that mutations in the client-side SQLite database are automatically synced back to the source MongoDB database. If users are offline or have patchy connectivity, PowerSync automatically manages network failures and retries.
+
+By introducing PowerSync as a sync engine, you get:
+* **Predictable sync behavior** that syncs relevant data to each user.
+* **Instantly responsive user experience**  as the app works with a zero-latency SQLite database.
+* **Consistency guarantees** ensuring consistent state of the client-side SQLite database.
+* **Real-time multi-user applications** as data updates are streamed to connected clients in real-time.
+* **Offline-first capabilities** enabling apps to continue to work regardless of network conditions.
+
+Please review this guide to understand the required changes and prerequisites. Following the provided steps will help your team transition smoothly.
+
+If you need further assistance at any point, you can:
+* **Ask AI** (see lower right corner of this site), which is trained on all our documentation, repositories and Discord discussions. 
+* [Set up a call](https://calendly.com/powersync/powersync-chat) with us.
+* Ask us anything on our [Discord server](https://discord.gg/powersync).
+* [Contact us](mailto:hello@powersync.com) through email.
+
+## Architecture: Before and After
+If you have MongoDB Atlas Device Sync deployed today, at a high level your architecture will look something like this:
+
+<img src="/images/migration-guides/mongodb-before.png" />
+
+Migrating to PowerSync results in this architecture: (new components in green)
+
+<img src="/images/migration-guides/mongodb-after.png" />
+
+Here is a quick overview of the resulting PowerSync architecture:
+* The **PowerSync Service** is the server-side component of PowerSync. It's available as a cloud-hosted service ([PowerSync Cloud](https://powersync.com/pricing)), or you can [self-host](/intro/self-hosting) using our Open Edition.
+* **Authentication**: PowerSync piggybacks off your app’s existing [authentication](/configuration/auth/overview), and JWTs are used to authenticate between clients and the PowerSync Service. If you are using Atlas Device SDKs for authentication, you will need to implement an authentication provider.
+* **PowerSync Client SDKs** use **SQLite** under the hood. Even though MongoDB is a "NoSQL" document database, PowerSync’s use of SQLite works well with MongoDB, since the [PowerSync protocol](/architecture/powersync-protocol) is schemaless (it syncs schemaless JSON data) and we dynamically apply a [client-side schema](/intro/setup-guide#define-your-client-side-schema) to the data in SQLite using SQLite views. Client-side queries can be written in SQL or you can make use of an ORM (we provide a few [ORM integrations](https://www.powersync.com/blog/using-orms-with-powersync)). Working with embedded documents and arrays from MongoDB is easy with SQLite due to [its JSON support](/client-sdks/advanced/query-json-in-sqlite).
+* **Reads vs Writes**: PowerSync handles syncing of reads differently from writes (mutations)
+   * **Reads**: The PowerSync Service connects to your MongoDB database for real-time replication of data, and syncs data to clients based on the [Sync Rules](/sync/rules/overview) configuration. Sync Rules are more flexible than MongoDB Realm Flexible Sync, but are defined on the server-side, not on the client-side.
+   * **Writes**: The client-side application can perform writes (mutations) directly on the SQLite database. The PowerSync Client SDK automatically places those mutations into an [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) and invokes an `uploadData()` function (defined by you) as needed to upload those mutations sequentially to your backend application.
+* **Authorization**: Authorization is controlled separately for reads vs. writes.
+   * **Reads**: The [Sync Rules](/sync/rules/overview) control which users can access which data.
+   * **Writes**: Your backend application controls authorization for how users can modify data, when it receives uploaded mutations from clients.
+* **Backend Application**: PowerSync requires a backend API interface to upload mutations to MongoDB (and optionally for custom authentication too). There are currently two options:
+   * **"Bring your own backend"**: If you already have a backend application as part of your stack, you should use your existing backend. If you don’t yet have one, but would like to run your own backend, we have example implementations available. See the [instructions below](#2-accept-uploads-on-the-backend) for more details.
+   * **Serverless cloud functions (hosted/managed)**: An alternative option is to use CloudCode, a serverless cloud functions environment provided by PowerSync. We have a template available that you can use as a turnkey starting point. Details are [explained below](#2-accept-uploads-on-the-backend).
+
+
+## Migration Steps
+
+Follow the steps below to migrate a MongoDB Atlas Device Sync app to PowerSync.
+
+<Note>
+   It is not necessary to remove Realm in order to install PowerSync. It is possible to initially run Realm and PowerSync in parallel, and remove Realm once PowerSync has been set up.
+</Note>
+
+### 1. Follow the PowerSync Setup Guide
+
+Follow the steps for MongoDB and your client platform/framework in our standard [Setup Guide](/intro/setup-guide):
+
+* [Configure Your Source Database](/intro/setup-guide#1-configure-your-source-database)
+* [Set Up PowerSync Service Instance](/intro/setup-guide#2-set-up-powersync-service-instance)
+* [Connect PowerSync To Your Source Database](/intro/setup-guide#3-connect-powersync-to-your-source-database) (MongoDB)
+* [Define Basic Sync Rules](/intro/setup-guide#4-define-basic-sync-rules)
+* [Generate a Development Token](/intro/setup-guide#5-generate-a-development-token)
+* [Test Sync with the Sync Diagnostics Client](/intro/setup-guide#6-%5Boptional%5D-test-sync-with-the-sync-diagnostics-client)
+* [Use the Client SDK](/intro/setup-guide#7-use-the-client-sdk)
+  * [Install the Client SDK](/intro/setup-guide#install-the-client-sdk)
+  * [Define Your Client-Side Schema](/intro/setup-guide#define-your-client-side-schema)
+  * [Instantiate the PowerSync Database](/intro/setup-guide#instantiate-the-powersync-database)
+  * [Connect to PowerSync Service Instance](/intro/setup-guide#connect-to-powersync-service-instance)
+  * [Read and Write Data (Using SQLite)](/intro/setup-guide#read-data)
+
+<Tip>For specific details on working with embedded documents and arrays from MongoDB, see our guide on [Querying JSON Data in SQLite](/client-sdks/advanced/query-json-in-sqlite)</Tip>
+
+Once you have completed the _Setup Guide_, the only two remaining steps are to configure & integrate a backend application to handle mutations uploaded from clients, and to implement authentication.
+
+
+### 2. Accept Uploads on the Backend
+
+MongoDB Atlas Device Sync provides built-in writes/uploads to the MongoDB database.
+
+PowerSync offers [full customizability](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) regarding how writes (mutations) are applied to the source MongoDB database, via your own application backend. This gives you control to apply your own business logic, data validations, authorization and conflict resolution logic.
+
+There are two options:
+
+* **"Bring your own backend"**: If you already have a backend application as part of your stack, you should use your existing backend. This can be any kind of backend environment including a custom backend (e.g. Node.js, Rails, Laravel, Django, ASP.NET), an API platform (e.g. Hasura), some kind of serverless cloud functions (e.g. Azure Functions, AWS Lambda, Google Cloud Functions, Cloudflare Workers, etc.), or any other equivalent system that allows you to run privileged logic securely or apply mutations to your MongoDB database securely. If you don’t yet have a backend application, but would like to run your own backend environment, we have example implementations available (see below). 
+* **Serverless cloud functions (hosted/managed)**: PowerSync offers serverless cloud functions hosted on the same infrastructure as PowerSync Cloud which can be used for the needed backend functionality. We provide a MongoDB-specific template for this which can be used as a turnkey solution.
+
+#### Using Your Own Custom Backend API
+
+This option gives you complete control over the backend. The simplest backend implementation is to simply apply mutations to MongoDB as they are received, which results in a last-write-wins conflict resolution strategy. See [App Backend Setup](/configuration/app-backend/setup) and [Writing Client Changes](/handling-writes/writing-client-changes) for more details.
+
+We have [example backend implementations](/intro/examples#backend-examples) available (e.g. Node.js, Django, Rails, .NET).
+
+<Tip>The [Migrating A MongoDB Atlas Device Sync App To PowerSync](https://www.powersync.com/blog/migrating-a-mongodb-atlas-device-sync-app-to-powersync) practical example on our blog also provides an example of a custom Node.js backend implementation.</Tip>
+
+On the client-side, you need to wire up the `uploadData()` function in the "backend connector" to use your own backend API. The [Client-Side Integration With Your Backend](/configuration/app-backend/client-side-integration) section of our docs provides more details on this.
+
+
+#### Using PowerSync’s Serverless Cloud Functions
+
+PowerSync provides serverless cloud functions for backend functionality, with a template available for MongoDB. See the [step-by-step instructions](/configuration/app-backend/cloudcode) on how to use the template. The template can be customized, or it can be used as-is.
+
+The template provides [turnkey conflict resolution](https://www.powersync.com/blog/turnkey-backend-functionality-conflict-resolution-for-powersync#turnkey-conflict-resolution) which roughly matches the built-in conflict resolution behavior provided by MongoDB Atlas Device Sync.
+
+<Note>PowerSync's serverless cloud functions require a bit of "white glove" assistance from our team. If you want to use this option, please [get in touch with us](https://www.powersync.com/contact) so we can get you set up.</Note>
+
+For more information, see our blog post: [Turnkey Backend Functionality & Conflict Resolution for PowerSync](https://www.powersync.com/blog/turnkey-backend-functionality-conflict-resolution-for-powersync).
+
+
+### 3. Set Up Authentication Integration
+
+For quick development and testing purposes, the _Setup Guide_ from step 1 instructions you to generate a temporary development token to use for authentication.
+
+At some point you will need to replace the development tokens with proper JWT-based authentication integration. PowerSync supports various authentication providers including Supabase, Firebase Auth, Auth0, Clerk, and custom JWT implementations.
+
+The [Authentication Setup](/configuration/auth/overview) section of our docs provides full details on this.
+
+
+## Questions? Need help?
+
+* **Ask AI** (see lower right corner of this site), which is trained on all our documentation, repositories and Discord discussions. 
+* [Get in touch](https://www.powersync.com/contact) with us.

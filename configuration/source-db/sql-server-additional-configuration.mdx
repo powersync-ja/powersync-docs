@@ -1,0 +1,97 @@
+---
+title: "SQL Server Additional Configuration"
+---
+
+## Introduction
+
+Some additional configuration for the SQL Server Adapter is available to users who are self-hosting the PowerSync Service.
+
+## Connect to Azure SQL Database using a Service Principal
+
+As an alternative to using standard SQL Login via username and password, PowerSync can connect to your Azure SQL Database using a Service Principal.
+
+Update your `config.yaml` file to use the Service Principal for authentication:
+
+```yaml config.yaml
+# Settings for source database replication
+replication:
+  connections:
+    - type: mssql
+      database: <YOUR_DATABASE_NAME>
+      schema: <YOUR_SCHEMA_NAME> # Optional, defaults to dbo
+      hostname: <YOUR_HOSTNAME>
+      port: 1433 # Default port for SQL Server
+
+      authentication:
+        type: azure-active-directory-service-principal-secret
+        options:
+          clientId: <YOUR_CLIENT_ID>
+          tenantId: <YOUR_TENANT_ID>
+          clientSecret: <YOUR_CLIENT_SECRET>
+```
+
+<Accordion title="Set up a Service Principal for Azure SQL Database">
+
+### Create a New App Registration
+
+1. Go to the [Azure portal](https://portal.azure.com/) and navigate to **App registrations** >.
+2. Click **New registration**.
+3. Fill in the required fields:
+   - **Name**: Give your app user a name, e.g. "powersync_user".
+   - **Redirect URI**: Leave this blank.
+   - **Supported account types**: Select **Accounts in this organizational directory only**.
+4. Click **Register**.
+5. Copy the **Application (Client) ID** and **Directory (Tenant) ID**.
+
+### Create a Client Secret
+
+1. Navigate to the app registration you created in the previous step.
+2. In the left navigation menu, under **Manage**, click **Certificates & secrets**.
+3. Click **New client secret**.
+4. Fill in the required fields:
+   - **Description**: Enter a description for the secret
+   - **Expires**: Select an expiration date
+5. Click **Add**.
+6. **Important**: Copy the **Value** - this is the client secret and will not be shown again.
+
+### Configure the Database User
+
+1. Connect to the SQL Server database using an account with administrative privileges.
+2. Create a new user linked to the app registration:
+
+```sql
+CREATE USER [powersync_user] FROM EXTERNAL PROVIDER;
+```
+
+3. Complete the rest of the user setup by following the instructions in [Source Database Setup](/configuration/source-db/setup#2-create-the-powersync-database-user).
+
+</Accordion>
+
+## Additional Configuration Options
+
+The below configuration options can be set in the `additionalConfig` section under the `connections` section of the `config.yaml` file.
+
+<Note>
+  All of these configuration options are optional and can be omitted if the
+  default values are acceptable.
+</Note>
+
+**pollingIntervalMs**:
+The polling interval is the frequency at which the PowerSync SQL Server Adapter polls the SQL Server Change tables for changes.
+Lowering this value helps reduce latency in the replication process, but also increases the load on the SQL Server database and the PowerSync Service.
+
+**pollingBatchSize**
+The polling batch size is the number of transactions that the PowerSync SQL Server Adapter will process in each polling cycle.
+Increasing this value can increase throughput at the cost of increased memory usage. If the volume of transactions being replicated is high, and memory is available, it is recommended to increase this value.
+
+**trustServerCertificate**:
+Whether to trust the server certificate. Set to true for local development and self-signed certificates. Set to false when connecting to Azure SQL Database.
+
+```yaml config.yaml
+connections:
+  - type: mssql
+    additionalConfig:
+      pollingIntervalMs: 1000 # Default is 1000ms
+      pollingBatchSize: 10 # Default is 10
+      trustServerCertificate: false # Default is false
+```

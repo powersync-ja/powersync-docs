@@ -1,6 +1,6 @@
 ---
 title: "Guide: Sync Data by Time"
-description: "Learn how to sync data by time in Sync Rules."
+description: "Learn how to sync data by time using Sync Streams or legacy Sync Rules."
 sidebarTitle: "Sync Data by Time"
 ---
 
@@ -8,21 +8,27 @@ A common need in offline-first apps is syncing data based on time, for example, 
 You might expect to write something like:
 
 ```yaml
-bucket_definitions
-    issues_after_start_date:
-        parameters: SELECT request.parameters() ->> 'start_at' as start_at
-        data: SELECT * FROM issues WHERE updated_at > bucket.start_date
+# Sync Streams
+streams:
+  issues_after_start_date:
+  query: SELECT * FROM issues WHERE updated_at > subscription.parameter('start_at')
+
+# Sync Rules
+bucket_definitions:
+  issues_after_start_date:
+    parameters: SELECT request.parameters() ->> 'start_at' as start_at
+    data: SELECT * FROM issues WHERE updated_at > bucket.start_date
 ```
 
 However, this won't work. Here's why.
 
 # The Problem
 
-Sync rules only support a limited set of [operators](https://docs.powersync.com/usage/sync-rules/operators-and-functions) when filtering on parameters. You can use `=`, `IN`, and `IS NULL`, but not range operators like `>`, `<`, `>=`, or `<=`.
+PowerSync pre-computes and caches which rows belong to which parameters to enable efficient streaming. This means parameter-based filtering is limited to equality checks (`=`, `IN`, `IS NULL`) — range operators like `>`, `<`, `>=`, or `<=` are not supported on parameters.
 
-Additionally, sync rule functions must be deterministic. Time-based functions like `now()` aren't allowed because the result changes depending on when the query runs.
+Additionally, time-based functions like `now()` aren't allowed in parameter expressions because the result changes depending on when the query runs, making pre-computation impossible.
 
-These constraints exist for good reason, they ensure buckets can be pre-computed and cached efficiently. But they make time-based filtering less obvious to implement.
+These constraints apply to both Sync Streams and legacy Sync Rules.
 
 This guide covers a few practical workarounds.
 
@@ -45,26 +51,73 @@ Update it periodically using a cron job (e.g., with pg_cron):
 UPDATE issues SET updated_this_week = (updated_at > now() - interval '7 days');
 ```
 
-```yaml
-bucket_definitions:
-  recent_issues:
-    data:
-      - SELECT * FROM issues WHERE updated_this_week = true
-```
-For multiple time ranges, add multiple columns and let the client choose which bucket to sync:
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      recent_issues:
+        auto_subscribe: true
+        query: SELECT * FROM issues WHERE updated_this_week = true
+    ```
 
-```yaml
-bucket_definitions:
-  issues_1week:
-    parameters: SELECT WHERE request.parameters() ->> 'range' = '1week'
-    data:
-      - SELECT * FROM issues WHERE updated_this_week = true
+    For multiple time ranges, define a stream per range and let the client subscribe to the one it needs:
 
-  issues_1month:
-    parameters: SELECT WHERE request.parameters() ->> 'range' = '1month'
-    data:
-      - SELECT * FROM issues WHERE updated_this_month = true
-```
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      issues_1week:
+        query: SELECT * FROM issues WHERE updated_this_week = true
+
+      issues_1month:
+        query: SELECT * FROM issues WHERE updated_this_month = true
+    ```
+
+    The client subscribes to the desired range:
+
+    ```javascript
+    // Subscribe to one-week range
+    await db.syncStream('issues_1week').subscribe();
+    // Or subscribe to one-month range
+    await db.syncStream('issues_1month').subscribe();
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    bucket_definitions:
+      recent_issues:
+        data:
+          - SELECT * FROM issues WHERE updated_this_week = true
+    ```
+
+    For multiple time ranges, add multiple bucket definitions and let the client choose which bucket to sync:
+
+    ```yaml
+    bucket_definitions:
+      issues_1week:
+        parameters: SELECT WHERE request.parameters() ->> 'range' = '1week'
+        data:
+          - SELECT * FROM issues WHERE updated_this_week = true
+
+      issues_1month:
+        parameters: SELECT WHERE request.parameters() ->> 'range' = '1month'
+        data:
+          - SELECT * FROM issues WHERE updated_this_month = true
+    ```
+
+    The client passes the desired range as a client parameter:
+
+    ```javascript
+    await db.connect(connector, {
+        params: {
+            range: '1week',
+        },
+    })
+    ```
+  </Tab>
+</Tabs>
 
 This approach works well when you have a small, fixed set of time ranges. However, it requires schema changes and a scheduled job to keep the columns updated.
 
@@ -80,22 +133,46 @@ Instead of pre-defined ranges, create a bucket for each date and let the client 
 
 Use `substring` to extract the date portion from a timestamp and match it with `=`:
 
-```sql
-bucket_definitions:
-  issues_by_update_at:
-    parameters: SELECT value as date FROM json_each(request.parameters() ->> 'dates')
-    data:
-      - SELECT * FROM issues WHERE substring(updated_at, 1, 10) = bucket.date
-```
-The client then passes the dates it wants as connection params:
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      issues_by_date:
+        query: SELECT * FROM issues WHERE substring(updated_at, 1, 10) = subscription.parameter('date')
+    ```
 
-```javascript
-await db.connect(connector, {
-    params: {
-        dates: ["2026-01-07", "2026-01-08", "2026-01-09"],
-    },
-})
-```
+    The client subscribes once per date it wants to sync:
+
+    ```javascript
+    await db.syncStream('issues_by_date', { date: '2026-01-07' }).subscribe();
+    await db.syncStream('issues_by_date', { date: '2026-01-08' }).subscribe();
+    await db.syncStream('issues_by_date', { date: '2026-01-09' }).subscribe();
+    ```
+
+    Each subscription can be managed independently — you can subscribe and unsubscribe to individual dates without affecting others.
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    bucket_definitions:
+      issues_by_update_at:
+        parameters: SELECT value as date FROM json_each(request.parameters() ->> 'dates')
+        data:
+          - SELECT * FROM issues WHERE substring(updated_at, 1, 10) = bucket.date
+    ```
+
+    The client passes the dates it wants as client parameters:
+
+    ```javascript
+    await db.connect(connector, {
+        params: {
+            dates: ["2026-01-07", "2026-01-08", "2026-01-09"],
+        },
+    })
+    ```
+  </Tab>
+</Tabs>
 
 This gives users full control over which dates to sync, with no schema changes or scheduled jobs required.
 
@@ -109,38 +186,71 @@ You have to pick a granularity and stick with it. If that's a problem—say, you
 
 ## 3: Multiple Granularities
 
-Combine multiple granularities in a single bucket definition. This lets you use larger buckets (days) for older data and smaller buckets (hours, minutes) for recent data.
+Combine multiple granularities in a single definition. This lets you use larger buckets (days) for older data and smaller buckets (hours, minutes) for recent data.
 
-```yaml
-bucket_definitions:
-  issues_by_time:
-    parameters: SELECT value as partition FROM json_each(request.parameters() ->> 'partitions')
-    data:
-      # By day (e.g., "2026-01-07")
-      - SELECT * FROM issues WHERE substring(updated_at, 1, 10) = bucket.partition
-      # By hour (e.g., "2026-01-07T14")
-      - SELECT * FROM issues WHERE substring(updated_at, 1, 13) = bucket.partition
-      # By 10 minutes (e.g., "2026-01-07T14:3")
-      - SELECT * FROM issues WHERE substring(updated_at, 1, 15) = bucket.partition
-```
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    config:
+      edition: 3
+    streams:
+      issues_by_partition:
+        queries:
+          # By day (e.g., "2026-01-07")
+          - SELECT * FROM issues WHERE substring(updated_at, 1, 10) = subscription.parameter('partition')
+          # By hour (e.g., "2026-01-07T14")
+          - SELECT * FROM issues WHERE substring(updated_at, 1, 13) = subscription.parameter('partition')
+          # By 10 minutes (e.g., "2026-01-07T14:3")
+          - SELECT * FROM issues WHERE substring(updated_at, 1, 15) = subscription.parameter('partition')
+    ```
 
-The client then mixes granularities as needed:
+    The client subscribes once per partition, mixing granularities as needed:
 
-```javascript
-await db.connect(connector, {
-    params: {
-        partitions: [
-            "2026-01-05",
-            "2026-01-06",
-            "2026-01-07T10",
-            "2026-01-07T11",
-            "2026-01-07T12:0",
-            "2026-01-07T12:1",
-            "2026-01-07T12:2"
-        ]
-    },
-})
-```
+    ```javascript
+    await db.syncStream('issues_by_partition', { partition: '2026-01-05' }).subscribe();
+    await db.syncStream('issues_by_partition', { partition: '2026-01-06' }).subscribe();
+    await db.syncStream('issues_by_partition', { partition: '2026-01-07T10' }).subscribe();
+    await db.syncStream('issues_by_partition', { partition: '2026-01-07T11' }).subscribe();
+    await db.syncStream('issues_by_partition', { partition: '2026-01-07T12:0' }).subscribe();
+    await db.syncStream('issues_by_partition', { partition: '2026-01-07T12:1' }).subscribe();
+    await db.syncStream('issues_by_partition', { partition: '2026-01-07T12:2' }).subscribe();
+    ```
+
+    Each query naturally acts as a filter based on the length of the partition value — a day-format partition only matches the day query, an hour-format partition only matches the hour query, and so on.
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    bucket_definitions:
+      issues_by_time:
+        parameters: SELECT value as partition FROM json_each(request.parameters() ->> 'partitions')
+        data:
+          # By day (e.g., "2026-01-07")
+          - SELECT * FROM issues WHERE substring(updated_at, 1, 10) = bucket.partition
+          # By hour (e.g., "2026-01-07T14")
+          - SELECT * FROM issues WHERE substring(updated_at, 1, 13) = bucket.partition
+          # By 10 minutes (e.g., "2026-01-07T14:3")
+          - SELECT * FROM issues WHERE substring(updated_at, 1, 15) = bucket.partition
+    ```
+
+    The client then mixes granularities as needed:
+
+    ```javascript
+    await db.connect(connector, {
+        params: {
+            partitions: [
+                "2026-01-05",
+                "2026-01-06",
+                "2026-01-07T10",
+                "2026-01-07T11",
+                "2026-01-07T12:0",
+                "2026-01-07T12:1",
+                "2026-01-07T12:2"
+            ]
+        },
+    })
+    ```
+  </Tab>
+</Tabs>
 
 This syncs January 5–6 by day, the morning of January 7 by hour, and the last 30 minutes in 10-minute chunks, without creating hundreds of buckets.
 
@@ -156,7 +266,7 @@ Each row belongs to multiple buckets (replication overhead). Re-sync overhead wh
 
 # Conclusion
 
-Time-based sync is a common need, but current sync rules don't support range operators or time-based functions directly.
+Time-based sync is a common need, but PowerSync doesn't support range operators or time-based functions on parameters directly.
 To recap the workarounds:
 
 - **Pre-defined time ranges** — Simplest option. Use when you have a fixed set of time ranges and don't mind schema changes.

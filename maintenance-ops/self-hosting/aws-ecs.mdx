@@ -23,6 +23,11 @@ Your configuration must include:
 - [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)): Define which data to sync to clients
 - [Client Auth](/configuration/auth/overview): Your authentication provider's JWKS
 - [Source Database](/configuration/source-db/setup): Connection details for your source database
+- [Telemetry](/maintenance-ops/self-hosting/telemetry): Enable the Prometheus metrics endpoint for connection-based auto-scaling (used in the [Auto Scaling](#auto-scaling-high-availability-setup) section):
+  ```yaml
+  telemetry:
+    prometheus_port: 9090
+  ```
 - [Bucket Storage](/configuration/powersync-service/self-hosted-instances#bucket-storage-database): Connection details for your bucket storage database. PowerSync supports MongoDB or Postgres as bucket storage databases. In this guide, we focus on MongoDB.
   <Tabs>
   <Tab title="MongoDB Atlas">
@@ -66,7 +71,7 @@ AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 # Set your VPC ID (or create a new VPC)
 VPC_ID="vpc-xxxxx"
 # Set PowerSync version (check Docker Hub for latest: https://hub.docker.com/r/journeyapps/powersync-service/tags)
-PS_VERSION="1.19.0" 
+PS_VERSION="1.20.0" 
 ```
 
 ### VPC Architecture Overview
@@ -479,10 +484,10 @@ aws route53 change-resource-record-sets \
 Store your PowerSync configuration and connection strings securely in AWS Secrets Manager. This allows you to reference them in your ECS task definition without hardcoding sensitive information.
 
 ```bash
-# Store config
+# Store config (base64-encoded, as required by the POWERSYNC_CONFIG_B64 env variable)
 aws secretsmanager create-secret \
   --name powersync/config \
-  --secret-string file://powersync.yaml
+  --secret-string "$(base64 -i powersync.yaml)"
 
 # Store connection strings
 
@@ -551,9 +556,46 @@ aws iam put-role-policy \
     }]
   }'
 
-# Save role ARN
+# Create task role (used by running containers for CloudWatch metrics publishing)
+aws iam create-role \
+  --role-name PowerSyncTaskRole \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+
+# Wait for role to propagate
+sleep 10
+
+# Add CloudWatch permissions for the CW Agent sidecar to publish metrics
+aws iam put-role-policy \
+  --role-name PowerSyncTaskRole \
+  --policy-name CloudWatchMetrics \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData",
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "*"
+    }]
+  }'
+
+TASK_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/PowerSyncTaskRole"
+echo "Task Role ARN: $TASK_ROLE_ARN"
+
+# Save role ARNs
 TASK_EXECUTION_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/PowerSyncTaskExecutionRole"
 echo "Task Execution Role ARN: $TASK_EXECUTION_ROLE_ARN"
+echo "Task Role ARN: $TASK_ROLE_ARN"
 ```
 
 ### Create Cluster
@@ -566,7 +608,7 @@ aws ecs create-cluster \
 
 ### Register Task Definition
 
-The task definitions below allocate **2 vCPU and 2GB memory** per container. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended baseline: 1 vCPU, 1GB memory).
+The task definitions below allocate **2 vCPU and 4GB memory** per container. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended baseline: 1 vCPU, 2GB memory). Note that [AWS Fargate enforces specific CPU/memory combinations](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#task_size) — for example, 2 vCPU (2048 CPU units) requires at least 4GB (4096 MiB) memory.
 
 <Tabs>
 
@@ -583,7 +625,7 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
     "networkMode": "awsvpc",
     "requiresCompatibilities": ["FARGATE"],
     "cpu": "2048",
-    "memory": "2048",
+    "memory": "4096",
     "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
     "containerDefinitions": [
       {
@@ -595,7 +637,7 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
           {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
         ],
         "secrets": [
-          {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+          {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
           {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
           {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
           {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
@@ -619,6 +661,67 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
 
   **Create API Task Definition**
 
+  The API task definition includes a **CloudWatch Agent sidecar** that scrapes Prometheus metrics from the PowerSync container and publishes them to CloudWatch. This enables [connection-based auto-scaling](#auto-scaling-high-availability-setup).
+
+  <Info>
+  The CloudWatch Agent sidecar adds ~256MB memory overhead. The task definition below allocates 4096MB total (shared between both containers). If you need more headroom, increase the task memory to 5120MB or 6144MB.
+  </Info>
+
+  First, create the CloudWatch Agent configuration. This tells the agent to scrape the PowerSync Prometheus endpoint on `localhost:9090` and publish the `powersync_concurrent_connections` metric to CloudWatch:
+
+  ```bash
+  cat > cw-agent-config.json <<'CWEOF'
+  {
+    "logs": {
+      "metrics_collected": {
+        "prometheus": {
+          "log_group_name": "/ecs/powersync-api/prometheus",
+          "prometheus_config_path": "env:PROMETHEUS_CONFIG_CONTENT",
+          "emf_processor": {
+            "metric_namespace": "PowerSync",
+            "metric_declaration": [
+              {
+                "source_labels": ["job"],
+                "label_matcher": "powersync",
+                "dimensions": [["ClusterName", "TaskId"]],
+                "metric_selectors": [
+                  "^powersync_concurrent_connections$"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+  CWEOF
+  ```
+
+  Store the CloudWatch Agent config in SSM Parameter Store:
+
+  ```bash
+  aws ssm put-parameter \
+    --name "/ecs/powersync/cwagent-config" \
+    --type "String" \
+    --value file://cw-agent-config.json \
+    --overwrite
+
+  # Grant the execution role access to read the SSM parameter
+  aws iam put-role-policy \
+    --role-name PowerSyncTaskExecutionRole \
+    --policy-name SSMParameterAccess \
+    --policy-document '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Action": ["ssm:GetParameters"],
+        "Resource": "arn:aws:ssm:'$AWS_REGION':'$AWS_ACCOUNT_ID':parameter/ecs/powersync/*"
+      }]
+    }'
+  ```
+
+  Now create the API task definition with both the PowerSync container and the CloudWatch Agent sidecar:
+
   ```bash
   cat > api-task-definition.json <<EOF
   {
@@ -626,8 +729,9 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
     "networkMode": "awsvpc",
     "requiresCompatibilities": ["FARGATE"],
     "cpu": "2048",
-    "memory": "2048",
+    "memory": "4096",
     "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+    "taskRoleArn": "$TASK_ROLE_ARN",
     "containerDefinitions": [
       {
         "name": "powersync-api",
@@ -642,7 +746,7 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
           {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
         ],
         "secrets": [
-          {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+          {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
           {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
           {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
         ],
@@ -661,14 +765,46 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
           "timeout": 5,
           "retries": 3,
           "startPeriod": 60
-        }
+        },
+        "stopTimeout": 120
+      },
+      {
+        "name": "cloudwatch-agent",
+        "image": "public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest",
+        "essential": false,
+        "environment": [
+          {
+            "name": "PROMETHEUS_CONFIG_CONTENT",
+            "value": "global:\n  scrape_interval: 30s\n  scrape_timeout: 10s\nscrape_configs:\n  - job_name: powersync\n    static_configs:\n      - targets:\n          - localhost:9090\n"
+          }
+        ],
+        "secrets": [
+          {
+            "name": "CW_CONFIG_CONTENT",
+            "valueFrom": "arn:aws:ssm:$AWS_REGION:$AWS_ACCOUNT_ID:parameter/ecs/powersync/cwagent-config"
+          }
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/powersync-api/cwagent",
+            "awslogs-region": "$AWS_REGION",
+            "awslogs-stream-prefix": "ecs",
+            "awslogs-create-group": "true"
+          }
+        },
+        "memory": 256
       }
     ]
   }
   EOF
-
+  
   aws ecs register-task-definition --cli-input-json file://api-task-definition.json
   ```
+
+  <Note>
+  The Prometheus port (9090) is **not** exposed through the ALB — it is only accessible within the task via `localhost` (ECS `awsvpc` networking). The CloudWatch Agent sidecar scrapes metrics locally every 30 seconds and publishes them to CloudWatch.
+  </Note>
 
   </Tab>
 
@@ -684,7 +820,7 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
     "family": "powersync-service",
     "networkMode": "awsvpc",
     "requiresCompatibilities": ["FARGATE"],
-    "cpu": "2048",
+    "cpu": "1024",
     "memory": "2048",
     "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
     "containerDefinitions": [
@@ -700,7 +836,7 @@ The task definitions below allocate **2 vCPU and 2GB memory** per container. You
           {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
         ],
         "secrets": [
-          {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+          {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
           {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
           {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
           {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
@@ -888,7 +1024,7 @@ cat > compact-task-definition.json <<EOF
         {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
       ],
       "secrets": [
-        {"name": "POWERSYNC_CONFIG", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+        {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
         {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"}
       ],
       "logConfiguration": {
@@ -973,9 +1109,33 @@ aws events put-targets \
 
 ### Auto Scaling (High-Availability Setup)
 
-<Note>
-  The auto-scaling configuration below only scales based on CPU usage. We are working on expanding this page with additional details on how to also auto-scale based on the number of concurrent connections per API pod. As seen in the [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) documentation, it is recommended to have 1 API pod per 100 concurrent client connections.
-</Note>
+PowerSync API containers are limited to 200 concurrent connections each, with a recommended target of **100 connections or less per container** (see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture)). Because PowerSync sync connections are long-lived (hours or days), CPU utilization alone may not reflect the actual connection load — a container can be near its connection limit while CPU remains relatively low. For this reason, we recommend scaling on **both CPU utilization and concurrent connections**.
+
+<Warning>
+**ALB metrics are not suitable for PowerSync scaling.** Metrics like `ALBRequestCountPerTarget` track request rate (requests per second), but PowerSync sync connections are long-lived HTTP streams or WebSockets — a single request stays open for hours or days. Similarly, `ActiveConnectionCount` tracks total connections across the entire ALB, not per target. Use the `powersync_concurrent_connections` Prometheus metric instead.
+</Warning>
+
+#### Prerequisites
+
+Connection-based auto-scaling requires:
+
+1. **Prometheus metrics enabled** in your `powersync.yaml` (see [Step 1](#1-powersync-configuration)):
+   ```yaml
+   telemetry:
+     prometheus_port: 9090
+   ```
+2. **CloudWatch Agent sidecar** deployed in the API task definition (configured in [Step 6](#6-ecs-task-definition)). The sidecar scrapes the `powersync_concurrent_connections` metric from the PowerSync Prometheus endpoint and publishes it to CloudWatch under the `PowerSync` namespace.
+3. **IAM permissions** for the task role to publish CloudWatch metrics (configured in [Step 6](#6-ecs-task-definition)).
+
+#### Register Scalable Target
+
+Set the minimum and maximum number of API tasks. Calculate your minimum capacity based on expected peak connections:
+
+```
+min_tasks = ceil(peak_concurrent_connections / 100)
+```
+
+For example, if you expect up to 500 concurrent connections, set `min-capacity` to 5:
 
 ```bash
 aws application-autoscaling register-scalable-target \
@@ -984,7 +1144,13 @@ aws application-autoscaling register-scalable-target \
   --scalable-dimension ecs:service:DesiredCount \
   --min-capacity 2 \
   --max-capacity 10
+```
 
+#### Scaling Policy 1: CPU Utilization
+
+This policy scales based on average CPU utilization across API tasks:
+
+```bash
 aws application-autoscaling put-scaling-policy \
   --service-namespace ecs \
   --resource-id service/powersync-cluster/powersync-api \
@@ -993,9 +1159,126 @@ aws application-autoscaling put-scaling-policy \
   --policy-type TargetTrackingScaling \
   --target-tracking-scaling-policy-configuration '{
     "TargetValue": 70.0,
-    "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"}
+    "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"},
+    "ScaleInCooldown": 300,
+    "ScaleOutCooldown": 120
   }'
 ```
+
+#### Scaling Policy 2: Concurrent Connections
+
+This policy scales based on the average number of concurrent sync connections per task, using the custom metric published by the CloudWatch Agent sidecar:
+
+```bash
+aws application-autoscaling put-scaling-policy \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-api \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-name connection-scaling \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration '{
+    "TargetValue": 80.0,
+    "CustomizedMetricSpecification": {
+      "MetricName": "powersync_concurrent_connections",
+      "Namespace": "PowerSync",
+      "Statistic": "Average"
+    },
+    "ScaleInCooldown": 300,
+    "ScaleOutCooldown": 120
+  }'
+```
+
+<Info>
+**How dual policies work:** Both policies operate independently — ECS scales to whichever policy demands the *higher* number of tasks. For example, if CPU-based scaling wants 3 tasks but connection-based scaling wants 5, ECS runs 5 tasks.
+</Info>
+
+**Key configuration values:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `TargetValue` (connections) | 80 | 40% of the 200 max connection limit per container. This matches PowerSync Cloud's scaling strategy and provides headroom before the hard limit. |
+| `TargetValue` (CPU) | 70.0 | Scale before CPU saturation impacts sync stream performance. |
+| `ScaleOutCooldown` | 120s | New Fargate tasks take 1–3 minutes to start, pass health checks, and begin accepting connections. A shorter cooldown risks triggering multiple scale-out events before the first new task is ready. |
+| `ScaleInCooldown` | 300s | Prevents rapid scale-in oscillations. When a task is removed, its clients reconnect to remaining tasks, causing a temporary connection spike. The cooldown allows this spike to settle. |
+
+#### Scale-In Behavior
+
+Scaling in (removing tasks) terminates active sync connections on the affected tasks. PowerSync client SDKs handle reconnection automatically, but there will be a brief interruption for affected clients.
+
+**What happens during scale-in:**
+
+1. ECS deregisters the task from the ALB target group — new connections are routed to other tasks
+2. The ALB [deregistration delay](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-target-groups.html#deregistration-delay) allows existing connections to drain (default: 300s). Since sync streams never complete naturally, connections are forcefully closed after this timeout.
+3. ECS sends `SIGTERM` to the container — PowerSync closes all active sync streams gracefully
+4. After the `stopTimeout` period (configured to 120s in the task definition), ECS sends `SIGKILL`
+5. Disconnected clients automatically reconnect to remaining healthy tasks
+
+To adjust the deregistration delay:
+
+```bash
+aws elbv2 modify-target-group-attributes \
+  --target-group-arn $TG_ARN \
+  --attributes Key=deregistration_delay.timeout_seconds,Value=300
+```
+
+#### Verify Auto-Scaling
+
+After configuring both policies, verify they are active:
+
+```bash
+# List scaling policies
+aws application-autoscaling describe-scaling-policies \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-api \
+  --query 'ScalingPolicies[*].[PolicyName,PolicyType,TargetTrackingScalingPolicyConfiguration.TargetValue]' \
+  --output table
+
+# Check the custom metric is being published (may take a few minutes after deployment)
+aws cloudwatch list-metrics \
+  --namespace "PowerSync" \
+  --metric-name "powersync_concurrent_connections"
+
+# View scaling activity
+aws application-autoscaling describe-scaling-activities \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-api \
+  --query 'ScalingActivities[*].[StatusCode,Description,StartTime]' \
+  --output table
+```
+
+<Accordion title="Alternative: Fixed Capacity (No Custom Metrics)">
+
+If you prefer not to set up the CloudWatch Agent sidecar and custom metrics, you can calculate a fixed minimum task count based on your expected peak connections:
+
+```bash
+# Formula: min_tasks = ceil(peak_concurrent_connections / 100)
+# Example: 500 peak connections → 5 tasks minimum
+
+aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-api \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 5 \
+  --max-capacity 10
+
+# Use CPU-only scaling policy
+aws application-autoscaling put-scaling-policy \
+  --service-namespace ecs \
+  --resource-id service/powersync-cluster/powersync-api \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-name cpu-scaling \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration '{
+    "TargetValue": 70.0,
+    "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"},
+    "ScaleInCooldown": 300,
+    "ScaleOutCooldown": 120
+  }'
+```
+
+This approach is simpler but means you pay for peak capacity at all times, even during low-traffic periods.
+
+</Accordion>
 
 ## Troubleshooting
 
@@ -1009,6 +1292,9 @@ aws application-autoscaling put-scaling-policy \
 | Sync Rule lock errors during deploy | Using multiple instances without HA setup<br/>Use [High Availability Setup](#high-availability-setup) for production |
 | CIDR block conflicts | Adjust CIDR blocks in [Step 2](#2-vpc-and-networking-setup) to match available VPC address space |
 | Certificate validation fails | Verify DNS nameservers are updated and propagated<br/>Check validation CNAME record exists in Route 53 |
+| CloudWatch metric not appearing | Verify `telemetry.prometheus_port: 9090` is set in powersync.yaml<br/>Check CW Agent logs: `aws logs tail /ecs/powersync-api/cwagent --follow`<br/>Confirm the SSM parameter exists: `aws ssm get-parameter --name /ecs/powersync/cwagent-config` |
+| Connection-based scaling not triggering | Verify metric in CloudWatch: `aws cloudwatch list-metrics --namespace PowerSync`<br/>Check the scaling policy: `aws application-autoscaling describe-scaling-policies --service-namespace ecs`<br/>Metric may take 2-3 minutes to appear after task startup |
+| Clients disconnecting during scale-in | This is expected behavior — sync connections on terminated tasks are closed and clients reconnect automatically.<br/>Increase `deregistration_delay.timeout_seconds` on the target group for a longer drain period |
 
 
 ### Additional Resources

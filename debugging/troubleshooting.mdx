@@ -53,6 +53,76 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
+### Too Many Buckets (`PSYNC_S2305`)
+
+PowerSync uses internal partitions called [buckets](/architecture/powersync-service#bucket-system) to organize and sync data efficiently. There is a [default limit of 1,000 buckets](/resources/performance-and-limits) per user/client. When this limit is exceeded, you will see a `PSYNC_S2305` error in your PowerSync Service logs.
+
+**How buckets are created in Sync Streams**
+
+The number of bucket instances a stream creates for a given user depends on what the stream's query evaluates to for that user — specifically, how many distinct rows the parameterizing parts of the query (subqueries and JOINs through intermediate tables) produce. The 1,000 limit is the total across all active streams for a single user.
+
+| Query pattern | Buckets per user |
+|---|---|
+| No parameters: `SELECT * FROM categories` | 1 global bucket, shared by all users |
+| Direct auth filter only: `WHERE owner_id = auth.user_id()` | 1 per user |
+| Subscription parameter: `WHERE list_id = subscription.parameter('list_id')` | 1 per unique parameter value the client subscribes with |
+| Subquery returning N rows: `WHERE id IN (SELECT org_id FROM org_membership WHERE ...)` | N — one per result row of the subquery |
+| INNER JOIN through an intermediate table: `SELECT t.* FROM todos JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()` | N — one per row of the joined table (one per list) |
+
+The subquery and JOIN cases are the ones most likely to hit the limit. Both follow the same principle: when a query filters through an intermediate table — whether via a subquery or a JOIN — each row of that intermediate table creates a separate bucket.
+
+For example, a user belonging to 3 organizations creates 3 buckets here:
+
+```yaml
+streams:
+  org_data:
+    query: SELECT * FROM orgs WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+```
+
+A user belonging to more than 1,000 organizations would hit the limit. The bucket count scales with the user's membership count, not with the total number of users.
+
+**Diagnosing which streams are contributing**
+
+- The `PSYNC_S2305` error log includes a breakdown showing which stream definitions are contributing the most bucket instances (top 10 by count).
+- PowerSync Service checkpoint logs record the total parameter result count per connection. You can find these in your [instance logs](/maintenance-ops/monitoring-and-alerting). For example:
+
+  ```
+  New checkpoint: 800178 | write: null | buckets: 7 | param_results: 6 ["5#user_data|0[\"ef718ff3...\"]","5#user_data|1[\"1ddeddba...\"]","5#user_data|1[\"2ece823f...\"]", ...]
+  ```
+  - `buckets` — total number of active buckets for this connection
+  - `param_results` — the total parameter result count across all stream definitions for this connection
+  - The array lists the active bucket names and the value in `[...]` is the evaluated parameter for that bucket
+
+- The [Sync Diagnostics Client](/tools/diagnostics-client) lets you inspect the buckets for a specific user, but note that it will not load for users who have exceeded the bucket limit since their sync connection fails before data can be retrieved. Use the instance logs and error breakdown to diagnose those cases.
+
+**Reducing bucket count in Sync Streams**
+
+- **Consolidate streams using [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream)**: Using `queries` instead of `query` groups related tables into a single stream. All queries in that stream share one bucket per unique evaluated parameter value, rather than each separate stream definition creating its own bucket. For example, if you have 5 separate streams all filtered on `auth.user_id()`, each creates 1 bucket per user — 5 buckets total. Merging them into a single stream with 5 queries creates 1 bucket per user regardless of how many queries are inside it.
+
+- **Query the membership table directly instead of through it**: When a subquery or JOIN through a membership table is causing N buckets, flip the query to target the membership table directly with a direct auth filter — no subquery, no JOIN. A direct `WHERE user_id = auth.user_id()` filter with no intermediate table creates 1 bucket per user, returning all matching rows inside that single bucket.
+
+  ```yaml
+  # N org memberships → N buckets (filtering through org_membership as a subquery)
+  streams:
+    org_data:
+      query: SELECT * FROM orgs WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+  ```
+
+  ```yaml
+  # 1 bucket per user — direct filter, no intermediate table
+  streams:
+    my_org_memberships:
+      query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
+  ```
+
+  If you need fields from `orgs` alongside each membership row, denormalize those fields onto `org_membership` so everything is available without introducing a JOIN in the stream query. Adding a JOIN back into the query would reintroduce per-row bucket creation.
+
+- **Use subscription parameters for on-demand loading**: Rather than syncing all related records upfront, consider having clients subscribe to specific items on demand (e.g., subscribe to one organization's data at a time via a subscription parameter). This only helps if users don't need all records active simultaneously.
+
+**Increasing the limit**
+
+The default of 1,000 can be increased upon request for [Team and Enterprise](https://www.powersync.com/pricing) customers. Note that performance degrades as bucket count increases beyond 1,000. See [Performance and Limits](/resources/performance-and-limits).
+
 ## Tools
 
 Troubleshooting techniques depend on the type of issue:

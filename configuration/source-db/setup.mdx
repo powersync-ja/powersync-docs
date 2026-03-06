@@ -181,7 +181,7 @@ We have documented steps for some specific hosting providers:
     - Schema(s)
     - Publication name (only if you want them to set `FOR ALL TABLES`; otherwise, you'll be able to create publications per table yourself later)
 
-    If you want to create the publication `FOR ALL TABLES`, you must let their support team to know that you want the publication name to be `powersync`.
+    If you want to create the publication `FOR ALL TABLES`, you must let their support team know that you want the publication name to be `powersync`.
 
     Additional notes they'll share with you:
 
@@ -198,7 +198,7 @@ For other providers and self-hosted databases:
 
 ### 1. Ensure logical replication is enabled
 
-PowerSync reads the Postgres WAL using logical replication in order to create [buckets](/architecture/powersync-service#bucket-system) in accordance with the specified PowerSync [Sync Rules](/sync/rules/overview).
+PowerSync reads the Postgres WAL using logical replication in order to create [buckets](/architecture/powersync-service#bucket-system) in accordance with your [Sync Streams](/sync/streams/overview) or [Sync Rules](/sync/rules/overview).
 
 If you are managing Postgres yourself, set `wal_level = logical` in your config file:
 
@@ -291,8 +291,8 @@ This requires the `changeStreamPreAndPostImages` option to be enabled on replica
 PowerSync supports three configuration options for post-images:
 
 1. **Off**: (`post_images: off`): Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling post-images instead.
-2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Rules](/sync/rules/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
-3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in the [Sync Rules](/sync/rules/overview). Replication will error if this is not configured. This option is ideal when permissions are restricted.
+2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview) or [Sync Rules](/sync/rules/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
+3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in your [Sync Streams](/sync/streams/overview) or [Sync Rules](/sync/rules/overview). Replication will error if this is not configured. This option is ideal when permissions are restricted.
 
 To manually configure collections for `read_only` mode, run this command on each collection:
 
@@ -350,6 +350,7 @@ To ensure that PowerSync can read the binary log, you need to configure your MyS
 - [`enforce_gtid_consistency`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency): **`ON`**. Enforces GTID consistency. Default is **`OFF`**.
 - [`gtid_mode`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_gtid_mode): **`ON`**. Enables GTID based logging. Default is **`OFF`**.
 - [`binlog_format`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_format): **`ROW`**. Sets the binary log format to row-based replication. This is required for PowerSync to correctly replicate changes. Default is **`ROW`**.
+- [`binlog_row_image`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_row_image): **`FULL`**. Captures the complete row data for each change. This is required for PowerSync to correctly replicate changes. Default is **`FULL`**. The `MINIMAL`/`NOBLOB` options will be supported in a future release. 
 
 These can be specified in a MySQL [option file](https://dev.mysql.com/doc/refman/8.4/en/option-files.html):
 
@@ -359,6 +360,7 @@ log_bin=ON
 enforce_gtid_consistency=ON
 gtid_mode=ON
 binlog_format=ROW
+binlog_row_image=FULL
 ```
 
 ### Database User Configuration
@@ -379,7 +381,7 @@ GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
 FLUSH PRIVILEGES;
 ```
 
-It is possible to constrain the MySQL user further and limit access to specific tables. Care should be taken to ensure that all the tables in the Sync Rules are included in the grants.
+It is possible to constrain the MySQL user further and limit access to specific tables. Care should be taken to ensure that all the tables in your [Sync Streams](/sync/streams/overview) or [Sync Rules](/sync/rules/overview) are included in the grants.
 
 ```sql
 -- Grant select to the users and the invoices tables in the source database
@@ -580,7 +582,7 @@ Repeat this for each table you want to replicate. Note that PowerSync does not c
 
 ### CDC Management
 
-Management and performance turning of CDC is left to the developer and is primarily done by modifying the change capture jobs. See [Change Data Capture Jobs (SQL Server)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/administer-and-monitor-change-data-capture-sql-server?view=sql-server-ver17) for more details.
+Management and performance tuning of CDC is left to the developer and is primarily done by modifying the change capture jobs. See [Change Data Capture Jobs (SQL Server)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/administer-and-monitor-change-data-capture-sql-server?view=sql-server-ver17) for more details.
 
 Capture Job settings of interest to PowerSync:
 
@@ -613,7 +615,7 @@ Due to the fundamental differences in how CDC works compared to logical replicat
 
 2. **Polling Interval**: The frequency at which PowerSync polls the CDC change tables for changes. The default value is once every 1000ms. This can be changed by setting the `pollingIntervalMs` parameter in the PowerSync configuration.
 
-<Warning>Configuration parameters for SQL Server like `pollingIntervalMs` and `pollingBatchSize` (see below) can currently only be [set when self-hosting](/intro/setup-guide#self-hosted-2) PowerSync. We are working on exposing these settings for SQL Server source database connections in the PowerSync Dashboard for PowerSync Cloud instances.</Warning>
+<Warning>Configuration parameters for SQL Server like `pollingIntervalMs` and `pollingBatchSize` (see below) can currently only be set when self-hosting PowerSync (e.g. via your config file or the [PowerSync CLI](/tools/cli)). We are working on exposing these settings in the PowerSync Dashboard for PowerSync Cloud instances.</Warning>
 
 ### Memory Management
 

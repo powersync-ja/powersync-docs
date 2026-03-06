@@ -1,0 +1,323 @@
+---
+title: "Writing Queries"
+description: Learn query syntax for filtering with subqueries and joins, selecting columns, and transforming data types.
+sidebarTitle: "Writing Queries"
+---
+
+This page covers query syntax for Sync Streams: filtering, selecting columns, and transforming data. 
+
+For parameter usage, see [Using Parameters](/sync/streams/parameters). For real-world patterns, see [Examples, Patterns & Demos](/sync/streams/examples).
+
+## Basic Queries
+
+The simplest stream query syncs all rows from a table:
+
+```yaml
+streams:
+  auto_subscribe: true
+  categories:
+    query: SELECT * FROM categories
+```
+
+Add a `WHERE` clause to filter:
+
+```yaml
+streams:
+  auto_subscribe: true
+  active_products:
+    query: SELECT * FROM products WHERE active = true
+```
+
+## Filtering by User
+
+Most apps need to sync different data to different users. Use `auth.user_id()` to filter by the authenticated user:
+
+```yaml
+streams:
+  auto_subscribe: true
+  my_lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+```
+
+This syncs only the lists owned by the current user. The user ID comes from the `sub` claim in their JWT token. See [Auth Parameters](/sync/streams/parameters#auth-parameters).
+
+## On-Demand Data with Subscription Parameters
+
+For data that should only sync when the user navigates to a specific screen, use subscription parameters. The client passes these when subscribing to a stream:
+
+```yaml
+streams:
+  list_todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list_id')
+```
+
+<Warning>
+**Authorization:** This example filters only by `subscription.parameter('list_id')`. Any client can pass any `list_id`, so a user could access another user's todos. For production, add an authorization check so the user can only see lists they own or have access to — for example, add `AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id() OR id IN (SELECT list_id FROM list_shares WHERE shared_with = auth.user_id()))`. See [Combining Parameters with Subqueries](#combining-parameters-with-subqueries) below.
+</Warning>
+
+```js
+// When user opens a specific list, subscribe with that list's ID
+const sub = await db.syncStream('list_todos', { list_id: 'abc123' }).subscribe();
+```
+
+See [Using Parameters](/sync/streams/parameters) for the full reference on parameters.
+
+## Selecting Columns
+
+Select specific columns instead of `*` to reduce data transfer:
+
+```yaml
+streams:
+  users:
+    query: SELECT id, name, email, avatar_url FROM users WHERE org_id = auth.parameter('org_id')
+```
+
+### Renaming Columns
+
+Use `AS` to rename columns in the synced data:
+
+```yaml
+streams:
+  todos:
+    query: SELECT id, name, created_timestamp AS created_at FROM todos
+```
+
+### Type Transformations
+
+PowerSync syncs data to SQLite on the client. You may need to transform types for compatibility:
+
+```yaml
+streams:
+  items:
+    query: |
+      SELECT 
+        id,
+        CAST(item_number AS TEXT) AS item_number,        -- Cast to text
+        metadata_json ->> 'description' AS description,  -- Extract field from JSON
+        base64(thumbnail) AS thumbnail_base64,           -- Binary to base64
+        unixepoch(created_at) AS created_at              -- DateTime to epoch
+      FROM items
+```
+
+See [Type Mapping](/sync/types) for details on how each database type is handled.
+
+## Using Subqueries
+
+Subqueries let you filter based on related tables. Use `IN (SELECT ...)` to sync data where a foreign key matches rows in another table:
+
+```yaml
+streams:
+  # Sync comments for issues owned by the current user
+  my_issue_comments:
+    query: |
+      SELECT * FROM comments 
+      WHERE issue_id IN (SELECT id FROM issues WHERE owner_id = auth.user_id())
+```
+
+### Nested Subqueries
+
+Subqueries can be nested to traverse multiple levels of relationships. This is useful for normalized database schemas:
+
+```yaml
+streams:
+  # Sync tasks for projects in organizations the user belongs to
+  org_tasks:
+    query: |
+      SELECT * FROM tasks 
+      WHERE project_id IN (
+        SELECT id FROM projects WHERE org_id IN (
+          SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+        )
+      )
+```
+
+### Combining Parameters with Subqueries
+
+A common pattern is using subscription parameters to select what data to sync, while using subqueries for authorization:
+
+```yaml
+streams:
+  # User subscribes with a list_id, but can only see lists they own or that are shared with them
+  list_items:
+    query: |
+      SELECT * FROM items 
+      WHERE list_id = subscription.parameter('list_id')
+        AND list_id IN (
+          SELECT id FROM lists 
+          WHERE owner_id = auth.user_id() 
+             OR id IN (SELECT list_id FROM list_shares WHERE shared_with = auth.user_id())
+        )
+```
+
+## Using Joins
+
+For complex queries that traverse multiple tables, join syntax is often easier to read than nested subqueries. You can use `JOIN` or `INNER JOIN` (they're equivalent). For the exact supported JOIN syntax and restrictions, see [Supported SQL — JOIN syntax](/sync/supported-sql#join-syntax).
+
+Consider this query:
+
+```yaml
+streams:
+  # Nested subquery version
+  user_comments:
+    query: |
+      SELECT * FROM comments WHERE issue_id IN (
+        SELECT id FROM issues WHERE project_id IN (
+          SELECT project_id FROM project_members WHERE user_id = auth.user_id()
+        )
+      )
+```
+
+The same query using joins:
+
+```yaml
+streams:
+  # Join version - same result, easier to read
+  user_comments:
+    query: |
+      SELECT comments.* FROM comments
+        INNER JOIN issues ON comments.issue_id = issues.id
+        INNER JOIN project_members ON issues.project_id = project_members.project_id
+      WHERE project_members.user_id = auth.user_id()
+```
+
+Both queries sync the same data. Choose whichever style is clearer for your use case.
+
+### Multiple Joins
+
+You can chain multiple joins to traverse complex relationships. This example joins four tables to sync checkpoints for assignments the user has access to.
+
+```yaml
+streams:
+  my_checkpoints:
+    query: |
+      SELECT checkpoint.* FROM user_assignment_scope uas
+        JOIN assignment a ON a.id = uas.assignment_id
+        JOIN assignment_checkpoint ac ON ac.assignment_id = a.id
+        JOIN checkpoint ON checkpoint.id = ac.checkpoint_id
+      WHERE uas.user_id = auth.user_id()
+        AND a.active = true
+```
+
+### Self-Joins
+
+You can join the same table multiple times; aliases are required to distinguish each occurrence (e.g. `gm1` and `gm2` for the two `group_memberships` joins). This is useful for finding related records through a shared relationship — for example, finding all users who share a group with the current user:
+
+```yaml
+streams:
+  users_in_my_groups:
+    query: |
+      SELECT users.* FROM users
+        JOIN group_memberships gm1 ON users.id = gm1.user_id
+        JOIN group_memberships gm2 ON gm1.group_id = gm2.group_id
+      WHERE gm2.user_id = auth.user_id()
+```
+
+### Join Limitations
+
+When writing stream queries with JOINs, keep in mind: use only `JOIN` or `INNER JOIN`; select columns from a single table (e.g. `comments.*`); and use simple equality conditions (`table1.column = table2.column`). For the full list of supported JOIN syntax and invalid examples, see [Supported SQL — JOIN syntax](/sync/supported-sql#join-syntax).
+
+## Multiple Queries per Stream
+
+You can group multiple queries into a single stream using `queries` instead of `query`. This is useful when several tables share the same access pattern:
+
+```yaml
+streams:
+  user_data:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM notes WHERE owner_id = auth.user_id()
+      - SELECT * FROM settings WHERE user_id = auth.user_id()
+      - SELECT * FROM preferences WHERE user_id = auth.user_id()
+```
+
+You subscribe once to the stream; PowerSync merges the data from all queries efficiently. This is <Tooltip tip="With one stream you use a single subscription instead of many, and PowerSync merges the data from all queries internally. You also use fewer buckets per user, which helps you stay within the per-user bucket limit. See Developer Notes for the limit." cta="See Developer Notes" href="/sync/streams/overview#developer-notes">more efficient</Tooltip> than defining separate streams, each requiring its own subscription.
+
+### When to Use Multiple Queries
+
+Use `queries` when:
+- Multiple tables have the same filtering logic (e.g., all filtered by `user_id`)
+- You want to optimize sync by using one stream so the client subscribes once and PowerSync merges the data from all queries, and to reduce bucket count (<Tooltip tip="When you use multiple queries in one stream, the client subscribes once and PowerSync merges the data from all queries. That uses fewer buckets than defining a separate stream for each table, which helps you stay within the per-user bucket limit. See Developer Notes for the limit." cta="See Developer Notes" href="/sync/streams/overview#developer-notes">see Developer Notes</Tooltip>)
+- Related data should sync together
+
+```yaml
+streams:
+  # All project-related data syncs together
+  project_details:
+    queries:
+      - SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id')
+      - SELECT * FROM files WHERE project_id = subscription.parameter('project_id')
+      - SELECT * FROM comments WHERE project_id = subscription.parameter('project_id')
+```
+
+### Compatibility Requirements
+
+For multiple queries in one stream to be valid, they must use compatible parameter inputs. In practice, this means they should filter on the same parameters in the same way:
+
+```yaml
+# Valid - all queries use the same parameter pattern
+streams:
+  user_content:
+    queries:
+      - SELECT * FROM notes WHERE user_id = auth.user_id()
+      - SELECT * FROM bookmarks WHERE user_id = auth.user_id()
+
+# Valid - all queries use the same subscription parameter
+streams:
+  project_data:
+    queries:
+      - SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id')
+      - SELECT * FROM files WHERE project_id = subscription.parameter('project_id')
+```
+
+### Combining with CTEs
+
+Multiple queries work well with [Common Table Expressions (CTEs)](/sync/streams/ctes) to share the filtering logic and keep all results in one stream, requiring clients to manage one subscription instead of many:
+
+```yaml
+streams:
+  org_data:
+    auto_subscribe: true
+    with:
+      user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+    queries:
+      - SELECT * FROM projects WHERE org_id IN user_orgs
+      - SELECT * FROM repositories WHERE org_id IN user_orgs
+      - SELECT * FROM team_members WHERE org_id IN user_orgs
+```
+
+## Complete Example
+
+A full configuration combining multiple techniques:
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  # Global reference data (no parameters, auto-subscribed)
+  categories:
+    auto_subscribe: true
+    query: SELECT id, name, CAST(sort_order AS TEXT) AS sort_order FROM categories
+
+  # User's own items with transformed fields (auth parameter, auto-subscribed)
+  my_items:
+    auto_subscribe: true
+    query: |
+      SELECT 
+        id, 
+        name,
+        metadata ->> 'status' AS status,
+        unixepoch(created_at) AS created_at,
+        base64(thumbnail) AS thumbnail
+      FROM items
+      WHERE owner_id = auth.user_id()
+  
+  # On-demand item details (subscription parameter with auth check)
+  item_comments:
+    query: |
+      SELECT * FROM comments 
+      WHERE item_id = subscription.parameter('item_id')
+        AND item_id IN (SELECT id FROM items WHERE owner_id = auth.user_id())
+```
+
+See [Examples & Patterns](/sync/streams/examples) for real-world examples like multi-tenant apps and role-based access, and [Supported SQL](/sync/supported-sql) for all available operators and functions.

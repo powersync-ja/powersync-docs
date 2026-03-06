@@ -1,9 +1,14 @@
 ---
 title: "Guide: Many-to-Many and Join Tables"
 sidebarTitle: "Many-to-Many and Join Tables"
+description: Strategies for handling many-to-many relationships in Sync Rules, which don't support JOINs directly.
 ---
 
 Join tables are often used to implement many-to-many relationships between tables. Join queries are not directly supported in PowerSync Sync Rules, and require some workarounds depending on the use case. This guide contains some recommended strategies.
+
+<Note>
+**Using Sync Streams?** Sync Streams support [JOINs](/sync/streams/queries#using-joins) and [nested subqueries](/sync/streams/queries#using-subqueries), which handle most many-to-many relationships directly without the workarounds described here. See [Many-to-Many with Sync Streams](/sync/streams/examples#many-to-many-relationships) for examples.
+</Note>
 
 <Note>
   **Postgres users:** For Postgres source databases, you can use the [`pg_ivm` extension](https://www.powersync.com/blog/using-pg-ivm-to-enable-joins-in-powersync) to create incrementally maintained materialized views with JOINs that can be referenced directly in Sync Rules. This approach avoids the need to denormalize your schema.
@@ -17,9 +22,7 @@ As an example, consider a social media application. The app has message boards. 
   <img src="/images/usage-11.avif"/>
 </Frame>
 
-<Accordion
-  title="Full schema (for Postgres)"
->
+<Accordion title="Full schema (for Postgres)">
 ```sql
 create table users (
     id uuid not null default gen_random_uuid (),
@@ -96,10 +99,11 @@ The relationship between users and boards is a many-to-many, specified via the `
 To start with, in our PowerSync Sync Rules, we define a [bucket](/sync/rules/organize-data-into-buckets) and sync the posts. The [parameter query](/sync/rules/parameter-queries) is defined using the `board_subscriptions` table:
 
 ```yaml
+bucket_definitions:
   board_data:
-    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    parameters: SELECT board_id FROM board_subscriptions WHERE user_id = request.user_id()
     data:
-      - select * from posts where board_id = bucket.board_id
+      - SELECT * FROM posts WHERE board_id = bucket.board_id
 ```
 
 ### Avoiding joins in data queries: Denormalize relationships (comments)
@@ -122,24 +126,26 @@ ALTER TABLE comments ADD CONSTRAINT comments_board_id_fkey FOREIGN KEY (board_id
 Now we can add it to the bucket definition in our Sync Rules:
 
 ```yaml
+bucket_definitions:
   board_data:
-    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    parameters: SELECT board_id FROM board_subscriptions WHERE user_id = request.user_id()
     data:
-      - select * from posts where board_id = bucket.board_id
+      - SELECT * FROM posts WHERE board_id = bucket.board_id
       # Add comments:
-      - select * from comments where board_id = bucket.board_id
+      - SELECT * FROM comments WHERE board_id = bucket.board_id
 ```
 
 Now we want to sync topics of posts. In this case we added `board_id` from the start, so `post_topics` is simple in our Sync Rules:
 
 ```yaml
+bucket_definitions:
   board_data:
-    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    parameters: SELECT board_id FROM board_subscriptions WHERE user_id = request.user_id()
     data:
-      - select * from posts where board_id = bucket.board_id
-      - select * from comments where board_id = bucket.board_id
+      - SELECT * FROM posts WHERE board_id = bucket.board_id
+      - SELECT * FROM comments WHERE board_id = bucket.board_id
       # Add post_topics:
-      - select * from post_topics where board_id = bucket.board_id
+      - SELECT * FROM post_topics WHERE board_id = bucket.board_id
 ```
 
 ### Many-to-many strategy: Sync everything (topics)
@@ -149,9 +155,10 @@ Now we need access to sync the topics for all posts synced to the device. There 
 If the topics table is limited in size (say 1,000 or less), the simplest solution is to just sync all topics in our Sync Rules:
 
 ```yaml
+bucket_definitions:
   global_topics:
     data:
-      - select * from topics where board_id = bucket.board_id
+      - SELECT * FROM topics
 ```
 
 ### Many-to-many strategy: Denormalize data (topics, user names)
@@ -175,14 +182,15 @@ ALTER TABLE board_subscriptions ADD COLUMN user_name text;
 Sync Rules:
 
 ```yaml
+bucket_definitions:
   board_data:
-    parameters: select board_id from board_subscriptions where user_id = request.user_id()
+    parameters: SELECT board_id FROM board_subscriptions WHERE user_id = request.user_id()
     data:
-      - select * from posts where board_id = bucket.board_id
-      - select * from comments where board_id = bucket.board_id
-      - select * from post_topics where board_id = bucket.board_id
+      - SELECT * FROM posts WHERE board_id = bucket.board_id
+      - SELECT * FROM comments WHERE board_id = bucket.board_id
+      - SELECT * FROM post_topics WHERE board_id = bucket.board_id
       # Add subscriptions which include the names:
-      - select * from board_subscriptions where board_id = bucket.board_id
+      - SELECT * FROM board_subscriptions WHERE board_id = bucket.board_id
 ```
 
 ### Many-to-many strategy: Array of IDs (user profiles)
@@ -198,21 +206,20 @@ ALTER TABLE users ADD COLUMN subscribed_board_ids uuid[];
 By using an array instead of or in addition to a join table, we can use it directly in Sync Rules:
 
 ```yaml
-board_data:
-  parameters: select board_id from board_subscriptions where user_id = request.user_id()
-  data:
-    - select * from posts where board_id = bucket.board_id
-    - select * from comments where board_id = bucket.board_id
-    - select * from post_topics where board_id = bucket.board_id
-    # Add participating users:
-    - select name, last_activity, profile_picture, bio from users where bucket.board_id in subscribed_board_ids
+bucket_definitions:
+  board_data:
+    parameters: SELECT board_id FROM board_subscriptions WHERE user_id = request.user_id()
+    data:
+      - SELECT * FROM posts WHERE board_id = bucket.board_id
+      - SELECT * FROM comments WHERE board_id = bucket.board_id
+      - SELECT * FROM post_topics WHERE board_id = bucket.board_id
+      # Add participating users:
+      - SELECT name, last_activity, profile_picture, bio FROM users WHERE bucket.board_id IN subscribed_board_ids
 ```
 
 This approach does require some extra effort to keep the array up to date. One option is to use a trigger in the case of Postgres:
 
-<Accordion
-  title="Postgres trigger to update subscribed_board_ids"
->
+<Accordion title="Postgres trigger to update subscribed_board_ids">
 ```sql
 CREATE OR REPLACE FUNCTION recalculate_subscribed_boards()
 RETURNS TRIGGER AS $$

@@ -97,9 +97,9 @@ A user belonging to more than 1,000 organizations would hit the limit. The bucke
 
 **Reducing bucket count in Sync Streams**
 
-- **Consolidate streams using [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream)**: Using `queries` instead of `query` groups related tables into a single stream. All queries in that stream share one bucket per unique evaluated parameter value, rather than each separate stream definition creating its own bucket. For example, if you have 5 separate streams all filtered on `auth.user_id()`, each creates 1 bucket per user — 5 buckets total. Merging them into a single stream with 5 queries creates 1 bucket per user regardless of how many queries are inside it.
+1. **Consolidate streams using [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream)**: Using `queries` instead of `query` groups related tables into a single stream. All queries in that stream share one bucket per unique evaluated parameter value, rather than each separate stream definition creating its own bucket. For example, if you have 5 separate streams all filtered on `auth.user_id()`, each creates 1 bucket per user — 5 buckets total. Merging them into a single stream with 5 queries creates 1 bucket per user regardless of how many queries are inside it.
 
-- **Query the membership table directly instead of through it**: When a subquery or JOIN through a membership table is causing N buckets, flip the query to target the membership table directly with a direct auth filter — no subquery, no JOIN. A direct `WHERE user_id = auth.user_id()` filter with no intermediate table creates 1 bucket per user, returning all matching rows inside that single bucket.
+2. **Query the membership table directly instead of through it**: When a subquery or JOIN through a membership table is causing N buckets, flip the query to target the membership table directly with a direct auth filter — no subquery, no JOIN. A direct `WHERE user_id = auth.user_id()` filter with no intermediate table creates 1 bucket per user, returning all matching rows inside that single bucket.
 
   ```yaml
   # N org memberships → N buckets (filtering through org_membership as a subquery)
@@ -117,7 +117,7 @@ A user belonging to more than 1,000 organizations would hit the limit. The bucke
 
   If you need fields from `orgs` alongside each membership row, denormalize those fields onto `org_membership` so everything is available without introducing a JOIN in the stream query. Adding a JOIN back into the query would reintroduce per-row bucket creation.
 
-- **Use subscription parameters for on-demand loading**: Rather than syncing all related records upfront, consider having clients subscribe to specific items on demand (e.g., subscribe to one organization's data at a time via a subscription parameter). This only helps if users don't need all records active simultaneously.
+3. **Restructure to use subscription parameters**: For subscription parameter streams, buckets are only created per active client subscription — not pre-evaluated from all possible values. So if you restructure the stream to use `subscription.parameter('org_id')` instead of a subquery that returns all org memberships, the bucket count is bounded by how many subscriptions the client has active at once rather than the user's total membership count. This requires changing both the stream definition and the client code to subscribe to specific items on demand, so it's only practical when users don't need all related records available simultaneously.
 
 **Increasing the limit**
 

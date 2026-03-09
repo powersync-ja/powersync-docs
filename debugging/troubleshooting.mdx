@@ -86,7 +86,7 @@ streams:
       user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
       user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
     queries:
-      - SELECT * FROM orgs WHERE id IN (SELECT org_id FROM user_orgs)
+      - SELECT * FROM orgs WHERE id IN user_orgs
       - SELECT * FROM projects WHERE id IN user_projects
       - SELECT * FROM tasks WHERE project_id IN user_projects
 ```
@@ -205,7 +205,7 @@ A user with 10 orgs and 50 projects per org therefore generates 10 + 500 + 500 =
       query: |
         SELECT assets.* FROM assets
         JOIN project_assets ON project_assets.asset_id = assets.id
-        WHERE project_assets.project_id IN (SELECT id FROM user_projects)
+        WHERE project_assets.project_id IN user_projects
   ```
 
   **After** — Add `project_ids` to `assets` (via triggers), partition by project → 50 buckets for 50 projects:
@@ -214,12 +214,13 @@ A user with 10 orgs and 50 projects per org therefore generates 10 + 500 + 500 =
   streams:
     assets_in_projects:
       with:
+        user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
         user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
       query: |
         SELECT assets.* FROM assets
         INNER JOIN json_each(assets.project_ids) AS p
         INNER JOIN user_projects ON p.value = user_projects.id
-        WHERE assets.org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+        WHERE assets.org_id IN user_orgs
   ```
 
   Alternatively, use two queries: one for `project_assets` filtered by project, one for `assets`; the client joins locally. The trade-off: the assets query may sync more rows than needed unless you can filter it further.

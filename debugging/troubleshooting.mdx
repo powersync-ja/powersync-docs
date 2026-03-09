@@ -55,31 +55,49 @@ export const db = new PowerSyncDatabase({
 
 ### Too Many Buckets (`PSYNC_S2305`)
 
-PowerSync uses internal partitions called [buckets](/architecture/powersync-service#bucket-system) to organize and sync data efficiently. There is a [default limit of 1,000 buckets](/resources/performance-and-limits) per user/client. When this limit is exceeded, you will see a `PSYNC_S2305` error in your PowerSync Service logs.
+PowerSync uses internal partitions called [buckets](/architecture/powersync-service#bucket-system) to organize and sync data efficiently. There is a [default limit of 1,000 buckets](/resources/performance-and-limits) per user/client. When this limit is exceeded, you will see a `PSYNC_S2305` error in your PowerSync Service API logs.
 
 **How buckets are created in Sync Streams**
 
-The number of bucket instances a stream creates for a given user depends on what the stream's query evaluates to for that user — specifically, how many distinct rows the parameterizing parts of the query (subqueries and JOINs through intermediate tables) produce. The 1,000 limit is the total across all active streams for a single user.
+The number of buckets a stream creates for a given user depends on how your query filters data. For subqueries and one-to-many JOINs, each row returned creates a bucket. For many-to-many JOINs, each row of the primary table (the one in `SELECT`) creates a bucket instead. The 1,000 limit applies to the total amount of buckets across all active streams for a single user.
+
+Examples below use a common schema: **regions** → **orgs** → **projects** → **tasks**, with **org_membership** (user_id, org_id) linking users to orgs. For many-to-many, **assets** ↔ **projects** via **project_assets** (asset_id, project_id).
 
 | Query pattern | Buckets per user |
 |---|---|
-| No parameters: `SELECT * FROM categories` | 1 global bucket, shared by all users |
-| Direct auth filter only: `WHERE owner_id = auth.user_id()` | 1 per user |
-| Subscription parameter: `WHERE list_id = subscription.parameter('list_id')` | 1 per unique parameter value the client subscribes with |
-| Subquery returning N rows: `WHERE id IN (SELECT org_id FROM org_membership WHERE ...)` | N — one per result row of the subquery |
-| INNER JOIN through an intermediate table: `SELECT t.* FROM todos JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()` | N — one per row of the joined table (one per list) |
+| No parameters: `SELECT * FROM regions` | 1 global bucket, shared by all users |
+| Direct auth filter only: `WHERE user_id = auth.user_id()` | 1 per user |
+| Subscription parameter: `WHERE project_id = subscription.parameter('project_id')` | 1 per unique parameter value the client subscribes with |
+| Subquery returning N rows: `WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())` | N — one per result row of the subquery |
+| INNER JOIN through an intermediate table: `SELECT tasks.* FROM tasks JOIN projects ON tasks.project_id = projects.id WHERE projects.org_id IN (...)` | N — one per row of the joined table (one per project) |
+| Many-to-many JOIN: `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id WHERE project_assets.project_id IN (...)` | N — one per primary table row (one per asset) |
 
-The subquery and JOIN cases are the ones most likely to hit the limit. Both follow the same principle: when a query filters through an intermediate table — whether via a subquery or a JOIN — each row of that intermediate table creates a separate bucket.
+The **subquery** and **one-to-many JOIN** cases follow the same principle: when a query filters through an intermediate table — whether via a subquery or a JOIN — each row of that intermediate table creates a separate bucket. The subquery returns `org_id`s, so you get one bucket per org; the tasks-projects JOIN yields one bucket per project.
 
-For example, a user belonging to 3 organizations creates 3 buckets here:
+**Many-to-many JOINs are different** than one-to-many JOINs. With a many-to-many relationship (e.g., assets ↔ projects via a join table like `project_assets`), the join table does *not* define the bucket space. PowerSync processes each primary-table row independently and cannot group by the join table's keys. So `SELECT assets.* FROM assets INNER JOIN project_assets ...` creates one bucket per asset row, even if you intended to partition by project. The JOIN controls which rows sync, not how they are grouped.
+
+**Hierarchical or chained queries** are another source of bucket growth. When multiple queries in one stream depend on each other (e.g., query B filters by IDs from query A, query C filters by IDs from query B), each level creates buckets. For example, consider:
 
 ```yaml
 streams:
-  org_data:
-    query: SELECT * FROM orgs WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+  org_projects_tasks:
+    auto_subscribe: true
+    with:
+      user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
+      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+    queries:
+      - SELECT * FROM orgs WHERE id IN (SELECT org_id FROM user_orgs)
+      - SELECT * FROM projects WHERE id IN user_projects
+      - SELECT * FROM tasks WHERE project_id IN user_projects
 ```
 
-A user belonging to more than 1,000 organizations would hit the limit. The bucket count scales with the user's membership count, not with the total number of users.
+A stream that fetches orgs by user membership, then projects by `org_id`, then tasks by `project_id` creates:
+
+- One bucket per org
+- One bucket per project
+- One bucket per project for tasks (filtered by `project_id`)
+
+A user with 10 orgs and 50 projects per org therefore generates 10 + 500 + 500 = 1,010 buckets — over the limit. Trying to reduce buckets by filtering all three tables with `org_id` only works if your schema has `org_id` on every table. If tasks only have `project_id` (and projects have `org_id`), add `org_id` to the tasks table so the flattened approach can work.
 
 **Diagnosing which streams are contributing**
 
@@ -97,27 +115,136 @@ A user belonging to more than 1,000 organizations would hit the limit. The bucke
 
 **Reducing bucket count in Sync Streams**
 
-1. **Consolidate streams using [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream)**: Using `queries` instead of `query` groups related tables into a single stream. All queries in that stream share one bucket per unique evaluated parameter value, rather than each separate stream definition creating its own bucket. For example, if you have 5 separate streams all filtered on `auth.user_id()`, each creates 1 bucket per user — 5 buckets total. Merging them into a single stream with 5 queries creates 1 bucket per user regardless of how many queries are inside it.
+1. **Consolidate streams using [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream)**: Using `queries` instead of `query` groups related tables into a single stream. All queries in that stream share one bucket per unique evaluated parameter value.
 
-2. **Query the membership table directly instead of through it**: When a subquery or JOIN through a membership table is causing N buckets, flip the query to target the membership table directly with a direct auth filter — no subquery, no JOIN. A direct `WHERE user_id = auth.user_id()` filter with no intermediate table creates 1 bucket per user, returning all matching rows inside that single bucket.
+  **Before** — 5 separate streams, each with direct `auth.user_id()` filter → 5 buckets per user:
 
   ```yaml
-  # N org memberships → N buckets (filtering through org_membership as a subquery)
+  streams:
+    user_settings:   
+      query: SELECT * FROM settings WHERE user_id = auth.user_id()
+    user_prefs:      
+      query: SELECT * FROM preferences WHERE user_id = auth.user_id()
+    user_org_list:   
+      query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
+    user_region:     
+      query: SELECT * FROM region_members WHERE user_id = auth.user_id()
+    user_profile:    
+      query: SELECT * FROM profiles WHERE user_id = auth.user_id()
+  ```
+
+  **After** — 1 stream with 5 queries → 1 bucket per user:
+
+  ```yaml
+  streams:
+    user_data:
+      queries:
+        - SELECT * FROM settings WHERE user_id = auth.user_id()
+        - SELECT * FROM preferences WHERE user_id = auth.user_id()
+        - SELECT * FROM org_membership WHERE user_id = auth.user_id()
+        - SELECT * FROM region_members WHERE user_id = auth.user_id()
+        - SELECT * FROM profiles WHERE user_id = auth.user_id()
+  ```
+
+2. **Query the membership table directly instead of through it**: When a subquery or JOIN through a membership table is causing N buckets, flip the query to target the membership table directly with a direct auth filter — no subquery, no JOIN. You will typically need fields from the related table (e.g., org name, address) alongside each membership row; denormalize those fields onto the membership table so everything is available without introducing a JOIN.
+
+  **Before** — N org memberships → N buckets:
+
+  ```yaml
   streams:
     org_data:
       query: SELECT * FROM orgs WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
   ```
 
+  **After** — 1 bucket per user (with org fields denormalized onto `org_membership`):
+
   ```yaml
-  # 1 bucket per user — direct filter, no intermediate table
   streams:
     my_org_memberships:
       query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
   ```
 
-  If you need fields from `orgs` alongside each membership row, denormalize those fields onto `org_membership` so everything is available without introducing a JOIN in the stream query. Adding a JOIN back into the query would reintroduce per-row bucket creation.
+3. **Denormalize for hierarchical data**: When chained queries through parent-child relationships (e.g., org → project → task) create too many buckets, filter all tables with the same top-level parameter (e.g., `org_id`). This only works if child tables have that column — add `org_id` to tasks if they only have `project_id`.
 
-3. **Restructure to use subscription parameters**: For subscription parameter streams, buckets are only created per active client subscription — not pre-evaluated from all possible values. So if you restructure the stream to use `subscription.parameter('org_id')` instead of a subquery that returns all org memberships, the bucket count is bounded by how many subscriptions the client has active at once rather than the user's total membership count. This requires changing both the stream definition and the client code to subscribe to specific items on demand, so it's only practical when users don't need all related records available simultaneously.
+  **Before** — org_projects_tasks with 3 chained queries → 10 + 500 + 500 = 1,010 buckets for 10 orgs, 50 projects each:
+
+  ```yaml
+  streams:
+    org_projects_tasks:
+      with:
+        user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
+        user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+      queries:
+        - SELECT * FROM orgs WHERE id IN user_orgs
+        - SELECT * FROM projects WHERE id IN user_projects
+        - SELECT * FROM tasks WHERE project_id IN user_projects
+  ```
+
+  **After** — Add `org_id` to tasks, flatten to one bucket per org → 10 buckets:
+
+  ```yaml
+  streams:
+    org_projects_tasks:
+      with:
+        user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
+      queries:
+        - SELECT * FROM orgs WHERE id IN user_orgs
+        - SELECT * FROM projects WHERE org_id IN user_orgs
+        - SELECT * FROM tasks WHERE org_id IN user_orgs
+  ```
+
+4. **Many-to-many via denormalization**: For assets ↔ projects via `project_assets`, buckets follow the primary table — one per asset. Add a denormalized `project_ids` JSON array on `assets` and use `json_each()` to partition by project.
+
+  **Before** — One bucket per asset (e.g., 2,000 assets → 2,000 buckets):
+
+  ```yaml
+  streams:
+    assets_in_projects:
+      with:
+        user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+      query: |
+        SELECT assets.* FROM assets
+        JOIN project_assets ON project_assets.asset_id = assets.id
+        WHERE project_assets.project_id IN (SELECT id FROM user_projects)
+  ```
+
+  **After** — Add `project_ids` to `assets` (via triggers), partition by project → 50 buckets for 50 projects:
+
+  ```yaml
+  streams:
+    assets_in_projects:
+      with:
+        user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+      query: |
+        SELECT assets.* FROM assets
+        INNER JOIN json_each(assets.project_ids) AS p
+        INNER JOIN user_projects ON p.value = user_projects.id
+        WHERE assets.org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+  ```
+
+  Alternatively, use two queries: one for `project_assets` filtered by project, one for `assets`; the client joins locally. The trade-off: the assets query may sync more rows than needed unless you can filter it further.
+
+5. **Restructure to use subscription parameters**: Buckets are only created per active client subscription, not from all possible values. Use `subscription.parameter('project_id')` so the count is bounded by how many subscriptions the client has active.
+
+  **Before** — Subquery returns all user projects → 50 buckets for 50 projects:
+
+  ```yaml
+  streams:
+    project_tasks:
+      with:
+        user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+      query: SELECT * FROM tasks WHERE project_id IN user_projects
+  ```
+
+  **After** — Client subscribes per project on demand → 1 bucket per active subscription (e.g., 3 projects open = 3 buckets):
+
+  ```yaml
+  streams:
+    project_tasks:
+      query: SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id')
+  ```
+
+  This requires client code to subscribe when the user opens a project and unsubscribe when they leave. Only practical when users don't need all related records available simultaneously.
 
 **Increasing the limit**
 

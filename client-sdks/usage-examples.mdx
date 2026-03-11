@@ -311,23 +311,22 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
 
       <Tab title=".NET">
-		Use `db.Watch()` to watch queries for changes.
+		Use `db.Watch()` to watch queries for changes. `Watch` returns an `IAsyncEnumerable` (since v0.0.11-alpha.1).
 
 		```cs
 		using PowerSync.Common.Client;
 		
-		// Watch for changes
-		var cancelWatchToken = new CancellationTokenSource();
-		var subscription = db.Watch("SELECT * FROM lists", cancellationToken: cancelWatchToken.Token);
+		// Watch for changes (define a result type matching your query, e.g. ListResult)
+		var cts = new CancellationTokenSource();
+		var listener = db.Watch<ListResult>("SELECT * FROM lists", [], new SQLWatchOptions { Signal = cts.Token });
 		
-		await foreach (var resultSet in subscription.WithCancellation(cancelWatchToken.Token))
+		await foreach (var results in listener)
 		{
 		    // Update UI when data changes
-		    Console.WriteLine($"Result count: {resultSet.Count()}");
+		    Console.WriteLine($"Result count: {results.Length}");
 		}
 		
-		// To cancel watching
-		// cancelWatchToken.Cancel();
+		// To cancel watching: cts.Cancel();
 		```
       </Tab>
 
@@ -901,7 +900,7 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
       
       <Tab title=".NET">
-		Use [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and [RunListener](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/Client/PowerSyncDatabase.cs) to listen for status changes to your PowerSync instance.
+		Use [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and `db.Events.OnStatusChanged.ListenAsync` (since v0.0.11-alpha.1) to listen for status changes to your PowerSync instance.
 
 		```cs
 		using PowerSync.Common.Client;
@@ -911,18 +910,14 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		{
 		    private SyncStatus? _currentStatus;
 
-		    public StatusIndicator(PowerSyncDatabase db)
+		    public async Task StartListeningAsync(PowerSyncDatabase db, CancellationToken ct = default)
 		    {
-		        // Monitor status changes
-		        db.RunListener((update) =>
+		        var listener = db.Events.OnStatusChanged.ListenAsync(ct);
+		        await foreach (var update in listener)
 		        {
-		            var newStatus = update.StatusChanged;
-		            if (newStatus != null && newStatus != _currentStatus)
-		            {
-		                _currentStatus = newStatus;
-		                UpdateStatusIcon(_currentStatus);
-		            }
-		        });
+		            _currentStatus = update.Status;
+		            UpdateStatusIcon(_currentStatus);
+		        }
 		    }
 
 		    private void UpdateStatusIcon(SyncStatus status)
@@ -1437,7 +1432,7 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		You can show users a progress bar when data downloads using the `DownloadProgress()` method from the [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) class. `DownloadProgress().DownloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
 
 		<Note>
-		  **Version compatibility**: The `DownloadProgress()` method is available since version 0.0.6-alpha.1 of the SDK.
+		  **Version compatibility**: The `DownloadProgress()` method is available since version 0.0.6-alpha.1 of the SDK. The event listener uses `db.Events.OnStatusChanged.ListenAsync` (since v0.0.11-alpha.1).
 		</Note>
 
 		Example:
@@ -1452,20 +1447,20 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		    private int? _priority; // Optional: when set, show progress towards this priority instead of the full sync
 		    private SyncStatus? _currentStatus;
 
+		    public async Task StartListeningAsync(CancellationToken ct = default)
+		    {
+		        var listener = _db.Events.OnStatusChanged.ListenAsync(ct);
+		        await foreach (var update in listener)
+		        {
+		            _currentStatus = update.Status;
+		            DisplayProgress();
+		        }
+		    }
+
 		    public SyncProgressBar(PowerSyncDatabase db, int? priority = null)
 		    {
 		        _db = db;
 		        _priority = priority;
-
-		        db.RunListener((update) =>
-		        {
-		            var newStatus = update.StatusChanged;
-		            if (newStatus != null && newStatus != _currentStatus)
-		            {
-		                _currentStatus = newStatus;
-		                DisplayProgress();
-		            }
-		        });
 		    }
 
 		    public void DisplayProgress()

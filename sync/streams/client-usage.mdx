@@ -222,7 +222,153 @@ const { data: todos } = useQuery(
 ````
 
 </Tab>
+<Tab title="Kotlin Compose">
+  The `composeSyncStream` extension subscribes to a stream as long as a composable is part of the composition. It returns `SyncStreamStatus?` for the subscription so you can check sync state.
+
+  <Note>
+  The `composeSyncStream` helper was added in Kotlin SDK v1.11.0.
+  </Note>
+
+  ```kotlin
+  @Composable
+  fun TodoList(database: PowerSyncDatabase, listId: String) {
+    val status = database.composeSyncStream(
+      name = "list_todos",
+      parameters = mapOf("list_id" to JsonParam.String(listId))
+    )
+
+    if (status?.subscription?.hasSynced != true) {
+      LoadingSpinner()
+      return
+    }
+
+    val todos = database.getAll("SELECT * FROM todos WHERE list_id = ?", listOf(listId))
+    TodoItems(todos = todos)
+  }
+  ```
+
+  You can pass `ttl` and `priority` for cache duration and [sync priority](/sync/advanced/prioritized-sync):
+
+  ```kotlin
+  database.composeSyncStream(
+    name = "list_todos",
+    parameters = mapOf("list_id" to JsonParam.String(listId)),
+    ttl = 1.hours,
+    priority = StreamPriority(1)
+  )
+  ```
+</Tab>
 </Tabs>
+
+## Type-Safe Stream Wrappers
+
+When you generate your client-side schema from the [PowerSync Dashboard](https://dashboard.powersync.com) or CLI, typed stream wrappers are generated alongside the schema for all SDKs. These catch typos in stream names and parameter names at compile time — mistakes that would otherwise cause silent data-missing bugs only detectable by inspecting sync status.
+
+For example, without typed wrappers this fails silently — no error, but data won't sync:
+
+```js
+// Wrong stream name, wrong parameter key — no compile error, data just won't sync
+await db.syncStream('note', { project_id: 'abc' }).subscribe();
+```
+
+### The Generated Code
+
+The schema generator produces typed wrappers at the bottom of your generated schema file. Given streams like:
+
+```yaml
+streams:
+  lists:
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+  todos:
+    query: SELECT * FROM todos WHERE list_id = subscription.parameter('list')
+```
+
+The generated output (JavaScript/TypeScript) looks like:
+
+```typescript
+import { column, Schema, Table, PowerSyncDatabase, SyncStream } from '@powersync/web';
+// OR: import { ... } from '@powersync/react-native';
+
+// ... table definitions ...
+
+export const AppSchema = new Schema({ lists, todos });
+
+export function typedStreams(db: PowerSyncDatabase) {
+  return {
+    lists(): SyncStream {
+      return db.syncStream('lists', {});
+    },
+    todos(params: { list: string }): SyncStream {
+      return db.syncStream('todos', params);
+    }
+  };
+}
+```
+
+### Usage
+
+Use the generated wrappers instead of calling `db.syncStream()` directly. Each method returns a `SyncStream`, so you can chain `.subscribe()`, `.subscribe({ ttl, priority })`, and all other methods covered on this page.
+
+<Tabs>
+<Tab title="JavaScript/TypeScript">
+```typescript
+import { typedStreams } from './powersync/schema';
+
+// Stream without subscription parameters
+const sub = await typedStreams(db).lists().subscribe();
+
+// Stream with subscription parameters — names and types are enforced
+const sub = await typedStreams(db).todos({ list: 'list-id-abc' }).subscribe();
+
+// Works with framework hooks
+const stream = useSyncStream(typedStreams(db).todos({ list: listId }));
+```
+</Tab>
+
+<Tab title="Dart">
+```dart
+// Stream without subscription parameters
+final sub = await TypedSyncStreams(db).lists().subscribe();
+
+// Stream with subscription parameters
+final sub = await TypedSyncStreams(db).todos(list: 'list-id-abc').subscribe();
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+// Stream without subscription parameters
+val sub = TypedSyncStreams(db).lists().subscribe()
+
+// Stream with subscription parameters
+val sub = TypedSyncStreams(db).todos(list = "list-id-abc").subscribe()
+```
+</Tab>
+
+<Tab title="Swift">
+```swift
+// Stream without subscription parameters
+let sub = try await TypedSyncStreams(db).lists().subscribe()
+
+// Stream with subscription parameters
+let sub = try await TypedSyncStreams(db).todos(list: "list-id-abc").subscribe()
+```
+</Tab>
+
+<Tab title=".NET">
+```csharp
+// Stream without subscription parameters
+var sub = await new TypedSyncStreams(db).Lists().Subscribe();
+
+// Stream with subscription parameters
+var sub = await new TypedSyncStreams(db).Todos(list: "list-id-abc").Subscribe();
+```
+</Tab>
+</Tabs>
+
+<Note>
+Type-safe wrappers are only generated for streams that do **not** have `auto_subscribe: true`. Auto-subscribe streams start syncing automatically on connect and don't require explicit client subscriptions, so no wrapper is generated for them.
+</Note>
 
 ## Checking Sync Status
 

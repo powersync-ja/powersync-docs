@@ -1,0 +1,475 @@
+---
+title: "Grammar Reference (Sync Streams)"
+description: Railroad diagrams for the SQL syntax supported in Sync Streams queries.
+---
+
+This page is a formal grammar reference for Sync Streams: it shows the syntax the compiler accepts using railroad diagrams. This page complements the [Supported SQL](/sync/supported-sql) guide, which explains in prose what you can write, with examples and restrictions.
+
+**When to use this page:** If you need to check whether a construct is valid, see how rules nest (e.g. subqueries, CTEs, JOINs), or you're used to grammar specs, use the diagrams and the "Used by" / "References" links to navigate. For most users just getting started, see [Supported SQL](/sync/supported-sql) and [Writing Queries](/sync/streams/queries).
+
+## SelectStatement
+
+```sql
+SELECT id, name FROM users WHERE active = true
+```
+
+![SelectStatement syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--SelectStatement.svg)
+
+**References:** [FromSource](#fromsource), [JoinClause](#joinclause), [SelectItem](#selectitem), [WhereClause](#whereclause)
+
+---
+
+## SelectItem
+
+```sql
+name AS user_name
+```
+
+![SelectItem syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--SelectItem.svg)
+
+**References:** [Expression](#expression), [Identifier](#lexical-rules), [Reference](#reference)
+
+<Accordion title="Used by">
+[SelectStatement](#selectstatement), [Subquery](#subquery)
+</Accordion>
+
+---
+
+## Reference
+
+```sql
+users.id
+```
+
+![Reference syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--Reference.svg)
+
+**References:** [Identifier](#lexical-rules)
+
+<Accordion title="Used by">
+[SelectItem](#selectitem), [TableSource](#tablesource), [PrimaryExpression](#primaryexpression), [FunctionCall](#functioncall)
+</Accordion>
+
+---
+
+## FromSource
+
+```sql
+users
+```
+
+![FromSource syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--FromSource.svg)
+
+**References:** [SubquerySource](#subquerysource), [TableSource](#tablesource), [TableValuedSource](#tablevaluedsource)
+
+<Accordion title="Used by">
+[SelectStatement](#selectstatement), [JoinClause](#joinclause), [Subquery](#subquery), [CteDefinition](#ctedefinition)
+</Accordion>
+
+---
+
+## TableSource
+
+```sql
+users AS u
+```
+
+![TableSource syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--TableSource.svg)
+
+**References:** [Identifier](#lexical-rules), [Reference](#reference)
+
+<Accordion title="Used by">
+[FromSource](#fromsource)
+</Accordion>
+
+---
+
+## TableValuedCall
+
+```sql
+json_each(data)
+```
+
+![TableValuedCall syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--TableValuedCall.svg)
+
+**References:** [Expression](#expression), [Identifier](#lexical-rules)
+
+<Accordion title="Used by">
+[TableValuedSource](#tablevaluedsource)
+</Accordion>
+
+---
+
+## TableValuedSource
+
+```sql
+json_each(data) AS items
+```
+
+![TableValuedSource syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--TableValuedSource.svg)
+
+**References:** [Identifier](#lexical-rules), [TableValuedCall](#tablevaluedcall)
+
+<Accordion title="Used by">
+[FromSource](#fromsource)
+</Accordion>
+
+---
+
+## SubquerySource
+
+```sql
+(SELECT id FROM users) AS u
+```
+
+![SubquerySource syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--SubquerySource.svg)
+
+**References:** [Identifier](#lexical-rules), [Subquery](#subquery)
+
+<Accordion title="Used by">
+[FromSource](#fromsource)
+</Accordion>
+
+---
+
+## JoinClause
+
+```sql
+JOIN orders ON users.id = orders.user_id
+```
+
+![JoinClause syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--JoinClause.svg)
+
+**References:** [FromSource](#fromsource), [WhereClause](#whereclause)
+
+<Accordion title="Used by">
+[SelectStatement](#selectstatement), [Subquery](#subquery), [CteDefinition](#ctedefinition)
+</Accordion>
+
+---
+
+## WhereClause
+
+```sql
+active = true AND age > 18
+```
+
+![WhereClause syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--WhereClause.svg)
+
+**References:** [Condition](#condition)
+
+<Accordion title="Used by">
+[SelectStatement](#selectstatement), [JoinClause](#joinclause), [Condition](#condition), [Subquery](#subquery), [CteDefinition](#ctedefinition)
+</Accordion>
+
+---
+
+## Condition
+
+```sql
+age BETWEEN 10 AND 100
+```
+
+![Condition syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--Condition.svg)
+
+**References:** [Expression](#expression), [PredicateTail](#predicatetail), [WhereClause](#whereclause)
+
+<Accordion title="Used by">
+[WhereClause](#whereclause), [CaseCondition](#casecondition)
+</Accordion>
+
+---
+
+## PredicateTail
+
+```sql
+IN (SELECT id FROM users)
+```
+
+![PredicateTail syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--PredicateTail.svg)
+
+**References:** [Expression](#expression), [InSource](#insource)
+
+<Accordion title="Used by">
+[Condition](#condition)
+</Accordion>
+
+---
+
+## InSource
+
+```sql
+(SELECT id FROM users)
+```
+
+![InSource syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--InSource.svg)
+
+**References:** [Expression](#expression), [Identifier](#lexical-rules), [Subquery](#subquery)
+
+<Accordion title="Used by">
+[PredicateTail](#predicatetail)
+</Accordion>
+
+---
+
+## Expression
+
+```sql
+price * quantity + tax
+```
+
+![Expression syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--Expression.svg)
+
+### Operators
+
+Binary operators supported in scalar expressions, listed from highest to lowest precedence.
+
+<Note>
+PowerSync evaluates all binary operators with equal precedence (left to right). Use parentheses to control evaluation order.
+</Note>
+
+| Precedence | Operators | Description |
+| --- | --- | --- |
+| 1 | `\|\|` | String concatenation |
+| 2 | `*` `/` `%` | Multiplication, division, modulo |
+| 3 | `+` `-` | Addition, subtraction |
+| 4 | `&` `\|` `<<` `>>` | Bitwise AND, OR, left/right shift |
+| 5 | `<` `>` `<=` `>=` | Less than, greater than, etc. |
+| 6 | `=` `!=` | Equal, not equal |
+
+**References:** [PrimaryExpression](#primaryexpression), [PropertyAccess](#propertyaccess)
+
+<Accordion title="Used by">
+[SelectItem](#selectitem), [TableValuedCall](#tablevaluedcall), [Condition](#condition), [PredicateTail](#predicatetail), [InSource](#insource), [PrimaryExpression](#primaryexpression), [SearchedCase](#searchedcase), [WhenClause](#whenclause), [SimpleCase](#simplecase), [WhenValueClause](#whenvalueclause), [CastExpression](#castexpression), [FunctionCall](#functioncall), [CteDefinition](#ctedefinition)
+</Accordion>
+
+---
+
+## PropertyAccess
+
+```sql
+->'address'->>'city'
+```
+
+![PropertyAccess syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--PropertyAccess.svg)
+
+**References:** [IntegerLiteral](#lexical-rules), [StringLiteral](#lexical-rules)
+
+<Accordion title="Used by">
+[Expression](#expression)
+</Accordion>
+
+---
+
+## PrimaryExpression
+
+```sql
+(price + tax)
+```
+
+![PrimaryExpression syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--PrimaryExpression.svg)
+
+**References:** [CaseExpression](#caseexpression), [CastExpression](#castexpression), [Expression](#expression), [FunctionCall](#functioncall), [NumericLiteral](#lexical-rules), [Reference](#reference), [StringLiteral](#lexical-rules)
+
+<Accordion title="Used by">
+[Expression](#expression)
+</Accordion>
+
+---
+
+## CaseExpression
+
+```sql
+CASE WHEN age >= 18 THEN 'adult' ELSE 'minor' END
+```
+
+![CaseExpression syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--CaseExpression.svg)
+
+**References:** [SearchedCase](#searchedcase), [SimpleCase](#simplecase)
+
+<Accordion title="Used by">
+[PrimaryExpression](#primaryexpression)
+</Accordion>
+
+---
+
+## SearchedCase
+
+```sql
+CASE WHEN x > 0 THEN 'positive' ELSE 'negative' END
+```
+
+![SearchedCase syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--SearchedCase.svg)
+
+**References:** [Expression](#expression), [WhenClause](#whenclause)
+
+<Accordion title="Used by">
+[CaseExpression](#caseexpression)
+</Accordion>
+
+---
+
+## WhenClause
+
+```sql
+WHEN age >= 18 THEN 'adult'
+```
+
+![WhenClause syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--WhenClause.svg)
+
+**References:** [CaseCondition](#casecondition), [Expression](#expression), [WhenClause](#whenclause)
+
+<Accordion title="Used by">
+[SearchedCase](#searchedcase), [WhenClause](#whenclause)
+</Accordion>
+
+---
+
+## CaseCondition
+
+```sql
+x > 0 AND y IS NOT NULL
+```
+
+![CaseCondition syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--CaseCondition.svg)
+
+**References:** [Condition](#condition)
+
+<Accordion title="Used by">
+[WhenClause](#whenclause)
+</Accordion>
+
+---
+
+## SimpleCase
+
+```sql
+CASE status WHEN 1 THEN 'active' WHEN 0 THEN 'inactive' END
+```
+
+![SimpleCase syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--SimpleCase.svg)
+
+**References:** [Expression](#expression), [WhenValueClause](#whenvalueclause)
+
+<Accordion title="Used by">
+[CaseExpression](#caseexpression)
+</Accordion>
+
+---
+
+## WhenValueClause
+
+```sql
+WHEN 1 THEN 'active'
+```
+
+![WhenValueClause syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--WhenValueClause.svg)
+
+**References:** [Expression](#expression), [WhenValueClause](#whenvalueclause)
+
+<Accordion title="Used by">
+[SimpleCase](#simplecase), [WhenValueClause](#whenvalueclause)
+</Accordion>
+
+---
+
+## CastExpression
+
+```sql
+CAST(age AS TEXT)
+```
+
+![CastExpression syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--CastExpression.svg)
+
+**References:** [Expression](#expression)
+
+<Accordion title="Used by">
+[PrimaryExpression](#primaryexpression)
+</Accordion>
+
+---
+
+## FunctionCall
+
+```sql
+upper(name)
+```
+
+![FunctionCall syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--FunctionCall.svg)
+
+**References:** [Expression](#expression), [Reference](#reference)
+
+<Accordion title="Used by">
+[PrimaryExpression](#primaryexpression)
+</Accordion>
+
+---
+
+## Subquery
+
+```sql
+SELECT id FROM orders WHERE orders.user_id = users.id
+```
+
+![Subquery syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--Subquery.svg)
+
+**References:** [FromSource](#fromsource), [JoinClause](#joinclause), [SelectItem](#selectitem), [WhereClause](#whereclause)
+
+<Accordion title="Used by">
+[SubquerySource](#subquerysource), [InSource](#insource)
+</Accordion>
+
+---
+
+## CteDefinition
+
+```sql
+SELECT id, upper(name) AS display_name FROM users WHERE active = true
+```
+
+![CteDefinition syntax diagram](/sync/grammar/sync-streams/sync-streams-compiler--CteDefinition.svg)
+
+**References:** [Expression](#expression), [FromSource](#fromsource), [Identifier](#lexical-rules), [JoinClause](#joinclause), [WhereClause](#whereclause)
+
+---
+
+## Lexical Rules
+
+| Token | Examples | Rule |
+| --- | --- | --- |
+| [Identifier](#identifier) | `user_id`, `MY_TABLE`, `"Column Name"`, `"with ""quotes"" inside"` | `[A-Z_] ([A-Z_0-9])*` |
+| [StringLiteral](#stringliteral) | `'hello'`, `'it''s'`, `''` | `"'" ([\x20-\x26] \| [\x28-\x7E])* "'"` |
+| [IntegerLiteral](#integerliteral) | `0`, `42`, `12345` | `([0-9])+` |
+| [NumericLiteral](#numericliteral) | `3.14`, `42`, `0.5` | `([0-9])+ ("." ([0-9])+)?` |
+
+### Identifier
+
+Bare identifiers are normalized to uppercase and may contain letters, digits, and underscores. Double-quoted identifiers ("name") allow any printable character and support escaped quotes ("").
+
+<Accordion title="Used by">
+[SelectItem](#selectitem), [Reference](#reference), [TableSource](#tablesource), [TableValuedCall](#tablevaluedcall), [TableValuedSource](#tablevaluedsource), [SubquerySource](#subquerysource), [InSource](#insource), [CteDefinition](#ctedefinition)
+</Accordion>
+
+### StringLiteral
+
+Single-quoted string literal. Embedded single quotes are escaped by doubling them ('').
+
+<Accordion title="Used by">
+[PropertyAccess](#propertyaccess), [PrimaryExpression](#primaryexpression)
+</Accordion>
+
+### IntegerLiteral
+
+One or more decimal digits (0-9).
+
+<Accordion title="Used by">
+[PropertyAccess](#propertyaccess)
+</Accordion>
+
+### NumericLiteral
+
+Decimal number: one or more digits with an optional fractional part (.digits).
+
+<Accordion title="Used by">
+[PrimaryExpression](#primaryexpression)
+</Accordion>
+

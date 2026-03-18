@@ -1,9 +1,9 @@
 ---
 title: "Common Table Expressions (CTEs)"
-description: Reuse common query patterns within a stream using CTEs to simplify configurations and improve efficiency.
+description: Reuse common query patterns within or across streams using CTEs to simplify configurations and improve efficiency.
 ---
 
-When a stream needs reusable filtering logic, you can define it once in a <Tooltip tip="A common table expression in SQL is a temporary named result set, derived from a simple query and defined within the execution scope of a SELECT, INSERT, UPDATE, or DELETE statement." cta="Definition" href="https://en.wikipedia.org/wiki/Hierarchical_and_recursive_queries_in_SQL#Common_table_expression">Common Table Expression (CTE)</Tooltip> and reuse it in that stream's queries. This keeps stream definitions DRY and makes it easier to maintain. For the supported syntax of the `with` block and CTE rules, see [Supported SQL — CTE and WITH syntax](/sync/supported-sql#cte-and-with-syntax).
+When streams need reusable filtering logic, you can define it once in a <Tooltip tip="A common table expression in SQL is a temporary named result set, derived from a simple query and defined within the execution scope of a SELECT, INSERT, UPDATE, or DELETE statement." cta="Definition" href="https://en.wikipedia.org/wiki/Hierarchical_and_recursive_queries_in_SQL#Common_table_expression">Common Table Expression (CTE)</Tooltip> and reference it in queries. CTEs can be defined at the stream level (scoped to one stream) or at the top level of your sync config (shared across all streams). This keeps stream definitions DRY and makes it easier to maintain. For the supported syntax of the `with` block and CTE rules, see [Supported SQL — CTE and WITH syntax](/sync/supported-sql#cte-and-with-syntax).
 
 ## Why Use CTEs
 
@@ -28,7 +28,7 @@ streams:
       WHERE org_id IN (SELECT org_id FROM org_members WHERE user_id = auth.user_id())
 ```
 
-The same subquery appears three times. You can merge these into one stream and define the logic once using a CTE:
+The same subquery appears three times. You can merge these into one stream and define the logic once as a stream-level CTE:
 
 ```yaml
 # With a CTE and multiple queries
@@ -42,11 +42,11 @@ streams:
       - SELECT * FROM settings WHERE org_id IN user_orgs
 ```
 
-If the membership logic changes, you update it in one place.
+If the membership logic changes, you update it in one place. When the streams cannot be merged (for example, because they have different `auto_subscribe` settings or separate subscription parameters), use a [global CTE](#global-ctes) to share the logic across streams instead.
 
-## Defining CTEs
+## Stream-Level CTEs
 
-Define CTEs in a `with` block inside a stream. Each CTE has a name and a `SELECT` query:
+Define CTEs in a `with` block inside a stream. Each CTE has a name and a `SELECT` query, and is available only within that stream:
 
 ```yaml
 streams:
@@ -67,9 +67,54 @@ streams:
     query: SELECT * FROM projects WHERE org_id IN user_orgs AND id IN active_projects
 ```
 
+## Global CTEs
+
+When the same filtering logic is needed across streams that cannot be merged — for example because they have different `auto_subscribe` settings or different subscription parameters — define the CTE once in a top-level `with` block. All streams can then reference it without repeating the definition:
+
+```yaml
+config:
+  edition: 3
+
+with:
+  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+
+streams:
+  # Auto-synced overview data
+  org_overview:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM organizations WHERE id IN user_orgs
+      - SELECT * FROM team_members WHERE org_id IN user_orgs
+
+  # On-demand project detail, subscribed per project
+  project_detail:
+    queries:
+      - SELECT * FROM projects WHERE id = subscription.parameter('project_id') AND org_id IN user_orgs
+      - SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id')
+```
+
+If the membership logic changes, you update it in one place and all streams pick up the change.
+
+A stream can still define its own local `with` block. Local CTEs take precedence over global CTEs when names conflict, so you can override a global CTE for a specific stream:
+
+```yaml
+config:
+  edition: 3
+
+with:
+  user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id()
+
+streams:
+  admin_projects:
+    # Local CTE overrides the global one for this stream
+    with:
+      user_orgs: SELECT org_id FROM org_members WHERE user_id = auth.user_id() AND role = 'admin'
+    query: SELECT * FROM projects WHERE org_id IN user_orgs
+```
+
 ## Using CTEs in Queries
 
-Once defined in a stream's `with` block, use the CTE name in that stream's query or queries. You can use it like a subquery or join it as if it were a table.
+Once defined — either in a stream's local `with` block or in the top-level global `with` block — use the CTE name in the stream's query or queries. You can use it like a subquery or join it as if it were a table.
 
 **Short-hand syntax** (when the CTE has exactly one column):
 
@@ -120,34 +165,32 @@ streams:
 
 ## Complete Example
 
-A full configuration using CTEs. Each stream that needs shared logic defines its own `with` block:
+A full configuration using both global and stream-level CTEs. The `accessible_projects` logic is shared across streams via a global CTE; `user_orgs` is only needed by `org_and_projects`, so it stays stream-level:
 
 ```yaml
 config:
   edition: 3
 
+# Global CTE - shared across all streams
+with:
+  accessible_projects: |
+    SELECT id FROM projects
+    WHERE org_id IN (SELECT org_id FROM org_memberships WHERE user_id = auth.user_id())
+      OR id IN (SELECT project_id FROM project_shares WHERE shared_with = auth.user_id())
+
 streams:
-  # Organization-level data (auto-sync) - one stream with CTE and multiple queries
+  # Organization-level data (auto-sync) - stream-level CTE + global CTE
   org_and_projects:
     auto_subscribe: true
     with:
       user_orgs: |
         SELECT org_id FROM org_memberships WHERE user_id = auth.user_id()
-      accessible_projects: |
-        SELECT id FROM projects
-        WHERE org_id IN (SELECT org_id FROM org_memberships WHERE user_id = auth.user_id())
-          OR id IN (SELECT project_id FROM project_shares WHERE shared_with = auth.user_id())
     queries:
       - SELECT * FROM organizations WHERE id IN user_orgs
       - SELECT * FROM projects WHERE id IN accessible_projects
 
-  # Project details (on-demand) - same CTE and param, so one stream with multiple queries
+  # Project details (on-demand) - uses only the global CTE
   project_details:
-    with:
-      accessible_projects: |
-        SELECT id FROM projects
-        WHERE org_id IN (SELECT org_id FROM org_memberships WHERE user_id = auth.user_id())
-          OR id IN (SELECT project_id FROM project_shares WHERE shared_with = auth.user_id())
     queries:
       - |
         SELECT * FROM tasks
@@ -163,7 +206,9 @@ streams:
 
 The following rules apply to CTEs. For the full syntax reference, see [Supported SQL — CTE and WITH syntax](/sync/supported-sql#cte-and-with-syntax).
 
-**Sync Streams do not support global CTEs.** Use a `with` block only inside a stream. To reuse logic across streams, define the same CTE (or equivalent subquery) in each stream that needs it, or combine streams using [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream) so one stream can share a single CTE across queries.
+**CTE names must not shadow source table names.** This prevents hard-to-debug situations where a global CTE silently changes the behavior of a stream defined elsewhere in the config.
+
+**Local CTEs take precedence over global CTEs.** If a stream defines a CTE with the same name as a global CTE, the stream-level definition is used within that stream.
 
 **CTEs cannot reference other CTEs.** Each CTE must be self-contained:
 
@@ -192,4 +237,4 @@ streams:
 
 **The short-hand `IN cte_name` works only when the CTE has exactly one column.** If the CTE has multiple columns, use explicit subquery syntax or join the CTE as a table.
 
-**CTE names take precedence over table/collection names.** If you define a CTE with the same name as a database table/collection, the CTE will be used. Choose distinct names to avoid confusion.
+**Stream-level CTE names take precedence over table/collection names.** If you define a stream-level CTE with the same name as a database table/collection, the CTE is used within that stream. Choose distinct names to avoid confusion.

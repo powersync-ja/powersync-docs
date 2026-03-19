@@ -87,28 +87,42 @@ The **subquery** and **one-to-many JOIN** cases follow the same principle: when 
 
 **Many-to-many JOINs are different** than one-to-many JOINs. With a many-to-many relationship (e.g., assets ↔ projects via a join table like `project_assets`), the join table does *not* define the bucket breakdown. PowerSync processes each primary-table row independently and cannot group by the join table's keys. So `SELECT assets.* FROM assets INNER JOIN project_assets ...` creates one bucket per _asset_ row.
 
-**Hierarchical or chained queries** are another source of bucket growth. When multiple queries in one stream depend on each other (e.g., query B filters by IDs from query A, query C filters by IDs from query B), each level creates buckets. For example, consider:
+**Hierarchical or chained queries** are another source of bucket growth. Each query in a stream is indexed by the CTE it uses, and each unique value that CTE returns becomes a separate bucket key. When queries use different CTEs, they each create their own set of buckets and do not share.
+
+Note that CTEs cannot reference other CTEs — each must query source tables directly. The "chaining" here is in the domain logic (projects belong to orgs), not in the CTE definitions. Consider a user who belongs to 2 orgs, each with 3 projects (6 projects total):
 
 ```yaml
 streams:
   org_projects_tasks:
     auto_subscribe: true
     with:
-      user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
+      user_orgs:     SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
       user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
     queries:
-      - SELECT * FROM orgs WHERE id IN user_orgs
-      - SELECT * FROM projects WHERE id IN user_projects
-      - SELECT * FROM tasks WHERE project_id IN user_projects
+      - SELECT * FROM orgs     WHERE id           IN user_orgs     # keyed by org
+      - SELECT * FROM projects WHERE id           IN user_projects  # keyed by project
+      - SELECT * FROM tasks    WHERE project_id   IN user_projects  # keyed by project
 ```
 
-A stream that fetches orgs by user membership, then projects by `org_id`, then tasks by `project_id` creates:
+The CTEs evaluate to:
 
-- One bucket per org
-- One bucket per project
-- One bucket per project for tasks (filtered by `project_id`)
+```
+user_orgs     → [org-A, org-B]                                      (2 values)
+user_projects → [proj-1, proj-2, proj-3, proj-4, proj-5, proj-6]   (6 values)
+```
 
-A user with 10 orgs and 50 projects per org therefore generates 10 + 500 + 500 = 1,010 buckets, which is over the limit. Trying to reduce buckets by filtering all three tables with `org_id` only works if your schema has `org_id` on every table. 
+Each query creates its own bucket namespace, even when two queries use the same CTE:
+
+| Query | CTE used | Bucket keys | Buckets |
+|---|---|---|---|
+| `orgs` | `user_orgs` | org-A, org-B | 2 |
+| `projects` | `user_projects` | proj-1 … proj-6 | 6 |
+| `tasks` | `user_projects` | proj-1 … proj-6 | 6 |
+| | | **Total** | **14** |
+
+At scale — 10 orgs and 50 projects per org — this becomes 10 + 500 + 500 = 1,010 buckets, which exceeds the default limit.
+
+The fix is to make all queries use the same CTE so they share a single bucket namespace. In this case that means filtering every table by `org_id` directly, which requires `org_id` to exist on every table. If tasks only have `project_id`, you need to add `org_id` to the tasks table first. See "Denormalize for hierarchical data" below.
 
 #### Diagnosing which streams are contributing
 
@@ -165,7 +179,7 @@ streams:
 
 <Accordion title="Query the membership table directly instead of through it">
 
-When a subquery or JOIN through a membership table is causing N buckets, flip the query to target the membership table directly with a direct auth filter, with no subquery and no JOIN. You will typically need fields from the related table (e.g., org name, address) alongside each membership row; denormalize those fields onto the membership table so everything is available without introducing a JOIN.
+When a subquery or JOIN through a membership table is causing N buckets, update the query to target the membership table directly with a direct auth filter, with no subquery and no JOIN. You will typically need fields from the related table (e.g., org name, address) alongside each membership row; denormalize those fields onto the membership table so everything is available without introducing a JOIN.
 
 **Before** — N org memberships → N buckets:
 

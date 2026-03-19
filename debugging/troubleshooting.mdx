@@ -85,11 +85,9 @@ regions
 
 The **subquery** and **one-to-many JOIN** cases follow the same principle: when a query filters through an intermediate table — whether via a subquery or a JOIN — each row of that intermediate table creates a separate bucket. The subquery returns `org_id`s, so you get one bucket per org; the tasks-projects JOIN yields one bucket per project.
 
-**Many-to-many JOINs are different** than one-to-many JOINs. With a many-to-many relationship (e.g., assets ↔ projects via a join table like `project_assets`), the join table does *not* define the bucket breakdown. PowerSync processes each primary-table row independently and cannot group by the join table's keys. So `SELECT assets.* FROM assets INNER JOIN project_assets ...` creates one bucket per _asset_ row.
+**Many-to-many JOINs are different** than one-to-many JOINs. With a many-to-many relationship (e.g., assets ↔ projects via a join table like `project_assets`), the join table does *not* define the bucket breakdown. PowerSync processes each primary-table row independently and cannot group by the join table's keys. So `SELECT assets.* FROM assets INNER JOIN project_assets ...` creates one bucket per _asset_ row. 
 
 **Hierarchical or chained queries** are another source of bucket growth. Each query in a stream is indexed by the CTE it uses, and each unique value that CTE returns becomes a separate bucket key. When queries use different CTEs, they each create their own set of buckets and do not share.
-
-Note that CTEs cannot reference other CTEs — each must query source tables directly. The "chaining" here is in the domain logic (projects belong to orgs), not in the CTE definitions. Consider a user who belongs to 2 orgs, each with 3 projects (6 projects total):
 
 ```yaml
 streams:
@@ -107,7 +105,7 @@ streams:
 The CTEs evaluate to:
 
 ```
-user_orgs     → [org-A, org-B]                                      (2 values)
+user_orgs     → [org-A, org-B]                                     (2 values)
 user_projects → [proj-1, proj-2, proj-3, proj-4, proj-5, proj-6]   (6 values)
 ```
 
@@ -234,7 +232,9 @@ streams:
 
 <Accordion title="Many-to-many via denormalization">
 
-For assets ↔ projects via `project_assets`, buckets follow the primary table — one per asset. Add a denormalized `project_ids` JSON array on `assets` and use `json_each()` to partition by project instead.
+For assets ↔ projects via `project_assets`, buckets follow the primary table — one per asset.
+
+The solution is to add a denormalized `project_ids` JSON array column to `assets` (maintained via database triggers) and use `json_each()` to traverse it. This lets PowerSync partition by project ID instead of asset ID.
 
 **Before** — One bucket per asset (e.g., 2,000 assets → 2,000 buckets):
 
@@ -249,22 +249,22 @@ streams:
       WHERE project_assets.project_id IN user_projects
 ```
 
-**After** — Add `project_ids` to `assets` (via triggers), partition by project → 50 buckets for 50 projects:
+**After** — Add `project_ids` to `assets`, partition by project → 50 buckets for 50 projects:
 
 ```yaml
 streams:
   assets_in_projects:
     with:
-      user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
       user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
     query: |
       SELECT assets.* FROM assets
       INNER JOIN json_each(assets.project_ids) AS p
       INNER JOIN user_projects ON p.value = user_projects.id
-      WHERE assets.org_id IN user_orgs
 ```
 
-Alternatively, use two queries: one for `project_assets` filtered by project, one for `assets`, with the client joining locally. The trade-off is that the assets query may sync more rows than needed unless you can filter it further.
+The `INNER JOIN user_projects` ensures only assets that belong to at least one of the user's projects are synced. Bucket key is the project ID, so the bucket count matches the number of projects, not assets.
+
+Alternatively, use two queries in the same stream: one for `project_assets` filtered by `user_projects`, and one for `assets` with no project filter. The client joins locally. The significant trade-off is that the assets query has no way to scope to the user's projects — it syncs all assets, which may be a dealbreaker depending on data volume.
 
 </Accordion>
 
@@ -298,7 +298,9 @@ This requires client code to subscribe when the user opens a project and unsubsc
 
 #### Increasing the limit
 
-The default of 1,000 can be increased upon request for [Team and Enterprise](https://www.powersync.com/pricing) customers. Note that performance degrades as bucket count increases beyond 1,000. See [Performance and Limits](/resources/performance-and-limits).
+The default of 1,000 can be increased up to 10,000 upon request for [Team and Enterprise](https://www.powersync.com/pricing) customers. For self-hosted deployments, configure `max_parameter_query_results` in the API service config. The limit applies per individual user — your PowerSync Service instance can track far more buckets in total across all users.
+
+Before requesting a higher limit, consider the performance implications. Incremental sync overhead scales roughly linearly with the number of buckets per user. Doubling the bucket count approximately doubles sync latency for a single operation and doubles CPU and memory usage on both the server and the client. By contrast, having many operations within a single bucket scales much more efficiently. The 1,000 default exists both to encourage sync configs that use fewer, larger buckets and to protect the service from the overhead of excessive bucket counts. We recommend increasing the limit only after exhausting the reduction strategies above.
 
 ## Tools
 

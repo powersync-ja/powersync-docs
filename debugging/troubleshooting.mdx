@@ -148,7 +148,7 @@ At scale — 10 orgs and 50 projects per org — this is 10 + 500 = 510 buckets.
 
 Using `queries` instead of `query` groups related tables into a single stream. All queries in that stream share one bucket per unique evaluated parameter value. See [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream).
 
-**Before** — 5 separate streams, each with direct `auth.user_id()` filter → 5 buckets per user:
+**Before**: 5 separate streams, each with direct `auth.user_id()` filter → 5 buckets per user:
 
 ```yaml
 streams:
@@ -164,7 +164,7 @@ streams:
     query: SELECT * FROM profiles WHERE user_id = auth.user_id()
 ```
 
-**After** — 1 stream with 5 queries → 1 bucket per user:
+**After**: 1 stream with 5 queries → 1 bucket per user:
 
 ```yaml
 streams:
@@ -183,7 +183,7 @@ streams:
 
 When a subquery or JOIN through a membership table is causing N buckets, update the query to target the membership table directly with a direct auth filter, with no subquery and no JOIN. You will typically need fields from the related table (e.g., org name, address) alongside each membership row; denormalize those fields onto the membership table so everything is available without introducing a JOIN.
 
-**Before** — N org memberships → N buckets:
+**Before**: N org memberships → N buckets:
 
 ```yaml
 streams:
@@ -191,7 +191,7 @@ streams:
     query: SELECT * FROM orgs WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
 ```
 
-**After** — 1 bucket per user (with org fields denormalized onto `org_membership`):
+**After**: 1 bucket per user (with org fields denormalized onto `org_membership`):
 
 ```yaml
 streams:
@@ -205,7 +205,7 @@ streams:
 
 When chained queries through parent-child relationships (e.g., org → project → task) create too many buckets, filter all tables with the same top-level parameter (e.g., `org_id`). This only works if child tables have that column. If tasks only have `project_id`, add `org_id` to the tasks table.
 
-**Before** — 3 chained queries → 10 + 500 = 510 buckets for 10 orgs with 50 projects each (projects and tasks share buckets since they use the same CTE, but orgs and projects use different CTEs and do not):
+**Before**: 3 chained queries → 10 + 500 = 510 buckets for 10 orgs with 50 projects each (projects and tasks share buckets since they use the same CTE, but orgs and projects use different CTEs and do not):
 
 ```yaml
 streams:
@@ -219,7 +219,7 @@ streams:
       - SELECT * FROM tasks WHERE project_id IN user_projects
 ```
 
-**After** — Add `org_id` to tasks, flatten to one bucket per org → 10 buckets:
+**After**: Add `org_id` to tasks, flatten to one bucket per org → 10 buckets:
 
 ```yaml
 streams:
@@ -240,7 +240,7 @@ For assets ↔ projects via `project_assets`, buckets follow the primary table �
 
 The solution is to add a denormalized `project_ids` JSON array column to `assets` (maintained via database triggers) and use `json_each()` to traverse it. This lets PowerSync partition by project ID instead of asset ID.
 
-**Before** — One bucket per asset (e.g., 2,000 assets → 2,000 buckets):
+**Before**: One bucket per asset (e.g., 2,000 assets → 2,000 buckets):
 
 ```yaml
 streams:
@@ -253,7 +253,7 @@ streams:
       WHERE project_assets.project_id IN user_projects
 ```
 
-**After** — Add `project_ids` to `assets`, partition by project → 50 buckets for 50 projects:
+**After**: Add `project_ids` to `assets`, partition by project → 50 buckets for 50 projects:
 
 ```yaml
 streams:
@@ -276,7 +276,7 @@ Alternatively, use two queries in the same stream: one for `project_assets` filt
 
 Buckets are only created per active client subscription, not from all possible values. Use `subscription.parameter('project_id')` so the count is bounded by how many subscriptions the client has active.
 
-**Before** — Subquery returns all user projects → 50 buckets for 50 projects:
+**Before**: Subquery returns all user projects → 50 buckets for 50 projects:
 
 ```yaml
 streams:
@@ -286,7 +286,7 @@ streams:
     query: SELECT * FROM tasks WHERE project_id IN user_projects
 ```
 
-**After** — Client subscribes per project on demand → 1 bucket per active subscription (e.g., 3 projects open = 3 buckets):
+**After**: Client subscribes per project on demand → 1 bucket per active subscription (e.g., 3 projects open = 3 buckets):
 
 ```yaml
 streams:

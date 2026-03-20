@@ -59,7 +59,7 @@ PowerSync uses internal partitions called [buckets](/architecture/powersync-serv
 
 #### How buckets are created in Sync Streams
 
-The number of buckets a stream creates for a given user depends on how your query filters data. For subqueries and one-to-many JOINs, each row returned creates a bucket. For many-to-many JOINs, each row of the primary table (the one in `SELECT`) creates a bucket instead. The 1,000 limit applies to the total amount of buckets across all active streams for a single user.
+The number of buckets a stream creates for a given user depends on how your query filters data. The general rule is: one bucket is created per unique value of the filter expression — whether a subquery result, a JOIN, an auth parameter, or a subscription parameter. The 1,000 limit applies to the total across all active streams for a single user.
 
 Examples below use a common schema:
 
@@ -81,13 +81,17 @@ regions
 | Subscription parameter: `WHERE project_id = subscription.parameter('project_id')` | 1 per unique parameter value the client subscribes with |
 | Subquery returning N rows: `WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())` | N — one per result row of the subquery |
 | INNER JOIN through an intermediate table: `SELECT tasks.* FROM tasks JOIN projects ON tasks.project_id = projects.id WHERE projects.org_id IN (...)` | N — one per row of the joined table (one per project) |
-| Many-to-many JOIN: `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id WHERE project_assets.project_id IN (...)` | N — one per primary table row (one per asset) |
+| Many-to-many JOIN: `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id WHERE project_assets.project_id IN (...)` | N — one per asset row (not per `project_assets` row) |
+| JWT array parameter: `WHERE project_id IN auth.parameter('project_ids')` | N — one per value in the JWT array |
+| Combined subquery + subscription parameter: `WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id()) AND region = subscription.parameter('region')` | N × M — one per (org\_id, region) pair |
 
-The **subquery** and **one-to-many JOIN** cases follow the same principle: when a query filters through an intermediate table — whether via a subquery or a JOIN — each row of that intermediate table creates a separate bucket. The subquery returns `org_id`s, so you get one bucket per org; the tasks-projects JOIN yields one bucket per project.
+The same general rule applies in all cases: one bucket per unique value of the filter expression for the synced (SELECT) table. For a subquery like `WHERE id IN (SELECT org_id FROM org_membership WHERE ...)`, each `org_id` returned is one bucket key. For a one-to-many JOIN like `SELECT tasks.* FROM tasks JOIN projects ON ...`, each project row in the join produces one bucket for tasks.
 
-**Many-to-many JOINs are different** than one-to-many JOINs. With a many-to-many relationship (e.g., assets ↔ projects via a join table like `project_assets`), the join table does *not* define the bucket breakdown. PowerSync processes each primary-table row independently and cannot group by the join table's keys. So `SELECT assets.* FROM assets INNER JOIN project_assets ...` creates one bucket per _asset_ row. 
+For a many-to-many JOIN (e.g., `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id`), the bucket key is each `assets.id` that passes the filter, not each `project_assets` row. 
 
-**Hierarchical or chained queries** are another source of bucket growth. Each query in a stream is indexed by the CTE it uses, and each unique value that CTE returns becomes a separate bucket key. When queries use different CTEs, they each create their own set of buckets and do not share.
+When a query combines two independent filter expressions — such as an IN subquery returning N rows and a subscription parameter with M distinct values — the bucket count multiplies to N × M, one per unique combination.
+
+**Hierarchical or chained queries** are another source of bucket growth. Each query in a stream is indexed by the CTE it uses, and each unique value that CTE returns becomes a separate bucket key. Queries using different CTEs always create separate sets of buckets. Queries using the same CTE within a stream may share buckets.
 
 For example, consider the following stream:
 
@@ -111,16 +115,16 @@ user_orgs     → [org-A, org-B]                                     (2 values)
 user_projects → [proj-1, proj-2, proj-3, proj-4, proj-5, proj-6]   (6 values)
 ```
 
-Each query creates its own bucket namespace, even when two queries use the same CTE:
+Queries using different CTEs always create separate sets of buckets. Queries using the same CTE within a stream may share buckets — the compiler can merge them into a single set:
 
 | Query | CTE used | Bucket keys | Buckets |
 |---|---|---|---|
 | `orgs` | `user_orgs` | org-A, org-B | 2 |
 | `projects` | `user_projects` | proj-1 … proj-6 | 6 |
-| `tasks` | `user_projects` | proj-1 … proj-6 | 6 |
-| | | **Total** | **14** |
+| `tasks` | `user_projects` (shared with `projects`) | proj-1 … proj-6 | 0 extra |
+| | | **Total** | **8** |
 
-At scale — 10 orgs and 50 projects per org — this becomes 10 + 500 + 500 = 1,010 buckets, which exceeds the limit.
+At scale — 10 orgs and 50 projects per org — this is 10 + 500 = 510 buckets. Even with same-CTE merging, having two CTEs with different cardinalities still causes bucket growth: every new level of the hierarchy multiplies the amount of buckets. 
 
 #### Diagnosing which streams are contributing
 
@@ -201,7 +205,7 @@ streams:
 
 When chained queries through parent-child relationships (e.g., org → project → task) create too many buckets, filter all tables with the same top-level parameter (e.g., `org_id`). This only works if child tables have that column. If tasks only have `project_id`, add `org_id` to the tasks table.
 
-**Before** — 3 chained queries → 10 + 500 + 500 = 1,010 buckets for 10 orgs with 50 projects each:
+**Before** — 3 chained queries → 10 + 500 = 510 buckets for 10 orgs with 50 projects each (projects and tasks share buckets since they use the same CTE, but orgs and projects use different CTEs and do not):
 
 ```yaml
 streams:

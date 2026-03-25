@@ -121,8 +121,8 @@ For maximum flexibility, the PowerSync Rust SDK can be configured with different
 These dependencies can be configured through the [`PowerSyncEnvironment`](https://docs.rs/powersync/latest/powersync/env/struct.PowerSyncEnvironment.html)
 struct, which wraps:
 
-1. An HTTP client (using traits from the `http-client` crate). We recommend enabling the `curl_client` feature
-   on that crate and then using an `IsahcClient`. The `H1Client` is known not to work with PowerSync because it can't cancel response streams properly.
+1. An HTTP client (implement the `powersync::http::HttpClient` trait). When enabling the `reqwest` feature on
+   the `powersync` crate, that trait is implemented for `reqwest::Client`.
 2. An asynchronous pool giving out leases to SQLite connections.
 3. A timer implementation allowing the sync client to implement delayed retries on connection errors.
    This is typically provided by async runtimes like Tokio.
@@ -176,11 +176,10 @@ async fn main() {
         .expect("could not load PowerSync core extension");
 
     let pool = open_pool().expect("open pool");
-    let client = Arc::new(IsahcClient::new());
     let env = PowerSyncEnvironment::custom(
-        client.clone(),
+        reqwest::Client::new(),
         pool,
-        Box::new(PowerSyncEnvironment::tokio_timer()),
+        PowerSyncEnvironment::tokio_timer(),
     );
 
     let db = PowerSyncDatabase::new(env, schema::app_schema());
@@ -195,12 +194,11 @@ Ensure you depend on `powersync` with the `smol` feature enabled.
 ```Rust
 async fn start_app() {
     let pool = open_pool().expect("open pool");
-    let client = Arc::new(IsahcClient::new());
     let env = PowerSyncEnvironment::custom(
-        client.clone(),
+        reqwest::Client::new(),
         pool,
         // Use the async_io crate to implement timers in PowerSync
-        Box::new(PowerSyncEnvironment::async_io_timer()),
+        PowerSyncEnvironment::async_io_timer(),
     );
 
     let db = PowerSyncDatabase::new(env, schema::app_schema());
@@ -242,7 +240,6 @@ Finally, instruct PowerSync to sync data from your backend:
 ```Rust
 // MyBackendConnector is defined in the next step...
 db.connect(SyncOptions::new(MyBackendConnector {
-    client,
     db: db.clone(),
 })).await;
 ```
@@ -265,7 +262,6 @@ Accordingly, the connector must implement two methods:
 
 ```Rust
 struct MyBackendConnector {
-    client: Arc<dyn http_client::HttpClient>,
     db: PowerSyncDatabase,
 }
 

@@ -9,6 +9,7 @@ import ReactNativeInstallation from '/snippets/react-native/installation.mdx';
 import JavaScriptWebInstallation from '/snippets/javascript-web/installation.mdx';
 import NodeInstallation from '/snippets/node/installation.mdx';
 import CapacitorInstallation from '/snippets/capacitor/installation.mdx';
+import TauriInstallation from '/snippets/tauri/installation.mdx';
 import FlutterInstallation from '/snippets/flutter/installation.mdx';
 import KotlinInstallation from '/snippets/kotlin/installation.mdx';
 import SwiftInstallation from '/snippets/swift/installation.mdx';
@@ -745,6 +746,10 @@ Add the PowerSync Client SDK to your app project. PowerSync provides SDKs for va
     <CapacitorInstallation />
   </Tab>
 
+  <Tab title="Tauri">
+    <TauriInstallation />
+  </Tab>
+
   <Tab title="Dart/Flutter">
     <FlutterInstallation />
   </Tab>
@@ -1059,6 +1064,61 @@ For development, you can use the development token you generated in the [Generat
   }))
   .await;
   ```
+
+  ```rust Tauri (Rust)
+  // For Tauri, connecting to PowerSync must be done in Rust so that sync state
+  // is shared across all windows. Calling connect() from JavaScript will throw.
+  //
+  // 1. Define your backend connector in Rust:
+
+  use async_trait::async_trait;
+  use tauri_plugin_powersync::PowerSyncExt;
+  use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase, SyncOptions};
+  use powersync::error::PowerSyncError;
+
+  struct MyBackendConnector {
+      db: PowerSyncDatabase,
+  }
+
+  #[async_trait]
+  impl BackendConnector for MyBackendConnector {
+      async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+          // for development: use development token
+          Ok(PowerSyncCredentials {
+              endpoint: "https://your-instance.powersync.com".to_string(),
+              token: "your-development-token-here".to_string(),
+          })
+      }
+
+      async fn upload_data(&self) -> Result<(), PowerSyncError> {
+          let mut local_writes = self.db.crud_transactions();
+          while let Some(tx) = local_writes.try_next().await? {
+              // upload to your backend API
+              tx.complete().await?;
+          }
+          Ok(())
+      }
+  }
+
+  // 2. Add a Tauri command that receives the database handle from JavaScript:
+  #[tauri::command]
+  async fn connect<R: tauri::Runtime>(
+      app: tauri::AppHandle<R>,
+      handle: usize,
+  ) -> tauri_plugin_powersync::Result<()> {
+      let database = app.powersync().database_from_javascript_handle(handle)?;
+      let options = SyncOptions::new(MyBackendConnector { db: database.clone() });
+      database.connect(options).await;
+      Ok(())
+  }
+
+  // 3. Register the command in your Tauri builder:
+  // .invoke_handler(tauri::generate_handler![connect])
+
+  // 4. Then call it from JavaScript after initializing the database:
+  // await db.init();
+  // await invoke('connect', { handle: db.rustHandle });
+  ```
 </CodeGroup>
 
 Once connected, you can read from and write to the client-side SQLite database. Changes from your source database will be automatically synced down into the SQLite database. For client-side mutations to be uploaded back to your source database, you need to complete the backend integration as we'll explain below.
@@ -1067,7 +1127,7 @@ Once connected, you can read from and write to the client-side SQLite database. 
 Read data using SQL queries. The data comes from your client-side SQLite database:
 
 <CodeGroup>
-      ```typescript React Native, Web, Node.js & Capacitor (TS)
+      ```typescript React Native, Web, Node.js, Capacitor & Tauri (TS)
       // Get all todos
       const todos = await db.getAll('SELECT * FROM todos');
 
@@ -1253,7 +1313,7 @@ Read data using SQL queries. The data comes from your client-side SQLite databas
 Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements. PowerSync automatically queues these mutations and uploads them to your backend via the `uploadData()` function, once you've fully implemented your _backend connector_ (as we'll talk about below).
 
 <CodeGroup>
-      ```typescript React Native (TS), Web & Node.js
+      ```typescript React Native, Web, Node.js, Capacitor & Tauri (TS)
       // Insert a new todo
       await db.execute(
         'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',

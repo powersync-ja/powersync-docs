@@ -53,6 +53,261 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
+### Too Many Buckets (`PSYNC_S2305`)
+
+PowerSync uses internal partitions called [buckets](/architecture/powersync-service#bucket-system) to organize and sync data efficiently. There is a [default limit of 1,000 buckets](/resources/performance-and-limits) per user/client. When this limit is exceeded, you will see a `PSYNC_S2305` error in your PowerSync Service API logs.
+
+#### How buckets are created in Sync Streams
+
+The number of buckets a stream creates for a given user depends on how your query filters data. The general rule is: one bucket is created per unique value of the filter expression — whether a subquery result, a JOIN, an auth parameter, or a subscription parameter. The 1,000 limit applies to the total across all active streams for a single user.
+
+Examples below use a common schema:
+
+```
+regions
+|_ orgs                  
+   |_ projects           
+   |  |_ tasks           
+   |  |_ project_assets  (project_assets.project_id → projects.id)
+   |     ↔ assets        (project_assets.asset_id → assets.id)
+   |_ org_membership     (org_membership.org_id → orgs.id)
+      ↔ users            (org_membership.user_id → users.id)
+```
+
+| Query pattern | Buckets per user |
+|---|---|
+| No parameters: `SELECT * FROM regions` | 1 global bucket, shared by all users |
+| Direct auth filter only: `WHERE user_id = auth.user_id()` | 1 per user |
+| JWT array parameter: `WHERE project_id IN auth.parameter('project_ids')` | N - one per value in the JWT array |
+| Subscription parameter: `WHERE project_id = subscription.parameter('project_id')` | 1 per unique parameter value the client subscribes with |
+| Subquery returning N rows: `WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())` | N — one per result row of the subquery |
+| Combined subquery + subscription parameter: `WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id()) AND region = subscription.parameter('region')` | N × M — one per (org\_id, region) pair |
+| INNER JOIN through an intermediate table: `SELECT tasks.* FROM tasks JOIN projects ON tasks.project_id = projects.id WHERE projects.org_id IN (...)` | N — one per row of the joined table (one per project) |
+| Many-to-many JOIN: `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id WHERE project_assets.project_id IN (...)` | N — one per asset row (not per `project_assets` row) |
+
+The same general rule applies in all cases: one bucket per unique value of the filter expression for the synced (SELECT) table. For a subquery like `WHERE id IN (SELECT org_id FROM org_membership WHERE ...)`, each `org_id` returned is one bucket key. For a one-to-many JOIN like `SELECT tasks.* FROM tasks JOIN projects ON ...`, each project row in the join produces one bucket for tasks.
+
+For a many-to-many JOIN (e.g., `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id`), the bucket key is each `assets.id` that passes the filter.
+
+When a query combines two independent filter expressions — such as an IN subquery returning N rows and a subscription parameter with M distinct values — the bucket count multiplies to N × M, one per unique combination.
+
+**Hierarchical or chained queries** are another source of bucket growth. Each query in a stream is indexed by the CTE it uses, and each unique value that CTE returns becomes a separate bucket key. Queries using different CTEs always create separate sets of buckets. Queries using the same CTE within a stream may share buckets.
+
+For example, consider the following stream:
+
+```yaml
+streams:
+  org_projects_tasks:
+    auto_subscribe: true
+    with:
+      user_orgs:     SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
+      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+    queries:
+      - SELECT * FROM orgs     WHERE id           IN user_orgs     # keyed by org
+      - SELECT * FROM projects WHERE id           IN user_projects  # keyed by project
+      - SELECT * FROM tasks    WHERE project_id   IN user_projects  # keyed by project
+```
+
+The CTEs evaluate to:
+
+```
+user_orgs     → [org-A, org-B]                                     (2 values)
+user_projects → [proj-1, proj-2, proj-3, proj-4, proj-5, proj-6]   (6 values)
+```
+
+Queries using different CTEs always create separate sets of buckets. Queries using the same CTE within a stream may share buckets — the compiler can merge them into a single set:
+
+| Query | CTE used | Bucket keys | Buckets |
+|---|---|---|---|
+| `orgs` | `user_orgs` | org-A, org-B | 2 |
+| `projects` | `user_projects` | proj-1 … proj-6 | 6 |
+| `tasks` | `user_projects` (shared with `projects`) | proj-1 … proj-6 | 0 extra |
+| | | **Total** | **8** |
+
+At scale — 10 orgs and 50 projects per org — this is 10 + 500 = 510 buckets. Even with same-CTE merging, having two CTEs with different cardinalities still causes bucket growth: every new level of the hierarchy multiplies the amount of buckets. 
+
+#### Diagnosing which streams are contributing
+
+- The `PSYNC_S2305` error log includes a breakdown showing which stream definitions are contributing the most bucket instances (top 10 by count).
+- PowerSync Service checkpoint logs record the total parameter result count per connection. You can find these in your [instance logs](/maintenance-ops/monitoring-and-alerting). For example:
+
+  ```
+  New checkpoint: 800178 | write: null | buckets: 7 | param_results: 6 ["5#user_data|0[\"ef718ff3...\"]","5#user_data|1[\"1ddeddba...\"]","5#user_data|1[\"2ece823f...\"]", ...]
+  ```
+  - `buckets` — total number of active buckets for this connection
+  - `param_results` — the total parameter result count across all stream definitions for this connection
+  - The array lists the active bucket names and the value in `[...]` is the evaluated parameter for that bucket
+
+- The [Sync Diagnostics Client](/tools/diagnostics-client) lets you inspect the buckets for a specific user, but note that it will not load for users who have exceeded the bucket limit since their sync connection fails before data can be retrieved. Use the instance logs and error breakdown to diagnose those cases.
+
+#### Reducing bucket count in Sync Streams
+
+<AccordionGroup>
+
+<Accordion title="Consolidate streams using multiple queries per stream">
+
+Using `queries` instead of `query` groups related tables into a single stream. All queries in that stream share one bucket per unique evaluated parameter value. See [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream).
+
+**Before**: 5 separate streams, each with direct `auth.user_id()` filter → 5 buckets per user:
+
+```yaml
+streams:
+  user_settings:
+    query: SELECT * FROM settings WHERE user_id = auth.user_id()
+  user_prefs:
+    query: SELECT * FROM preferences WHERE user_id = auth.user_id()
+  user_org_list:
+    query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
+  user_region:
+    query: SELECT * FROM region_members WHERE user_id = auth.user_id()
+  user_profile:
+    query: SELECT * FROM profiles WHERE user_id = auth.user_id()
+```
+
+**After**: 1 stream with 5 queries → 1 bucket per user:
+
+```yaml
+streams:
+  user_data:
+    queries:
+      - SELECT * FROM settings WHERE user_id = auth.user_id()
+      - SELECT * FROM preferences WHERE user_id = auth.user_id()
+      - SELECT * FROM org_membership WHERE user_id = auth.user_id()
+      - SELECT * FROM region_members WHERE user_id = auth.user_id()
+      - SELECT * FROM profiles WHERE user_id = auth.user_id()
+```
+
+</Accordion>
+
+<Accordion title="Query the membership table directly instead of through it">
+
+When a subquery or JOIN through a membership table is causing N buckets, update the query to target the membership table directly with a direct auth filter, with no subquery and no JOIN. You will typically need fields from the related table (e.g., org name, address) alongside each membership row; denormalize those fields onto the membership table so everything is available without introducing a JOIN.
+
+**Before**: N org memberships → N buckets:
+
+```yaml
+streams:
+  org_data:
+    query: SELECT * FROM orgs WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+```
+
+**After**: 1 bucket per user (with org fields denormalized onto `org_membership`):
+
+```yaml
+streams:
+  my_org_memberships:
+    query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
+```
+
+</Accordion>
+
+<Accordion title="Denormalize for hierarchical data">
+
+When chained queries through parent-child relationships (e.g., org → project → task) create too many buckets, filter all tables with the same top-level parameter (e.g., `org_id`). This only works if child tables have that column. If tasks only have `project_id`, add `org_id` to the tasks table.
+
+**Before**: 3 chained queries → 10 + 500 = 510 buckets for 10 orgs with 50 projects each (projects and tasks share buckets since they use the same CTE, but orgs and projects use different CTEs and do not):
+
+```yaml
+streams:
+  org_projects_tasks:
+    with:
+      user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
+      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+    queries:
+      - SELECT * FROM orgs WHERE id IN user_orgs
+      - SELECT * FROM projects WHERE id IN user_projects
+      - SELECT * FROM tasks WHERE project_id IN user_projects
+```
+
+**After**: Add `org_id` to tasks, flatten to one bucket per org → 10 buckets:
+
+```yaml
+streams:
+  org_projects_tasks:
+    with:
+      user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
+    queries:
+      - SELECT * FROM orgs WHERE id IN user_orgs
+      - SELECT * FROM projects WHERE org_id IN user_orgs
+      - SELECT * FROM tasks WHERE org_id IN user_orgs
+```
+
+</Accordion>
+
+<Accordion title="Many-to-many via denormalization">
+
+For assets ↔ projects via `project_assets`, buckets follow the primary table — one per asset.
+
+The solution is to add a denormalized `project_ids` JSON array column to `assets` (maintained via database triggers) and use `json_each()` to traverse it. This lets PowerSync partition by project ID instead of asset ID.
+
+**Before**: One bucket per asset (e.g., 2,000 assets → 2,000 buckets):
+
+```yaml
+streams:
+  assets_in_projects:
+    with:
+      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+    query: |
+      SELECT assets.* FROM assets
+      JOIN project_assets ON project_assets.asset_id = assets.id
+      WHERE project_assets.project_id IN user_projects
+```
+
+**After**: Add `project_ids` to `assets`, partition by project → 50 buckets for 50 projects:
+
+```yaml
+streams:
+  assets_in_projects:
+    with:
+      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+    query: |
+      SELECT assets.* FROM assets
+      INNER JOIN json_each(assets.project_ids) AS p
+      INNER JOIN user_projects ON p.value = user_projects.id
+```
+
+The `INNER JOIN user_projects` ensures only assets that belong to at least one of the user's projects are synced. Bucket key is the project ID, so the bucket count matches the number of projects, not assets.
+
+Alternatively, use two queries in the same stream: one for `project_assets` filtered by `user_projects`, and one for `assets` with no project filter. The client joins locally. The significant trade-off is that the assets query has no way to scope to the user's projects — it syncs all assets, which may be a dealbreaker depending on data volume.
+
+</Accordion>
+
+<Accordion title="Restructure to use subscription parameters">
+
+Buckets are only created per active client subscription, not from all possible values. Use `subscription.parameter('project_id')` so the count is bounded by how many subscriptions the client has active.
+
+**Before**: Subquery returns all user projects → 50 buckets for 50 projects:
+
+```yaml
+streams:
+  project_tasks:
+    with:
+      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+    query: SELECT * FROM tasks WHERE project_id IN user_projects
+```
+
+**After**: Client subscribes per project on demand → 1 bucket per active subscription (e.g., 3 projects open = 3 buckets):
+
+```yaml
+streams:
+  project_tasks:
+    with:
+      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
+    query: SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id') AND project_id IN user_projects
+```
+
+This requires client code to subscribe when the user opens a project and unsubscribe when they leave. It is only practical when users don't need all related records available simultaneously.
+
+</Accordion>
+
+</AccordionGroup>
+
+#### Increasing the limit
+
+The default of 1,000 can be increased upon request for [Team and Enterprise](https://www.powersync.com/pricing) customers. For self-hosted deployments, configure `max_parameter_query_results` in the API service config. The limit applies per individual user — your PowerSync Service instance can track far more buckets in total across all users.
+
+Before requesting a higher limit, consider the performance implications. Incremental sync overhead scales roughly linearly with the number of buckets per user. Doubling the bucket count approximately doubles sync latency for a single operation and doubles CPU and memory usage on both the server and the client. By contrast, having many operations within a single bucket scales much more efficiently. The 1,000 default exists both to encourage sync configs that use fewer, larger buckets and to protect the PowerSyncService from the overhead of excessive bucket counts. We recommend increasing the limit only after exhausting the reduction strategies above.
+
 ## Tools
 
 Troubleshooting techniques depend on the type of issue:
@@ -93,19 +348,9 @@ The JavaScript SDKs ([React Native](/client-sdks/reference/react-native-and-expo
 
 ### Inspect local SQLite Database
 
-Another useful debugging tool as a developer is to open the SQLite file and inspect the contents. We share an example of how to do this on iOS from macOS in this video:
-<iframe width="100%" height="420" src="https://www.youtube.com/embed/tl-T3I-cuw8?si=soUvsLKX54YdPntz" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-Essentially, run the following to grab the SQLite file:
-<Tabs>
-  <Tab title="iOS">
-`find ~/Library/Developer/CoreSimulator/Devices -name "mydb.sqlite"`
-  </Tab>
-  <Tab title="Android">
-`adb pull data/data/com.mydomain.app/files/mydb.sqlite`
-  </Tab>
-</Tabs>
+Opening the SQLite file directly is useful for verifying sync state, inspecting raw table contents, and diagnosing unexpected data. See [Understanding the SQLite Database](/maintenance-ops/client-database-diagnostics) for platform-specific instructions (Android, iOS, Web), how to merge the WAL file, and how to analyze storage usage.
 
-Our [Sync Diagnostics Client](/tools/diagnostics-client) and several of our [demo apps](/intro/examples) also contain a SQL console view to inspect the local database contents. Consider implementing similar functionality in your app. See a React example [here](https://github.com/powersync-ja/powersync-js/blob/main/tools/diagnostics-app/src/app/views/sql-console.tsx).
+Our [Sync Diagnostics Client](/tools/diagnostics-client) and several of our [demo apps](/intro/examples) also contain a SQL console view to inspect the local database contents without pulling the file. Consider implementing similar functionality in your app. See a React example [here](https://github.com/powersync-ja/powersync-js/blob/main/tools/diagnostics-app/src/app/views/sql-console.tsx).
 
 ### Client-side Logging
 

@@ -80,18 +80,18 @@ regions
 | Direct auth filter only: `WHERE user_id = auth.user_id()` | 1 per user |
 | JWT array parameter: `WHERE project_id IN auth.parameter('project_ids')` | N - one per value in the JWT array |
 | Subscription parameter: `WHERE project_id = subscription.parameter('project_id')` | 1 per unique parameter value the client subscribes with |
-| Subquery returning N rows: `WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())` | N — one per result row of the subquery |
-| Combined subquery + subscription parameter: `WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id()) AND region = subscription.parameter('region')` | N × M — one per (org\_id, region) pair |
-| INNER JOIN through an intermediate table: `SELECT tasks.* FROM tasks JOIN projects ON tasks.project_id = projects.id WHERE projects.org_id IN (...)` | N — one per row of the joined table (one per project) |
-| Many-to-many JOIN: `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id WHERE project_assets.project_id IN (...)` | N — one per asset row (not per `project_assets` row) |
+| Subquery returning N rows: `WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())` | N - one per result row of the subquery |
+| Combined subquery + subscription parameter: `WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id()) AND region = subscription.parameter('region')` | N × M - one per (org\_id, region) pair |
+| INNER JOIN through an intermediate table: `SELECT tasks.* FROM tasks JOIN projects ON tasks.project_id = projects.id WHERE projects.org_id IN (...)` | N - one per row of the joined table (one per project) |
+| Many-to-many JOIN: `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id WHERE project_assets.project_id IN (...)` | N - one per asset row (not per `project_assets` row) |
 
-The same general rule applies in all cases: one bucket per unique value of the filter expression for the synced (SELECT) table. For a subquery like `WHERE id IN (SELECT org_id FROM org_membership WHERE ...)`, each `org_id` returned is one bucket key. For a one-to-many JOIN like `SELECT tasks.* FROM tasks JOIN projects ON ...`, each project row in the join produces one bucket for tasks.
+#### Combined Filter Expressions
 
-For a many-to-many JOIN (e.g., `SELECT assets.* FROM assets JOIN project_assets ON project_assets.asset_id = assets.id`), the bucket key is each `assets.id` that passes the filter.
+When a query combines two independent filter expressions, the bucket count multiplies rather than adds. For example, consider a stream that filters by org membership (an IN subquery returning N org IDs) and also by a subscription parameter for region (M distinct values). Each bucket represents one unique (org, region) pair, so the total is N × M buckets. The same principle applies to any two independent filter axes: each combination of values becomes its own bucket key.
 
-When a query combines two independent filter expressions — such as an IN subquery returning N rows and a subscription parameter with M distinct values — the bucket count multiplies to N × M, one per unique combination.
+#### Hierarchical or Chained Queries
 
-**Hierarchical or chained queries** are another source of bucket growth. Each query in a stream is indexed by the CTE it uses, and each unique value that CTE returns becomes a separate bucket key. Queries using different CTEs always create separate sets of buckets. Queries using the same CTE within a stream may share buckets.
+Hierarchical queries are another common source of bucket growth. Each query in a stream is indexed by the CTE it uses, and each unique value that CTE returns becomes a separate bucket key. Queries using different CTEs always create separate sets of buckets. Queries using the same CTE within a stream may share buckets; the compiler can merge them into a single set.
 
 For example, consider the following stream:
 
@@ -115,8 +115,6 @@ user_orgs     → [org-A, org-B]                                     (2 values)
 user_projects → [proj-1, proj-2, proj-3, proj-4, proj-5, proj-6]   (6 values)
 ```
 
-Queries using different CTEs always create separate sets of buckets. Queries using the same CTE within a stream may share buckets — the compiler can merge them into a single set:
-
 | Query | CTE used | Bucket keys | Buckets |
 |---|---|---|---|
 | `orgs` | `user_orgs` | org-A, org-B | 2 |
@@ -124,7 +122,7 @@ Queries using different CTEs always create separate sets of buckets. Queries usi
 | `tasks` | `user_projects` (shared with `projects`) | proj-1 … proj-6 | 0 extra |
 | | | **Total** | **8** |
 
-At scale — 10 orgs and 50 projects per org — this is 10 + 500 = 510 buckets. Even with same-CTE merging, having two CTEs with different cardinalities still causes bucket growth: every new level of the hierarchy multiplies the amount of buckets. 
+At scale, with 10 orgs and 50 projects per org, this is 10 + 500 = 510 buckets. Even with same-CTE merging, having two CTEs with different cardinalities still causes bucket growth. Every new level of the hierarchy multiplies the bucket count.
 
 #### Diagnosing which streams are contributing
 

@@ -68,7 +68,7 @@ We use the following icons for supported backend databases and SDKs:
 - Flutter: `icon="flutter"`
 - React Native: `icon="react"`
 - Web: `icon="js"`
-- Kotlin: `icon="k"`
+- Kotlin: `icon="android"`
 - Swift: `icon="swift"`
 - Node.js: `icon="node-js"`
 - .NET: `icon="microsoft"`

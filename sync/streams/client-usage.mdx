@@ -105,52 +105,75 @@ Most developers use framework-specific hooks that handle subscription lifecycle 
 
 <Tabs>
 <Tab title="React Hooks">
-  The `useSyncStream` hook automatically subscribes when the component mounts and unsubscribes when it unmounts. Use this when you know which single stream a component needs:
-  ```jsx
-  function TodoList({ listId }) {
-    // Automatically subscribes/unsubscribes based on component lifecycle
-    const stream = useSyncStream({ name: 'list_todos', parameters: { list_id: listId } });
-    
-    // Check if data has synced
-    if (!stream?.subscription.hasSynced) {
-      return <LoadingSpinner />;
-    }
-    
-    // Data is ready - query and render
-    const { data: todos } = useQuery('SELECT * FROM todos WHERE list_id = ?', [listId]);
-    return <TodoItems todos={todos} />;
-  }
-  ```
+The PowerSync React package provides three hooks. Each serves a distinct role:
 
-   When the number of streams is only known at runtime - for example, it depends on an array from props or state - use `useSyncStreams` (plural) instead. It accepts an array of stream options and returns a matching array of statuses. When the array contents change or the component unmounts, all previous subscriptions are unsubscribed before new ones are created.
+- **`useQuery`**: queries the local SQLite database and returns live-updating results. It also accepts a `streams` option to subscribe to streams alongside the query — use this when the stream is only needed for that specific query.
+- **`useSyncStream`**: subscribes to a single named Sync Stream. Use this when the same stream's data is needed across multiple queries or components; the subscription lives independently of any particular `useQuery` call and is cancelled when the component unmounts.
+- **`useSyncStreams`**: the same as `useSyncStream` but for a variable number of streams. Accepts an array of stream options; all subscriptions are cancelled when the component unmounts or the array changes.
 
-  ```jsx
-  function ProjectView({ listIds }) {
-    // Subscribe to a dynamic number of streams
-    const statuses = useSyncStreams(
-      listIds.map((id) => ({ name: 'list_todos', parameters: { list_id: id } }))
-    );
+### `useQuery` with `streams`: Tethering a Subscription to a Query
 
-    const allSynced = statuses.every((s) => s?.subscription?.hasSynced);
+`useQuery` accepts an optional `streams` option that subscribes to one or more streams and ties their lifecycle to that specific query. This is the simplest option when the stream is only ever needed alongside this one query:
 
-    if (!allSynced) {
-      return <LoadingSpinner />;
-    }
+```jsx
+import { useQuery } from '@powersync/react';
 
-    return <TodoLists listIds={listIds} />;
-  }
-  ```
-
-  You can also have `useQuery` wait for a stream before running:
-
-  ```jsx
-  // This query waits for the stream to sync before executing
+function TodoList({ listId }) {
+  // The stream subscription is created alongside this query and cancelled with it.
   const { data: todos } = useQuery(
     'SELECT * FROM todos WHERE list_id = ?',
     [listId],
     { streams: [{ name: 'list_todos', parameters: { list_id: listId }, waitForStream: true }] }
   );
-  ```
+
+  return <TodoItems todos={todos} />;
+}
+```
+
+### `useSyncStream`: Single Stream
+
+Use this when a component needs data from exactly one stream.
+
+```jsx
+import { useSyncStream, useQuery } from '@powersync/react';
+
+function TodoList({ listId }) {
+  // Subscribe to the stream for this list. Unsubscribes when component unmounts.
+  const stream = useSyncStream({ name: 'list_todos', parameters: { list_id: listId } });
+
+  if (!stream?.subscription.hasSynced) {
+    return <LoadingSpinner />;
+  }
+
+  // Data is synced — read it from the local database
+  const { data: todos } = useQuery('SELECT * FROM todos WHERE list_id = ?', [listId]);
+  return <TodoItems todos={todos} />;
+}
+```
+
+### `useSyncStreams`: Variable Number of Streams
+
+Use this when the number of streams is only known at runtime — for example, when it depends on an array from props or state:
+
+```jsx
+import { useSyncStreams } from '@powersync/react';
+
+function ProjectView({ listIds }) {
+  // Subscribe to one stream per list. All subscriptions are managed together.
+  const statuses = useSyncStreams(
+    listIds.map((id) => ({ name: 'list_todos', parameters: { list_id: id } }))
+  );
+
+  const allSynced = statuses.every((s) => s?.subscription?.hasSynced);
+
+  if (!allSynced) {
+    return <LoadingSpinner />;
+  }
+
+  return <TodoLists listIds={listIds} />;
+}
+```
+
 </Tab>
 <Tab title="TanStack Query">
   Both the `useQuery` and `useQueries` hooks automatically subscribe when the component mounts and will unsubscribe when it unmounts:

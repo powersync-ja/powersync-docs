@@ -136,6 +136,29 @@ SELECT sum(length(data)) / 1024.0 / 1024.0 AS size_mb FROM ps_oplog;
 ```
 This measures only the raw JSON payloads, which will be smaller than the on-disk storage reported by `dbstat`.
 
+### Finding duplicate rows
+
+Rows can appear in multiple buckets. To find duplicated rows and their total size:
+
+```sql
+SELECT
+    row_type,
+    count(*) AS duplicated_rows,
+    json_group_array(distinct ps_buckets.name) as buckets,
+    sum(data_size) as size_of_duplicates
+  FROM (
+    SELECT row_type, row_id, bucket, length(data) as data_size
+    FROM ps_oplog
+    GROUP BY row_type, row_id
+    HAVING count(*) > 1
+  )
+  JOIN ps_buckets ON bucket = ps_buckets.id
+  GROUP BY row_type
+  ORDER BY row_type;
+```
+
+This shows which tables have rows appearing in more than one bucket, which buckets contain them, and how much space the duplicates consume.
+
 ## Reducing SQLite file size
 
 <Note>

@@ -31,7 +31,7 @@ The PowerSync Client SDK calls `uploadData()` automatically - you never call it 
 
 1. **After a local write** - Any `INSERT`, `UPDATE`, or `DELETE` on a PowerSync table adds an entry to the internal upload queue (the `ps_crud` table). The SDK monitors this table for changes and triggers `uploadData()` shortly after.
 2. **On initial connection / reconnection** - When `connect()` establishes (or re-establishes) a sync stream and the first message is received from the PowerSync Service, the SDK triggers `uploadData()` to flush any writes that were made while offline or disconnected.
-3. **On keepalive messages** - The PowerSync Service sends periodic keepalive messages (roughly every 20 seconds). Each keepalive triggers an upload attempt, ensuring pending writes are retried even if no new local writes have occurred.
+3. **On keepalive messages** - The PowerSync Service sends periodic keepalive messages (every 20 seconds, with slight jitter). Each keepalive triggers an upload attempt, ensuring pending writes are retried even if no new local writes have occurred.
 4. **After an error, with retry** - If `uploadData()` throws an error, the SDK waits for a configurable delay (default: 5 seconds, controlled by `retryDelayMs`) and then retries. This continues until the upload succeeds or the sync stream is disconnected.
 
 #### Upload Loop Behavior
@@ -42,7 +42,17 @@ Once the queue is empty, the SDK updates an internal write checkpoint used for [
 
 #### Throttling
 
-To avoid excessive calls, upload triggers are **throttled**. Rapid local writes (e.g., multiple `INSERT` statements in quick succession) are coalesced so that `uploadData()` is invoked at most once per throttle interval (default: 1 second). If an upload is already in progress when a new write occurs, the SDK will trigger another upload after the current one completes.
+To avoid excessive calls, upload triggers are **throttled**. Rapid local writes (e.g., multiple `INSERT` statements in quick succession) are coalesced so that `uploadData()` is invoked at most once per throttle interval. If an upload is already in progress when a new write occurs, the SDK will trigger another upload after the current one completes.
+
+The default throttle interval varies by SDK:
+
+| SDK | Default | Option Name |
+|-----|---------|-------------|
+| JavaScript / React Native / Node / Capacitor / Tauri | 1,000 ms | `crudUploadThrottleMs` |
+| Kotlin | 1,000 ms | `crudThrottleMs` |
+| Swift | 1 second | `crudThrottle` (seconds) |
+| .NET | 1,000 ms | `CrudUploadThrottleMs` |
+| Dart / Flutter | 10 ms | `crudThrottleTime` |
 
 The throttle interval is configurable via options when calling `connect()`:
 
@@ -67,7 +77,7 @@ database.connect(connector, crudThrottleMs = 500L)
 ```swift Swift
 try await database.connect(
   connector: connector,
-  options: ConnectOptions(crudThrottle: 0.5)
+  options: ConnectOptions(crudThrottle: 0.5) // seconds
 )
 ```
 
@@ -76,17 +86,12 @@ await database.Connect(connector, new PowerSyncConnectionOptions(
   crudUploadThrottleMs: 500
 ));
 ```
-
-```rust Rust
-// Rust SDK does not currently expose a CRUD throttle option
-db.connect(SyncOptions::new(connector)).await;
-```
 </CodeGroup>
 
 #### Error Handling
 
 <Warning>
-Your backend API must return a `2xx` response for validation errors or write conflicts. A `4xx` or `5xx` error response from your backend will cause the SDK to **retry** the same upload indefinitely, effectively blocking the upload queue. See [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors) for recommended patterns.
+If your `uploadData()` throws an error (e.g. due to a `4xx` or `5xx` response from your backend), the SDK will **retry** the same upload indefinitely, effectively blocking the upload queue. Your backend should return `2xx` for validation errors or write conflicts, and reserve error responses for transient failures. See [Writing Client Changes](/handling-writes/writing-client-changes#recommendations) and [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors) for recommended patterns.
 </Warning>
 
 When `uploadData()` throws an error:
@@ -99,7 +104,9 @@ When `uploadData()` throws an error:
 
 If the SDK detects that the same CRUD entry is at the front of the queue across consecutive upload iterations (i.e., `uploadData()` returned without error but didn't call `.complete()` on the batch or transaction), it logs a warning:
 
-> _"Potentially previously uploaded CRUD entries are still present in the upload queue. Make sure to handle uploads and complete CRUD transactions or batches by calling and awaiting their `.complete()` method."_
+> _"Potentially previously uploaded CRUD entries are still present in the upload queue. Make sure to handle uploads and complete CRUD transactions or batches by calling and awaiting their \[.complete()\] method. The next upload iteration will be delayed."_
+
+After logging this warning, the SDK **throws an internal error**, which causes it to enter the retry delay path (default: 5 seconds) before attempting the upload again. This prevents a tight loop when `uploadData()` consistently fails to process entries.
 
 This typically means your `uploadData()` implementation is not calling `.complete()` after successfully processing entries. Always call `.complete()` on the `CrudBatch` or `CrudTransaction` to remove processed entries from the queue.
 

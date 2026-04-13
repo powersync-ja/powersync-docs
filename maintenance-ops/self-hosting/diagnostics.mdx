@@ -1,13 +1,9 @@
 ---
 title: "Diagnostics"
-description: "How to use the PowerSync Service Diagnostics API"
+description: "How to use the PowerSync Service Diagnostics API to inspect replication status, errors, and slot health."
 ---
 
-All self-hosted PowerSync Service instances ship with a Diagnostics API.
-This API provides the following diagnostic information:
-
-- Connections → Connected backend source database and any active errors associated with the connection.
-- Active Sync Streams / Sync Rules → Currently deployed Sync Streams (or legacy Sync Rules) and its status.
+All self-hosted PowerSync Service instances ship with a Diagnostics API for inspecting replication state, surfacing errors, and monitoring source database health.
 
 ## CLI
 
@@ -17,27 +13,40 @@ If you have the [PowerSync CLI](/tools/cli) installed, use `powersync status` to
 powersync status
 
 # Extract a specific field
-powersync status --output=json | jq '.connections[0]'
+powersync status --output=json | jq '.data.active_sync_rules'
 ```
 
 ## Diagnostics API
 
-# Configuration
+### Configuration
 
-1. To enable the Diagnostics API, specify an API token in your PowerSync YAML file:
+1. Specify an API token in your PowerSync YAML file:
 
 ```yaml service.yaml
 api:
   tokens:
     - YOUR_API_TOKEN
 ```
-<Warning>Make sure to use a secure API token as part of this configuration</Warning>
+
+<Warning>Use a secure, randomly generated API token.</Warning>
 
 2. Restart the PowerSync Service.
 
-3. Once configured, send an HTTP request to your PowerSync Service Diagnostics API endpoint. Include the API token set in step 1 as a Bearer token in the Authorization header.
+3. Send a POST request to the diagnostics endpoint, passing the token as a Bearer token:
 
 ```shell
 curl -X POST http://localhost:8080/api/admin/v1/diagnostics \
   -H "Authorization: Bearer YOUR_API_TOKEN"
 ```
+
+### Response structure
+
+The response `data` object contains information about:
+
+**`connections`** — whether PowerSync can reach the configured source database, and any connection-level errors.
+
+**`active_sync_rules`** — the currently serving sync config (Sync Streams/Sync Rules). Shows which replication slot is in use, whether the initial snapshot has completed, replication lag, which tables are being replicated, and any errors.
+
+**`deploying_sync_rules`** — only present while a new sync config is being deployed. PowerSync runs the new snapshot in parallel so clients continue to be served by the existing active config. Once the snapshot completes, this section disappears and `active_sync_rules` updates. Errors during deployment (snapshot failures, configuration problems) surface here rather than in `active_sync_rules`.
+
+For Postgres sources on version 13 or later, each connection entry in `active_sync_rules` also includes `wal_status`, `safe_wal_size`, and `max_slot_wal_keep_size`. These fields show how much WAL budget remains before the replication slot could be invalidated, which is particularly useful to monitor when deploying a new sync config against a large database. See [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues) for details on slot invalidation and how to resolve it.

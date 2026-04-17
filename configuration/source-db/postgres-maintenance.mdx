@@ -27,7 +27,7 @@ While this is desired behavior for slot replication downtime, it could result in
 
 Inactive slots can be dropped using:
 
-```bash
+```sql
 select slot_name, pg_drop_replication_slot(slot_name) from pg_replication_slots where active = false;
 ```
 
@@ -35,19 +35,11 @@ Postgres prevents active slots from being dropped. If it does happen (e.g. while
 
 ### WAL Slot Invalidation
 
-Postgres can invalidate a replication slot when the amount of retained WAL data exceeds the `max_slot_wal_keep_size` limit. This is most likely to happen during a long-running initial snapshot — PowerSync must hold the slot open while copying your entire dataset, and WAL accumulates throughout that time.
+Postgres can invalidate a replication slot when the amount of retained WAL data exceeds the `max_slot_wal_keep_size` limit. This is most likely to happen during a long-running [initial snapshot](/architecture/powersync-service#initial-replication-vs-incremental-replication). PowerSync must hold the slot open while copying your entire dataset, and WAL accumulates throughout that time.
 
-If the slot is invalidated mid-snapshot, PowerSync detects this early and aborts with error [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues) rather than continuing a doomed snapshot. The fix is to increase `max_slot_wal_keep_size` on the source database and delete the existing replication slot. PowerSync will automatically create a new slot and restart the snapshot.
+If the slot is invalidated mid-snapshot, PowerSync detects the problem and stops with error [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues) instead of finishing a snapshot that will fail. On the source database, increase `max_slot_wal_keep_size` and delete the existing replication slot. PowerSync creates a new slot and restarts the snapshot.
 
-To check the current `max_slot_wal_keep_size` value:
-
-```sql
-SHOW max_slot_wal_keep_size
-```
-
-A value of `-1` means unlimited (no cap on WAL retention). If your database has a cap set, make sure it is large enough to cover the full WAL growth expected during an initial snapshot. See [Managing & Monitoring Replication Lag](/maintenance-ops/production-readiness-guide#managing--monitoring-replication-lag) for guidance on choosing an appropriate value.
-
-You can monitor slot health in real time using the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics). The `wal_status`, `safe_wal_size`, and `max_slot_wal_keep_size` fields on each connection object show how much WAL budget remains. The PowerSync Service also logs a warning when less than 50% of the WAL budget remains during a snapshot.
+During a snapshot, PowerSync warns when less than 50% of the WAL budget remains. You may see this warning in the PowerSync dashboard, in the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics) if you self-host, and in PowerSync Service logs. Increase `max_slot_wal_keep_size` or reduce snapshot work before the slot is invalidated. For how to choose a value, see [Managing & Monitoring Replication Lag](/maintenance-ops/production-readiness-guide#managing--monitoring-replication-lag).
 
 ### Maximum Replication Slots
 

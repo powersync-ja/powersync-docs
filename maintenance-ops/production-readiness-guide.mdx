@@ -262,7 +262,7 @@ Because PowerSync relies on Postgres logical replication, it's important to cons
 
 The WAL growth rate is expected to increase substantially during the initial replication of large datasets with high update frequency, particularly for tables included in the PowerSync publication.
 
-During normal operation (after Sync Streams (or legacy Sync Rules) are deployed) the WAL growth rate is much smaller than the initial replication period, since the PowerSync Service can replicate ~5k operations per second, meaning the WAL lag is typically in the MB range as opposed to the GB range.
+During normal operation (after Sync Streams/Sync Rules are deployed) the WAL growth rate is much smaller than the initial replication period, since the PowerSync Service can replicate ~5k operations per second, meaning the WAL lag is typically in the MB range as opposed to the GB range.
 
 When deciding what to set the `max_slot_wal_keep_size` configuration parameter the following should be taken in account:
 1. Database size - This impacts the time it takes to complete the initial replication from the source Postgres database.
@@ -271,7 +271,7 @@ When deciding what to set the `max_slot_wal_keep_size` configuration parameter t
 
 To view the current replication slots that are being used by PowerSync you can run the following query:
 
-```
+```sql
 SELECT slot_name,
     plugin,
     slot_type,
@@ -281,18 +281,14 @@ FROM pg_replication_slots;
 ```
 
 To view the current configured value of the `max_slot_wal_keep_size` you can run the following query:
+
+```sql
+SHOW max_slot_wal_keep_size
 ```
-SELECT setting as max_slot_wal_keep_size
-FROM pg_settings
-WHERE name = 'max_slot_wal_keep_size'
-```
 
-It's recommended to check the current replication slot lag and `max_slot_wal_keep_size` when deploying Sync Streams/Sync Rules changes to your PowerSync Service instance, especially when you're working with large database volumes.
-If you notice that the replication lag is greater than the current `max_slot_wal_keep_size` it's recommended to increase the value of `max_slot_wal_keep_size` on the connected source Postgres database to accommodate for the lag and to ensure the PowerSync Service can complete initial replication without further delays.
+If the slot is invalidated mid-snapshot, PowerSync detects the problem and stops replication with error [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues). On the source database, increase `max_slot_wal_keep_size` and delete the existing replication slot. PowerSync creates a new slot and restarts the snapshot.
 
-If the slot is invalidated, PowerSync aborts the snapshot early and surfaces error [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues). After increasing `max_slot_wal_keep_size`, delete the existing replication slot. PowerSync will automatically create a new slot and restart the snapshot.
-
-You can also monitor slot health in real time using the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics). Each connection object in the response includes `wal_status` (slot status from `pg_replication_slots`), `safe_wal_size` (bytes remaining before potential invalidation), and `max_slot_wal_keep_size` (the configured cap). The PowerSync Service logs a warning when less than 50% of the WAL budget is remaining during a snapshot.
+During a snapshot, PowerSync warns when less than 50% of the WAL budget remains. You may see this warning in the PowerSync dashboard, in the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics) if you self-host, and in PowerSync Service logs. Increase `max_slot_wal_keep_size` or reduce snapshot work before the slot is invalidated. Use the considerations above to set a high enough cap.
 
 ### Managing Replication Slots
 
@@ -315,7 +311,7 @@ FROM pg_replication_slots where active = false;
 
 The alternative to manually checking for inactive replication slots would be to configure the `idle_replication_slot_timeout` configuration parameter on the source Postgres database.
 
-<Note>The `idle_replication_slot_timeout` [configuration parameter](https://www.postgresql.org/docs/current/runtime-config-replication.html#GUC-IDLE-REPLICATION-SLOT-TIMEOUT) is only available from PostgresSQL 18 and above.</Note>
+<Note>The `idle_replication_slot_timeout` [configuration parameter](https://www.postgresql.org/docs/current/runtime-config-replication.html#GUC-IDLE-REPLICATION-SLOT-TIMEOUT) is only available from Postgres 18 onward.</Note>
 
 The `idle_replication_slot_timeout` will invalidate replication slots that have remained inactive for longer than the value set for the `idle_replication_slot_timeout` parameter.
 

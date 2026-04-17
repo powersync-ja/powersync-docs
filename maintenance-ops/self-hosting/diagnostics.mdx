@@ -45,8 +45,14 @@ The response `data` object contains information about:
 
 **`connections`** — whether PowerSync can reach the configured source database, and any connection-level errors.
 
-**`active_sync_rules`** — the currently serving sync config (Sync Streams/Sync Rules). Shows which replication slot is in use, whether the initial snapshot has completed, replication lag, which tables are being replicated, and any errors.
+**`active_sync_rules`** — the currently serving sync config (Sync Streams/Sync Rules). Shows which replication slot is in use, whether initial replication has completed, which tables are being replicated, and any replication lag or errors.
 
-**`deploying_sync_rules`** — only present while a new sync config is being deployed. PowerSync runs the new snapshot in parallel so clients continue to be served by the existing active config. Once the snapshot completes, this section disappears and `active_sync_rules` updates. Errors during deployment (snapshot failures, configuration problems) surface here rather than in `active_sync_rules`.
+**`deploying_sync_rules`** — only present while a new sync config is being deployed and the initial replication is in progress. PowerSync runs this process in parallel so clients continue to be served by the existing active config. Once initial replication completes, this section disappears and `active_sync_rules` updates. Errors during initial replication surface here rather than in `active_sync_rules`.
 
-For Postgres sources on version 13 or later, each connection entry in `active_sync_rules` also includes `wal_status`, `safe_wal_size`, and `max_slot_wal_keep_size`. These fields show how much WAL budget remains before the replication slot could be invalidated, which is particularly useful to monitor when deploying a new sync config against a large database. When the WAL budget drops below 50%, a warning appears in the sync rules errors array. If the slot is fully invalidated, the error is reported via `last_fatal_error` with code [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues).
+From version 1.20.5 of the PowerSync Service, each connection entry under `active_sync_rules` includes WAL information so you can see how much budget remains before Postgres could invalidate the replication slot:
+
+- `wal_status` — slot status from `pg_replication_slots` (Postgres 13+)
+- `safe_wal_size` — bytes remaining before potential invalidation
+- `max_slot_wal_keep_size` — configured limit in bytes
+
+This information is especially useful when you deploy a new sync config against a large database. When less than 50% of the WAL budget remains during a snapshot, PowerSync adds a warning to the response. If the slot is invalidated, the response includes error [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues).

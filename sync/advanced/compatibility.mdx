@@ -1,6 +1,6 @@
 ---
 title: "Compatibility"
-description: "Configure sync behavior: enable latest backwards-incompatible fixes (recommended for new projects) or keep legacy behavior."
+description: "Configure sync behavior: compatibility editions, optional bucket storage format version, and backwards-incompatible fixes for new or legacy projects."
 ---
 
 To ensure consistency, it is important that the PowerSync Service does not interpret the same source row in different ways after updating to a new version.
@@ -56,6 +56,38 @@ streams:
 **Upgrading from alpha**: If you have existing Sync Streams using `edition: 2`, updgrade to `edition: 3` to enable the new compiler with an expanded SQL feature set (including `JOIN`, CTEs, multiple queries per stream, `BETWEEN`, `CASE`, and more). See [Supported SQL](/sync/supported-sql) for the full list of supported features.
 </Note>
 
+## Storage version
+
+The PowerSync Service stores replicated bucket data in [bucket storage](/architecture/powersync-service#bucket-storage). That data uses a storage version that can evolve when you deploy new Sync Streams or Sync Rules. This versioningapproach avoids large upfront migrations on existing bucket data when the Service introduces bigger storage changes. Each time your sync config is deployed and processed, the bucket data written for that deployment uses a specific storage version.
+
+### Optional `config.storage_version`
+
+You can pin the bucket storage version by setting it under the `config` block:
+
+```yaml
+config:
+  edition: 3
+  storage_version: 2 # version 2 (stable) and 3 (unstable) are currently supported
+
+streams:
+  todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+```
+
+### When to set `storage_version` explicitly
+
+In most deployments you can omit `storage_version`. The PowerSync Service then uses the latest stable storage version it supports. You should only set this field if you need more control, e.g.:
+
+1. Service downgrade: If you need to run an older Service version that only supports up to a given storage version, deploy sync config with that `storage_version`, wait until reprocessing for that deployment has finished, then downgrade the Service.
+2. Experiments: Opt into an odd, unstable storage version in non-production environments.
+3. Delaying a storage upgrade: Change other sync config while keeping bucket data on an older stable storage version until you are ready for the newer format.
+
+### Stable and experimental versions
+
+The service distinguishes stable and experimental storage versions as follows:
+
+- Even numbers (for example `2`, `4`) denote stable formats. Once a stable version is supported, newer Service releases are expected to keep supporting it until it is officially deprecated.
+- Odd numbers (for example `3`) denote unstable formats. The layout may change without notice and support may be removed in a future release. Use odd versions only for testing, not production.
 
 ## Supported fixes
 
@@ -121,6 +153,8 @@ twice before realizing that something is off and starting from scratch.
 
 Applying this fix improves client-side progress estimation and is more efficient, since data would not get
 downloaded twice.
+
+For how bucket identifiers are represented in bucket storage at the persistence layer (including automatic use of versioned bucket names with newer storage formats), see [Storage version](#storage-version).
 
 ### `fixed_json_extract`
 

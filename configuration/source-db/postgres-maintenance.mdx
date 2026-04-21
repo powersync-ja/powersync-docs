@@ -34,6 +34,32 @@ select slot_name, pg_drop_replication_slot(slot_name) from pg_replication_slots 
 
 Postgres prevents active slots from being dropped. If it does happen (e.g. while a PowerSync instance is disconnected), PowerSync would automatically re-create the slot, and restart replication.
 
+### Recovering from an invalidated slot
+
+A replication slot becomes invalidated when its `wal_status` is `lost`. This happens when the WAL data needed by the slot has been removed — typically because the replication lag exceeded `max_slot_wal_keep_size`.
+
+When this occurs, you will see an error in the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics) such as:
+
+> Replication slot powersync\_1\_xxxx was invalidated (reason: wal\_removed). Increase max\_slot\_wal\_keep\_size on the source database and delete the existing slot to recover.
+
+To recover:
+
+1. Increase `max_slot_wal_keep_size` on the source Postgres database to prevent re-occurrence. See the [production readiness guide](/maintenance-ops/production-readiness-guide#managing--monitoring-replication-lag) for sizing guidance.
+
+2. Drop the invalidated slot:
+
+```sql
+SELECT pg_drop_replication_slot('powersync_1_xxxx');
+```
+
+Replace `powersync_1_xxxx` with the actual slot name from the error message.
+
+3. Restart the PowerSync Service. It will create a new replication slot and begin replication from scratch.
+
+<Note>If the slot was invalidated during the initial snapshot (before it completed), the PowerSync Service will not automatically retry. You must drop the invalidated slot manually before the service can recover.</Note>
+
+If the invalidation reason is `idle_timeout` (Postgres 18+), the slot was invalidated due to inactivity. In this case, increase `idle_replication_slot_timeout` on the source database instead.
+
 ### Maximum Replication Slots
 
 Postgres is configured with a maximum number of replication slots per server. Since each PowerSync instance uses one replication slot for replication and an additional one while deploying a new Sync Streams/Rules version, the maximum number of PowerSync instances connected to one Postgres server is equal to the maximum number of replication slots, minus 1\.

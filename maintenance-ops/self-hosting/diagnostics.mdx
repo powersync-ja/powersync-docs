@@ -6,8 +6,8 @@ description: "Use the PowerSync Diagnostics API to inspect replication status an
 All self-hosted PowerSync Service instances ship with a Diagnostics API.
 This API provides the following diagnostic information:
 
-- Connections → Connected backend source database and any active errors associated with the connection.
-- Active Sync Streams / Sync Rules → Currently deployed Sync Streams (or legacy Sync Rules) and its status.
+- Connections — Connected backend source database and any active errors associated with the connection.
+- Active Sync Streams / Sync Rules — Currently deployed Sync Streams (or legacy Sync Rules) and its status.
 
 ## CLI
 
@@ -22,7 +22,7 @@ powersync status --output=json | jq '.connections[0]'
 
 ## Diagnostics API
 
-# Configuration
+### Configuration
 
 1. To enable the Diagnostics API, specify an API token in your PowerSync YAML file:
 
@@ -31,7 +31,7 @@ api:
   tokens:
     - YOUR_API_TOKEN
 ```
-<Warning>Make sure to use a secure API token as part of this configuration</Warning>
+<Warning>Make sure to use a secure API token as part of this configuration.</Warning>
 
 2. Restart the PowerSync Service.
 
@@ -41,3 +41,41 @@ api:
 curl -X POST http://localhost:8080/api/admin/v1/diagnostics \
   -H "Authorization: Bearer YOUR_API_TOKEN"
 ```
+
+### Response
+
+The response includes connection details, WAL replication status, and any active errors or warnings. For Postgres connections, the `active_sync_rules.connections[]` object includes these fields related to WAL health:
+
+| Field | Description |
+| --- | --- |
+| `slot_name` | The name of the Postgres replication slot used by this sync rules version. |
+| `initial_replication_done` | Whether the initial snapshot has completed. |
+| `replication_lag_bytes` | Replication lag in bytes. |
+| `wal_status` | The WAL status of the replication slot (`reserved`, `extended`, `unreserved`, or `lost`). |
+| `safe_wal_size` | Remaining WAL budget in bytes before the slot risks invalidation. |
+| `max_slot_wal_keep_size` | The configured `max_slot_wal_keep_size` value on the source Postgres database. |
+
+### WAL budget warnings
+
+The Diagnostics API monitors the WAL budget for Postgres replication slots. When the remaining WAL budget drops to 50% or below, a warning appears in the `active_sync_rules.errors[]` array:
+
+```json
+{
+  "level": "warning",
+  "message": "WAL budget is low: 25% remaining. The replication slot may be invalidated if WAL consumption continues at this rate. Consider increasing max_slot_wal_keep_size.",
+  "ts": "2025-08-26T15:51:49.746Z"
+}
+```
+
+If the replication slot is invalidated (i.e. `wal_status` is `lost`), the error is reported through the `last_fatal_error` field on the sync rules status. This means you should monitor both the `errors` array and the sync rules status for replication issues.
+
+<Tip>
+For guidance on configuring `max_slot_wal_keep_size` and managing replication slots, see [Postgres maintenance](/configuration/source-db/postgres-maintenance).
+</Tip>
+
+### Replication lag warnings
+
+The Diagnostics API also checks replication lag based on the last checkpoint or keepalive timestamp:
+
+- A **warning** is raised if no replicated commit has been received in more than 5 minutes.
+- A **fatal** error is raised if no replicated commit has been received in more than 15 minutes.

@@ -21,6 +21,8 @@ Welcome to the PowerSync documentation repository! Our docs are powered by [Mint
    pnpm dev
    ```
 
+The install command provides you with the Mintlify CLI. For a full list of commands, refer to the [docs](https://www.mintlify.com/docs/cli/commands).
+
 ## Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for details.

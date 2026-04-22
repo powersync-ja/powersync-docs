@@ -11,20 +11,17 @@ Welcome to the PowerSync documentation repository! Our docs are powered by [Mint
    git clone https://github.com/YOUR-USERNAME/powersync-docs.git
    cd powersync-docs
    ```
-2. **Install Mintlify CLI:**
+2. **Install dependencies:**
    ```
-   npx mintlify install
+   corepack enable
+   pnpm install
    ```
 3. **Start the local docs server:**
-   - Run the following command at the root of the repo (where docs.json is):
    ```
-   npx mintlify dev
+   pnpm dev
    ```
-   
-   - If you see the error `✖ Must be run in a directory where a mint.json file exists.`, update Mintlify:
-   ```
-   npx mintlify@latest dev
-   ```
+
+The install command provides you with the Mintlify CLI. For a full list of commands, refer to the [docs](https://www.mintlify.com/docs/cli/commands).
 
 ## Contributing
 
@@ -46,7 +43,7 @@ All changes merged to the `main` branch are automatically published to https://d
 
 Regularly check for broken links by running:
 ```
-npx mintlify broken-links
+pnpm check:links
 ```
 
 ### Whitelisting & Blacklisting Terms (Vale)
@@ -83,5 +80,5 @@ We use the following icons for supported backend databases and SDKs:
 
 ## Troubleshooting
 
-- **Mintlify dev isn't running:** Run `npx mintlify install` to re-install dependencies.
+- **Mintlify dev isn't running:** Run `pnpm install` to re-install dependencies.
 - **Page loads as a 404:** Make sure you are running in a folder with `docs.json`.

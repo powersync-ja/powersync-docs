@@ -1,5 +1,6 @@
 ---
 title: "Room (Alpha)"
+description: "Use Android Room with PowerSync's Kotlin SDK."
 ---
 
 <Warning>
@@ -46,6 +47,36 @@ To add PowerSync to your Room database,
     
     Room.databaseBuilder(...).setDriver(driver).build()
     ```
+
+## Encrypted databases
+
+When using PowerSync with Room, PowerSync wraps the Room database instead of opening its own connection. To use an encrypted database with Room, implement `SQLiteDriver` by delegating to `PersistentConnectionFactory` and pass that to `RoomDatabase.Builder.setDriver`:
+
+```kotlin
+class PowerSyncConnectionFactoryAsSqliteDriver(
+    private val powersyncFactory: PersistentConnectionFactory
+) : SQLiteDriver {
+    override fun open(fileName: String): SQLiteConnection {
+        if (fileName == ":memory:") {
+            return powersyncFactory.openInMemoryConnection()
+        }
+
+        return powersyncFactory.openConnection(fileName, null, false)
+    }
+}
+```
+
+Depending on your target platform, pass an `AndroidEncryptedDatabaseFactory`, `JavaEncryptedDatabaseFactory`, or `NativeEncryptedDatabaseFactory` to the wrapper. The factory automatically installs the PowerSync SQLite extension, so you can skip the `loadPowerSyncExtension()` step.
+
+```kotlin
+val driver = PowerSyncConnectionFactoryAsSqliteDriver(
+    AndroidEncryptedDatabaseFactory(context, Key.Passphrase("your encryption key"))
+)
+
+val roomDb = Room.databaseBuilder<MyDatabase>(context, "your_database")
+    .setDriver(driver)
+    .build()
+```
 
 ## Setup
 

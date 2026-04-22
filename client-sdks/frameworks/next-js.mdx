@@ -1,12 +1,17 @@
 ---
 title: "Next.js + PowerSync"
 sidebarTitle: "Next.js"
-description: "A guide for creating a new Next.js application with PowerSync for offline/local first functionality"
+description: "Learn how to build highly responsive Next.js applications with PowerSync."
 keywords: ["next.js", "web"]
 ---
 
 ## Introduction
-In this tutorial, we'll explore how to enhance a Next.js application with offline-first capabilities using PowerSync. In the following sections, we'll walk through the process of integrating PowerSync into a Next.js application, setting up local-first storage, and handling synchronization efficiently.
+
+This guide shows you how to add PowerSync to a Next.js app for local-first data and sync. You install the Web SDK, define a client-side schema, and connect sync so components query the local database instead of blocking on the network.
+
+<Tip>
+For a runnable reference that includes API routes for JWTs, JWKS, and writes to Postgres, clone the [Next.js demo app](https://github.com/powersync-ja/powersync-js/tree/main/demos/example-nextjs) in the [powersync-js](https://github.com/powersync-ja/powersync-js) repository and follow its README (Docker, local Postgres, and the PowerSync Service).
+</Tip>
 
 <Note>
 PowerSync is tailored for client-side applications — there isn't much benefit to using SSR with PowerSync. Some frameworks like Next.js push towards enabling SSR by default, which means code is evaluated in a Node.js runtime. The PowerSync Web SDK requires browser APIs which are not available in Node.js. For ergonomics, the SDK performs no-ops if used in Node.js (rather than throwing errors), but you should not expect any data from PowerSync during server-side rendering. If you are using SSR in your application, we recommend explicitly isolating PowerSync to client-side code.
@@ -263,14 +268,11 @@ You'll notice that we need to add a `.env` file to our project which will contai
 * `NEXT_PUBLIC_POWERSYNC_URL` - This is the PowerSync instance url. You can grab this from the PowerSync Cloud dashboard.
 * `NEXT_PUBLIC_POWERSYNC_TOKEN` - For development purposes we'll be using a development token. To generate one, please follow the steps outlined in [Development Token](/configuration/auth/development-tokens) from our installation docs.
 
-### Create Providers
+### Create the PowerSync Provider
 
-Create a new directory in `./src/app/components` named `providers`
+Add a new file at `./src/lib/powersync/PowerSyncProvider.tsx`. This is the client-side boundary that initializes the `PowerSyncDatabase` and exposes it via React Context.
 
-#### `SystemProvider`
-Add a new file in the newly created `providers` directory called `SystemProvider.tsx`.
-
-```typescript components/providers/SystemProvider.tsx
+```typescript lib/powersync/PowerSyncProvider.tsx
 'use client';
 
 import { AppSchema } from '@/lib/powersync/AppSchema';
@@ -283,51 +285,49 @@ const logger = createBaseLogger();
 logger.useDefaults();
 logger.setLevel(LogLevel.DEBUG);
 
-const factory = new WASQLiteOpenFactory({
-    dbFilename: 'powersync.db',
-    // Use the pre-bundled worker from public/@powersync/
-    // This is required since Turbopack doesn't support dynamic imports of workers yet
-    worker: '/@powersync/worker/WASQLiteDB.umd.js'
-});
+let dbInstance: PowerSyncDatabase | null = null;
 
-export const db = new PowerSyncDatabase({
-    database: factory,
+function getDB(): PowerSyncDatabase {
+  if (dbInstance) return dbInstance;
+
+  dbInstance = new PowerSyncDatabase({
+    database: new WASQLiteOpenFactory({
+      dbFilename: 'powersync.db',
+      // Use the pre-bundled worker from public/@powersync/
+      // This is required since Turbopack doesn't support dynamic imports of workers yet
+      worker: '/@powersync/worker/WASQLiteDB.umd.js'
+    }),
     schema: AppSchema,
-    flags: {
-        disableSSRWarning: true
-    },
-    sync: {
-        // Use the pre-bundled sync worker from public/@powersync/
-        worker: '/@powersync/worker/SharedSyncImplementation.umd.js'
-    }
-});
+    flags: { disableSSRWarning: true },
+    // Use the pre-bundled sync worker from public/@powersync/
+    sync: { worker: '/@powersync/worker/SharedSyncImplementation.umd.js' },
+    logger
+  });
 
-const connector = new BackendConnector();
-db.connect(connector);
+  dbInstance.connect(new BackendConnector());
+  return dbInstance;
+}
 
-export const SystemProvider = ({ children }: { children: React.ReactNode }) => {
-    return (
-        <Suspense>
-            <PowerSyncContext.Provider value={db}>{children}</PowerSyncContext.Provider>
-        </Suspense>
-    );
-};
-
-export default SystemProvider;
+export function PowerSyncProvider({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense>
+      <PowerSyncContext.Provider value={getDB()}>{children}</PowerSyncContext.Provider>
+    </Suspense>
+  );
+}
 ```
 
-The `SystemProvider` is responsible for initializing the `PowerSyncDatabase`. The worker paths point to the pre-bundled workers copied to the public directory by the `powersync-web copy-assets` command.
+The `'use client'` directive marks this as a Client Component — PowerSync requires browser APIs, so initialization must happen on the client. The lazy `getDB()` singleton ensures the database is only instantiated once (and only in the browser), which avoids duplicate connections when modules are re-evaluated during development.
 
-We also instantiate our `BackendConnector` and pass an instance of that to `db.connect()`. This will connect to the PowerSync instance, validate the token supplied in the `fetchCredentials` function and then start syncing with the PowerSync Service.
+The worker paths point to the pre-bundled workers copied to the public directory by the `powersync-web copy-assets` command. `db.connect()` is called with an instance of `BackendConnector`, which will validate the token returned from `fetchCredentials` and start syncing with the PowerSync Service.
 
 #### Update `layout.tsx`
 
-In our main `layout.tsx` we'll update the `RootLayout` function to use the `SystemProvider`.
+Update `RootLayout` to wrap `children` with the `PowerSyncProvider`. Importantly, **the root layout should remain a Server Component** — do not add `'use client'` here. This is the standard Next.js App Router convention and is required if you want to export `metadata` (or use `generateMetadata`) from the layout. The client boundary is drawn at `PowerSyncProvider`, which is all that's needed to get PowerSync running in the browser.
 
 ```typescript app/layout.tsx
-'use client';
-
-import { SystemProvider } from '@/app/components/providers/SystemProvider';
+import type { Metadata } from 'next';
+import { PowerSyncProvider } from '@/lib/powersync/PowerSyncProvider';
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -341,6 +341,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+export const metadata: Metadata = {
+  title: 'PowerSync Next.js Example'
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -350,7 +354,7 @@ export default function RootLayout({
     <html lang="en">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <SystemProvider>{children}</SystemProvider>
+        <PowerSyncProvider>{children}</PowerSyncProvider>
       </body>
     </html>
   );

@@ -13,11 +13,12 @@ Welcome to the PowerSync documentation repository! Our docs are powered by [Mint
    ```
 2. **Install dependencies:**
    ```
+   corepack enable
    pnpm install
    ```
 3. **Start the local docs server:**
    ```
-   npm run dev
+   pnpm dev
    ```
 
 ## Contributing
@@ -40,7 +41,7 @@ All changes merged to the `main` branch are automatically published to https://d
 
 Regularly check for broken links by running:
 ```
-npx mintlify broken-links
+pnpm check:links
 ```
 
 ### Whitelisting & Blacklisting Terms (Vale)

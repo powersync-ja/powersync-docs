@@ -1,43 +1,73 @@
 ---
 title: "Diagnostics"
-description: "Use the PowerSync Diagnostics API to inspect replication status and sync health."
+description: "How to use the PowerSync Service Diagnostics API to inspect replication status, errors, and slot health."
 ---
 
-All self-hosted PowerSync Service instances ship with a Diagnostics API.
-This API provides the following diagnostic information:
-
-- Connections → Connected backend source database and any active errors associated with the connection.
-- Active Sync Streams / Sync Rules → Currently deployed Sync Streams (or legacy Sync Rules) and its status.
+All self-hosted PowerSync Service instances ship with a Diagnostics API for inspecting replication state, surfacing errors, and monitoring source database health.
 
 ## CLI
 
-If you have the [PowerSync CLI](/tools/cli) installed, use `powersync status` to check instance status without calling the API directly. This works with any running PowerSync instance — local or remote.
+If you have the [PowerSync CLI](/tools/cli) installed, use `powersync status` to check instance status without calling the API directly. This works with any running PowerSync instance, whether local or remote.
 
 ```bash
 powersync status
 
 # Extract a specific field
-powersync status --output=json | jq '.connections[0]'
+powersync status --output=json | jq '.data.active_sync_rules'
 ```
 
 ## Diagnostics API
 
-# Configuration
+### Configuration
 
-1. To enable the Diagnostics API, specify an API token in your PowerSync YAML file:
+1. Specify an API token in your PowerSync YAML file:
 
 ```yaml service.yaml
 api:
   tokens:
     - YOUR_API_TOKEN
 ```
-<Warning>Make sure to use a secure API token as part of this configuration</Warning>
+
+<Warning>Use a secure, randomly generated API token.</Warning>
 
 2. Restart the PowerSync Service.
 
-3. Once configured, send an HTTP request to your PowerSync Service Diagnostics API endpoint. Include the API token set in step 1 as a Bearer token in the Authorization header.
+3. Send a POST request to the diagnostics endpoint, passing the token as a Bearer token:
 
 ```shell
 curl -X POST http://localhost:8080/api/admin/v1/diagnostics \
   -H "Authorization: Bearer YOUR_API_TOKEN"
 ```
+
+### Response structure
+
+The response `data` object contains:
+
+**`connections`** — whether PowerSync can reach the configured source database and any connection-level errors.
+
+**`active_sync_rules`** — the currently serving sync config (Sync Streams or Sync Rules). Contains a `connections[]` array with details about each replication connection including slot name, WAL status, and tables being replicated. Also includes an `errors[]` array for warnings or errors.
+
+**`deploying_sync_rules`** — only present while a new sync config is being deployed and the initial replication is in progress. PowerSync runs this process in parallel so clients continue to be served by the existing active config. Once initial replication completes, this section disappears and `active_sync_rules` updates.
+
+Each connection in `active_sync_rules.connections[]` includes:
+
+| Field | Description |
+| --- | --- |
+| `slot_name` | The name of the Postgres replication slot used by this sync rules version. |
+| `initial_replication_done` | Whether the initial snapshot has completed. |
+| `replication_lag_bytes` | Replication lag in bytes. |
+| `wal_status` | The WAL status of the replication slot (`reserved`, `extended`, `unreserved`, or `lost`). |
+| `safe_wal_size` | Remaining WAL budget in bytes before the slot risks invalidation. |
+| `max_slot_wal_keep_size` | The configured `max_slot_wal_keep_size` value on the source Postgres database. |
+
+### Errors and warnings
+
+Warnings and errors appear in the `errors[]` array at the sync rules level (`active_sync_rules.errors[]` or `deploying_sync_rules.errors[]`). This includes:
+
+- **Replication lag warnings** are raised if no replicated commit has been received in more than 5 minutes (warning level) or 15 minutes (fatal level).
+- **WAL budget warnings** appear when the remaining WAL budget drops below 50%.
+- **Replication errors** such as `PSYNC_S1146` appear when a replication slot is invalidated (when `wal_status` is `lost`).
+
+<Tip>
+For guidance on configuring `max_slot_wal_keep_size` and managing replication slots, see [Postgres maintenance](/configuration/source-db/postgres-maintenance).
+</Tip>

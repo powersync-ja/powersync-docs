@@ -7,7 +7,7 @@ description: "Manage Postgres replication slots and WAL lag for reliable PowerSy
 
 Postgres logical replication slots are used to keep track of [replication](/architecture/powersync-service#replication-from-the-source-database) progress (recorded as a [LSN](https://www.postgresql.org/docs/current/datatype-pg-lsn.html)). 
 
-Every time a new version of [Sync Streams or Sync Rules](/sync/overview) are deployed, PowerSync creates a new replication slot, then switches over and deletes the old replication slot when the reprocessing of the new Sync Streams/Rules version is done.
+Every time a new version of [Sync Streams or Sync Rules](/sync/overview) is deployed, PowerSync creates a new replication slot. Once the new version is fully processed, PowerSync switches to use the new slot and deletes the old one.
 
 The replication slots can be viewed using this query:
 
@@ -22,9 +22,9 @@ Example output:
 | powersync\_1\_c3c8cf21 | 0/70D8240             | 1      | 56 bytes |
 | powersync\_2\_e62d7e0f | 0/70D8240             | 1      | 56 bytes |
 
-In some cases, a replication slot may remain without being used. In this case, the slot prevents Postgres from deleting older WAL entries. One such example is when a PowerSync instance has been deprovisioned.
+In some cases, a replication slot may remain without being used. In this case, the slot prevents Postgres from deleting older WAL entries. For example, this happens when a PowerSync instance has been deprovisioned.
 
-While this is desired behavior for slot replication downtime, it could result in excessive disk usage if the slot is not used anymore.
+Keeping unused slots alive prevents WAL cleanup, which can lead to excessive disk usage. If a slot is no longer needed, it should be dropped.
 
 Inactive slots can be dropped using:
 
@@ -32,15 +32,41 @@ Inactive slots can be dropped using:
 select slot_name, pg_drop_replication_slot(slot_name) from pg_replication_slots where active = false;
 ```
 
-Postgres prevents active slots from being dropped. If it does happen (e.g. while a PowerSync instance is disconnected), PowerSync would automatically re-create the slot, and restart replication.
+Postgres prevents active slots from being dropped. If an active slot is somehow dropped while a PowerSync instance is disconnected, PowerSync will automatically recreate the slot when it reconnects and restart replication.
+
+### Recovering from an invalidated slot
+
+A replication slot becomes invalidated when its `wal_status` is `lost`. This happens when the WAL data needed by the slot has been removed, typically because the replication lag exceeded `max_slot_wal_keep_size`.
+
+When this occurs, you will see an error such as:
+
+> Replication slot powersync\_1\_xxxx was invalidated (reason: wal\_removed). Increase max\_slot\_wal\_keep\_size on the source database and delete the existing slot to recover.
+
+To recover:
+
+1. Increase `max_slot_wal_keep_size` on the source Postgres database to prevent re-occurrence. See the [production readiness guide](/maintenance-ops/production-readiness-guide#managing--monitoring-replication-lag) for sizing guidance.
+
+2. Drop the invalidated slot:
+
+```sql
+SELECT pg_drop_replication_slot('powersync_1_xxxx');
+```
+
+Replace `powersync_1_xxxx` with the actual slot name from the error message.
+
+3. Restart the PowerSync Service. It will create a new replication slot and begin replication from scratch.
+
+<Note>If the slot was invalidated during the initial snapshot (before it completed), the PowerSync Service will not automatically retry. You must drop the invalidated slot manually before the service can recover.</Note>
+
+If the invalidation reason is `idle_timeout` (Postgres 18+), the slot was invalidated due to inactivity. In this case, increase `idle_replication_slot_timeout` on the source database instead.
 
 ### Maximum Replication Slots
 
-Postgres is configured with a maximum number of replication slots per server. Since each PowerSync instance uses one replication slot for replication and an additional one while deploying a new Sync Streams/Rules version, the maximum number of PowerSync instances connected to one Postgres server is equal to the maximum number of replication slots, minus 1\.
+Postgres is configured with a maximum number of replication slots per server. Each PowerSync instance uses one replication slot for replication and an additional one while deploying a new Sync Streams or Sync Rules version. The maximum number of PowerSync instances you can connect to one Postgres server is equal to the maximum number of replication slots, minus one.
 
 If other clients are also using replication slots, this number is reduced further.
 
-The maximum number of slots can be configured by setting `max_replication_slots` (not all hosting providers expose this), and checked using: 
+To configure the maximum number of slots, set `max_replication_slots` (though not all hosting providers expose this setting). Check the current value using: 
 
 ```sql
 select current_setting('max_replication_slots')

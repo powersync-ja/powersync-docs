@@ -7,7 +7,7 @@ All self-hosted PowerSync Service instances ship with a Diagnostics API for insp
 
 ## CLI
 
-If you have the [PowerSync CLI](/tools/cli) installed, use `powersync status` to check instance status without calling the API directly. This works with any running PowerSync instance — local or remote.
+If you have the [PowerSync CLI](/tools/cli) installed, use `powersync status` to check instance status without calling the API directly. This works with any running PowerSync instance, whether local or remote.
 
 ```bash
 powersync status
@@ -41,18 +41,33 @@ curl -X POST http://localhost:8080/api/admin/v1/diagnostics \
 
 ### Response structure
 
-The response `data` object contains information about:
+The response `data` object contains:
 
-**`connections`** — whether PowerSync can reach the configured source database, and any connection-level errors.
+**`connections`** — whether PowerSync can reach the configured source database and any connection-level errors.
 
-**`active_sync_rules`** — the currently serving sync config (Sync Streams/Sync Rules). Shows which replication slot is in use, whether initial replication has completed, which tables are being replicated, and any replication lag or errors.
+**`active_sync_rules`** — the currently serving sync config (Sync Streams or Sync Rules). Contains a `connections[]` array with details about each replication connection including slot name, WAL status, and tables being replicated. Also includes an `errors[]` array for warnings or errors.
 
-**`deploying_sync_rules`** — only present while a new sync config is being deployed and the initial replication is in progress. PowerSync runs this process in parallel so clients continue to be served by the existing active config. Once initial replication completes, this section disappears and `active_sync_rules` updates. Errors during initial replication surface here rather than in `active_sync_rules`.
+**`deploying_sync_rules`** — only present while a new sync config is being deployed and the initial replication is in progress. PowerSync runs this process in parallel so clients continue to be served by the existing active config. Once initial replication completes, this section disappears and `active_sync_rules` updates.
 
-From version 1.20.5 of the PowerSync Service, each connection entry under `active_sync_rules` includes WAL information so you can see how much budget remains before Postgres could invalidate the replication slot:
+Each connection in `active_sync_rules.connections[]` includes:
 
-- `wal_status` — slot status from `pg_replication_slots` (Postgres 13+)
-- `safe_wal_size` — bytes remaining before potential invalidation
-- `max_slot_wal_keep_size` — configured limit in bytes
+| Field | Description |
+| --- | --- |
+| `slot_name` | The name of the Postgres replication slot used by this sync rules version. |
+| `initial_replication_done` | Whether the initial snapshot has completed. |
+| `replication_lag_bytes` | Replication lag in bytes. |
+| `wal_status` | The WAL status of the replication slot (`reserved`, `extended`, `unreserved`, or `lost`). |
+| `safe_wal_size` | Remaining WAL budget in bytes before the slot risks invalidation. |
+| `max_slot_wal_keep_size` | The configured `max_slot_wal_keep_size` value on the source Postgres database. |
 
-This information is especially useful when you deploy a new sync config against a large database. When less than 50% of the WAL budget remains during a snapshot, PowerSync adds a warning to the response. If the slot is invalidated, the response includes error [`PSYNC_S1146`](/debugging/error-codes#psync_s11xx-postgres-replication-issues).
+### Errors and warnings
+
+Warnings and errors appear in the `errors[]` array at the sync rules level (`active_sync_rules.errors[]` or `deploying_sync_rules.errors[]`). This includes:
+
+- **Replication lag warnings** are raised if no replicated commit has been received in more than 5 minutes (warning level) or 15 minutes (fatal level).
+- **WAL budget warnings** appear when the remaining WAL budget drops below 50%.
+- **Replication errors** such as `PSYNC_S1146` appear when a replication slot is invalidated (when `wal_status` is `lost`).
+
+<Tip>
+For guidance on configuring `max_slot_wal_keep_size` and managing replication slots, see [Postgres maintenance](/configuration/source-db/postgres-maintenance).
+</Tip>

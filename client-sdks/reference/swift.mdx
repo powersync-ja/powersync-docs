@@ -262,6 +262,68 @@ func deleteTodo(id: String) async throws {
 }
 ```
 
+## Uploading client changes
+
+PowerSync queues writes made via `execute` (or its transaction equivalents) into a local upload queue. Implement `uploadData` on your connector to upload these changes to your backend. The Swift SDK exposes the queue through three APIs:
+
+* `getCrudBatch(limit:)` returns up to `limit` queued entries (default 100). A batch may span multiple transactions, and a single transaction may be split across batches. Use this when you don't need atomic transactions and want to upload in bulk.
+* `getNextCrudTransaction()` returns the oldest pending transaction. Each call returns the same transaction until it has been completed.
+* `getCrudTransactions()` returns an `AsyncSequence` of pending transactions. Completing a transaction returned by this iterator marks it and all prior transactions as uploaded, which is useful when you want to upload multiple transactions in a single network round-trip.
+
+After your backend accepts the changes, call `complete(writeCheckpoint:)` on the batch or transaction so PowerSync removes the entries from the queue.
+
+```swift
+class MyConnector: PowerSyncBackendConnector {
+    override func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+        guard let batch = try await database.getCrudBatch() else { return }
+
+        for entry in batch.crud {
+            switch entry.op {
+            case .put:
+                try await myApi.put(table: entry.table, data: entry.opDataTyped ?? [:])
+            case .patch:
+                try await myApi.patch(table: entry.table, id: entry.id, data: entry.opDataTyped ?? [:])
+            case .delete:
+                try await myApi.delete(table: entry.table, id: entry.id)
+            }
+        }
+
+        try await batch.complete()
+    }
+}
+```
+
+### Inspecting a `CrudEntry`
+
+Each `CrudEntry` describes a single row-level write captured by PowerSync:
+
+| Property | Description |
+| --- | --- |
+| `id` | The primary key of the affected row. |
+| `op` | The `UpdateType` (`.put`, `.patch`, or `.delete`). |
+| `table` | The table that was written to. |
+| `transactionId` | The id of the transaction the entry belongs to. `nil` for changes recorded outside of an explicit transaction. |
+| `opDataTyped` | The changed column values as a typed `JsonParam` (`[String: JsonValue]`). `nil` for `.delete` operations. |
+| `previousValuesTyped` | The previous column values as a typed `JsonParam`, available for `.patch` operations when [`Table.trackPreviousValues`](https://powersync-ja.github.io/powersync-swift/documentation/powersync/table) is enabled. |
+| `metadata` | User-defined metadata attached to the write. Available when `Table.trackMetadata` is enabled. |
+| `opData` | Backwards-compatible view of `opDataTyped` with all values converted to `String?`. Prefer `opDataTyped` for new code. |
+| `previousValues` | Backwards-compatible view of `previousValuesTyped` with all values converted to `String?`. Prefer `previousValuesTyped` for new code. |
+
+`opDataTyped` and `previousValuesTyped` were added in `1.14.0` and preserve the original SQLite types (`Int`, `Double`, `Bool`, `String`, `null`) instead of converting everything to strings. This avoids an extra parsing step when forwarding the data to a typed API or JSON encoder:
+
+```swift
+for entry in batch.crud {
+    guard let data = entry.opDataTyped else { continue }
+    if case .bool(let completed) = data["completed"] ?? .null {
+        // `completed` is a Swift `Bool`, no string parsing required.
+    }
+}
+```
+
+<Note>
+  As of `1.14.0`, `CrudBatch`, `CrudEntry`, and `CrudTransaction` are concrete `struct`s instead of protocols. They cannot be constructed in user code, but existing code that reads their properties continues to work unchanged.
+</Note>
+
 ## Configure Logging
 
 You can include your own Logger that must conform to the [LoggerProtocol](https://powersync-ja.github.io/powersync-swift/documentation/powersync/loggerprotocol) as shown here.

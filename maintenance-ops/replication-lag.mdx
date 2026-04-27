@@ -1,0 +1,196 @@
+---
+title: "Replication Lag"
+description: "Understand, monitor, and reduce replication lag between your source database and the PowerSync Service."
+---
+
+Replication lag is the delay between a change being committed in your source database (Postgres, MongoDB, MySQL, SQL Server) and that change being available in the PowerSync Service for clients to sync. A small amount of lag is normal. Sustained or growing lag usually points to a specific cause that you can investigate and act on.
+
+This page covers what replication lag is, how to monitor it, what commonly causes it, and how to reduce it.
+
+## Overview
+
+A change committed in the source database goes through roughly three stages before a client sees it:
+
+1. The source database writes the change to its replication stream. The exact mechanism differs per source:
+   - **Postgres**: logical replication via the Write-Ahead Log (WAL), read through a replication slot.
+   - **MongoDB**: change streams backed by the oplog.
+   - **MySQL**: the binary log (binlog), read using GTIDs.
+   - **SQL Server**: Change Data Capture (CDC) change tables, populated by a capture job that scans the transaction log.
+2. The PowerSync Service reads the change from that stream and processes it into its internal bucket storage.
+3. Connected clients receive the change on their next checkpoint.
+
+Replication lag refers specifically to stage 2: the time or volume of changes that have been committed to the source but not yet processed by the PowerSync Service.
+
+<Note>
+  SQL Server has an additional source of latency inside stage 1: the CDC capture job itself runs on an interval (default 5 seconds on SQL Server, fixed at 20 seconds on Azure SQL), so changes do not appear in the CDC change tables instantly. See [SQL Server](#sql-server) below.
+</Note>
+
+## How to monitor replication lag
+
+### PowerSync Dashboard
+
+The [PowerSync Dashboard](https://dashboard.powersync.com/) exposes a **Replication Lag** chart in the **Metrics** view of each instance. Use it to spot spikes and trends over time.
+
+See [Monitoring and Alerting](/maintenance-ops/monitoring-and-alerting) for alert and notification options available on your plan.
+
+### Instance Logs
+
+[Instance Logs](/maintenance-ops/monitoring-and-alerting#instance-logs) include **Replicator** entries that reflect replication activity from your source database to the PowerSync Service. Replication errors and restarts appear here and are often the first signal when lag starts climbing.
+
+## What "*normal*" looks like
+
+Replication lag is not expected to be exactly zero at all times. Short fluctuations are routine and generally not a concern. As a rough guide:
+
+* **Steady state**: lag stays low (typically in the single-digit seconds, or a few MB of WAL on Postgres) and returns to near-zero between bursts.
+* **Write bursts**: a batch of writes in the source database causes a short spike while the service catches up. Lag should recover within seconds to a minute once the burst ends.
+* **PowerSync infrastructure events**: brief replication lag can also occur during internal PowerSync scaling events. These are expected to recover on their own within a few minutes without any action from you. 
+* **Sustained or growing lag**: lag that keeps climbing, or does not recover after a burst or infrastructure event, indicates a problem worth investigating.
+
+## Common causes
+
+The causes below are grouped into ones that apply to any source, and ones that are specific to a given source database.
+
+<Note>
+  Replication lag is separate from client sync lag. A client can be behind the PowerSync Service because of its own connection or app state, even when replication lag is zero.
+</Note>
+
+### All sources
+
+#### Initial replication of a large dataset
+
+When you first connect a source database, or when you deploy Sync Config changes that trigger reprocessing, the PowerSync Service replicates the full set of matching rows. During this period:
+
+* Replication lag will be elevated until the initial snapshot completes.
+* The source-side replication buffer (WAL on Postgres, oplog on MongoDB, binlog on MySQL, CDC change tables on SQL Server) grows because the service has not yet acknowledged those changes.
+
+This is expected. Plan for it by sizing the relevant retention setting appropriately (see the source-specific sections below) and by coordinating large Sync Config changes during lower-traffic windows.
+
+#### Source database load
+
+Replication lag is sensitive to activity on the source database:
+
+* Long-running transactions on the source hold back the replication position until they commit.
+* CPU, IO, or connection saturation on the source slows how fast changes are written to the replication stream in the first place.
+
+If lag correlates with specific workloads, profile those workloads on the source database before looking at the PowerSync Service.
+
+#### Bursty write workloads exceeding replication throughput
+
+Replication lag is a function of how fast changes arrive vs. how fast PowerSync can consume them. If a workload produces changes faster than the service can replicate, lag will accumulate until the burst ends and then drain as the service catches up. The service's published throughput (see [Performance and Limits](/resources/performance-and-limits#performance-expectations)) is roughly:
+
+* **2,000-4,000 operations per second** for small rows
+* **Up to 5 MB per second** for large rows
+* **~60 transactions per second** for smaller transactions
+
+Workloads that commonly push past these rates, and therefore commonly cause visible lag spikes, include:
+
+* **Scheduled jobs**: cron jobs, nightly batches, or queue workers that flush on a timer. These tend to produce very sharp lag spikes at predictable times.
+* **Bulk `UPDATE`s across indexed columns**: a single statement can generate millions of row-change events in the replication stream, even if the SQL itself runs quickly on the source.
+* **Backfills and data migrations**: schema changes, column backfills, or re-keying jobs. On Postgres these can also rewrite large portions of a table, multiplying WAL volume.
+* **Bulk imports** (`COPY`, `LOAD DATA`, `BULK INSERT`, `insertMany`): import throughput on the source is often far higher than replication throughput.
+
+<Tip>
+  If a burst is unavoidable, prefer to run it during lower-traffic windows, batch it into smaller chunks rather than one large transaction, and make sure your source-side retention setting is large enough to cover the time it takes PowerSync to catch up afterwards. See the source-specific sections below: [Postgres](#postgres), [MongoDB](#mongodb), [MySQL](#mysql), [SQL Server](#sql-server).
+</Tip>
+
+#### Sync Config complexity
+
+Slower replication performance is correlated with the number of buckets a replicated row ends up in, i.e. a row written once to the source database can be replicated to many buckets if many queries in your Sync Config reference it. If lag climbs after a Sync Config deploy and stays elevated, review the new configuration for rows that end up in many buckets. See [Performance and Limits](/resources/performance-and-limits) for limits that are worth staying well inside of.
+
+### Postgres
+
+#### WAL retention (`max_slot_wal_keep_size`)
+
+If the WAL grows faster than the PowerSync Service can consume it, and the total unconsumed WAL exceeds `max_slot_wal_keep_size`, Postgres will invalidate the replication slot. PowerSync then has to restart replication from scratch, which extends the period of elevated lag.
+
+<Tip>
+  The [`max_slot_wal_keep_size`](https://www.postgresql.org/docs/current/runtime-config-replication.html#GUC-MAX-SLOT-WAL-KEEP-SIZE) Postgres parameter limits how much WAL a replication slot can retain. Setting it too low on a write-heavy database risks slot invalidation during bursts or during initial replication.
+</Tip>
+
+<Warning>
+  **Supabase defaults**: Supabase projects ship with `max_slot_wal_keep_size = 4GB` and a limit of 5 replication slots. The 4GB cap is easy to exceed during initial replication of a large dataset or a sustained write burst, after which the slot will be invalidated and PowerSync has to restart replication from scratch. Raise this value before connecting a large Supabase database to PowerSync.
+</Warning>
+
+See [Managing and Monitoring Replication Lag](/maintenance-ops/production-readiness-guide#managing-and-monitoring-replication-lag) for queries to check the current setting and the current slot lag, and for guidance on sizing it.
+
+#### `TRUNCATE` on replicated tables
+
+A `TRUNCATE` on a table in your Sync Config is treated as a change event for every row in that table, which can force the service to re-process large amounts of bucket data. If `TRUNCATE` runs on a regular schedule (for example, a cron that truncates-and-reloads a table), each run will produce a visible lag spike. Prefer `DELETE` with a filter, or redesign the job so it does not truncate a replicated table.
+
+#### Inactive replication slots holding WAL
+
+When Sync Streams/Sync Rules are redeployed, PowerSync creates a new replication slot and retires the old one once reprocessing completes. If an instance is stopped, deprovisioned, or hits an error before that handover finishes, an inactive slot can remain on the source database and continue to hold WAL, which can contribute to disk pressure and can mask what "real" lag looks like.
+
+See [Managing Replication Slots](/maintenance-ops/production-readiness-guide#managing-replication-slots) for queries to find and drop inactive slots, and for notes on the Postgres 18+ `idle_replication_slot_timeout` parameter.
+
+### MongoDB
+
+* **Change stream timeouts**: a significant delay on the source database in reading the change stream can cause timeouts (see [`PSYNC_S1345`](/debugging/error-codes#psync-s13xx-mongodb-replication-issues)). If this is not resolved after retries, replication may need to be restarted from scratch.
+* **Change stream invalidation**: replication restarts with a new change stream if the existing one is invalidated, for example if the `startAfter`/`resumeToken` is no longer valid, if the replication connection changes, or if the database is dropped (see [`PSYNC_S1344`](/debugging/error-codes#psync-s13xx-mongodb-replication-issues)).
+* **Deeply nested documents**: JSON or embedded-document nesting deeper than 20 levels will fail replication with [`PSYNC_S1004`](/debugging/error-codes#psync-s1xxx-replication-issues).
+* **Post-image configuration**: if post-images are set to `read_only`, every replicated collection must have `changeStreamPreAndPostImages: { enabled: true }` set or replication will error. See [Post Images](/configuration/source-db/setup#post-images).
+
+### MySQL
+
+* **Binlog retention**: PowerSync reads from the MySQL binary log. If required binlog files are purged before PowerSync has read them (for example, after extended downtime or sustained lag), replication has to restart from scratch. Configure MySQL binlog retention to be long enough to cover expected downtime and lag bursts.
+* **`binlog-do-db` / `binlog-ignore-db` filters**: these filters are optional, but if set, every database referenced by your Sync Config must be included. Tables in excluded databases will not produce binlog events for PowerSync to replicate. See [Additional Configuration (Optional) → Binlog](/configuration/source-db/setup#additional-configuration-optional) in the MySQL setup docs.
+
+See [MySQL setup](/configuration/source-db/setup#mysql) for required binlog settings.
+
+### SQL Server
+
+* **CDC retention**: the CDC cleanup job expires data from CDC change tables after a retention window (default 3 days). If the PowerSync Service is offline longer than this period, data will need to be fully re-synced.
+* **Latency from CDC polling**: end-to-end latency has two components. First, the SQL Server capture job's transaction log scan interval (default 5 seconds, recommended 1 second; fixed at 20 seconds on Azure SQL Database). Second, PowerSync's own polling interval (`pollingIntervalMs`, default 1000ms, self-hosted only). Both contribute to the minimum achievable lag.
+* **`_powersync_checkpoints` table**: CDC must be enabled on `dbo._powersync_checkpoints` for PowerSync to generate regular checkpoints.
+
+See [SQL Server setup](/configuration/source-db/setup#sql-server) for CDC configuration, recommended capture job tuning, and the [Latency](/configuration/source-db/setup#latency) section.
+
+## Reducing replication lag
+
+Start with the "All sources" checks, then go to the section for your source database.
+
+### All sources
+
+* **Confirm the source database is healthy**: check CPU, IO, connection count, and long-running transactions on the source. A saturated source will cause replication lag that no amount of tuning on the PowerSync side can fix.
+* **Pause or reduce large writes while the service catches up**: if lag is already elevated, holding off on scheduled jobs, bulk updates, migrations, and backfills is usually the fastest way to let it drain. If a large write is unavoidable, batch it into smaller transactions and pace them so the service has time to drain between batches, rather than running it as one large transaction.
+* **Review Sync Config**: look for Sync Config changes that could be producing significantly more buckets or heavier parameter queries than before. Simplify where possible and deploy large changes during lower-traffic windows.
+* **Check for source schema changes**: `ALTER TABLE` and similar changes on replicated tables can stall or invalidate replication until reconfigured. See [Implementing Schema Changes](/maintenance-ops/implementing-schema-changes) for the recommended flow.
+* **Check instance logs for errors**: [Replicator logs](/maintenance-ops/monitoring-and-alerting#instance-logs) often contain the specific error (slot invalidation, change stream failure, binlog purge, CDC retention expiry, source connectivity) behind a lag incident.
+
+### Postgres
+
+* Run the queries in [Managing and Monitoring Replication Lag](/maintenance-ops/production-readiness-guide#managing-and-monitoring-replication-lag) to see current slot lag and `max_slot_wal_keep_size`. Increase `max_slot_wal_keep_size` if lag routinely approaches it, especially before deploying Sync Config changes against large datasets. On Supabase, raise the default 4GB cap before connecting a large database.
+* If WAL is growing on the source but lag reported by the PowerSync Service is low, look for inactive slots. See [Managing Replication Slots](/maintenance-ops/production-readiness-guide#managing-replication-slots) to identify and drop them.
+* Avoid `TRUNCATE` on tables in your Sync Config. See [`TRUNCATE` on replicated tables](#truncate-on-replicated-tables) above.
+
+### MongoDB
+
+* Check [Replicator logs](/maintenance-ops/monitoring-and-alerting#instance-logs) for change-stream errors ([`PSYNC_S1344`](/debugging/error-codes#psync-s13xx-mongodb-replication-issues), [`PSYNC_S1345`](/debugging/error-codes#psync-s13xx-mongodb-replication-issues)). Persistent timeouts or invalidation generally require the change stream to be re-established, which may restart replication.
+* If you are using `read_only` post-images, confirm every replicated collection has `changeStreamPreAndPostImages` enabled. See [Post Images](/configuration/source-db/setup#post-images).
+
+### MySQL
+
+* Confirm MySQL binlog retention is long enough to tolerate expected downtime or lag bursts, and that any `binlog-do-db` / `binlog-ignore-db` filters include every database referenced by your Sync Config. See [MySQL](#mysql) above.
+
+### SQL Server
+
+* Confirm the CDC capture job is running and has not exceeded its retention window (default 3 days), and that CDC is still enabled on `dbo._powersync_checkpoints`. See [SQL Server](#sql-server) above and [SQL Server setup](/configuration/source-db/setup#sql-server) for capture job tuning.
+
+If lag persists after these checks, reach out on the PowerSync [Discord](https://discord.gg/powersync) or contact support with your instance ID, the time range of the incident, and a screenshot of the Replication Lag chart.
+
+## Related
+
+<CardGroup>
+  <Card title="Monitoring and Alerting" icon="chart-line" href="/maintenance-ops/monitoring-and-alerting">
+    Configure usage metrics, logs, issue alerts, and notifications.
+  </Card>
+  <Card title="Production Readiness Guide" icon="screwdriver-wrench" href="/maintenance-ops/production-readiness-guide">
+    Database best practices, including replication slot management.
+  </Card>
+  <Card title="Troubleshooting" icon="bug" href="/debugging/troubleshooting">
+    Common issues and pointers for debugging sync and replication.
+  </Card>
+  <Card title="Performance and Limits" icon="gauge" href="/resources/performance-and-limits">
+    Service limits that are worth staying well inside of.
+  </Card>
+</CardGroup>

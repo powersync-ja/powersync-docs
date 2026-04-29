@@ -424,13 +424,43 @@ export const db = new PowerSyncDatabase({
 - The system is not designed to handle multiple tab scenarios.
 - The configuration is similar to `OPFSCoopSyncVFS`, but requires using `WASQLiteVFS.AccessHandlePoolVFS`.
 
+##### OPFSWriteAheadVFS
+
+<Note>
+  Available from `@powersync/web` version 1.36.0.
+</Note>
+
+- This OPFS-based implementation is the only VFS that supports **concurrent reads** alongside writes by hosting one or more read-only SQLite connections in additional dedicated workers.
+- Use this VFS when you have read-heavy workloads and want long-running queries to run in parallel without blocking writes (or each other).
+- Configure the number of additional read-only worker connections via the `additionalReaders` option (default: `1`). The writer connection can also serve reads, so `additionalReaders: 1` allows two concurrent readers in practice.
+- Like other OPFS-based VFS implementations, it requires a browser that supports OPFS and `FileSystemSyncAccessHandle`, and uses a dedicated web worker (`useWebWorker: true`).
+- Example configuration:
+
+```js
+import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: new WASQLiteOpenFactory({
+    dbFilename: 'exampleVFS.db',
+    vfs: WASQLiteVFS.OPFSWriteAheadVFS,
+    // Open one additional read-only connection for concurrent reads.
+    // The writer connection also serves reads, so this enables two concurrent readers in total.
+    additionalReaders: 1
+  })
+});
+```
+
+The `additionalReaders` option is ignored on other VFS types.
+
 #### VFS Compatibility Matrix
 
-| VFS Type            | Multi-Tab Support (Standard Browsers) | Multi-Tab Support (Safari/iOS) | Notes                                 |
-| ------------------- | ------------------------------------- | ------------------------------ | ------------------------------------- |
-| IDBBatchAtomicVFS   | ✅                                     | ❌                              | Default, some Safari stability issues |
-| OPFSCoopSyncVFS     | ✅                                     | ✅                              | Recommended for multi-tab support     |
-| AccessHandlePoolVFS | ❌                                     | ❌                              | Best for single-tab applications      |
+| VFS Type            | Multi-Tab Support (Standard Browsers) | Multi-Tab Support (Safari/iOS) | Concurrent Reads | Notes                                       |
+| ------------------- | ------------------------------------- | ------------------------------ | ---------------- | ------------------------------------------- |
+| IDBBatchAtomicVFS   | ✅                                     | ❌                              | ❌                | Default, some Safari stability issues       |
+| OPFSCoopSyncVFS     | ✅                                     | ✅                              | ❌                | Recommended for multi-tab support           |
+| AccessHandlePoolVFS | ❌                                     | ❌                              | ❌                | Best for single-tab applications            |
+| OPFSWriteAheadVFS   | ❌                                     | ❌                              | ✅                | Best for read-heavy, single-tab workloads   |
 
 **Note**: There are known issues with OPFS when using Safari's incognito mode.
 

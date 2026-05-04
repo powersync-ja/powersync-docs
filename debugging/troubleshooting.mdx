@@ -396,18 +396,16 @@ This covers the whole pipeline in one number, but does not tell you which stage 
 
 #### Stage 1: Source Database to PowerSync Service
 
-Check the **replication lag** metric on the PowerSync Dashboard's **Metrics** view. This shows whether replication from your source database is keeping up.
+Check the **Replication Lag** chart in the **Metrics** view of the [PowerSync Dashboard](https://dashboard.powersync.com/). This shows whether replication from your source database is keeping up. Replicator logs in the **Logs** view surface any replication errors that would cause delays at this stage.
 
-For Postgres sources, you can also query the replication slots directly to see the current WAL backlog. See [Logical Replication Slots](/configuration/source-db/postgres-maintenance#logical-replication-slots) for the query and guidance on interpreting the result.
-
-Replicator logs in the **Logs** view of the [PowerSync Dashboard](https://dashboard.powersync.com/) surface any replication errors that would cause delays at this stage.
+For a deeper walkthrough of what drives replication lag, how to interpret it for your specific source (Postgres, MongoDB, MySQL, SQL Server), and how to reduce it, see [Replication Lag](/maintenance-ops/replication-lag).
 
 #### Stage 2: PowerSync Service to Client
 
 Service/API logs in the [PowerSync Dashboard](https://dashboard.powersync.com/) record each client sync session. Two events are useful when investigating a specific user's experience:
 
 * **Sync stream started**: logged when a client connects. Includes `user_id`, `client_id`, `app_metadata` (if set), and client parameters.
-* **Sync stream completed**: logged when the session ends. Includes `user_id`, `app_metadata` (if set), `operations_synced`, `data_synced_bytes`, `data_sent_bytes`, and `stream_ms` (session duration).
+* **Sync stream complete**: logged when the session ends. Includes `user_id`, `app_metadata` (if set), `operations_synced`, `data_synced_bytes`, `data_sent_bytes`, and `stream_ms` (session duration).
 
 If a user reports "data took several seconds to show up at 2:15 PM", filter the logs by their `user_id` around that time. The matched events show how many operations were synced, how much data was transferred, and how long the connection was active.
 
@@ -419,7 +417,7 @@ A few patterns account for most latency reports:
 
 * **Large initial sync**: if your sync rules result in a large dataset, the first sync after connecting will be slow. Inspect bucket sizes and sync state with the [Sync Diagnostics Client](/tools/diagnostics-client).
 * **Upload queue blocking downloads**: by default, uploads are processed before downloads, so a backlogged upload queue delays receiving new data. Buckets and streams at [priority 0](/sync/advanced/prioritized-sync) are not blocked by uploads, but come with the trade-off of potential sync inconsistencies.
-* **Postgres WAL backlog**: high write volume on the source database can cause the replication slot to fall behind. See [Postgres Maintenance](/configuration/source-db/postgres-maintenance) for managing this.
+* **Replication lag on the source database**: high write volume, long-running transactions, bulk updates, or backfills can cause replication to fall behind faster than the service can drain it. See [Replication Lag](/maintenance-ops/replication-lag) for source-specific causes and fixes.
 * **Too many buckets per user**: incremental sync overhead scales roughly linearly with the number of buckets per user. See [Too Many Buckets](#too-many-buckets-psync_s2305) above.
 
 ### Web: Logging queries on the performance timeline

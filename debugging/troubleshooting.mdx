@@ -374,6 +374,54 @@ These are some common pointers when it comes to diagnosing and understanding per
 2. The **initial sync** on a client can take a while in cases where the operations history is large. See [Compacting Buckets](/maintenance-ops/compacting-buckets) to optimize sync performance.
 3. You can get big performance gains by using **transactions & batching** as explained in this [blog post](https://www.powersync.com/blog/flutter-database-comparison-sqlite-async-sqflite-objectbox-isar).
 
+### Diagnosing Sync Latency
+
+When a user reports that a write took too long to reach their device, there is no single end-to-end trace that covers the full path from your source database to the client. Instead, isolate each stage of the pipeline to find the bottleneck.
+
+The pipeline has three stages:
+
+1. **Source database to PowerSync Service** (replication).
+2. **PowerSync Service to client** (sync session).
+3. **End-to-end** (write committed in source database to row visible on the device).
+
+#### Measuring End-to-End Latency
+
+The most reliable way to measure the full round trip is to put a timestamp in the data itself. When a row is written or updated in your source database, set a column to the current server time (e.g. `updated_at = NOW()`). On the client, compare that timestamp to the time the row arrives in the local database. The difference is the total time from the source write to data being visible on the device.
+
+This covers the whole pipeline in one number, but does not tell you which stage is slow. Use the per-stage diagnostics below to break it down.
+
+<Note>
+  [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints) are not a latency measurement tool. They are a per-client consistency mechanism tied to the upload cycle and carry sequence numbers, not timestamps. They tell you whether a client's own upload has been reflected back to it, not how long a backend write took to reach a device.
+</Note>
+
+#### Stage 1: Source Database to PowerSync Service
+
+Check the **replication lag** metric on the PowerSync Dashboard's **Metrics** view. This shows whether replication from your source database is keeping up.
+
+For Postgres sources, you can also query the replication slots directly to see the current WAL backlog. See [Logical Replication Slots](/configuration/source-db/postgres-maintenance#logical-replication-slots) for the query and guidance on interpreting the result.
+
+Replicator logs in the **Logs** view of the [PowerSync Dashboard](https://dashboard.powersync.com/) surface any replication errors that would cause delays at this stage.
+
+#### Stage 2: PowerSync Service to Client
+
+Service/API logs in the [PowerSync Dashboard](https://dashboard.powersync.com/) record each client sync session. Two events are useful when investigating a specific user's experience:
+
+* **Sync stream started**: logged when a client connects. Includes `user_id`, `client_id`, `app_metadata` (if set), and client parameters.
+* **Sync stream completed**: logged when the session ends. Includes `user_id`, `app_metadata` (if set), `operations_synced`, `data_synced_bytes`, `data_sent_bytes`, and `stream_ms` (session duration).
+
+If a user reports "data took several seconds to show up at 2:15 PM", filter the logs by their `user_id` around that time. The matched events show how many operations were synced, how much data was transferred, and how long the connection was active.
+
+[Custom metadata](/maintenance-ops/monitoring-and-alerting#custom-metadata-in-sync-logs) attached at `connect()` time is included in both events, so you can also filter by app version, environment, or other context you set.
+
+#### Common Causes of Latency
+
+A few patterns account for most latency reports:
+
+* **Large initial sync**: if your sync rules result in a large dataset, the first sync after connecting will be slow. Inspect bucket sizes and sync state with the [Sync Diagnostics Client](/tools/diagnostics-client).
+* **Upload queue blocking downloads**: by default, uploads are processed before downloads, so a backlogged upload queue delays receiving new data. Buckets and streams at [priority 0](/sync/advanced/prioritized-sync) are not blocked by uploads, but come with the trade-off of potential sync inconsistencies.
+* **Postgres WAL backlog**: high write volume on the source database can cause the replication slot to fall behind. See [Postgres Maintenance](/configuration/source-db/postgres-maintenance) for managing this.
+* **Too many buckets per user**: incremental sync overhead scales roughly linearly with the number of buckets per user. See [Too Many Buckets](#too-many-buckets-psync_s2305) above.
+
 ### Web: Logging queries on the performance timeline
 
 Enabling the `debugMode` flag in the [Web SDK](/client-sdks/reference/javascript-web) logs all SQL queries on the Performance timeline in Chrome's Developer Tools (after recording). This can help identify slow-running queries.

@@ -2,23 +2,28 @@
 // Define a result type with properties matching the schema columns (some columns omitted here for brevity)
 // public class ListResult { public string id; public string name; public string owner_id; ... }
 
-// Watch returns an IDisposable (available since version v0.0.8-alpha.1)
-var query = await db.Watch("SELECT * FROM lists WHERE owner_id = ?", [ownerId], new WatchHandler<ListResult>
+// Optional cancellation token to stop watching
+var cts = new CancellationTokenSource();
+
+// Register listener synchronously on the calling thread...
+var listener = db.Watch<ListResult>(
+    "SELECT * FROM lists WHERE owner_id = ?",
+    [ownerId],
+    new SQLWatchOptions { Signal = cts.Token }
+);
+
+// ...then listen to changes on another thread (or await foreach directly if already in an async context)
+_ = Task.Run(async () =>
 {
-    OnResult = (results) =>
+    await foreach (var results in listener)
     {
         Console.WriteLine("Lists: ");
         foreach (var result in results)
         {
             Console.WriteLine($"{result.id}: {result.name}");
         }
-    },
-    OnError = (error) =>
-    {
-        Console.WriteLine("Error: " + error.Message);
     }
-});
+}, cts.Token);
 
-// Call query.Dispose() to stop watching for updates
-query.Dispose();
+// To stop watching, cancel the token: cts.Cancel();
 ``` 

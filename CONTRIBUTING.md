@@ -15,19 +15,23 @@ The PowerSync docs, like [the Service](https://github.com/powersync-ja/powersync
      git clone https://github.com/YOUR-USERNAME/powersync-docs.git
      cd powersync-docs
      ```
-2. **Install Mintlify CLI:**
+2. **Enable Corepack and install dependencies:**
    ```
-   npx mintlify install
+   corepack enable
+   pnpm install
    ```
 3. **Start the local docs server:**
    ```
-   npx mintlify dev
+   pnpm dev
    ```
    (See the [README](/README.md) for more details and troubleshooting.)
 4. **Make your changes:**
    - Edit or add .mdx files as needed.
    - See the [Editing Guidelines in the README](/README.md#editing-guidelines).
 5. **Test your changes locally**
+   ```
+   pnpm check:links
+   ```
 6. **Submit a pull request:**
    - Push your changes to your fork.
    - Open a PR to `powersync-ja/powersync-docs:main`.

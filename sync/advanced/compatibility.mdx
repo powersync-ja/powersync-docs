@@ -1,6 +1,6 @@
 ---
 title: "Compatibility"
-description: "Configure sync behavior: enable latest backwards-incompatible fixes (recommended for new projects) or keep legacy behavior."
+description: "Configure compatibility editions and bucket storage format version in PowerSync's sync config."
 ---
 
 To ensure consistency, it is important that the PowerSync Service does not interpret the same source row in different ways after updating to a new version.
@@ -10,7 +10,7 @@ At the same time, we want to fix bugs or other inaccuracies that have accumulate
 
 To make this trade‑off explicit, you choose whether to keep the existing behavior or turn on newer fixes that slightly change how data is processed.
 
-Use the `config` block in your Sync Rules YAML file to choose the behavior. There are two ways to turn fixes on:
+Use the `config` block in your sync config YAML to choose the behavior. There are two ways to turn fixes on:
 
 1. Set an `edition` to enable the full set of fixes for that edition. This is the recommended approach for new projects.
 2. Toggle individual options for more fine‑grained control.
@@ -21,23 +21,73 @@ For older projects, the previous behavior remains the default. New projects shou
 
 For new projects, it is recommended to enable all current fixes by setting `edition: <edition>`:
 
-```yaml sync_rules.yaml
+```yaml
 config:
-  edition: 2 # Recommended to set to the latest available edition (see 'Supported fixes' table below)
+  edition: 3 # Recommended to set to the latest available edition (see 'Supported fixes' table below)
 
-bucket_definitions:
+streams:
   # ...
 ```
 
 Or, specify options individually:
 
-```yaml sync_rules.yaml
+```yaml
 config:
   timestamps_iso8601: true
   versioned_bucket_ids: true
   fixed_json_extract: true
   custom_postgres_types: true
 ```
+
+## Sync Streams Requirement
+
+**New Sync Streams configurations should use `edition: 3`**, which enables the new compiler with an expanded SQL feature set (including `JOIN`, CTEs, multiple queries per stream, `BETWEEN`, `CASE`, and more):
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  my_stream:
+    query: SELECT * FROM my_table WHERE user_id = auth.user_id()
+```
+
+<Note>
+**Upgrading from alpha**: If you have existing Sync Streams using `edition: 2`, upgrade to `edition: 3` to enable the new compiler with an expanded SQL feature set (including `JOIN`, CTEs, multiple queries per stream, `BETWEEN`, `CASE`, and more). See [Supported SQL](/sync/supported-sql) for the full list of supported features.
+</Note>
+
+## Storage version
+
+The PowerSync Service stores replicated bucket data in [bucket storage](/architecture/powersync-service#bucket-storage). That data uses a storage version that can evolve when you deploy new Sync Streams or Sync Rules. This versioning approach avoids large upfront migrations on existing bucket data when the Service introduces bigger storage changes. Each time your sync config is deployed and processed, the bucket data written for that deployment uses a specific storage version.
+
+### Optional `config.storage_version`
+
+You can pin the bucket storage version by setting it under the `config` block:
+
+```yaml
+config:
+  edition: 3
+  storage_version: 2 # version 2 (stable) and 3 (unstable) are currently supported
+
+streams:
+  todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+```
+
+### When to set `storage_version` explicitly
+
+In most deployments you can omit `storage_version`. The PowerSync Service then uses the latest stable storage version it supports. You should only set this field if you need more control, e.g.:
+
+1. Service downgrade: If you need to run an older Service version that only supports up to a given storage version, deploy sync config with that `storage_version`, wait until reprocessing for that deployment has finished, then downgrade the Service.
+2. Experiments: Opt into an odd, unstable storage version in non-production environments.
+3. Delaying a storage upgrade: Change other sync config while keeping bucket data on an older stable storage version until you are ready for the newer format.
+
+### Stable and experimental versions
+
+The service distinguishes stable and experimental storage versions as follows:
+
+- Even numbers (for example `2`, `4`) denote stable formats. Once a stable version is supported, newer Service releases are expected to keep supporting it until it is officially deprecated.
+- Odd numbers (for example `3`) denote unstable formats. The layout may change without notice and support may be removed in a future release. Use odd versions only for testing, not production.
 
 ## Supported fixes
 
@@ -72,9 +122,9 @@ You can use the `timestamp_max_precision` option to configure the actual precisi
 For instance, a Postgres timestamp value would sync as `2025-09-22T14:29:30.000000` by default.
 If you don't want that level of precision, you can use the following options to make it sync as `2025-09-22T14:29:30.000`:
 
-```yaml sync_rules.yaml
+```yaml sync-config.yaml
 config:
-  edition: 2
+  edition: 3
   timestamp_max_precision: milliseconds
 ```
 
@@ -104,9 +154,11 @@ twice before realizing that something is off and starting from scratch.
 Applying this fix improves client-side progress estimation and is more efficient, since data would not get
 downloaded twice.
 
+For how bucket identifiers are represented in bucket storage at the persistence layer (including automatic use of versioned bucket names with newer storage formats), see [Storage version](#storage-version).
+
 ### `fixed_json_extract`
 
-This fixes the `json_extract` functions as well as the `->` and `->>` operators in sync rules to behave similar
+This fixes the `json_extract` functions as well as the `->` and `->>` operators in Sync Rules to behave similar
 to recent SQLite versions: We only split on `.` if the path starts with `$.`.
 
 For instance, `'json_extract({"foo.bar": "baz"}', 'foo.bar')` would evaluate to:

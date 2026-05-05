@@ -1,6 +1,6 @@
 ---
 title: "React Native & Expo SDK"
-description: "Full SDK guide for using PowerSync in React Native clients"
+description: "Use PowerSync in React Native (& Expo) apps."
 sidebarTitle: "SDK Reference"
 ---
 
@@ -9,6 +9,7 @@ import ReactNativeInstallation from '/snippets/react-native/installation.mdx';
 import JavaScriptAsyncWatch from '/snippets/basic-watch-query-javascript-async.mdx';
 import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-callback.mdx';
 import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+import MutationConfirmationWithReturning from '/snippets/javascript-mutation-confirmation-returning.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 
 <CardGroup cols={3}>
@@ -51,15 +52,15 @@ A separate `powersync-react` package is available containing React hooks for Pow
 
 ## Getting Started
 
-**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Rules (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
+**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Streams (or legacy Sync Rules) (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
 
 ### 1\. Define the Client-Side Schema
 
-The first step is to define the client-side schema, which refers to the schema for the managed SQLite database exposed by the PowerSync Client SDKs, that your app can read from and write to. The client-side schema is typically mainly derived from your backend source database schema and [Sync Rules](/sync/rules/overview), but can also include other tables such as local-only tables. Note that schema migrations are not required on the SQLite database due to the schemaless nature of the [PowerSync protocol](/architecture/powersync-protocol): schemaless data is synced to the client-side SQLite database, and the client-side schema is then applied to that data using _SQLite views_ to allow for structured querying of the data. The schema is applied when the local PowerSync database is constructed (as we'll show in the next step).
+The first step is to define the client-side schema, which refers to the schema for the managed SQLite database exposed by the PowerSync Client SDKs, that your app can read from and write to. The client-side schema is typically mainly derived from your backend source database schema and your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)), but can also include other tables such as local-only tables. Note that schema migrations are not required on the SQLite database due to the schemaless nature of the [PowerSync protocol](/architecture/powersync-protocol): schemaless data is synced to the client-side SQLite database, and the client-side schema is then applied to that data using _SQLite views_ to allow for structured querying of the data. The schema is applied when the local PowerSync database is constructed (as we'll show in the next step).
 
 <GenerateSchemaAutomatically />
 
-The types available are `text`, `integer` and `real`. These should map directly to the values produced by the [Sync Rules](/sync/rules/overview). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
+The types available are `text`, `integer` and `real`. These should map directly to the values produced by your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
 
 **Example**:
 
@@ -104,7 +105,7 @@ export type ListRecord = Database['lists'];
 
 ### 2\. Instantiate the PowerSync Database
 
-Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Rules](/sync/rules/overview). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline. 
+Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline.
 
 **Example**:
 
@@ -184,9 +185,8 @@ The PowerSync backend connector provides the connection between your application
 
 Accordingly, the connector must implement two methods:
 
-1. [PowerSyncBackendConnector.fetchCredentials](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L16) \- This is called every couple of minutes and is used to obtain credentials for your app backend API. -> See [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
-2. [PowerSyncBackendConnector.uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) \- Use this to upload client-side changes to your app backend.
-\-> See [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
+1. [PowerSyncBackendConnector.fetchCredentials](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L16) \- This method is automatically invoked by the PowerSync Client SDK to obtain authentication credentials. The SDK caches credentials internally and only calls this method when needed (e.g. on initial connection or when the token is near expiry). See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details, and [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
+2. [PowerSyncBackendConnector.uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) \- This method will be automatically invoked by the PowerSync Client SDK whenever it needs to upload client-side writes to your app's backend API. You need to implement how those writes are processed and uploaded in this method. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for details on triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
 
 **Example**:
 
@@ -371,6 +371,9 @@ export const ListsWidget = () => {
     )
 }
 ```
+
+<MutationConfirmationWithReturning />
+
 ## Configure Logging
 
 ```js

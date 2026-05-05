@@ -1,11 +1,12 @@
 ---
 title: "Usage Examples"
-description: "Code examples and common patterns for using PowerSync Client SDKs"
+description: "Code examples and common patterns for the PowerSync Client SDKs."
 ---
 
 import FlutterWatch from '/snippets/flutter/basic-watch-query.mdx';
 import SwiftWatch from '/snippets/swift/basic-watch-query.mdx';
 import KotlinWatch from '/snippets/kotlin/basic-watch-query.mdx';
+import RustWatch from '/snippets/rust/basic-watch-query.mdx';
 import JavaScriptAsyncWatch from '/snippets/basic-watch-query-javascript-async.mdx';
 import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-callback.mdx';
 
@@ -222,6 +223,9 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		}
 		```
       </Tab>
+      <Tab title="Rust">
+		Example not yet available.
+      </Tab>
 </Tabs>
 
 
@@ -265,11 +269,33 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
 
       <Tab title="Capacitor">
-      	Example not yet available.
+		The Capacitor SDK uses the same API as the [JavaScript Web SDK](/client-sdks/reference/javascript-web#watching-queries-powersync.watch). Use `db.watch()` to watch for changes in source tables.
+
+		<Tabs>
+		  <Tab title="AsyncIterator approach">
+		  <JavaScriptAsyncWatch />
+		  </Tab>
+		  <Tab title="Callback approach">
+		  <JavaScriptCallbackWatch />
+		  </Tab>
+		</Tabs>
+
+		For advanced watch query features like incremental updates and differential results, see [Live Queries / Watch Queries](/client-sdks/watch-queries).
       </Tab>
 
       <Tab title="Node.js">
-      	Example not yet available.
+		Use [PowerSyncDatabase.watch](https://powersync-ja.github.io/powersync-js/node-sdk/classes/PowerSyncDatabase#watch) to watch for changes in source tables.
+
+		<Tabs>
+		  <Tab title="AsyncIterator approach">
+		  <JavaScriptAsyncWatch />
+		  </Tab>
+		  <Tab title="Callback approach">
+		  <JavaScriptCallbackWatch />
+		  </Tab>
+		</Tabs>
+
+		For advanced watch query features like incremental updates and differential results, see [Live Queries / Watch Queries](/client-sdks/watch-queries).
       </Tab>
 
       <Tab title="Kotlin">
@@ -285,24 +311,29 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
 
       <Tab title=".NET">
-		Use `db.Watch()` to watch queries for changes.
+		Use `db.Watch()` to watch queries for changes. `Watch` returns an `IAsyncEnumerable` (since v0.0.11-alpha.1).
 
 		```cs
 		using PowerSync.Common.Client;
 		
-		// Watch for changes
-		var cancelWatchToken = new CancellationTokenSource();
-		var subscription = db.Watch("SELECT * FROM lists", cancellationToken: cancelWatchToken.Token);
+		// Watch for changes (define a result type matching your query, e.g. ListResult)
+		var cts = new CancellationTokenSource();
+		var listener = db.Watch<ListResult>("SELECT * FROM lists", [], new SQLWatchOptions { Signal = cts.Token });
 		
-		await foreach (var resultSet in subscription.WithCancellation(cancelWatchToken.Token))
+		await foreach (var results in listener)
 		{
 		    // Update UI when data changes
-		    Console.WriteLine($"Result count: {resultSet.Count()}");
+		    Console.WriteLine($"Result count: {results.Length}");
 		}
 		
-		// To cancel watching
-		// cancelWatchToken.Cancel();
+		// To cancel watching: cts.Cancel();
 		```
+      </Tab>
+
+      <Tab title="Rust">
+		Use `watch_statement` to watch for changes to the dependent tables of any SQL query.
+
+        <RustWatch />
       </Tab>
 </Tabs>
 
@@ -411,6 +442,26 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		    "INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)",
 		    new object[] { "Fred", "fred@example.org" }
 		);
+		```
+      </Tab>
+      <Tab title="Rust">
+		Use `PowerSyncDatabase::writer` and `execute` to run INSERT, UPDATE or DELETE queries. Obtain a write connection with `db.writer().await?`, then call `writer.execute(sql, params![...])?`:
+
+		```rust
+		use rusqlite::params;
+
+		async fn insert_customer(
+		    db: &PowerSyncDatabase,
+		    name: &str,
+		    email: &str,
+		) -> Result<(), PowerSyncError> {
+		    let writer = db.writer().await?;
+		    writer.execute(
+		        "INSERT INTO customers (id, name, email) VALUES (uuid(), ?, ?)",
+		        params![name, email],
+		    )?;
+		    Ok(())
+		}
 		```
       </Tab>
 </Tabs>
@@ -624,6 +675,29 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		}
 		```
       </Tab>
+      <Tab title="Rust">
+		Implement `upload_data` on your `BackendConnector` to send local changes to your backend service. Use `db.crud_transactions()` and iterate with `try_next()`; for each transaction, inspect `tx.crud` and call your API, then `tx.complete().await?`:
+
+		```rust
+		use async_trait::async_trait;
+
+		#[async_trait]
+		impl BackendConnector for MyBackendConnector {
+		    async fn upload_data(&self) -> Result<(), PowerSyncError> {
+		        let mut local_writes = self.db.crud_transactions();
+		        while let Some(tx) = local_writes.try_next().await? {
+		            for op in &tx.crud {
+		                // Send the data to your backend service
+		                // Replace with your own API client or service
+		                // match on op.op (e.g. Put, Patch, Delete) and op.table, op.id, op.op_data
+		            }
+		            tx.complete().await?;
+		        }
+		        Ok(())
+		    }
+		}
+		```
+      </Tab>
 </Tabs>
 
 
@@ -826,7 +900,7 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
       </Tab>
       
       <Tab title=".NET">
-		Use [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and [RunListener](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/Client/PowerSyncDatabase.cs) to listen for status changes to your PowerSync instance.
+		Use [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) and `db.Events.OnStatusChanged.ListenAsync` (since v0.0.11-alpha.1) to listen for status changes to your PowerSync instance.
 
 		```cs
 		using PowerSync.Common.Client;
@@ -836,18 +910,14 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		{
 		    private SyncStatus? _currentStatus;
 
-		    public StatusIndicator(PowerSyncDatabase db)
+		    public async Task StartListeningAsync(PowerSyncDatabase db, CancellationToken ct = default)
 		    {
-		        // Monitor status changes
-		        db.RunListener((update) =>
+		        var listener = db.Events.OnStatusChanged.ListenAsync(ct);
+		        await foreach (var update in listener)
 		        {
-		            var newStatus = update.StatusChanged;
-		            if (newStatus != null && newStatus != _currentStatus)
-		            {
-		                _currentStatus = newStatus;
-		                UpdateStatusIcon(_currentStatus);
-		            }
-		        });
+		            _currentStatus = update.Status;
+		            UpdateStatusIcon(_currentStatus);
+		        }
 		    }
 
 		    private void UpdateStatusIcon(SyncStatus status)
@@ -887,6 +957,9 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		    }
 		}
 		```
+      </Tab>
+      <Tab title="Rust">
+		Example not yet available.
       </Tab>
 </Tabs>
 
@@ -1072,6 +1145,9 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		var prioritySyncRequest = new PowerSyncDatabase.PrioritySyncRequest{ Priority = 1 };
 		await db.WaitForFirstSync(request: prioritySyncRequest);
 		```
+      </Tab>
+      <Tab title="Rust">
+		Example not yet available.
       </Tab>
 </Tabs>
 
@@ -1356,7 +1432,7 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		You can show users a progress bar when data downloads using the `DownloadProgress()` method from the [SyncStatus](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common/DB/Crud/SyncStatus.cs) class. `DownloadProgress().DownloadedFraction` gives you a value from 0.0 to 1.0 representing the total sync progress. This is especially useful for long-running initial syncs.
 
 		<Note>
-		  **Version compatibility**: The `DownloadProgress()` method is available since version 0.0.6-alpha.1 of the SDK.
+		  **Version compatibility**: The `DownloadProgress()` method is available since version 0.0.6-alpha.1 of the SDK. The event listener uses `db.Events.OnStatusChanged.ListenAsync` (since v0.0.11-alpha.1).
 		</Note>
 
 		Example:
@@ -1371,20 +1447,20 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		    private int? _priority; // Optional: when set, show progress towards this priority instead of the full sync
 		    private SyncStatus? _currentStatus;
 
+		    public async Task StartListeningAsync(CancellationToken ct = default)
+		    {
+		        var listener = _db.Events.OnStatusChanged.ListenAsync(ct);
+		        await foreach (var update in listener)
+		        {
+		            _currentStatus = update.Status;
+		            DisplayProgress();
+		        }
+		    }
+
 		    public SyncProgressBar(PowerSyncDatabase db, int? priority = null)
 		    {
 		        _db = db;
 		        _priority = priority;
-
-		        db.RunListener((update) =>
-		        {
-		            var newStatus = update.StatusChanged;
-		            if (newStatus != null && newStatus != _currentStatus)
-		            {
-		                _currentStatus = newStatus;
-		                DisplayProgress();
-		            }
-		        });
 		    }
 
 		    public void DisplayProgress()
@@ -1416,6 +1492,9 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 		    }
 		}
 		```
+      </Tab>
+      <Tab title="Rust">
+		Example not yet available.
       </Tab>
 </Tabs>
 

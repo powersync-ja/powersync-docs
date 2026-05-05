@@ -1,9 +1,9 @@
 ---
 title: "Source Database Setup"
-description: "Configure your backend source database for PowerSync, including permissions and replication settings."
+description: "Prepare your Postgres, MongoDB, MySQL or SQL Server database for PowerSync replication."
 ---
 
-Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql-beta) | [SQL Server](#sql-server-alpha)
+Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql) | [SQL Server](#sql-server)
 
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
@@ -181,13 +181,32 @@ We have documented steps for some specific hosting providers:
     - Schema(s)
     - Publication name (only if you want them to set `FOR ALL TABLES`; otherwise, you'll be able to create publications per table yourself later)
 
-    If you want to create the publication `FOR ALL TABLES`, you must let their support team to know that you want the publication name to be `powersync`.
+    If you want to create the publication `FOR ALL TABLES`, you must let their support team know that you want the publication name to be `powersync`.
 
     Additional notes they'll share with you:
 
     > We will reserve approximately 1/8 of your storage for `wal_keep_size`. This will not be available for your normal operations and will always be reserved no matter what.
     > We will also schedule maintenance for the database to pick up the changes. It will be initially scheduled for 14 days out with a deadline of 30 days out. Once the maintenance is added, you can reschedule to any time between immediately and the deadline. If you do nothing, it will run automatically at the initially scheduled time of 14 days out.
 
+  </Accordion>
+  <Accordion title="Xata">
+      ### 1. Ensure logical replication is enabled
+
+```sql
+ALTER SYSTEM SET wal_level = logical;
+ALTER SYSTEM SET max_replication_slots = 10;
+ALTER SYSTEM SET max_wal_senders = 10;
+```
+
+    ### 2. Create a PowerSync database user
+
+    <PostgresPowerSyncUser />
+
+    ### 3. Create `powersync` publication
+
+    <PostgresPowerSyncPublication />
+
+    See [Xata's documentation](https://xata.io/docs/tutorials/streaming-replication) for more information on setting up logical replication with Xata.
   </Accordion>
 </AccordionGroup>
 
@@ -198,7 +217,7 @@ For other providers and self-hosted databases:
 
 ### 1. Ensure logical replication is enabled
 
-PowerSync reads the Postgres WAL using logical replication in order to create [buckets](/architecture/powersync-service#bucket-system) in accordance with the specified PowerSync [Sync Rules](/sync/rules/overview).
+PowerSync reads the Postgres WAL using logical replication in order to create [buckets](/architecture/powersync-service#bucket-system) in accordance with your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)).
 
 If you are managing Postgres yourself, set `wal_level = logical` in your config file:
 
@@ -291,8 +310,8 @@ This requires the `changeStreamPreAndPostImages` option to be enabled on replica
 PowerSync supports three configuration options for post-images:
 
 1. **Off**: (`post_images: off`): Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling post-images instead.
-2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Rules](/sync/rules/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
-3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in the [Sync Rules](/sync/rules/overview). Replication will error if this is not configured. This option is ideal when permissions are restricted.
+2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)), you need to manually disable `changeStreamPreAndPostImages` on that collection.
+3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in your Sync Streams/Sync Rules. Replication will error if this is not configured. This option is ideal when permissions are restricted.
 
 To manually configure collections for `read_only` mode, run this command on each collection:
 
@@ -324,7 +343,7 @@ Post-images can be configured for PowerSync instances as follows:
     href="https://github.com/powersync-ja/self-host-demo/blob/main/demos/nodejs-mongodb/config/powersync.yaml#L11"
     cta="See an example"
   >
-    Configure `post_images` in the `config.yaml` file.
+    Configure `post_images` in the `service.yaml` file.
   </Card>
 </CardGroup>
 
@@ -333,7 +352,9 @@ Post-images can be configured for PowerSync instances as follows:
 If you need to use private endpoints with MongoDB Atlas, see [Private Endpoints](/configuration/source-db/private-endpoints) (AWS only).
 
 
-## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL (Beta)
+## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL
+
+<Note>MySQL support is currently in a [Beta release](/resources/feature-status).</Note>
 
 <Check>
   **Version compatibility**: PowerSync requires MySQL version 5.7 or greater.
@@ -350,6 +371,7 @@ To ensure that PowerSync can read the binary log, you need to configure your MyS
 - [`enforce_gtid_consistency`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency): **`ON`**. Enforces GTID consistency. Default is **`OFF`**.
 - [`gtid_mode`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_gtid_mode): **`ON`**. Enables GTID based logging. Default is **`OFF`**.
 - [`binlog_format`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_format): **`ROW`**. Sets the binary log format to row-based replication. This is required for PowerSync to correctly replicate changes. Default is **`ROW`**.
+- [`binlog_row_image`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_row_image): **`FULL`**. Captures the complete row data for each change. This is required for PowerSync to correctly replicate changes. Default is **`FULL`**. The `MINIMAL`/`NOBLOB` options will be supported in a future release. 
 
 These can be specified in a MySQL [option file](https://dev.mysql.com/doc/refman/8.4/en/option-files.html):
 
@@ -359,6 +381,7 @@ log_bin=ON
 enforce_gtid_consistency=ON
 gtid_mode=ON
 binlog_format=ROW
+binlog_row_image=FULL
 ```
 
 ### Database User Configuration
@@ -379,7 +402,7 @@ GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
 FLUSH PRIVILEGES;
 ```
 
-It is possible to constrain the MySQL user further and limit access to specific tables. Care should be taken to ensure that all the tables in the Sync Rules are included in the grants.
+It is possible to constrain the MySQL user further and limit access to specific tables. Care should be taken to ensure that all the tables in your Sync Streams/Sync Rules are included in the grants.
 
 ```sql
 -- Grant select to the users and the invoices tables in the source database
@@ -412,11 +435,13 @@ binlog-do-db=invoices_db
 binlog-ignore-db=user_db
 ```
 
-## <Icon icon="server" iconType="solid" size={32} /> SQL Server (Alpha)
+## <Icon icon="server" iconType="solid" size={32} /> SQL Server
+
+<Note>SQL Server support is currently in a [Beta release](/resources/feature-status).</Note>
 
 <Check>
   **Version compatibility**: 
-  - PowerSync requires SQL Server 2022+ or Azure SQL
+  - PowerSync requires SQL Server 2019+ or Azure SQL
   Database.
   - SQL Server support was introduced in version 1.18.1 of the PowerSync Service.
 </Check>
@@ -431,16 +456,15 @@ For more information about CDC, see:
 
 ### Supported Editions/Versions
 
-| Database         | Edition                                     | Version | Min Service Tier                                                                      |
-| ---------------- | ------------------------------------------- | ------- | ------------------------------------------------------------------------------------- |
-| SQL Server 2022+ | Standard, Enterprise, Developer, Evaluation | 16.0+   | N/A                                                                                   |
+| Database         | Edition                                     | Version | Min Service Tier                                                                                                                                                                                                                                                                  |
+| ---------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SQL Server 2019+ | Standard, Enterprise, Developer, Evaluation | 15.0+   | N/A                                                                                                                                                                                                                                                                               |
 | Azure SQL\*      | Database, Managed instance                  | N/A     | Any service tier on vCore purchasing model. S3 tier and up on DTU purchasing model. See: [Azure SQL Database compute requirements](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql#azure-sql-database-compute-requirements) |
 
 \* Azure SQL Database is always running on the latest version of the SQL Server DB Engine
 
 ### Limitations / Known Issues
 
-- Schema change handling is not supported yet.
 - Spatial data types are returned as JSON objects as supplied by the Tedious `node-mssql` client. See the notes [here](https://github.com/tediousjs/node-mssql?tab=readme-ov-file#geography-and-geometry).
 - There is an inherent latency in replicating data from SQL Server to PowerSync. See [Latency](#latency) for more details.
 
@@ -580,7 +604,7 @@ Repeat this for each table you want to replicate. Note that PowerSync does not c
 
 ### CDC Management
 
-Management and performance turning of CDC is left to the developer and is primarily done by modifying the change capture jobs. See [Change Data Capture Jobs (SQL Server)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/administer-and-monitor-change-data-capture-sql-server?view=sql-server-ver17) for more details.
+Management and performance tuning of CDC is left to the developer and is primarily done by modifying the change capture jobs. See [Change Data Capture Jobs (SQL Server)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/administer-and-monitor-change-data-capture-sql-server?view=sql-server-ver17) for more details.
 
 Capture Job settings of interest to PowerSync:
 
@@ -613,13 +637,17 @@ Due to the fundamental differences in how CDC works compared to logical replicat
 
 2. **Polling Interval**: The frequency at which PowerSync polls the CDC change tables for changes. The default value is once every 1000ms. This can be changed by setting the `pollingIntervalMs` parameter in the PowerSync configuration.
 
-<Warning>Configuration parameters for SQL Server like `pollingIntervalMs` and `pollingBatchSize` (see below) can currently only be [set when self-hosting](/intro/setup-guide#self-hosted-2) PowerSync. We are working on exposing these settings for SQL Server source database connections in the PowerSync Dashboard for PowerSync Cloud instances.</Warning>
-
 ### Memory Management
 
 During each polling cycle, PowerSync will read a limited number of transactions from the CDC change tables. The default value of 10 transactions can be changed by setting the `pollingBatchSize` parameter in the PowerSync configuration.
 Increasing this will increase throughput at the cost of increased memory usage. If the volume of transactions being replicated is high, and memory is available, it is recommended to increase this value.
 
+<Note>
+  Connection configuration parameters for the PowerSync SQL Server Adapter like `pollingIntervalMs` and `pollingBatchSize` can currently only be set when [self-hosting](/intro/setup-guide#self-hosted-2) PowerSync.
+  See [SQL Server Additional Configuration](/configuration/source-db/sql-server-additional-configuration#additional-configuration-options)
+  for more details.
+  We are planning to expose these settings for SQL Server source database connections in the PowerSync Dashboard for PowerSync Cloud instances.
+</Note>
 
 ## Next Step
 

@@ -1,6 +1,6 @@
 ---
 title: "Pre-Seeding SQLite Databases"
-description: "Optimizing Initial Sync by Pre-Seeding SQLite Databases."
+description: "Speed up initial sync by pre-seeding SQLite databases with baseline data so users can start working immediately after app installation."
 ---
 
 # Overview 
@@ -14,26 +14,42 @@ To achieve this, you can run server-side processes using the [PowerSync Node.js 
 If you're interested in seeing an end-to-end example, we've prepared a demo repo that can be used as a template for your own implementation. This repo covers all of the key concepts and code examples shown in this page.
 
 <Card title="GitHub - nodejs-react-native-sqlite-seeder" icon="github" href="https://github.com/powersync-community/nodejs-react-native-sqlite-seeder">
-    Self-hosted PowerSync instance connected to a PostgreSQL database, using the PowerSync Node.js SDK, React Native SDK and AWS S3 for storing the pre-seeded SQLite files.
+    Self-hosted PowerSync instance connected to a Postgres database, using the PowerSync Node.js SDK, React Native SDK and AWS S3 for storing the pre-seeded SQLite files.
 </Card>
 
 # Main Concepts
 
 ## Generate a scoped JWT token
-In most cases you'd want to pre-seed the SQLite database with user specific data and not all data from the source database, as you normally would when using PowerSync. For this you would need to generate a JWT tokens that include the necessary properties to satisfy the conditions of the parameter queries in your sync rules. 
+In most cases you'd want to pre-seed the SQLite database with user specific data and not all data from the source database, as you normally would when using PowerSync. For this you would need to generate JWT tokens that include the necessary properties to satisfy the conditions of the queries in your Sync Streams (or legacy Sync Rules).
 
-Let's say we have sync rules that look like this:
-```yaml
-sync_rules:
-  content: |
-    bucket_definitions:
-      store_products:
-        parameters: SELECT id as store_id FROM stores WHERE id = request.jwt() ->> 'store_id'
-        data:
-          - SELECT * FROM products WHERE store_id = bucket.store_id
-```
+Let's say we have the following sync config:
 
-In the example above the `store_id` is part of the JWT payload and is used in a parameter query to filter products by store for a user. Given this we would want to do the following:
+<Tabs>
+  <Tab title="Sync Streams">
+    ```yaml
+    sync_config:
+      content: |
+        config:
+          edition: 3
+        streams:
+          store_products:
+            query: SELECT * FROM products WHERE store_id = auth.parameter('store_id')
+    ```
+  </Tab>
+  <Tab title="Sync Rules (Legacy)">
+    ```yaml
+    sync_config:
+      content: |
+        bucket_definitions:
+          store_products:
+            parameters: SELECT id as store_id FROM stores WHERE id = request.jwt() ->> 'store_id'
+            data:
+              - SELECT * FROM products WHERE store_id = bucket.store_id
+    ```
+  </Tab>
+</Tabs>
+
+In the example above the `store_id` is part of the JWT payload and is used to filter products by store for a user. Given this we would want to do the following:
 1. Query the source database, directly from the Node.js application, for all the store ids you'd want a pre-seeded SQLite database for. 
 2. Generate a JWT token for each store and include the `store_id` in the payload.
 3. In the Node.js application which implements the PowerSync SDK, return the JWT token in the `fetchCredentials()` function.
@@ -91,7 +107,7 @@ To enhance the process you can consider doing the following:
 - To keep the pre-seeded SQLite databases fresh, schedule a CRON jobs for periodic regeneration, ensuring that new clients always download the latest snapshot of the initial sync data.
 - After each run, perform some environment cleanup to avoid disk bloat. This can be done by deleting the pre-seeded SQLite database files after they have been uploaded to the blob storage provider.
 
-## Client Side Usage
+## Client-Side Usage
 
 When the client application boots, before connecting to the PowerSync instance, check if a SQLite database exists in the application's permanent storage. If it does, use it, else download a pre-seeded SQLite database from the blob storage provider.
 

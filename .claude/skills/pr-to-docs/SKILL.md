@@ -26,7 +26,7 @@ Use `WebFetch` to retrieve all PR content directly:
 1. **PR page** (`https://github.com/<owner>/<repo>/pull/<number>`) — title, description, labels, merge status, linked issues, and any screenshots or embedded images in the body.
 2. **PR comments** (`https://github.com/<owner>/<repo>/pull/<number>` — scroll for review comments) — reviewers often add context, corrections, or scope notes that aren't in the description.
 3. **PR diff/files** (`https://github.com/<owner>/<repo>/pull/<number>/files`) — identify every file changed. Pay special attention to:
-   - **README files** — these are primary sources written by the engineer. Fetch every new or modified README in the diff and read it in full before writing anything. READMEs contain setup steps, flags, configuration options, and behaviour details that may not appear elsewhere.
+   - **README files** — these are primary sources written by the engineer. Fetch every new or modified README in the diff and read it in full before writing anything. READMEs contain important setup steps, flags, configuration options, and behaviour details that may not appear elsewhere, and usually these details will all need to be documented here.
    - **Code comments and docstrings** — extract flags, defaults, constraints, and edge cases.
    - **Config files** — flag names, defaults, and schema changes.
 4. **Linked content** — fetch any issues, RFCs, design docs, or external URLs referenced in the PR body or comments.

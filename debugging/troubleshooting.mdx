@@ -376,19 +376,22 @@ These are some common pointers when it comes to diagnosing and understanding per
 
 ### Diagnosing Sync Latency
 
-When a user reports that a write took too long to reach their device, there is no single end-to-end trace that covers the full path from your source database to the client. Instead, isolate each stage of the pipeline to find the bottleneck.
+When a user reports that a write took too long to reach their device, there is no single trace that covers the full path. Instead, isolate each stage of the pipeline to find the bottleneck.
 
-The pipeline has three stages:
+The downstream pipeline (source database to client) has two stages:
 
 1. **Source database to PowerSync Service** (replication).
 2. **PowerSync Service to client** (sync session).
-3. **End-to-end** (write committed in source database to row visible on the device).
 
-#### Measuring End-to-End Latency
+A full end-to-end picture also includes the upstream path (client write → your backend API → source database commit), which sits outside PowerSync and is not covered by the diagnostics below.
 
-The most reliable way to measure the full round trip is to put a timestamp in the data itself. When a row is written or updated in your source database, set a column to the current server time (e.g. `updated_at = NOW()`). On the client, compare that timestamp to the time the row arrives in the local database. The difference is the total time from the source write to data being visible on the device.
+#### Measuring Downstream Latency (Source to Device)
 
-This covers the whole pipeline in one number, but does not tell you which stage is slow. Use the per-stage diagnostics below to break it down.
+The most reliable way to measure the downstream pipeline is to put a timestamp in the data itself. When a row is written or updated in your source database, set a column to the current server time (e.g. `updated_at = NOW()`). On the client, compare that timestamp to the time the row arrives in the local database. The difference is the time from the source write being committed to the row being visible on the device.
+
+This does not include the time taken for the client to send a write to your backend, the backend's processing, or the backend's commit to the source database. To measure those, instrument your backend API directly (e.g. log request received and source DB commit timestamps).
+
+This number covers the downstream pipeline as a whole but does not tell you which stage is slow. Use the per-stage diagnostics below to break it down.
 
 #### Stage 1: Source Database to PowerSync Service
 
@@ -399,8 +402,6 @@ For a deeper walkthrough of what drives replication lag, how to interpret it for
 #### Stage 2: PowerSync Service to Client
 
 Service/API logs in the [PowerSync Dashboard](https://dashboard.powersync.com/) record a **Sync stream started** event when a client connects and a **Sync stream complete** event when the session ends. Together they show how many operations were synced, how much data was transferred, and how long the connection stayed open. See [Correlating User Reports to Sync Sessions](/maintenance-ops/monitoring-and-alerting#correlating-user-reports-to-sync-sessions) for the full list of fields on each event.
-
-If a user reports "data took several seconds to show up at 2:15 PM", filter the logs by their `user_id` around that time to locate the matching session.
 
 [Custom metadata](/maintenance-ops/monitoring-and-alerting#custom-metadata-in-sync-logs) attached at `connect()` time is included in both events, so you can also filter by app version, environment, or other context you set.
 

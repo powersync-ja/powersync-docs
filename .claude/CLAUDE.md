@@ -100,6 +100,19 @@ Do not use " — " or " - " to join two clauses in running prose. Write two sent
 
 Dashes are acceptable in headings, code, and genuinely parenthetical asides.
 
+### American English
+
+Use American English spelling throughout. Common differences to watch for:
+
+| Use | Avoid |
+|-----|-------|
+| behavior | behaviour |
+| color | colour |
+| center | centre |
+| initialize | initialise |
+| analyze | analyse |
+| license | licence |
+
 ### Language and Tone
 
 - Remove unnecessary words while maintaining clarity

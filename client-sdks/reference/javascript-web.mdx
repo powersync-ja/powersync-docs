@@ -384,15 +384,6 @@ powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP
 
 This SDK supports multiple Virtual File Systems (VFS), each responsible for storing the local SQLite database. The VFS you choose determines where data persists, how multiple browser tabs interact with the database, and whether concurrent reads are possible.
 
-#### Choosing a VFS
-
-Choose a VFS based on your application's requirements:
-
-- Safari/iOS + multi-tab support needed → `OPFSCoopSyncVFS` (recommended)
-- Single-tab application, maximum performance → `AccessHandlePoolVFS` (best raw single-connection speed)
-- Read-heavy queries with parallel execution, no Safari requirement → `OPFSWriteAheadVFS` (supports concurrent reads)
-- No specific requirements, broad compatibility → `IDBBatchAtomicVFS` (default, works out of the box)
-
 #### 1. IDBBatchAtomicVFS (Default)
 
 The default VFS for applications needing the broadest browser compatibility. This system utilizes IndexedDB as its underlying storage mechanism. Multiple tabs are fully supported across most modern browsers, and no additional configuration is needed.
@@ -429,7 +420,7 @@ export const db = new PowerSyncDatabase({
 
 ##### AccessHandlePoolVFS
 
-Use this for single-tab applications where performance is critical. This implementation delivers optimal performance by using the OPFS Access Handle API directly, but is not designed to handle multiple tab scenarios.
+Use this for single-tab applications that want a straightforward OPFS setup with one worker and direct use of the OPFS Access Handle API. It is not designed for multiple tab use cases.
 
 Example configuration:
 
@@ -447,13 +438,11 @@ export const db = new PowerSyncDatabase({
 
 ##### OPFSWriteAheadVFS
 
-Use this for read-heavy applications that benefit from parallel query execution. This VFS enables concurrent reads by using SQLite's write-ahead log (WAL) mechanism alongside a multi-worker architecture.
+Use this for read-heavy applications that benefit from parallel reads. This VFS uses SQLite's write-ahead log (WAL) mode and opens multiple connections so reads can run concurrently.
 
-PowerSync spawns `additionalReaders + 1` dedicated workers when this VFS is enabled. One worker handles writes (and can also read), while the remaining workers handle read-only queries. This means up to `additionalReaders + 1` queries can execute in parallel. The `AsyncConnectionPool` intelligently routes read operations to available readers. Even with just one additional reader (the default), you get up to 2 concurrent reads because the writer connection also handles reads when idle.
+This VFS is only supported on Chromium-based browsers (for example Chrome or Edge). Safari, Firefox, and related environments are not supported.
 
-The `additionalReaders` option (defaults to `1`) controls how many dedicated read-only workers to spawn. Increase this for high-concurrency read workloads, but be aware that each additional worker consumes extra memory. The `useWebWorker` flag must not be set to `false` — the concurrent read architecture only works with web workers enabled.
-
-Safari and Safari iOS do not support this VFS due to OPFS limitations in those browsers.
+The `additionalReaders` option (defaults to `1`) controls how many extra read-only database connections PowerSync opens alongside the primary connection. Increase it when you routinely run many read queries at once; each extra reader uses more memory. The `useWebWorker` flag must not be set to `false`, because this setup relies on web workers.
 
 Example configuration with 2 additional readers (3 total concurrent reads):
 
@@ -476,8 +465,8 @@ export const db = new PowerSyncDatabase({
 | ------------------- | -------------------- | ---------------------- | ---------------- | ---------------------------------------------- |
 | IDBBatchAtomicVFS   | ✅                   | ❌                     | ❌               | Broadest compatibility, minimal setup          |
 | OPFSCoopSyncVFS     | ✅                   | ✅                     | ❌               | Multi-tab + Safari/iOS support                 |
-| AccessHandlePoolVFS | ❌                   | ❌                     | ❌               | Single-tab, maximum single-connection speed    |
-| OPFSWriteAheadVFS   | ❌                   | ❌                     | ✅               | Read-heavy workloads with parallel execution   |
+| AccessHandlePoolVFS | ❌                   | ❌                     | ❌               | Single-tab, single worker, access-handle OPFS  |
+| OPFSWriteAheadVFS   | ❌                   | ❌                     | ✅               | Chromium only; parallel reads via WAL + readers |
 
 **Note**: There are known issues with OPFS (all variants) when using Safari's incognito mode.
 

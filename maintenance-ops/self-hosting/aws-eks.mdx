@@ -1,0 +1,93 @@
+---
+title: "Deploy PowerSync on AWS EKS"
+sidebarTitle: "AWS EKS"
+description: "Deploy the self-hosted PowerSync Service on Kubernetes using the community Helm charts."
+---
+
+[AWS EKS](https://aws.amazon.com/eks/) (or any Kubernetes distribution) is a supported target for running PowerSync in production. A community-maintained Helm chart packages the API, replication, compaction, and migration workloads together with sensible production defaults.
+
+<Card title="powersync-helm-chart" icon="github" href="https://github.com/powersync-community/powersync-helm-chart">
+  Helm charts for deploying PowerSync on Kubernetes. The repository is the source of truth for chart values, upgrade notes, and configuration reference.
+</Card>
+
+## What the Charts Cover
+
+The defaults in `values.yaml` follow the recommendations below. Override them only when your workload diverges.
+
+### Workload Sizing
+
+Start with the chart defaults and tune from there.
+
+| Component | Baseline | When to Adjust |
+|-----------|----------|----------------|
+| API | 2+ replicas, 1 vCPU, 1Gi request / 2Gi limit | Client connections drive scaling. Let the HPA handle replica counts. Increase per-pod limits only if rows are unusually large. |
+| Replication | 2 replicas (warm standby), 1 vCPU, 1Gi / 2Gi | Scale vertically as source database write throughput grows. Do not add more replicas, since only one ever replicates. |
+| Compact | Daily CronJob, 100m / 1 vCPU, 512Mi / 1Gi | Schedule for off-peak hours. If runs start overlapping, increase memory before CPU. |
+| Migrate | Helm pre-install/upgrade hook, 100m / 1 vCPU, 256Mi / 512Mi | Rarely needs tuning. |
+
+Leave `NODE_OPTIONS=--max-old-space-size-percentage=80` as-is. V8 tracks the container limit automatically, so no recalculation is needed when you change `resources.limits.memory`.
+
+### Observability
+
+Wire monitoring up before you take traffic. Scrape Prometheus metrics from port `9464` and watch these signals:
+
+| Metric | Why It Matters |
+|--------|----------------|
+| `powersync_concurrent_connections` | Drives the HPA. Page when a pod nears the 200 connection hard cap. |
+| `powersync_replication_lag_seconds` | Alert on sustained spikes. |
+| `powersync_replication_storage_size_bytes` | Track bucket storage growth. Capacity-plan from the slope. |
+| `powersync_operation_storage_size_bytes` | Track operation storage growth. Capacity-plan from the slope. |
+| `powersync_data_sent_bytes_total` | Egress cost driver. |
+
+See [Metrics](/maintenance-ops/self-hosting/metrics) for the full metric catalog.
+
+Use the file-based probes (`MICRO_PROBE_TYPE=fs`) shipped in the chart unless your platform requires HTTP probes. The chart bundles a `NetworkPolicy` (disabled by default via `networkPolicy.enabled: false`) that allows Prometheus scrapes on port `9464`. Enable it in production.
+
+### Cluster Topology
+
+- Run PowerSync in a dedicated namespace so RBAC, NetworkPolicy, and resource quotas stay scoped.
+- Spread replication pods across nodes. The chart sets `podAntiAffinity` on the replication deployment as a soft preference so single-node clusters still schedule, but on multi-node clusters this matters. Putting the active and standby on the same node defeats the warm standby pattern.
+- Keep PodDisruptionBudgets at `minAvailable: 1` to protect against node drains and upgrades. The chart skips the replication PDB automatically when `replicas: 1` so it does not block drains.
+- Use `RollingUpdate` for both deployments at the default replica counts. If you drop replication to `replicas: 1`, override its strategy to `Recreate`.
+
+### Ingress
+
+- Use a dedicated subdomain such as `powersync.example.com`. PowerSync cannot share a host with other services.
+- Use an NGINX-compatible ingress controller or any L7 with HTTP/2 and WebSocket support. Without HTTP/2, sync stream multiplexing degrades.
+- Keep the default annotations. `proxy-buffering: "off"` is required for streaming sync, and `proxy-read-timeout` and `proxy-send-timeout` of `3600` keep long-lived sync streams open.
+- Terminate TLS at the ingress and reference a real certificate secret. The placeholder in `values.yaml` will not work in production.
+
+### Scaling API Pods (Horizontal)
+
+The API is stateless. Scale it out, not up.
+
+- Target roughly 100 connections per pod with a hard cap of 200. Past 200 connections you will see `PSYNC_S2304` errors.
+- The HPA template is bundled but disabled by default. Set `api.autoscaling.enabled: true` once you have the connections metric flowing.
+- Bridge the Prometheus metric to the HPA using `prometheus-adapter` (the rule is in the chart README) or KEDA's Prometheus scaler.
+- Keep the 70% CPU fallback. It catches load patterns the connection count alone misses, such as heavy queries or slow clients.
+- Default scale-up stabilization of 60s reacts to traffic spikes. The 300s scale-down prevents flapping. Lengthen scale-down further if you see thrashing.
+
+### Scaling Replication
+
+A single replication instance handles roughly 50,000 to 100,000 concurrent clients depending on row size. Use this as a rough capacity-planning anchor.
+
+Past that, run [multiple instances](/maintenance-ops/self-hosting/multiple-instances) by installing the chart again under a separate release name with its own bucket storage database. The same source database is fine across installs.
+
+Pin clients to instances. Each instance maintains its own copy of bucket data, so a client switching instances forces a full resync. Either have your backend hand the client an endpoint, or compute it deterministically (for example, `hash(user_id) % n`). Do not load-balance multiple instances behind one host.
+
+### Networking
+
+Open these flows before deploying:
+
+| From | To | Protocol |
+|------|----|---------| 
+| Client | Ingress and API | HTTPS (long-lived) |
+| API pods | Bucket storage database, JWKS endpoint | TCP / HTTPS egress |
+| Replication pod | Source database, bucket storage database | TCP |
+| Compact CronJob | Bucket storage database | TCP |
+
+## Next Steps
+
+- Review the [chart repository](https://github.com/powersync-community/powersync-helm-chart) for `values.yaml`, install instructions, and version compatibility.
+- Read the [deployment architecture](/maintenance-ops/self-hosting/deployment-architecture) reference for the broader context behind these recommendations.
+- Configure [telemetry](/maintenance-ops/self-hosting/telemetry) so the HPA has a connections metric to scale on.

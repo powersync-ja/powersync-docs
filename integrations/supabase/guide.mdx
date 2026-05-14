@@ -84,11 +84,33 @@ We will follow these steps to get an offline-first 'To-Do List' demo app up and 
 
 Create a new Supabase project (or use an existing project if you prefer) and follow the below steps.
 
+### Before You Start: Project Creation Settings
+
+When you create a new Supabase project, two settings on the project creation screen affect how the demo app behaves. Reviewing them now saves debugging later.
+
+**Automatically expose new tables and functions**
+
+This controls whether tables you create in the `public` schema are reachable via the Data API (PostgREST, GraphQL, `supabase-js`) on creation. Supabase is rolling out a new default:
+
+- **From April 28, 2026:** the setting is available as an opt-in. New projects can choose to require explicit `grant` statements.
+- **From May 30, 2026:** the new default for all new projects is that tables in `public` are not exposed to the Data API on creation.
+- **From October 30, 2026:** the new default is enforced on all existing projects.
+
+The schema SQL in this guide includes explicit `grant` statements, so the demo app works under either default. See [this](https://github.com/orgs/supabase/discussions/45329) for more details.
+
+**Enable automatic RLS**
+
+This adds an event trigger that automatically enables Row Level Security on every new table created in the `public` schema. Enabling it is recommended because RLS is the authoritative security layer for any writes that reach Postgres through the Data API. If you leave it disabled, you can still enable RLS per table as the schema SQL in this guide does.
+
+<Warning>
+  Without RLS, any user with the `anon` or `authenticated` key can read and write every row in the table, regardless of who created it.
+</Warning>
+
 ### Create the Demo Database Schema
 
 To set up the Postgres database for our _To-Do List_ demo app, we will create two new tables: `lists` and `todos`. The demo app will have access to these tables even while offline.
 
-Run the below SQL statements in your **Supabase SQL Editor**:
+Run the below SQL statements in your **Supabase SQL Editor**. Creating the tables, granting Data API access, enabling RLS, and adding policies are treated as a single unit so the tables are never reachable in an insecure state:
 
 ```sql
 create table
@@ -116,7 +138,41 @@ create table
     constraint todos_completed_by_fkey foreign key (completed_by) references auth.users (id) on delete set null,
     constraint todos_list_id_fkey foreign key (list_id) references lists (id) on delete cascade
   ) tablespace pg_default;
+
+-- Grant Data API access so supabase-js can read and write these tables.
+grant select, insert, update, delete on public.lists to authenticated;
+grant select, insert, update, delete on public.todos to authenticated;
+grant select, insert, update, delete on public.lists to service_role;
+grant select, insert, update, delete on public.todos to service_role;
+
+-- Enable Row Level Security and add policies so each user can only access their own data.
+alter table public.lists enable row level security;
+alter table public.todos enable row level security;
+
+create policy "owned lists" on public.lists
+  for all to authenticated
+  using (auth.uid() = owner_id);
+
+create policy "todos in owned lists" on public.todos
+  for all to authenticated
+  using (
+    auth.uid() in (
+      select lists.owner_id from public.lists where lists.id = todos.list_id
+    )
+  );
 ```
+
+<Tip>
+  If you ran an earlier version of this SQL that created the tables without RLS, the SQL Editor warned you that "New tables will not have Row Level Security enabled." The combined query above creates the tables and enables RLS in the same transaction, so the warning does not apply. If you ever see it on your own schema changes, treat it as a prompt to add the `enable row level security` and `create policy` statements before running the query.
+</Tip>
+
+<Info>
+  **Grants and RLS do different jobs, and you need both.** Grants control which Postgres roles can touch a table through the Data API. Without a grant, `supabase-js` returns a `42501: permission denied for table` error before RLS is ever evaluated. RLS runs after the grant succeeds and filters which rows that role can read or modify. Skipping RLS means any user with the `anon` or `authenticated` key can read and write every row.
+
+  This guide grants `authenticated` because the demo app requires sign-in. The `anon` role is intentionally left ungranted. If you wanted to expose a table for public read-only access (for example, a shared catalog visible to signed-out users), you would add `grant select on public.your_table to anon` along with an RLS policy scoping which rows `anon` can read.
+</Info>
+
+PowerSync's Sync Streams (configured later in this guide) control which rows get downloaded to each client and generally mirror your RLS setup. For more on how these work together, see [RLS and Sync Streams](/integrations/supabase/rls-and-sync-streams).
 
 ### Create a PowerSync Database User
 
@@ -176,8 +232,8 @@ Run the below SQL statement in your **Supabase SQL Editor** to create a Postgres
   </Tab>
 </Tabs>
 
-2. Click **"Validate"** and ensure there are no errors. This validates your sync config against your Postgres database.
-3. Click **"Deploy"** to deploy your sync config.
+3. Click **"Validate"** and ensure there are no errors. This validates your Sync Config against your Postgres database.
+4. Click **"Deploy"** to deploy your Sync Config.
 
 <Tip>
 - For additional information on PowerSync's Sync Streams, refer to the [Sync Streams](/sync/streams/overview) documentation.
@@ -266,8 +322,11 @@ SUPABASE_ANON_KEY=foo # from https://supabase.com/dashboard/project/_/settings/a
 
 </CodeGroup>
 
+<Note>
+  Supabase has replaced the legacy anon key with **publishable keys** (prefixed `sb_publishable_…`) by default on new projects. The demos still read environment variables named `SUPABASE_ANON_KEY` / `supabaseAnonKey`, but the value is interchangeable: paste your publishable key into the same variable. Existing projects that still use legacy JWT keys can continue to use the anon key directly.
+</Note>
 
-1. In the relevant config file, replace the values for `supabaseUrl` (from the [Project URL](https://supabase.com/dashboard/project/_/settings/api) section in the Supabase dashboard) and `supabaseAnonKey` (from the [API Keys](https://supabase.com/dashboard/project/_/settings/api-keys) section in the Supabase dashboard)
+1. In the relevant config file, replace the values for `supabaseUrl` (from the [Project URL](https://supabase.com/dashboard/project/_/settings/api) section in the Supabase dashboard) and `supabaseAnonKey` (from the [API Keys](https://supabase.com/dashboard/project/_/settings/api-keys) section in the Supabase dashboard).
 2. For the value of `powersyncUrl`, click **Connect** in the top bar of the [PowerSync Dashboard](https://dashboard.powersync.com/) and copy the instance URL from the dialog.
 
 #### Run the App
@@ -282,10 +341,6 @@ flutter run
 ```
 
 ```bash React Native
-# In the repo root directory:
-pnpm install
-pnpm build:packages
-
 # In `demos/react-native-supabase-todolist`:
 # Run on iOS
 pnpm ios
@@ -294,10 +349,6 @@ pnpm android
 ```
 
 ```bash JavaScript Web
-# In the repo root directory:
-pnpm install
-pnpm build:packages
-
 # In `demos/react-supabase-todolist`:
 pnpm dev
 ```

@@ -29,11 +29,15 @@ Leave `NODE_OPTIONS=--max-old-space-size-percentage=80` as-is. V8 tracks the con
 
 ### Observability
 
-Wire monitoring up before you take traffic:
+Wire monitoring up before you take traffic. Scrape Prometheus metrics from port `9464` and watch these signals:
 
-- Scrape Prometheus metrics from port `9464`.
-- Alert on `powersync_concurrent_connections` (drives the HPA, page when a pod nears the 200 connection cap), `powersync_replication_lag_seconds` (sustained spikes), and the bucket and operation storage size metrics for capacity planning.
-- Track `powersync_data_sent_bytes_total` as your egress cost driver.
+| Metric | Why It Matters |
+|--------|----------------|
+| `powersync_concurrent_connections` | Drives the HPA. Page when a pod nears the 200 connection hard cap. |
+| `powersync_replication_lag_seconds` | Alert on sustained spikes. |
+| `powersync_replication_storage_size_bytes` | Track bucket storage growth. Capacity-plan from the slope. |
+| `powersync_operation_storage_size_bytes` | Track operation storage growth. Capacity-plan from the slope. |
+| `powersync_data_sent_bytes_total` | Egress cost driver. |
 
 See [Metrics](/maintenance-ops/self-hosting/metrics) for the full metric catalog.
 
@@ -53,13 +57,23 @@ Use the file-based probes (`MICRO_PROBE_TYPE=fs`) shipped in the chart unless yo
 - Keep the default annotations. `proxy-buffering: "off"` is required for streaming sync, and `proxy-read-timeout` and `proxy-send-timeout` of `3600` keep long-lived sync streams open.
 - Terminate TLS at the ingress and reference a real certificate secret. The placeholder in `values.yaml` will not work in production.
 
-### Scaling
+### Scaling API Pods (Horizontal)
 
-The API is stateless. Target roughly 100 connections per pod with a hard cap of 200. Past 200 connections you will see `PSYNC_S2304` errors. The HPA template is bundled but disabled by default. Set `api.autoscaling.enabled: true` once you have the connections metric flowing.
+The API is stateless. Scale it out, not up.
 
-Bridge the Prometheus metric to the HPA using `prometheus-adapter` (the rule is in the chart README) or KEDA's Prometheus scaler. Keep the 70% CPU fallback to catch load patterns the connection count alone misses, such as heavy queries or slow clients.
+- Target roughly 100 connections per pod with a hard cap of 200. Past 200 connections you will see `PSYNC_S2304` errors.
+- The HPA template is bundled but disabled by default. Set `api.autoscaling.enabled: true` once you have the connections metric flowing.
+- Bridge the Prometheus metric to the HPA using `prometheus-adapter` (the rule is in the chart README) or KEDA's Prometheus scaler.
+- Keep the 70% CPU fallback. It catches load patterns the connection count alone misses, such as heavy queries or slow clients.
+- Default scale-up stabilization of 60s reacts to traffic spikes. The 300s scale-down prevents flapping. Lengthen scale-down further if you see thrashing.
 
-A single replication instance handles roughly 50,000 to 100,000 concurrent clients depending on row size. Past that, run [multiple instances](/maintenance-ops/self-hosting/multiple-instances) by installing the chart again under a separate release name with its own bucket storage database.
+### Scaling Replication
+
+A single replication instance handles roughly 50,000 to 100,000 concurrent clients depending on row size. Use this as a rough capacity-planning anchor.
+
+Past that, run [multiple instances](/maintenance-ops/self-hosting/multiple-instances) by installing the chart again under a separate release name with its own bucket storage database. The same source database is fine across installs.
+
+Pin clients to instances. Each instance maintains its own copy of bucket data, so a client switching instances forces a full resync. Either have your backend hand the client an endpoint, or compute it deterministically (for example, `hash(user_id) % n`). Do not load-balance multiple instances behind one host.
 
 ### Networking
 

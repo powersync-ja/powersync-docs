@@ -374,6 +374,42 @@ These are some common pointers when it comes to diagnosing and understanding per
 2. The **initial sync** on a client can take a while in cases where the operations history is large. See [Compacting Buckets](/maintenance-ops/compacting-buckets) to optimize sync performance.
 3. You can get big performance gains by using **transactions & batching** as explained in this [blog post](https://www.powersync.com/blog/flutter-database-comparison-sqlite-async-sqflite-objectbox-isar).
 
+### Diagnosing Sync Latency
+
+If writes are slow to reach the client, there is no single trace that covers the full path. Isolate each stage of the pipeline to find the bottleneck.
+
+The downstream pipeline (source database to client) has two stages:
+
+1. **Source database to PowerSync Service** (replication).
+2. **PowerSync Service to client** (sync session).
+
+The upstream path (the client sending a write to your backend, your backend processing it, and your backend committing to the source database) sits outside PowerSync and is not covered by the diagnostics below. To measure that, instrument your backend API directly.
+
+#### Measuring Downstream Latency (Source to Device)
+
+To measure the downstream pipeline, put a timestamp in the data itself. When a row is written or updated in your source database, set a column to the current server time (e.g. `updated_at = NOW()`). On the client, compare that timestamp to the time the row arrives in the local database. The difference is the time from the source write being committed to the row being visible on the device.
+
+This gives you a single number for the downstream pipeline but does not tell you which stage is slow. Use the per-stage diagnostics below to break it down.
+
+#### Stage 1: Source Database to PowerSync Service
+
+Check the **Replication Lag** chart in the **Metrics** view of the [PowerSync Dashboard](https://dashboard.powersync.com/). This shows whether replication from your source database is keeping up. Replicator logs in the **Logs** view surface any replication errors that would cause delays at this stage.
+
+For a deeper walkthrough of what drives replication lag, how to interpret it for your specific source (Postgres, MongoDB, MySQL, SQL Server), and how to reduce it, see [Replication Lag](/maintenance-ops/replication-lag).
+
+#### Stage 2: PowerSync Service to Client
+
+Service/API logs in the [PowerSync Dashboard](https://dashboard.powersync.com/) record a **Sync stream started** event when a client connects and a **Sync stream complete** event when the session ends. The complete event includes how many operations were synced, how much data was transferred, and how long the connection stayed open. See [Correlating Sync Sessions](/maintenance-ops/monitoring-and-alerting#correlating-sync-sessions) for the full list of fields on each event.
+
+[Custom metadata](/maintenance-ops/monitoring-and-alerting#custom-metadata-in-sync-logs) attached at `connect()` time is included in both events, so you can also filter by app version, environment, or other context you set.
+
+#### Common Causes of Latency
+
+* **Large initial sync**: if your sync rules result in a large dataset, the first sync after connecting will be slow. Inspect bucket sizes and sync state with the [Sync Diagnostics Client](/tools/diagnostics-client).
+* **Upload queue blocking downloads**: by default, uploads are processed before downloads, so a backlogged upload queue delays receiving new data. Buckets and streams at [priority 0](/sync/advanced/prioritized-sync) are not blocked by uploads, but come with the trade-off of potential sync inconsistencies.
+* **Replication lag on the source database**: high write volume, long-running transactions, bulk updates, or backfills can cause replication to fall behind faster than the service can drain it. See [Replication Lag](/maintenance-ops/replication-lag) for source-specific causes and fixes.
+* **Too many buckets per user**: incremental sync overhead scales roughly linearly with the number of buckets per user. See [Too Many Buckets](#too-many-buckets-psync_s2305) above.
+
 ### Web: Logging queries on the performance timeline
 
 Enabling the `debugMode` flag in the [Web SDK](/client-sdks/reference/javascript-web) logs all SQL queries on the Performance timeline in Chrome's Developer Tools (after recording). This can help identify slow-running queries.

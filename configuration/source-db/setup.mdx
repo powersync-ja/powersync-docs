@@ -735,11 +735,11 @@ When you add, remove, or change Convex fields or tables:
   it. When that happens, PowerSync falls back to runtime value inspection for later rows.
 </Note>
 
-### Sparse Fields and Int64 Values
+### Int64 and Bytes Values
 
-Convex `Int64` values arrive in raw documents as base-10 strings. PowerSync can convert those strings to SQLite integers when Convex `json_schemas` reports the field as an `Int64`, but sparse fields can be missing from `json_schemas` until a document contains a value for them. Without schema metadata, an `Int64` string is indistinguishable from a regular string.
+PowerSync syncs Convex `Int64` values as base-10 text values and Convex `Bytes` values as base64 text values.
 
-Convex's `json_schemas` endpoint appears to infer table schemas from table summaries instead of using the TypeScript schema as a complete source of truth. To keep synced values consistent, cast ambiguous Convex `Int64` fields to `INTEGER` in your Sync Streams. This allows either a raw string or an already-converted `bigint` to be emitted as a SQLite integer.
+If you want a Convex `Int64` value to be synced as a SQLite integer, cast it to `INTEGER` in your Sync Streams.
 
 ### Latency
 
@@ -762,7 +762,7 @@ Lowering this value can reduce replication latency, but it increases the number 
 
 - Convex support is currently limited to the default Convex component.
 - Schema changes are not automatically detected. When you change your Convex schema, redeploy your Sync Config so PowerSync can re-evaluate the affected tables and fields.
-- Convex `Int64` and `Bytes` values are ambiguous in raw JSON documents without schema metadata. Cast `Int64` fields to `INTEGER` in Sync Streams when you need stable client-side integer types.
+- Convex `Int64` values sync as text by default. Cast `Int64` fields to `INTEGER` in Sync Streams when you need client-side integer types.
 - PowerSync reports time-based replication lag for Convex, but not byte-based lag.
 
 ### Sync Streams Examples
@@ -784,7 +784,7 @@ The example below uses one stream for a user's lists and todos:
 
 - `uuid` as the synced client-side `id` instead of the Convex `_id`.
 - `list_uuid` as the synced relationship column instead of the Convex `list_id`.
-- `CAST(an_int64_column AS INTEGER)` to keep a Convex `Int64` value stable on the client.
+- `CAST(an_int64_column AS INTEGER)` to sync a Convex `Int64` value as a SQLite integer.
 - `substring(auth.user_id(), 1, 32)` to extract the Convex user ID from a Convex Auth JWT subject. Convex Auth subjects include the 32-character user ID followed by `|` and the user session ID.
 
 ```yaml
@@ -812,8 +812,7 @@ streams:
           -- Map relationships that use Convex IDs, such as `list_id`,
           -- to the related table's local UUID column.
           list_uuid,
-          -- Cast Convex Int64 values to INTEGER to avoid inconsistent inferred types
-          -- when json_schemas does not include sparse field metadata.
+          -- Cast Convex Int64 values to INTEGER when you want a SQLite integer.
           CAST(an_int64_column AS INTEGER) AS an_int64_column
         FROM todos
         WHERE list_uuid IN user_lists

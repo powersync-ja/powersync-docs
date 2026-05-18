@@ -149,6 +149,26 @@ Renaming an unsynced collection to a name that is included in your Sync/Streams/
 
 Circular renames (e.g., renaming `todos` → `todos_old` → `todos`) are not directly supported. To reprocess the database after such changes, a Sync Streams/Sync Rules update must be deployed.
 
+## <Icon icon="database" iconType="solid" size={32} /> Convex Specifics
+
+<Note>Convex support is currently in an [Open Alpha release](/resources/feature-status).</Note>
+
+For Convex, most schema changes are document-shape changes rather than DDL events. PowerSync reads the JSON documents returned by Convex snapshots and document deltas, not Convex schema metadata, so added fields and type changes are replicated through normal Convex writes.
+
+Convex tables use `_id` as the replication identity for PowerSync. There is no source-specific primary key or replica identity definition to track.
+
+If a Convex migration updates existing documents, those updates should appear in `document_deltas` and replicate like other writes. You do not need to re-snapshot merely because a field was added or changed type.
+
+If you remove a field from Convex documents, PowerSync stops replicating new values for that field. Previously synced values can remain on clients until the affected data is reprocessed. To completely remove a field from synced client data, update and redeploy your Sync Config.
+
+A re-snapshot is still required for cases that change the selected data set or invalidate the source cursor. This includes initial replication, a Sync Streams deployment that selects new existing data, restarting an incomplete initial snapshot, or recovering from a lost or expired Convex cursor.
+
+### Dropping Tables
+
+Dropping Convex tables has a known limitation. Deleting a table from the Convex dashboard does not emit per-document delete rows in `document_deltas`, so PowerSync does not automatically remove previously synced rows for that table.
+
+To decommission a table while preserving replication correctness, clear the table before deleting it. In the Convex dashboard, use **Clear Table** first, then delete the table after those document removals have replicated. Deleting documents through Convex mutations is also valid when that path emits document delete deltas. Otherwise, treat dashboard table deletion or schema-only table removal as a Sync Config deployment change and clear or re-replicate affected PowerSync state.
+
 ## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL Specifics
 
 <Note>MySQL support is currently in a [Beta release](/resources/feature-status).</Note>

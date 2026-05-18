@@ -722,14 +722,20 @@ If you use Convex Auth tokens directly for PowerSync client authentication, conf
 
 ### Schema Changes
 
-PowerSync does not automatically detect Convex schema changes.
+For Convex, most schema changes are document-shape changes rather than DDL events. PowerSync reads the JSON documents returned by Convex snapshots and document deltas, so added fields and type changes are replicated through normal Convex writes.
 
-When you add, remove, or change Convex fields or tables:
+If a Convex migration updates existing documents, those updates should appear in `document_deltas` and replicate like other writes. You do not need to redeploy your Sync Config merely because a field was added or changed type.
 
-1. Update your Convex schema and deploy it.
-2. Update and redeploy your Sync Config.
+If you remove a field from Convex documents, PowerSync stops replicating new values for that field. Previously synced values can remain on clients until the affected data is reprocessed. To completely remove a field from synced client data, update and redeploy your Sync Config.
 
-<Note>Convex schema diagnostics can omit fields that have no stored values yet.</Note>
+You also need to redeploy your Sync Config when you change which tables or fields are selected by Sync Streams, or when a Sync Streams deployment needs to include existing data that was not previously selected.
+
+<Warning>
+  Dropping Convex tables has a known limitation. Deleting a table from the Convex dashboard does not emit per-document
+  delete rows in `document_deltas`, so previously synced rows for that table can remain on clients. Clear the table
+  before deleting it, or delete documents through Convex mutations that emit document delete deltas. Otherwise, treat the
+  table removal as a Sync Config deployment change and clear or re-replicate affected PowerSync state.
+</Warning>
 
 ### Int64 and Bytes Values
 
@@ -757,13 +763,6 @@ Lowering this value can reduce replication latency, but it increases the number 
 ### Mutation Transaction Atomicity
 
 Convex mutations are ACID transactions. When a mutation writes multiple documents, Convex exposes those writes in `document_deltas` with the same commit timestamp. PowerSync replicates all writes from the same mutation together as one batch, so clients do not observe a partial result from a single Convex mutation.
-
-### Limitations
-
-- Convex support is currently limited to the default Convex component.
-- Schema changes are not automatically detected. When you change your Convex schema, redeploy your Sync Config so PowerSync can re-evaluate the affected tables and fields.
-- Convex `Int64` values sync as text by default. Cast `Int64` fields to `INTEGER` in Sync Streams when you need client-side integer types.
-- PowerSync reports time-based replication lag for Convex, but not byte-based lag.
 
 ### Sync Streams Examples
 

@@ -39,7 +39,7 @@ For custom Endpoint Services for Postgres:
 The flow is the same for both supported source databases: configure an Endpoint Service in front of your database, create a matching Private Endpoint in the PowerSync Dashboard, accept the connection, then point your database connection at the endpoint.
 
 <Steps>
-<Step title="Configure the Endpoint Service">
+<Step title="Configure an Endpoint Service">
 
 Set up an Endpoint Service in front of your source database and copy its **Service Name**.
 
@@ -51,20 +51,18 @@ MongoDB Atlas supports creating an Endpoint Service per project for AWS.
 **Limitations:**
 
 1. Only Atlas clusters in AWS are supported.
-2. The Atlas cluster must be in one of the PowerSync [AWS regions](#aws-regions). Cross-region endpoints are not yet supported by MongoDB Atlas.
-3. PowerSync does not support PrivateLink for MongoDB clusters self-hosted in AWS, only Atlas clusters.
+2. PowerSync does not support PrivateLink for MongoDB clusters self-hosted in AWS, only Atlas clusters.
+3. If your cluster is in a newer AWS region, you may not be able to create Private Endpoints until we activate that region. See [AWS Regions](https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html#available-regions) for the list of regions enabled by default.
 
-To configure the Endpoint Service:
+Create an Endpoint Service:
 
-1. In the Atlas project dashboard, go to **Network Access** → **Private Endpoint** → **Dedicated Cluster**.
-2. Select **Add Private Endpoint**.
-3. Select **AWS** and the relevant AWS region.
-4. Wait for the **Endpoint Service** to be created.
-5. Leave "Your VPC ID" and "Your Subnet IDs" blank. They are not relevant for PowerSync.
-6. Do not run the command to create the "VPC Interface Endpoint". PowerSync handles this step.
-7. Note the **Endpoint Service Name** displayed in the command, as the `--service-name` option. It should look like `com.amazonaws.vpce.us-east-1.vpce-svc-0123456`.
-
-Skip the final step of configuring the "VPC Endpoint ID". You will provide this in a later step.
+1. In the Atlas project dashboard, go to **Security** → **Database & Network Access** → **Network Access** -> **Private Endpoint**.
+2. On the **Dedicated Cluster** tab click **Create endpoint service**.
+3. Select **AWS** as the Cloud Provider and the Atlas Region matching your PowerSync cluster.
+4. Under **Accepted Endpoint Regions**, select the AWS region where your PowerSync instances are hosted. See [AWS Regions](#aws-regions) for the mapping of PowerSync regions to AWS regions.
+5. Click **Create endpoint service**.
+6. Wait for the **Endpoint Service** to be created.
+7. Copy the **Endpoint Service Name/ID**. You will use this when creating a Private Endpoint in the PowerSync Dashboard.
 
 </Tab>
 <Tab title="Custom Endpoint Service for Postgres">
@@ -107,14 +105,14 @@ In the [PowerSync Dashboard](https://dashboard.powersync.com/), open your organi
 2. Provide the following details:
    * **Name**: a recognizable name for the endpoint (for example, `my-private-endpoint`).
    * **Service Name**: the Endpoint Service Name from the previous step (for example, `com.amazonaws.vpce.us-east-1.vpce-svc-0123456`).
-   * **Region**: the AWS region of your Endpoint Service. This must match the region of the PowerSync instance you plan to use the endpoint with.
+   * **Region**: the PowerSync region to create the Private Endpoint in. This must match the region of the PowerSync instance you plan to use the endpoint with.
 3. Click **Create**.
+4. The endpoint is created in a `Pending Acceptance` state and will only be available once accepted on the Endpoint Service side.
 
 <Note>
 A Private Endpoint can only be used by PowerSync instances in the same region. Endpoints in other regions will not appear in the connection form.
 </Note>
 
-The endpoint is created in a `Pending` state. Once PowerSync provisions the VPC Endpoint in its VPC, the status transitions to `Pending acceptance` and the **VPC Endpoint ID** (in the form `vpce-<id>`) becomes available on the endpoint's card.
 
 </Step>
 
@@ -125,9 +123,13 @@ Copy the **VPC Endpoint ID** from the endpoint's card in the Dashboard and use i
 <Tabs>
 <Tab title="MongoDB Atlas">
 
-In the Atlas Private Endpoint configuration, complete the final step by entering the **VPC Endpoint ID** from the PowerSync Dashboard.
+In the Atlas project dashboard, go to **Security** → **Database & Network Access** → **Network Access** -> **Private Endpoint**.
 
-If you have already closed the configuration dialog in Atlas, start the Private Endpoint creation process again. The wizard should show the same Endpoint Service Name as before.
+1. Under the relevant Endpoint Service, click **Add Endpoint**
+2. Select **Connect Existing Endpoint**.
+3. Enter the **VPC Endpoint ID** you copied from the PowerSync Dashboard.
+4. Click **Add endpoint**.
+5. Wait for the endpoint to be added.
 
 </Tab>
 <Tab title="Custom Endpoint Service for Postgres">
@@ -147,11 +149,11 @@ The endpoint's status in the Dashboard reflects the AWS connection state:
 
 | Status | Meaning |
 | --- | --- |
-| `Pending` | The endpoint is being provisioned. |
-| `Pending acceptance` | Waiting for you to accept the connection on the Endpoint Service. |
+| `Pending acceptance` | Waiting for you to accept the Private Endpoint connection on the Endpoint Service. |
+| `Pending` | The Private Endpoint is being provisioned on the Endpoint Service. 
 | `Available` | Ready to use. |
-| `Rejected` | The connection was rejected by the Endpoint Service. |
-| `Failed` | Endpoint creation failed. |
+| `Rejected` | The Private Endpoint connection was rejected by the Endpoint Service. |
+| `Failed` | Private Endpoint creation failed. |
 
 Once the status changes to `Available`, the endpoint can be selected when configuring a database connection.
 
@@ -164,7 +166,7 @@ Once the status changes to `Available`, the endpoint can be selected when config
 3. In the **Private Endpoint** dropdown, select your endpoint. Only endpoints in the same region as the instance with status `Available` are selectable.
 4. Fill in the rest of the connection details:
    * **For Postgres**: enter your database connection details as usual. PowerSync routes traffic through the Private Endpoint to your load balancer.
-   * **For MongoDB Atlas**: on the Atlas cluster, click **Connect**, choose **Private Endpoint** as the connection type, select the provisioned endpoint, choose **Drivers** as the connection method, and copy the resulting connection string. It should look something like `mongodb+srv://<db_username>:<db_password>@your-cluster-pl-0.abcde.mongodb.net/`. Paste it into the **URI** field in the Dashboard.
+   * **For MongoDB**: on the Atlas cluster, click **Connect**, choose **Private Endpoint** as the connection type, select the provisioned endpoint, choose **Drivers** as the connection method, and copy the resulting connection string. It should look something like `mongodb+srv://<db_username>:<db_password>@your-cluster-pl-0.abcde.mongodb.net/`. Paste it into the **URI** field in the Dashboard.
 5. Click **Test Connection** and resolve any errors.
 6. Click **Save Connection**.
 
@@ -175,7 +177,7 @@ PowerSync deploys and configures an isolated cloud environment for you, which ca
 
 ## AWS Regions
 
-PowerSync Cloud currently runs in the AWS regions below. Make sure the region matching your PowerSync instance is supported by the Endpoint Service.
+PowerSync Cloud currently runs in the AWS regions below. Make sure that your Endpoint Service accepts connections from the relevant AWS region, and that the Private Endpoint is created in the same region as the PowerSync instance.
 
 1. US: `us-east-1`
 2. EU: `eu-west-1`

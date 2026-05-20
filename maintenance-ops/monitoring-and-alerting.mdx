@@ -100,24 +100,139 @@ Access instance logs through the [PowerSync Dashboard](https://dashboard.powersy
 
 You can manage logs with the following options:
 
-* **Filter Options**: Filter logs by level (`Note`, `Error`, `Warning`, `Debug`) and by date range.
+* **Log Type**: Switch between **API logs** (Service) and **Replication logs**.
+* **Log Levels**: Show or hide `Info`, `Error`, `Warn`, and `Debug` entries.
+* **Time Range**: Limit results to a relative window (last 15 minutes, last hour, etc.) or a custom range. The available window depends on your plan's retention period.
+* **Sort Order**: Sort by newest or oldest first.
+* **Display Options**: Show metadata pills on each entry, show stack traces for errors, and tail logs in real time.
 
-* **Sorting**: Sort logs by newest or oldest first.
+### Search and Filter Logs
 
-* **Metadata**: Display metadata like `user_id` and `user_agent` in the logs if available.
+The **Search** input above the log list accepts free-text terms and structured `alias:value` filters. Type a query and the results update as you type. Applied filters appear as removable chips below the input when you collapse it.
 
-* **View Mode**: Tail logs in real-time or view them statically.
+#### Free-Text Search
 
-* **Stack Traces**: Option to show or hide stack traces for errors.
+Type bare words to match anywhere in the log line. Matching is case-insensitive, and each word matches independently:
+
+```
+checkpoint stream
+```
+
+Wrap a phrase in double quotes to match the exact sequence:
+
+```
+"sync stream complete"
+```
+
+#### Field Filters
+
+Use `alias:value` to filter on a structured field. Repeating an alias matches any of the listed values (OR within a field, AND across fields):
+
+```
+user:<user-id-a> user:<user-id-b> error:PSYNC_S2001
+```
+
+Quote values that contain spaces:
+
+```
+reason:"client closing stream"
+```
+
+The following aliases are supported for API logs:
+
+| Alias     | Field          | Description                                              |
+| --------- | -------------- | -------------------------------------------------------- |
+| `user`    | `user_id`      | The authenticated user ID for the sync session.          |
+| `client`  | `client_id`    | The client device ID.                                    |
+| `request` | `rid`          | The request ID. Matches a started or complete entry.     |
+| `error`   | `error_code`   | A specific PSYNC error code (see [Error Codes](/debugging/error-codes)). |
+| `reason`  | `close_reason` | Why the sync session closed.                             |
+
+For Replication logs:
+
+| Alias | Field             | Description                                                                  |
+| ----- | ----------------- | ---------------------------------------------------------------------------- |
+| `lag` | `replication_lag` | Replication lag in seconds. Used with a numeric comparison (see below). |
+
+#### Numeric Comparisons
+
+The `lag` filter accepts `>`, `>=`, `<`, `<=`, and `=`:
+
+```
+lag:>=5
+```
+
+Only one numeric comparison is allowed per field. Combining `lag:>5 lag:<10` is rejected.
+
+#### Unknown Fields
+
+Filters on fields the dashboard doesn't have a built-in alias for pass through to the service unchanged. For example:
+
+```
+buckets:1
+```
+
+The chip for an unknown filter renders with a different color so you can spot it. The service evaluates the filter against the matching field on each log entry.
+
+#### Combined Example
+
+You can mix free-text terms, known aliases, and unknown fields in a single query:
+
+```
+checkpoint sync user:123 checkpoint:>=1224
+```
+
+This matches entries containing `checkpoint` or `sync` in the message, with `user_id` equal to `123` and a `checkpoint` field greater than or equal to `1224`.
+
+#### Editing Filters
+
+Each active filter renders as a chip below the search input when the input is collapsed:
+
+* Click the chip body to edit the value.
+* Click the `×` button to remove it.
+
+### Export Logs
+
+Click the **Download** button on the right side of the toolbar to export the currently visible log entries to a CSV file. The export reflects the active log type, time range, log levels, and search query, so you can narrow the result set before downloading.
+
+The CSV uses fixed columns for the most useful fields and collapses anything else into a trailing `metadata` JSON column:
+
+| Column         | Description                                                                 |
+| -------------- | --------------------------------------------------------------------------- |
+| `timestamp`    | ISO 8601 timestamp of the entry.                                            |
+| `level`        | Log level (`info`, `error`, `warn`, `debug`).                                |
+| `message`      | Formatted log message.                                                       |
+| `user_id`      | Authenticated user ID (API logs).                                            |
+| `client_id`    | Client device ID (API logs).                                                 |
+| `rid`          | Request ID (API logs).                                                       |
+| `error_code`   | PSYNC error code if the entry has one.                                       |
+| `close_reason` | Close reason for sync session entries.                                       |
+| `metadata`     | JSON object containing every other top-level field on the entry.             |
+
+The file is named `powersync-logs-<instance-id>-<timestamp>.csv` where `<timestamp>` is the export time in UTC.
+
+<Note>
+  The export only includes entries currently loaded in the view. If you have not scrolled to load more entries with **Load More**, those entries are not included in the CSV.
+</Note>
 
 ### Correlating Sync Sessions
 
-To find a specific users session in the Service logs, filter on their `user_id`. Two events describe each sync session:
+To find a specific user's session in the API logs, search for their `user_id`:
+
+```
+user:<user-id>
+```
+
+Two events describe each sync session:
 
 * **Sync stream started**: logged when the client connects. Fields include `user_id`, `client_id`, `app_metadata` (if set), `client_params`, `user_agent`, and `rid` (request id).
 * **Sync stream complete**: logged when the session ends. Fields include `user_id`, `client_id`, `app_metadata` (if set), `operations_synced`, `operation_counts` (broken down by `put`, `remove`, `move`, `clear`), `data_synced_bytes`, `data_sent_bytes`, `stream_ms` (session duration), `close_reason`, and `rid`.
 
-Both events share the same `rid`, so a started/complete pair for a single session can be matched by filtering on it.
+Both events share the same `rid`, so you can match a started/complete pair for a single session by searching for it:
+
+```
+request:<request-id>
+```
 
 For diagnosing sync latency, see [Diagnosing Sync Latency](/debugging/troubleshooting#diagnosing-sync-latency).
 

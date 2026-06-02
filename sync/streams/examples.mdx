@@ -413,6 +413,48 @@ sub.unsubscribe();
 
 The `project_details` stream uses a [CTE](/sync/streams/ctes) and groups tasks, files, and comments for a specific project into a single subscription.
 
+### Convex with ID Mapping
+
+Convex source databases need a few source-specific patterns in Sync Streams. Convex generates its own document IDs and exposes them as `_id`, but PowerSync clients need a stable local ID before a write is uploaded. The client creates a UUID in its local `id` column, your Convex mutation stores that value in a separate `uuid` field, and PowerSync syncs `uuid AS id` back to the client. See [Convex Source Database Setup](/configuration/source-db/setup#convex) for the schema-side requirements and [Type Mapping](/sync/types#convex-type-mapping) for how Convex types map to SQLite columns.
+
+This example uses one stream for a user's lists and todos:
+
+- `uuid` as the synced client-side `id` instead of the Convex `_id`.
+- `list_uuid` as the synced relationship column instead of the Convex `list_id`.
+- `CAST(an_int64_column AS INTEGER)` to sync a Convex `Int64` value as a SQLite integer.
+- `substring(auth.user_id(), 1, 32)` to extract the Convex user ID from a Convex Auth JWT subject. Convex Auth subjects include the 32-character user ID followed by `|` and the user session ID.
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  user_data:
+    with:
+      # Extract the Convex user ID from the JWT subject.
+      # Convex Auth subjects include `[32 character user ID]|[user session ID]`.
+      user_lists: |
+        SELECT uuid
+        FROM lists
+        WHERE archived != true
+          AND owner_id = substring(auth.user_id(), 1, 32)
+    auto_subscribe: true
+    queries:
+      - SELECT uuid AS id, name, owner_id FROM lists WHERE uuid IN user_lists
+      - |
+        SELECT
+          -- Use the client-generated todo UUID as the synced `id`.
+          uuid AS id,
+          description,
+          -- Map relationships that use Convex IDs, such as `list_id`,
+          -- to the related table's local UUID column.
+          list_uuid,
+          -- Cast Convex Int64 values to INTEGER when you want a SQLite integer.
+          CAST(an_int64_column AS INTEGER) AS an_int64_column
+        FROM todos
+        WHERE list_uuid IN user_lists
+```
+
 ## Demo Apps
 
 Working demo apps that demonstrate Sync Streams in action. These show how to combine auto-subscribe streams (for data that should always be available) with on-demand streams (for data loaded when needed).

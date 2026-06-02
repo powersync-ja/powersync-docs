@@ -108,8 +108,8 @@ Most developers use framework-specific hooks that handle subscription lifecycle 
 The PowerSync React package provides three hooks relevant to Sync Stream subscriptions. Each serves a distinct role:
 
 - **`useQuery`**: queries the local SQLite database and returns live-updating results. It also accepts a `streams` option to subscribe to streams alongside the query — use this when the stream is only needed for that specific query.
-- **`useSyncStream`**: subscribes to a single named Sync Stream. Use this when the same stream's data is needed across multiple queries or components; the subscription lives independently of any particular `useQuery` call and is cancelled when the component unmounts.
-- **`useSyncStreams`**: the same as `useSyncStream` but for a variable number of streams. Accepts an array of stream options; all subscriptions are cancelled when the component unmounts or the array changes.
+- **`useSyncStream`**: subscribes to a single named Sync Stream. Use this when the same stream's data is needed across multiple queries or components; the subscription lives independently of any particular `useQuery` call and is canceled when the component unmounts.
+- **`useSyncStreams`**: the same as `useSyncStream` but for a variable number of streams. Accepts an array of stream options; all subscriptions are canceled when the component unmounts or the array changes.
 
 ### `useQuery` with `streams`: Tethering a Subscription to a Query
 
@@ -119,7 +119,7 @@ The PowerSync React package provides three hooks relevant to Sync Stream subscri
 import { useQuery } from '@powersync/react';
 
 function TodoList({ listId }) {
-  // The stream subscription is created alongside this query and cancelled with it.
+  // The stream subscription is created alongside this query and canceled with it.
   const { data: todos } = useQuery(
     'SELECT * FROM todos WHERE list_id = ?',
     [listId],
@@ -641,8 +641,64 @@ try await db.connect(
 
 <Tab title=".NET">
 ```csharp
-await db.Connect(connector, new ConnectOptions {
+await db.Connect(connector, new PowerSyncConnectionOptions {
   Params = new() { ["environment"] = "production" }
+});
+```
+</Tab>
+</Tabs>
+
+## Opting Out of Auto-Subscribed Streams
+
+By default, every stream defined with [`auto_subscribe: true`](/sync/streams/overview#using-auto-subscribe) starts syncing as soon as the client connects. For advanced use cases where the client needs more control over what syncs at connect time, you can set `includeDefaultStreams: false` on the connect options. The `auto_subscribe: true` flag is then ignored for that connection, and those streams only sync if the client explicitly calls `db.syncStream(name, params).subscribe()`. 
+
+Most apps will not need this option. Defining streams without `auto_subscribe: true` and subscribing on-demand from the client generally achieves a similar result with less indirection. One scenario where it can help is during a migration from auto-subscribed streams to on-demand subscriptions. You keep the auto-subscribed streams in place so older client versions continue to sync correctly, while newer versions that explicitly subscribe to the streams they need set `includeDefaultStreams: false` to skip those defaults. 
+
+
+<Tabs>
+<Tab title="TypeScript/JavaScript">
+```js
+// Connect without syncing auto_subscribe streams
+await db.connect(connector, {
+  includeDefaultStreams: false
+});
+
+// Later, opt in to a specific stream
+const sub = await db.syncStream('my_stream', params).subscribe();
+```
+</Tab>
+
+<Tab title="Dart">
+```dart
+await db.connect(
+  connector: connector,
+  options: const SyncOptions(includeDefaultStreams: false),
+);
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+database.connect(
+  connector,
+  options = SyncOptions(includeDefaultStreams = false)
+)
+```
+</Tab>
+
+<Tab title="Swift">
+```swift
+try await db.connect(
+  connector: connector,
+  options: ConnectOptions(includeDefaultStreams: false)
+)
+```
+</Tab>
+
+<Tab title=".NET">
+```csharp
+await db.Connect(connector, new PowerSyncConnectionOptions {
+  IncludeDefaultStreams = false
 });
 ```
 </Tab>

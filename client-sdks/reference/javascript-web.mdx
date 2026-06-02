@@ -181,7 +181,7 @@ export const setupPowerSync = async () => {
 };
 ```
 
-### 3. Integrate with your Backend
+### 3. Integrate with Your Backend
 
 The PowerSync backend connector provides the connection between your application backend and the PowerSync client-side managed SQLite database. It is used to:
 
@@ -382,23 +382,23 @@ powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP
 
 ### SQLite Virtual File Systems
 
-This SDK supports multiple Virtual File Systems (VFS), responsible for storing the local SQLite database:
+This SDK supports multiple Virtual File Systems (VFS), each responsible for storing the local SQLite database. The VFS you choose determines where data persists, how multiple browser tabs interact with the database, and whether concurrent reads are possible.
 
 #### 1. IDBBatchAtomicVFS (Default)
 
-- This system utilizes IndexedDB as its underlying storage mechanism.
-- Multiple tabs are fully supported across most modern browsers.
-- Users may experience stability issues when using Safari. For example, the `RangeError: Maximum call stack size exceeded` error. See [Troubleshooting](/debugging/troubleshooting#rangeerror-maximum-call-stack-size-exceeded-on-ios-or-safari) for more details.
+The default VFS for applications needing the broadest browser compatibility. This system utilizes IndexedDB as its underlying storage mechanism. Multiple tabs are fully supported across most modern browsers, and no additional configuration is needed.
+
+Users may experience stability issues when using Safari. For example, the `RangeError: Maximum call stack size exceeded` error. See [Troubleshooting](/debugging/troubleshooting#rangeerror-maximum-call-stack-size-exceeded-on-ios-or-safari) for more details.
 
 #### 2. OPFS-based Alternatives
 
-PowerSync supports two OPFS (Origin Private File System) implementations that generally offer improved performance:
+PowerSync supports three OPFS (Origin Private File System) implementations that generally offer improved performance compared to IndexedDB:
 
-##### OPFSCoopSyncVFS (Recommended)
+**OPFSCoopSyncVFS**
 
-- This implementation provides comprehensive multi-tab support across all major browsers.
-- It offers the most reliable compatibility with Safari and Safari iOS.
-- Example configuration:
+Recommended for applications requiring multi-tab support, especially on Safari/iOS. This implementation provides multi-tab support across all major browsers and offers the most reliable compatibility with Safari and Safari iOS.
+
+Example configuration:
 
 ```js
 import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
@@ -418,21 +418,57 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
-##### AccessHandlePoolVFS
+**AccessHandlePoolVFS**
 
-- This implementation delivers optimal performance for single-tab applications.
-- The system is not designed to handle multiple tab scenarios.
-- The configuration is similar to `OPFSCoopSyncVFS`, but requires using `WASQLiteVFS.AccessHandlePoolVFS`.
+Use this for single-tab applications that want a straightforward OPFS setup with one worker and direct use of the OPFS Access Handle API. It is not designed for multiple tab use cases.
+
+Example configuration:
+
+```js
+import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: new WASQLiteOpenFactory({
+    dbFilename: 'exampleVFS.db',
+    vfs: WASQLiteVFS.AccessHandlePoolVFS
+  })
+});
+```
+
+**OPFSWriteAheadVFS**
+
+Use this for read-heavy applications that benefit from parallel reads. This VFS uses SQLite's write-ahead log (WAL) mode and opens multiple connections so reads can run concurrently.
+
+This VFS is only supported on Chromium-based browsers (for example Chrome or Edge). Safari, Firefox, and related environments are not supported.
+
+The `additionalReaders` option (defaults to `1`) controls how many extra read-only database connections PowerSync opens alongside the primary connection. Increase it when you routinely run many read queries at once; each extra reader uses more memory. The `useWebWorker` flag must not be set to `false`, because this setup relies on web workers.
+
+Example configuration with 2 additional readers (3 total concurrent reads):
+
+```js
+import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: new WASQLiteOpenFactory({
+    dbFilename: 'exampleVFS.db',
+    vfs: WASQLiteVFS.OPFSWriteAheadVFS,
+    additionalReaders: 2
+  })
+});
+```
 
 #### VFS Compatibility Matrix
 
-| VFS Type            | Multi-Tab Support (Standard Browsers) | Multi-Tab Support (Safari/iOS) | Notes                                 |
-| ------------------- | ------------------------------------- | ------------------------------ | ------------------------------------- |
-| IDBBatchAtomicVFS   | ✅                                     | ❌                              | Default, some Safari stability issues |
-| OPFSCoopSyncVFS     | ✅                                     | ✅                              | Recommended for multi-tab support     |
-| AccessHandlePoolVFS | ❌                                     | ❌                              | Best for single-tab applications      |
+| VFS Type            | Multi-Tab (Standard) | Multi-Tab (Safari/iOS) | Concurrent Reads | Best For                                       |
+| ------------------- | -------------------- | ---------------------- | ---------------- | ---------------------------------------------- |
+| IDBBatchAtomicVFS   | ✅                   | ❌                     | ❌               | Broadest compatibility, minimal setup          |
+| OPFSCoopSyncVFS     | ✅                   | ✅                     | ❌               | Multi-tab + Safari/iOS support                 |
+| AccessHandlePoolVFS | ❌                   | ❌                     | ❌               | Single-tab, single worker, access-handle OPFS  |
+| OPFSWriteAheadVFS   | ✅                   | ❌                     | ✅               | Chromium only; parallel reads via WAL + readers |
 
-**Note**: There are known issues with OPFS when using Safari's incognito mode.
+**Note**: There are known issues with OPFS (all variants) when using Safari's incognito mode.
 
 ### Managing OPFS Storage
 

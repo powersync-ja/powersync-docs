@@ -25,10 +25,11 @@ We provide attachment helpers for multiple platforms:
 
 | SDK | Package | Min. SDK version | Demo App |
 |-----|---------|----------|----------|
-| **JavaScript/TypeScript** | [Built-in attachments (alpha)](https://github.com/powersync-ja/powersync-js/tree/main/packages/common/src/attachments) | Web v1.33.0, React Native v1.30.0, Node.js v0.17.0 | [React Native Todo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) · [React Web Todo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist) |
+| **JavaScript/TypeScript** | [Built-in attachments (alpha)](https://github.com/powersync-ja/powersync-js/tree/main/packages/common/src/attachments) | Web v1.33.0, React Native v1.30.0, Node.js v0.17.0 | [React Native Todo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-native-supabase-todolist) |
 | **Flutter** | [Built-in attachments (alpha)](https://pub.dev/documentation/powersync_core/latest/topics/attachments-topic.html) | v1.16.0 | [Flutter Todo](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist) |
-| **Swift** | [Built-in attachments (alpha)](https://github.com/powersync-ja/powersync-swift/blob/main/Sources/PowerSync/attachments/README.md) | v1.0.0 | [iOS Demo](https://github.com/powersync-ja/powersync-swift/tree/main/Demo) |
+| **Swift** | [Built-in attachments (alpha)](https://github.com/powersync-ja/powersync-swift/blob/main/Sources/PowerSync/attachments/README.md) | v1.0.0 | [iOS Demo](https://github.com/powersync-ja/powersync-swift/tree/main/Demos/PowerSyncExample) |
 | **Kotlin** | [Built-in attachments (alpha)](https://github.com/powersync-ja/powersync-kotlin/tree/main/common/src/commonMain/kotlin/com/powersync/attachments) | v1.0.0 | [Android Todo](https://github.com/powersync-ja/powersync-kotlin/tree/main/demos/android-supabase-todolist) |
+| **.NET** | [Built-in attachments (alpha)](https://github.com/powersync-ja/powersync-dotnet/tree/main/PowerSync/PowerSync.Common/Attachments) | v0.1.2 | - |
 
 <Note>
 Most demo applications use Supabase Storage as the storage provider, but the patterns are adaptable to any storage system.
@@ -60,7 +61,7 @@ Most demo applications use Supabase Storage as the storage provider, but the pat
 |-------|-------------|
 | `QUEUED_UPLOAD` | File saved locally, waiting to upload to remote storage |
 | `QUEUED_DOWNLOAD` | Data model synced from another device, file needs to be downloaded |
-| `SYNCED` | File exists both locally and in remote storage, fully synchronized |
+| `SYNCED` | File exists both locally and in remote storage, fully synced |
 | `QUEUED_DELETE` | Marked for deletion from both local and remote storage |
 | `ARCHIVED` | No longer referenced in your data model, candidate for cleanup |
 
@@ -140,7 +141,7 @@ The queue needs to know which attachments exist in your data model. The `watchAt
 - **Missing attachments** - Upload them  
 - **Removed attachments** - Archive them
 
-The `watchAttachments` queries are reactive and execute whenever the watched tables change, keeping the attachment queue synchronized with your data model.
+The `watchAttachments` queries are reactive and execute whenever the watched tables change, keeping the attachment queue in sync with your data model.
 
 There are a few scenarios you might encounter:
 
@@ -197,19 +198,31 @@ Multiple queues may use more memory, but each queue watches simpler queries. Imp
 <CodeGroup>
 
 ```bash JavaScript/TypeScript
-Included with web and node and react-native packages, for react-native adapters install @powersync/attachments-storage-react-native.
+# Built into @powersync/web, @powersync/node, and @powersync/react-native.
+# React Native requires an additional storage adapter:
+# npm install @powersync/attachments-storage-react-native
+
+# Expo projects (v54+) also require:
+# npm install expo-file-system
+
+# Bare React Native projects also require:
+# npm install @dr.pogodin/react-native-fs
 ```
 
-```bash Flutter
-comes with flutter SDK, check SDK installation guide
+```bash Dart/Flutter
+# Built into the powersync package (v1.16.0+). No additional installation needed.
 ```
 
 ```swift Swift
-comes with swift SDK, check SDK installation guide
+// Built into the PowerSync Swift SDK (v1.0.0+). No additional installation needed.
 ```
 
 ```kotlin Kotlin
-comes with Kotlin SDK, check SDK installation guide
+// Built into the PowerSync Kotlin SDK (v1.0.0+). No additional installation needed.
+```
+
+```bash .NET
+# Built into PowerSync.Common (v0.1.2+). No additional installation needed.
 ```
 
 </CodeGroup>
@@ -287,6 +300,23 @@ val schema = Schema(
     // Add the local-only table which stores attachment states
     createAttachmentsTable("attachments")
 )
+```
+
+```csharp .NET
+using PowerSync.Common.Attachments;
+using PowerSync.Common.DB.Schema;
+
+var users = new Table(
+    "users",
+    new Dictionary<string, ColumnType>
+    {
+        ["name"] = ColumnType.Text,
+        ["email"] = ColumnType.Text,
+        ["photo_id"] = ColumnType.Text,  // References attachment ID
+    });
+
+// new Table(typeof(Attachment)) uses the [Table("attachments", LocalOnly = true)] attribute
+var schema = new Schema(users, new Table(typeof(Attachment)));
 ```
 
 </CodeGroup>
@@ -563,6 +593,49 @@ val remoteStorage = object : RemoteStorage {
 }
 ```
 
+```csharp .NET
+using PowerSync.Common.Attachments;
+
+// Local storage backed by System.IO.File — works on Windows, macOS, Linux, iOS, and Android
+var localStorage = new FileManagerLocalStorage(
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "myapp", "attachments"));
+
+// Remote storage adapter (example with signed URLs)
+public sealed class MyRemoteStorage(HttpClient http) : IRemoteStorageAdapter
+{
+    public async Task UploadFileAsync(Stream fileData, Attachment attachment)
+    {
+        // Request a signed upload URL from your backend
+        var resp = await http.PostAsJsonAsync("/api/attachments/upload-url",
+            new { filename = attachment.Filename });
+        var body = await resp.Content.ReadFromJsonAsync<UploadUrlResponse>()
+            ?? throw new InvalidOperationException("missing body");
+
+        // Upload directly to cloud storage using the signed URL
+        using var content = new StreamContent(fileData);
+        content.Headers.ContentType = new(attachment.MediaType ?? "application/octet-stream");
+        (await http.PutAsync(body.UploadUrl, content)).EnsureSuccessStatusCode();
+    }
+
+    public async Task<Stream> DownloadFileAsync(Attachment attachment)
+    {
+        // Request a signed download URL from your backend
+        var url = await http.GetStringAsync($"/api/attachments/download-url/{attachment.Id}");
+        return await http.GetStreamAsync(url);
+    }
+
+    public async Task DeleteFileAsync(Attachment attachment)
+    {
+        // Delete via your backend; 404 is treated as success (file already gone)
+        var resp = await http.DeleteAsync($"/api/attachments/{attachment.Id}");
+        if (resp.StatusCode != HttpStatusCode.NotFound)
+            resp.EnsureSuccessStatusCode();
+    }
+
+    private sealed record UploadUrlResponse(string UploadUrl);
+}
+```
+
 </CodeGroup>
 
 <Warning>
@@ -721,6 +794,43 @@ val attachmentQueue = AttachmentQueue(
 
 // Start the sync process
 attachmentQueue.startSync()
+```
+
+```csharp .NET
+using PowerSync.Common.Attachments;
+
+var queue = new AttachmentQueue(new AttachmentQueueOptions
+{
+    Db = powersync,
+    LocalStorage = localStorage,
+    RemoteStorage = remoteStorage,
+
+    // Define which attachments exist in your data model
+    WatchAttachments = ct => WatchProfilePhotos(powersync, ct),
+
+    // Optional configuration
+    SyncInterval = TimeSpan.FromSeconds(30),  // Retry failed transfers every 30 seconds
+    DownloadAttachments = true,               // Auto-download referenced files
+    ArchivedCacheLimit = 100,                 // Keep 100 archived files before cleanup
+});
+
+// Start automatic syncing
+await queue.StartSyncAsync();
+
+static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchProfilePhotos(
+    PowerSyncDatabase db,
+    [EnumeratorCancellation] CancellationToken ct)
+{
+    var stream = db.Watch<UserPhotoRow>(
+        "SELECT photo_id FROM users WHERE photo_id IS NOT NULL",
+        null,
+        new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
+
+    await foreach (var rows in stream.WithCancellation(ct))
+        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.photo_id, fileExtension: "jpg"))];
+}
+
+internal sealed class UserPhotoRow { public string photo_id { get; set; } = ""; }
 ```
 
 </CodeGroup>
@@ -905,6 +1015,56 @@ val attachmentQueue = AttachmentQueue(
 )
 
 attachmentQueue.startSync()
+```
+
+```csharp .NET
+// Example: watching users.photo_id, documents.document_id, and videos.video_id
+// Assuming your tables store file extensions
+var queue = new AttachmentQueue(new AttachmentQueueOptions
+{
+    Db = powersync,
+    LocalStorage = localStorage,
+    RemoteStorage = remoteStorage,
+    WatchAttachments = ct => WatchAllAttachments(powersync, ct),
+    // ... other options
+});
+
+await queue.StartSyncAsync();
+
+static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchAllAttachments(
+    PowerSyncDatabase db,
+    [EnumeratorCancellation] CancellationToken ct)
+{
+    var stream = db.Watch<AttachmentRef>(
+        """
+        SELECT photo_id AS id, photo_file_extension AS file_extension
+        FROM users
+        WHERE photo_id IS NOT NULL
+
+        UNION ALL
+
+        SELECT document_id AS id, document_file_extension AS file_extension
+        FROM documents
+        WHERE document_id IS NOT NULL
+
+        UNION ALL
+
+        SELECT video_id AS id, video_file_extension AS file_extension
+        FROM videos
+        WHERE video_id IS NOT NULL
+        """,
+        null,
+        new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
+
+    await foreach (var rows in stream.WithCancellation(ct))
+        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.id, fileExtension: r.file_extension))];
+}
+
+internal sealed class AttachmentRef
+{
+    public string id { get; set; } = "";
+    public string file_extension { get; set; } = "";
+}
 ```
 
 </CodeGroup>
@@ -1109,6 +1269,57 @@ photoQueue.startSync()
 documentQueue.startSync()
 ```
 
+```csharp .NET
+// Create separate queues for different attachment types
+var photoQueue = new AttachmentQueue(new AttachmentQueueOptions
+{
+    Db = powersync,
+    LocalStorage = localStorage,
+    RemoteStorage = remoteStorage,
+    WatchAttachments = ct => WatchPhotos(powersync, ct),
+});
+
+var documentQueue = new AttachmentQueue(new AttachmentQueueOptions
+{
+    Db = powersync,
+    LocalStorage = localStorage,
+    RemoteStorage = remoteStorage,
+    WatchAttachments = ct => WatchDocuments(powersync, ct),
+});
+
+await Task.WhenAll(
+    photoQueue.StartSyncAsync(),
+    documentQueue.StartSyncAsync());
+
+static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchPhotos(
+    PowerSyncDatabase db,
+    [EnumeratorCancellation] CancellationToken ct)
+{
+    var stream = db.Watch<UserPhotoRow>(
+        "SELECT photo_id FROM users WHERE photo_id IS NOT NULL",
+        null,
+        new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
+
+    await foreach (var rows in stream.WithCancellation(ct))
+        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.photo_id, fileExtension: "jpg"))];
+}
+
+static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchDocuments(
+    PowerSyncDatabase db,
+    [EnumeratorCancellation] CancellationToken ct)
+{
+    var stream = db.Watch<DocumentRow>(
+        "SELECT document_id FROM documents WHERE document_id IS NOT NULL",
+        null,
+        new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
+
+    await foreach (var rows in stream.WithCancellation(ct))
+        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.document_id, fileExtension: "pdf"))];
+}
+
+internal sealed class DocumentRow { public string document_id { get; set; } = ""; }
+```
+
 </CodeGroup>
 
 ### Upload an Attachment
@@ -1234,6 +1445,30 @@ suspend fun uploadProfilePhoto(imageBytes: ByteArray, userId: String) {
 // 3. Update user record in same transaction
 // 4. Automatically upload file in background
 // 5. Update state to SYNCED when complete
+```
+
+```csharp .NET
+async Task UploadProfilePhotoAsync(Stream imageStream, string currentUserId)
+{
+    var attachment = await queue.SaveFileAsync(
+        data: imageStream,
+        fileExtension: "jpg",
+        mediaType: "image/jpeg",
+        // updateHook runs in the same transaction, ensuring atomicity
+        updateHook: async (tx, attachment) =>
+        {
+            await tx.Execute(
+                "UPDATE users SET photo_id = ? WHERE id = ?",
+                [attachment.Id, currentUserId]);
+        });
+
+    // The queue will:
+    // 1. Save the file locally immediately
+    // 2. Create an attachment record with state QueuedUpload
+    // 3. Update the user record in the same transaction
+    // 4. Automatically upload the file in the background
+    // 5. Update the state to Synced when complete
+}
 ```
 
 </CodeGroup>
@@ -1512,6 +1747,39 @@ fun watchProfilePhoto(userId: String): Flow<String?> {
 }
 ```
 
+```csharp .NET
+// Downloads happen automatically when WatchAttachments references a file
+
+// Reactively yield the local file path whenever the attachment reaches the Synced state
+static async IAsyncEnumerable<string?> WatchProfilePhotoUri(
+    PowerSyncDatabase db,
+    string userId,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    var stream = db.Watch<PhotoState>(
+        """
+        SELECT a.local_uri, a.state
+        FROM users u
+        LEFT JOIN attachments a ON a.id = u.photo_id
+        WHERE u.id = ?
+        """,
+        [userId],
+        new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
+
+    await foreach (var rows in stream.WithCancellation(ct))
+    {
+        var row = rows.FirstOrDefault();
+        yield return row?.state == (long)AttachmentState.Synced ? row.local_uri : null;
+    }
+}
+
+internal sealed class PhotoState
+{
+    public string? local_uri { get; set; }
+    public long state { get; set; }
+}
+```
+
 </CodeGroup>
 
 ### Delete an Attachment
@@ -1661,6 +1929,38 @@ suspend fun removePhotoReference(userId: String) {
 }
 ```
 
+```csharp .NET
+async Task DeleteProfilePhotoAsync(string userId, string photoId)
+{
+    await queue.DeleteFileAsync(
+        id: photoId,
+        // updateHook ensures the data model update and deletion are atomic
+        updateHook: async (tx, attachment) =>
+        {
+            await tx.Execute(
+                "UPDATE users SET photo_id = NULL WHERE id = ?",
+                [userId]);
+        });
+
+    // The queue will:
+    // 1. Delete from remote storage
+    // 2. Delete the local file
+    // 3. Remove the attachment record
+}
+
+// Alternative: remove the reference and let the queue archive it automatically
+async Task RemovePhotoReferenceAsync(string userId)
+{
+    await powersync.Execute(
+        "UPDATE users SET photo_id = NULL WHERE id = ?",
+        [userId]);
+
+    // The WatchAttachments callback detects this change.
+    // The queue archives the unreferenced attachment automatically.
+    // Once the cache limit is reached, archived attachments are deleted.
+}
+```
+
 </CodeGroup>
 
 ## Advanced Topics
@@ -1806,6 +2106,42 @@ val queue = AttachmentQueue(
     // ... other options
     errorHandler = errorHandler
 )
+```
+
+```csharp .NET
+using PowerSync.Common.Attachments;
+
+public sealed class MyErrorHandler(ILogger logger) : IAttachmentErrorHandler
+{
+    public Task<bool> OnDownloadErrorAsync(Attachment attachment, Exception error)
+    {
+        logger.LogError(error, "Download failed for {Filename}", attachment.Filename);
+
+        // Return true to retry, false to archive
+        if (error is HttpRequestException { StatusCode: HttpStatusCode.NotFound })
+            return Task.FromResult(false);  // File no longer exists
+
+        return Task.FromResult(true);  // Retry on network errors
+    }
+
+    public Task<bool> OnUploadErrorAsync(Attachment attachment, Exception error)
+    {
+        logger.LogError(error, "Upload failed for {Filename}", attachment.Filename);
+        return Task.FromResult(true);  // Always retry
+    }
+
+    public Task<bool> OnDeleteErrorAsync(Attachment attachment, Exception error)
+    {
+        logger.LogError(error, "Delete failed for {Filename}", attachment.Filename);
+        return Task.FromResult(true);  // Retry
+    }
+}
+
+var queue = new AttachmentQueue(new AttachmentQueueOptions
+{
+    // ... other options
+    ErrorHandler = new MyErrorHandler(logger),
+});
 ```
 </CodeGroup>
 
@@ -1977,6 +2313,40 @@ class IPFSStorageAdapter : RemoteStorage {
 }
 ```
 
+```csharp .NET
+// Example: IPFS remote storage
+public sealed class IPFSStorageAdapter(HttpClient http) : IRemoteStorageAdapter
+{
+    public async Task UploadFileAsync(Stream fileData, Attachment attachment)
+    {
+        // Upload the file to IPFS via your backend
+        using var content = new StreamContent(fileData);
+        var resp = await http.PostAsync("/api/ipfs/add", content);
+        resp.EnsureSuccessStatusCode();
+        var cid = await resp.Content.ReadAsStringAsync();
+
+        // Store the CID so it can be retrieved for downloads
+        await http.PostAsJsonAsync("/api/ipfs-cids",
+            new { attachmentId = attachment.Id, cid });
+    }
+
+    public async Task<Stream> DownloadFileAsync(Attachment attachment)
+    {
+        // Retrieve the CID from your backend
+        var cid = await http.GetStringAsync($"/api/ipfs-cids/{attachment.Id}");
+        return await http.GetStreamAsync($"/api/ipfs/cat/{cid}");
+    }
+
+    public async Task DeleteFileAsync(Attachment attachment)
+    {
+        // IPFS is immutable; unpin and remove the record from your backend
+        var resp = await http.DeleteAsync($"/api/ipfs-cids/{attachment.Id}");
+        if (resp.StatusCode != HttpStatusCode.NotFound)
+            resp.EnsureSuccessStatusCode();
+    }
+}
+```
+
 </CodeGroup>
 
 ### Verification and Recovery
@@ -2004,6 +2374,10 @@ try await attachmentQueue.waitForInit()
 
 ```kotlin Kotlin
 Coming soon, need to expose the function publicly
+```
+
+```csharp .NET
+await queue.VerifyAttachmentsAsync();
 ```
 
 </CodeGroup>
@@ -2057,6 +2431,17 @@ val queue = AttachmentQueue(
 
 // For manually expiring the cache
 queue.expireCache()
+```
+
+```csharp .NET
+var queue = new AttachmentQueue(new AttachmentQueueOptions
+{
+    // ... other options
+    ArchivedCacheLimit = 200,  // Keep 200 archived files; oldest deleted when limit reached
+});
+
+// Manually expire the cache
+await queue.ExpireCacheAsync();
 ```
 
 </CodeGroup>

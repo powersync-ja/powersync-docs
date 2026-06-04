@@ -1,128 +1,258 @@
 ---
 title: "Log Reference"
-description: "Reference for PowerSync Service log lines (Sync & API and Replicator), with field meanings, recovery behavior, and what each event indicates."
+description: "Reference for PowerSync Service log lines: what the structured fields mean, what each event indicates, and whether the Service recovers on its own."
 sidebarTitle: "Log Reference"
 ---
 
-This reference explains the log lines you will see under **Sync & API logs** and **Replicator logs**. To view them, open the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, and go to the **Logs** view (or use your own log aggregator if you are self-hosting). It covers what each event indicates, the structured fields it carries, and whether the service recovers on its own or operator action is needed.
+This reference explains the log lines under **Sync & API logs** and **Replicator logs**, starting with the most common structured fields. To view them, open the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, and go to the **Logs** view. If you self-host, use your own log aggregator.
 
 For error code lookups, see [Error Codes Reference](/debugging/error-codes). For how to view, filter, and export logs, see [Monitoring and Alerting](/maintenance-ops/monitoring-and-alerting#instance-logs).
 
-## How to read these logs
+## Field Glossary
+
+Most log lines carry structured fields alongside their human-readable message. Because message wording can change between Service versions, filter on these fields rather than the message text. The table below covers the fields on most lines, but a line can carry many more (especially with metadata expanded), and each source connector adds its own. Treat fields not listed here as additional context, and see the [Detailed Event Reference](#detailed-event-reference) for fields specific to individual events.
+
+| Field | Meaning |
+| ----- | ------- |
+| `level` | Log severity: `info`, `warn`, `error`, or `fatal`. |
+| `timestamp` | ISO-8601 UTC time the line was emitted. |
+| `rid` | Request ID. The same `rid` appears on both the start and complete line of a session, so you can correlate them. The prefix marks the endpoint type: `s/` for the WebSocket sync stream, `h/` for HTTP API requests. |
+| `user_id` | The authenticated user ID extracted from the client's JWT. |
+| `client_id` | The client device ID, assigned per install by the SDK. One user can have many clients, so this differs from `user_id`. |
+| `user_agent` | The SDK and platform the client reported, for example `powersync-js/1.43.1 powersync-react-native react-native/0.77 ios/26.5`. |
+| `app_metadata` | Custom metadata the client attached via `connect({ params })`. See [Custom Metadata in Sync Logs](/maintenance-ops/monitoring-and-alerting#custom-metadata-in-sync-logs). |
+| `client_params` | The parameter values the client passed to `connect()`. Large values may be truncated. |
+| `pod` | The Kubernetes pod that emitted the line. Distinguishes pods in a multi-pod deployment. |
+| `duration_ms` | Wall-clock duration of the request in milliseconds. On streaming access log lines this is the full session length. |
+| `stream_ms` | How long a sync session stayed open, in milliseconds. Same value as the `duration_ms` on the session's streaming access log line. |
+| `operations_synced` | Total number of operations sent to the client during the session. |
+| `operation_counts` | Per-type breakdown of operations: `{ "put": N, "remove": N, "move": N, "clear": N }`. |
+| `data_synced_bytes` | Uncompressed (plaintext) bytes synced to the client. |
+| `data_sent_bytes` | Bytes actually sent over the wire. Smaller than `data_synced_bytes` when compression is enabled. |
+| `close_reason` | Why a sync session ended. See [Close Reasons](#close-reasons). |
+| `status` | HTTP response status code. `200` for streaming sync (it streams as `200` even if it later errors), `401` for auth failures, `429` for queue overflow. |
+| `error_code` / `errorData` | The structured error on a failed line. `errorData` is `{ code, name, description, details?, severity, status }`, where `code` is the [PSYNC error code](/debugging/error-codes) and `details` carries the underlying-driver message. |
+| `lsn` | The source database position a checkpoint or flush corresponds to: a Postgres LSN, a MongoDB resume token, or an MSSQL LSN. |
+| `replication_lag` / `replication_lag_seconds` | Seconds between when a change was committed on the source database and when the replicator flushed it to storage. Zero or one second is healthy. See [Replication Lag](/maintenance-ops/replication-lag). |
+| `checkpoint` | The internal checkpoint op_id a sync session has reached. |
+
+## Severity and Recovery
+
+A line's severity (`level`) does not necessarily tell you whether you need to act. Most `error` and `warn` lines describe transient events that the Service recovers from on its own:
+
+- Per-session errors stay isolated to the affected client. `Sync stream error` and `Streaming sync request failed` tear down a single stream, and that client reconnects on its own. Service-wide failures such as a pod restart are the exception. They interrupt all connected clients until the Service recovers.
+- The replicator retries source-database operations automatically, so transient connection drops, query timeouts, and keep-alive failures are caught, logged, and retried.
+- Some `error` lines, such as `Replication failed.`, trigger a pod restart that the supervisor handles automatically. Operator action is needed only when the cause persists across restarts.
+
+To judge whether a line needs action, each table below includes a **Recovery** column:
+
+| Recovery | What it means |
+| -------- | ------------- |
+| Auto | The Service handles it. No client or operator action required. |
+| Client retries | A single client is affected. Its SDK reconnects. |
+| Pod restart | The pod restarts automatically. Persistent occurrences usually point to a configuration or source-database problem. |
+| Investigate | The line alone breaks nothing, but a burst of them is worth looking into. |
+| Operator action | The Service cannot recover without intervention. |
 
 <Note>
-**Most error and warn lines describe transient events the service handles on its own.** PowerSync is designed so:
-
-- Per-session errors are isolated to the affected client. `Sync stream error` and `Streaming sync request failed` tear down that one stream; the client reconnects on its own, and other clients are unaffected. Service-wide failures (such as a pod restart) are the exception and do interrupt all connected clients until the service recovers.
-- The replicator wraps source-database operations in retry loops. Transient connection drops, query timeouts, and keep-alive failures are caught, logged, and retried automatically.
-- Some `[error]`-level lines (for example `Replication failed.`) trigger a pod restart, but the service supervisor brings the pod back up. Recovery is operator-action-required only when the underlying cause persists across restarts.
-
-The **Recovery** column on each table below states what happens after the line fires. The values are:
-
-- **Auto**: the service handles it; no client or operator action is required.
-- **Client retries**: a single client is affected; its SDK reconnects.
-- **Pod restart**: the pod restarts automatically. Persistent occurrences usually indicate a configuration or source-database problem.
-- **Investigate**: the line on its own does not break anything, but a burst of them is signal worth looking into.
-- **Operator action**: the service cannot recover without intervention.
+MongoDB is the storage backend for all PowerSync Cloud instances, which some lines reflect (for example `Successfully activated storage: mongodb.` or checksum errors like [PSYNC_S2403](/debugging/error-codes#psync-s23xx-sync-api-errors-mongodb-storage)). If you self-host on Postgres-backed storage, those lines look different.
 </Note>
 
-<Note>
-**MongoDB is the storage backend for all PowerSync Cloud instances.** Several log lines (for example `Successfully activated storage: mongodb.`, MongoDB-specific checksum errors like [PSYNC_S2403](/debugging/error-codes#psync-s23xx-sync-api-errors-mongodb-storage)) reflect that. If you are self-hosting, you may be on Postgres-backed storage instead, in which case those lines look different.
-</Note>
-
-<Note>
-**Specific log message wording is subject to change between versions.** The structured fields are more stable than the human-readable string. Filter on structured fields (`user_id`, `error_code`, `close_reason`, `replication_lag`) rather than substring-matching the message text where possible.
-</Note>
-
-<Note>
-**Each section below is illustrative, not exhaustive.** New log lines are added regularly, source-specific connectors (Postgres, MongoDB, MySQL, MSSQL, Convex) each emit their own variants, and the service produces additional lines at debug level that are not covered here. If you see a line that is not in this reference, it is most likely safe to read as additional context rather than as something this document forgot to flag.
-</Note>
-
----
-
-## Sync & API logs
+## Sync & API Logs
 
 Produced by the PowerSync Service API pods. These cover client sync sessions (WebSocket and HTTP), HTTP API requests, checkpoint calculations, and write checkpoint endpoints.
 
-### Common fields
+### Sync Session Lifecycle
 
-A few fields appear across many sync log entries.
+These events trace a client's sync session from start to finish. Searching for a `rid` returns both ends.
 
-| Field          | Meaning |
-| -------------- | ------- |
-| `user_id`      | The authenticated user ID extracted from the JWT for the sync session. |
-| `client_id`    | The client device ID, assigned per-install by the SDK. Different from `user_id`: one user can have multiple clients. |
-| `rid`          | Request ID. The same `rid` is on both the start and complete event of a single session, which lets you correlate them. The prefix tells you the endpoint type: `s/` for the WebSocket sync endpoint, `h/` for HTTP API requests. |
-| `user_agent`   | The SDK and client platform reported by the client, for example `powersync-js/1.43.1 powersync-react-native react-native/0.77 ios/26.5`. |
-| `app_metadata` | Custom metadata the client attached via `connect({ params })`. See [Custom Metadata in Sync Logs](/maintenance-ops/monitoring-and-alerting#custom-metadata-in-sync-logs). |
-| `duration_ms`  | On HTTP access log lines and on the `STREAM /sync/stream` line, the wall-clock duration of the request in milliseconds. For a sync session this is the time between the start and complete events. |
-| `pod`          | The Kubernetes pod that emitted the line. Useful for distinguishing per-pod behavior in multi-pod deployments. |
-| `level`        | Log severity: `info`, `warn`, `error`, `fatal`. |
-| `timestamp`    | ISO-8601 UTC timestamp when the line was emitted. |
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `Sync stream started` | info | n/a | A client opened a sync connection and authenticated. Both the HTTP streaming endpoint and the WebSocket endpoint emit this. |
+| `Sync stream complete` | info | n/a | A sync session ended. The fields on this line summarize what the session did (`operations_synced`, `data_synced_bytes`, `close_reason`). |
+| `Sync stream error` | error | Client retries | The WebSocket sync stream threw an exception and is being torn down. The SDK reconnects on its 5s retry. Other clients are unaffected. |
+| `Streaming sync request failed` | error | Client retries | The HTTP streaming sync request threw an exception and is being torn down. Same impact as `Sync stream error`, but on the HTTP endpoint. |
 
-### Sync session lifecycle
+A short `stream_ms` paired with `operations_synced: 0` usually means the connection was opened and torn down before any sync line was sent. This is normal when many clients reconnect at once, or when a client cancels quickly.
 
-These events describe a client's sync session from start to finish. Searching for a `rid` returns both ends of one session.
+For the full field breakdown of each line, see [Sync session field details](#detailed-event-reference) below.
 
-| Event                            | Level | Recovery        | When it fires |
-| -------------------------------- | ----- | --------------- | ------------- |
-| `Sync stream started`            | info  | n/a             | A client opened a sync connection and authenticated. Both the HTTP streaming endpoint and the WebSocket endpoint emit this. |
-| `Sync stream complete`           | info  | n/a             | A sync session ended. The fields on this line summarise what the session did. |
-| `Sync stream error`              | error | Client retries  | The WebSocket sync stream threw and is being torn down. The SDK reconnects on its 5s retry. Other clients are unaffected. |
-| `Streaming sync request failed`  | error | Client retries  | The HTTP streaming sync request threw and is being torn down. Same impact as `Sync stream error` but on the HTTP endpoint. |
+#### Close Reasons
+
+The `close_reason` field on `Sync stream complete` takes one of these values:
+
+| Value | Recovery | Meaning |
+| ----- | -------- | ------- |
+| `client closing stream` | n/a | The client called `disconnect()` or its TCP connection closed cleanly. Normal for a session that ends because the user closed the app. |
+| `service closing stream` | n/a | The server closed the stream for non-error reasons, for example because the Sync Config changed and existing streams need to reconnect. |
+| `stream error` | Client retries | An exception was thrown during the stream. See the preceding `Sync stream error` or `Streaming sync request failed` for details. |
+| `process shutdown` | n/a | The API pod is shutting down (deploy, scale-down, restart). |
+| `unknown` | Investigate | The session ended without a recognized cause. Treat as a likely bug if it appears frequently. |
+
+### Checkpoint Events
+
+The PowerSync Service computes checkpoints to decide whether each connected client needs new data. In steady state you mostly see `Updated checkpoint` lines with empty `updated`/`removed` arrays, which are rechecks where nothing changed for that user.
+
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `New checkpoint: ...` | info | n/a | The first checkpoint sent to a session, or after a parameter or sync-stream membership change forces a full checkpoint. |
+| `Updated checkpoint: ...` | info | n/a | An incremental checkpoint (diff). |
+
+```
+New checkpoint: 1152792849 | write: 1585 | buckets: 2 | param_results: 2 ["1#global[]","1#user_bucket[81097]"]
+```
+
+For the full payload breakdown, see [Checkpoint payload anatomy](#detailed-event-reference) below.
+
+### Common Errors in Sync & API Logs
+
+| Code | What it means | Recovery |
+| ---- | ------------- | -------- |
+| `PSYNC_S2001` | Generic internal server error wrapper. The real cause is in the nested error. | Depends on cause |
+| `PSYNC_S2103` | JWT has expired. The client should be refreshing credentials. | Client retries |
+| `PSYNC_S2305` | Too many buckets for the user. Sync for this user is blocked until either the data or the Sync Config changes. See [Troubleshooting: Too Many Buckets](/debugging/troubleshooting#too-many-buckets-psync_s2305). | Operator action (per user) |
+| `PSYNC_S2401` | Checksum mismatch. The client deletes the affected bucket and re-fetches. No data loss. | Auto |
+| `PSYNC_S2403` | Query timed out while reading checksums (MongoDB storage). The Mongo aggregate that builds the checkpoint exceeded its timeout (50s). | Client retries |
+
+For the full code list, see [Error Codes Reference](/debugging/error-codes).
+
+## Replicator Logs
+
+Produced by the replication pod that pulls changes from your source database (Postgres, MongoDB, MySQL, or MSSQL) and writes them into the PowerSync storage layer.
+
+<Note>
+Most replicator lines are prefixed with the Sync Config identifier in brackets, for example `[powersync_69b93ff7358aa0646ff0dbca_1_e6dc]`. The format is `[powersync_<instance_id>_<group_id>_<hash>]`. The `group_id` increments when the Sync Config changes, so a new version means a new group. Use this prefix to scope log queries to a particular Sync Config iteration.
+</Note>
+
+### Streaming Replication (Steady State)
+
+Once the initial snapshot is done, the replicator streams changes. The `Flushed` line is the most important steady-state line and the bulk of normal replicator logs.
+
+```
+[<sync_rule>] Flushed N + M + K updates, Xkb in Yms. Last op_id: Z. Replication lag: Ls
+```
+
+| Component | Meaning |
+| --------- | ------- |
+| `N + M + K updates` | `N` = bucket data rows written. `M` = bucket parameter rows written. `K` = current_data records updated (the source-row mirror used for parameter recalculation). |
+| `Xkb` | Uncompressed size of the bucket data written in this flush. |
+| `Yms` | Wall-clock time the flush took. Sustained values above ~500ms indicate the storage layer is under load. |
+| `Last op_id: Z` | The highest internal op_id assigned in this flush. Increases monotonically across all flushes for the iteration. |
+| `Replication lag: Ls` | Seconds between when the oldest uncommitted change in this flush was made on the source and when it was flushed to storage. Zero or one second is healthy. Sustained values above 60s warrant investigation. See [Replication Lag](/maintenance-ops/replication-lag). |
+
+The same numbers appear as a structured `flushed` object on the line, easier to filter on than the message text:
+
+```json
+"flushed": {
+  "bucket_data_count": 14,
+  "parameter_data_count": 0,
+  "current_data_count": 14,
+  "duration": 5,
+  "size": 7498,
+  "replication_lag_seconds": 0
+}
+```
+
+If `Replication lag` is absent, the flush had no source-side change timestamps to derive it from. This happens only on snapshot flushes, never steady-state.
+
+### Replication Health
+
+These lines report problems in the replication loop. Almost all are non-fatal, and the replicator handles them on its own.
+
+| Event | Source DBs | Level | Recovery | What it indicates |
+| ----- | ---------- | ----- | -------- | ----------------- |
+| `Failed to ping connection` | Postgres | warn | Auto | A pooled connection failed its health check. Dropped and replaced. |
+| `KeepAlive failed, unable to post to WAL` | Postgres | warn | Auto | The replicator could not write a keep-alive heartbeat to the source WAL. Usually transient (source briefly read-only, brief network blip). Sustained occurrences indicate credentials or permissions. |
+| `KeepAlive failed, unable to write an update to the <table>` | MSSQL | warn | Auto | Same as above, for MSSQL. |
+| `Could not check RLS access for <schema>.<table>` | Postgres | warn | Investigate | The replicator could not verify whether its user bypasses Row-Level Security. If RLS is in fact enforced, you will see missing data downstream. |
+| `Could not query max_slot_wal_keep_size` | Postgres | warn | Investigate | The Postgres user lacks permission to read `pg_settings`. Cosmetic, but indicates a permission gap. |
+| `Query error, retrying..` | MSSQL | warn | Auto | A CDC query failed and is being retried. |
+| `Replication error` | All | warn | Auto | A non-fatal error in the replication loop. The replicator retries. |
+| `Replication failed.` | All | error | Pod restart | Top-level error from the replication job loop. The pod is being restarted by the supervisor. Persistent occurrences usually carry a [PSYNC code](/debugging/error-codes#psync-s1xxx-replication-issues) and indicate the underlying cause needs intervention. |
+| `Fatal replication error` | All | error | Pod restart | Same as above. |
+
+### Common Errors in Replicator Logs
+
+| Code | What it means | Recovery |
+| ---- | ------------- | -------- |
+| `PSYNC_S1003` | Replication stream is locked by another process. Normal for up to 1 minute after a deploy or after a process was killed; the lock has a 60s TTL. | Auto (within 1 minute) |
+| `PSYNC_S1004` | JSON nested object depth exceeds 20. Affects replication of that row. | Operator action (data fix) |
+| `PSYNC_S1146` | Postgres replication slot was invalidated (source dropped it or exceeded `max_slot_wal_keep_size`). Replication restarts from snapshot. | Auto (re-snapshot) |
+| `PSYNC_S1344` | MongoDB change stream invalidated. Replication restarts with a new change stream. | Auto |
+| `PSYNC_S1345` | MongoDB change stream timed out reading from the source. | Auto (retry) |
+
+For the full code list and additional connector-specific codes, see [Error Codes Reference](/debugging/error-codes).
+
+## Filtering Tips
+
+In the Dashboard log view, the search bar supports both free-text and `alias:value` filters. Full syntax is in [Monitoring and Alerting: Search and Filter Logs](/maintenance-ops/monitoring-and-alerting#search-and-filter-logs).
+
+### Sync & API Logs
+
+```
+user_id:<user-id>                             # one user
+rid:<request-id>                              # both ends of one session
+close_reason:"stream error"                   # errored sessions
+error:PSYNC_S2403                             # specific error code
+user_id:<user-id> close_reason:"stream error" # errored sessions for one user
+operations_synced:>=10000                     # high-volume sync sessions
+```
+
+### Replicator Logs
+
+```
+lag:>=10                       # flushes with significant lag
+"Replicating" "public.orders"  # snapshot progress for a specific table
+"Replication error"            # non-fatal retries
+"Replication failed"           # pod restarts
+"Created replication slot"     # Postgres slot recreation events
+"Processing schema change"     # MySQL DDL
+"System started"               # pod restart points
+```
+
+## Detailed Event Reference
+
+The sections above cover the most common lines. The events below are lower-frequency or verbose, collapsed here to keep the page scannable but documented in full.
+
+### Sync & API Logs
+
+<AccordionGroup>
+
+<Accordion title="Sync session field details">
 
 #### Fields on `Sync stream started`
 
-| Field           | Meaning |
-| --------------- | ------- |
-| `user_id`, `client_id`, `rid`, `user_agent`, `app_metadata` | See common fields. |
+| Field | Meaning |
+| ----- | ------- |
+| `user_id`, `client_id`, `rid`, `user_agent`, `app_metadata` | See [Field Glossary](#field-glossary). |
 | `client_params` | Parameter values the client passed to `connect()`. Subject to size limits, so very large values may be truncated. |
 
 #### Fields on `Sync stream complete`
 
-| Field                 | Meaning |
-| --------------------- | ------- |
-| `user_id`, `client_id`, `rid`, `user_agent`, `app_metadata` | See common fields. |
-| `stream_ms`           | Duration the session was open, in milliseconds. Same value as the `duration_ms` on the corresponding `STREAM /sync/stream` access line. |
-| `operations_synced`   | Total operations sent to this client in the session. |
-| `operation_counts`    | Per-type breakdown: `{ "put": N, "remove": N, "move": N, "clear": N }`. |
-| `data_synced_bytes`   | Plaintext (uncompressed) bytes synced to the client. |
-| `data_sent_bytes`     | Bytes actually sent on the wire. With compression enabled, this is smaller than `data_synced_bytes`. |
-| `encoding`            | Wire encoding used for the session, for example `permessage-deflate` (WebSocket compression). |
-| `large_buckets`       | Buckets that contributed an unusually large number of operations in this session, as an object mapping `<bucket descriptor> -> <operation count>`. Useful for spotting outlier buckets that dominate a session's payload. |
-| `close_reason`        | Why the session ended. See [Close reasons](#close-reasons). |
-
-A short `stream_ms` paired with `operations_synced: 0` typically means the connection was opened and torn down before any sync line was sent. This is normal during reconnect storms or when the client cancels quickly.
+| Field | Meaning |
+| ----- | ------- |
+| `user_id`, `client_id`, `rid`, `user_agent`, `app_metadata` | See [Field Glossary](#field-glossary). |
+| `stream_ms` | Duration the session was open, in milliseconds. Same value as `duration_ms` on the corresponding `STREAM /sync/stream` access line. |
+| `operations_synced` | Total operations sent to this client in the session. |
+| `operation_counts` | Per-type breakdown: `{ "put": N, "remove": N, "move": N, "clear": N }`. |
+| `data_synced_bytes` | Plaintext (uncompressed) bytes synced to the client. |
+| `data_sent_bytes` | Bytes actually sent on the wire. With compression enabled, this is smaller than `data_synced_bytes`. |
+| `encoding` | Wire encoding used for the session, for example `permessage-deflate` (WebSocket compression). |
+| `large_buckets` | Buckets that contributed an unusually large number of operations in this session, as an object mapping `<bucket descriptor> -> <operation count>`. Useful for spotting outlier buckets that dominate a session's payload. |
+| `close_reason` | Why the session ended. See [Close Reasons](#close-reasons). |
 
 #### Fields on `Sync stream error` and `Streaming sync request failed`
 
-| Field              | Meaning |
-| ------------------ | ------- |
-| `user_id`, `client_id`, `rid`, `user_agent` | See common fields. |
-| `errorData`        | Structured error: `{ code, name, description, details?, severity, status }`. The `code` is the PSYNC code, and `details` carries the underlying-driver message (for example, `"Connection to <mongo host>:<port> interrupted due to server monitor timeout"`). |
-| `is_service_error` | `true` when the error came from a recognised service code path; `false` for unexpected exceptions. |
-| `stack`            | Stack trace from the throw site. Useful for cross-referencing against the service source. |
+| Field | Meaning |
+| ----- | ------- |
+| `user_id`, `client_id`, `rid`, `user_agent` | See [Field Glossary](#field-glossary). |
+| `errorData` | Structured error: `{ code, name, description, details?, severity, status }`. The `code` is the PSYNC code, and `details` carries the underlying-driver message (for example, `"Connection to <mongo host>:<port> interrupted due to server monitor timeout"`). |
+| `is_service_error` | `true` when the error came from a recognized Service code path; `false` for unexpected exceptions. |
+| `stack` | Stack trace from the throw site. Useful for cross-referencing against the Service source. |
 
-#### Close reasons
+</Accordion>
 
-The `close_reason` field on `Sync stream complete` takes one of these values:
-
-| Value                    | Recovery        | Meaning |
-| ------------------------ | --------------- | ------- |
-| `client closing stream`  | n/a             | The client called `disconnect()` or its TCP connection closed cleanly. Normal for a healthy session that ends because the user closed the app. |
-| `service closing stream` | n/a             | The server closed the stream for non-error reasons, for example because the Sync Config changed and existing streams need to reconnect. |
-| `stream error`           | Client retries  | An exception was thrown during the stream. See the preceding `Sync stream error` or `Streaming sync request failed` for details. |
-| `process shutdown`       | n/a             | The API pod is shutting down (deploy, scale-down, restart). |
-| `unknown`                | Investigate     | The session ended without a recognised cause. Treat as a bug signal if it appears frequently. |
-
-### Checkpoint events
-
-The PowerSync Service evaluates whether each connected client needs to be informed of new data by computing checkpoints.
-
-| Event                  | Level | Recovery | When it fires |
-| ---------------------- | ----- | -------- | ------------- |
-| `New checkpoint: ...`  | info  | n/a      | The first checkpoint sent to a session, or after a parameter or sync-stream membership change forces a full checkpoint. |
-| `Updated checkpoint: ...` | info | n/a    | An incremental checkpoint (diff). |
+<Accordion title="Checkpoint payload anatomy">
 
 Example payloads:
 
@@ -134,11 +264,11 @@ New checkpoint: 1152792849 | write: 1585 | buckets: 2 | param_results: 2 ["1#glo
 Updated checkpoint: 1152792918 | write: 376 | buckets: 2 | param_results: 0 | updated: ["1#user_bucket[72594]"] | removed: []
 ```
 
-| Component        | Meaning |
-| ---------------- | ------- |
-| `1152792849`     | The internal checkpoint op_id this session is at. |
-| `write: 1585`    | The latest write checkpoint applicable to this user, if any. `null` if there are no pending writes. See [Write checkpoints](#http-endpoint-and-write-checkpoint-events). |
-| `buckets: 2`     | The total number of buckets visible to this user given current parameters. The default cap is 1,000 (see [PSYNC_S2305](/debugging/error-codes#psync-s23xx-sync-api-errors)). |
+| Component | Meaning |
+| --------- | ------- |
+| `1152792849` | The internal checkpoint op_id this session is at. |
+| `write: 1585` | The latest write checkpoint applicable to this user, if any. `null` if there are no pending writes. See [Write Checkpoints in the PowerSync protocol](/architecture/powersync-protocol#write-checkpoints). |
+| `buckets: 2` | The total number of buckets visible to this user given current parameters. The default cap is 1,000 (see [PSYNC_S2305](/debugging/error-codes#psync-s23xx-sync-api-errors)). |
 | `param_results: 2` | The number of distinct parameter results evaluated for this user. Each parameter result corresponds to a row returned by a parameter query. |
 | `[<bucket descriptors>]` | The list of bucket descriptors, truncated to 20. Format is `<priority>#<stream_name>_<version>[<parameter_values>]`. |
 | `updated: [...]` (Updated only) | Buckets whose data changed since the previous checkpoint. |
@@ -146,101 +276,93 @@ Updated checkpoint: 1152792918 | write: 376 | buckets: 2 | param_results: 0 | up
 
 Structured fields on the same line include `checkpoint` (the op_id), `buckets` (count), `parameter_query_results` (count), and on `Updated checkpoint` only, `updated` and `removed` counts as integers. These are easier to filter on than parsing the message body.
 
-For most steady-state sessions you will see a stream of `Updated checkpoint` lines with empty `updated`/`removed` arrays. Those represent rechecks where nothing changed for this user.
+</Accordion>
 
-### HTTP endpoint and write checkpoint events
+<Accordion title="HTTP endpoint and write checkpoint events">
 
-| Event                                                | Level | Recovery        | When it fires |
-| ---------------------------------------------------- | ----- | --------------- | ------------- |
-| `STREAM /sync/stream`                                | info  | n/a             | RSocket access log line for a WebSocket sync subscription. Emitted on stream close (so the `duration_ms` is the full session length). Carries `client_id`, `rid`, `duration_ms`, `user_id`, `user_agent`. |
-| `GET /write-checkpoint2.json?client_id=<uuid>`       | info  | n/a             | A client requested a write checkpoint number to wait for. See [Write Checkpoints in the PowerSync protocol](/architecture/powersync-protocol#write-checkpoints). Carries `method`, `path`, `route`, `status`, `rid`, `duration_ms`. |
-| `Write checkpoint for <user>/<client>: <num> \| <lsn>` | info  | n/a           | Result of a write checkpoint computation. `<lsn>` is the source database LSN this checkpoint corresponds to (Postgres LSN, MongoDB resume token, MSSQL LSN). |
-| `Currently have N active WebSocket connection(s)`    | info  | n/a             | Periodic count of open WebSocket connections on this pod. Per-pod, not per-instance. |
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `STREAM /sync/stream` | info | n/a | RSocket access log line for a WebSocket sync subscription. Emitted on stream close, so the `duration_ms` is the full session length. Carries `client_id`, `rid`, `duration_ms`, `user_id`, `user_agent`. |
+| `GET /write-checkpoint2.json?client_id=<uuid>` | info | n/a | A client requested a write checkpoint number to wait for. See [Write Checkpoints in the PowerSync protocol](/architecture/powersync-protocol#write-checkpoints). Carries `method`, `path`, `route`, `status`, `rid`, `duration_ms`. |
+| `Write checkpoint for <user>/<client>: <num> \| <lsn>` | info | n/a | Result of a write checkpoint computation. `<lsn>` is the source database LSN this checkpoint corresponds to (Postgres LSN, MongoDB resume token, MSSQL LSN). |
+| `Currently have N active WebSocket connection(s)` | info | n/a | Periodic count of open WebSocket connections on this pod. Per-pod, not per-instance. |
 | `<METHOD> <path>` with `status: 429, queue_overflow: true` | warn | Client retries | The request queue is full and the request is being rejected with HTTP 429. The client retries on its own. |
-
-#### Fields on HTTP access lines
 
 Every HTTP access log line carries these structured fields. They are not visible in the rendered message but are filterable.
 
-| Field         | Meaning |
-| ------------- | ------- |
-| `method`      | HTTP method, for example `GET`, `POST`, `STREAM`. |
-| `path`        | Full request path, including query string. |
-| `route`       | The matched route template (with placeholders), useful for grouping. |
-| `status`      | HTTP response status code. `200` for streaming sync (it streams as a 200 even if it later errors), `401` for auth failures, `429` for queue overflow. |
+| Field | Meaning |
+| ----- | ------- |
+| `method` | HTTP method, for example `GET`, `POST`, `STREAM`. |
+| `path` | Full request path, including query string. |
+| `route` | The matched route template (with placeholders), useful for grouping. |
+| `status` | HTTP response status code. `200` for streaming sync (it streams as a 200 even if it later errors), `401` for auth failures, `429` for queue overflow. |
 | `duration_ms` | Wall-clock duration in milliseconds. For streaming endpoints this is the full session length. |
-| `rid`         | Request ID. `h/` prefix for HTTP, `s/` for sync stream. |
+| `rid` | Request ID. `h/` prefix for HTTP, `s/` for sync stream. |
 
-### Concurrency and queueing
+</Accordion>
+
+<Accordion title="Concurrency and queueing">
 
 These appear when the API pod is near its configured concurrent-sync limit.
 
-| Event                                                  | Level | Recovery       | When it fires |
-| ------------------------------------------------------ | ----- | -------------- | ------------- |
-| `Sync concurrency limit reached, waiting for lock`     | info  | Auto           | A new sync session is queued behind currently-active sessions. It will start when a slot frees up. |
-| `Got sync lock. Slots available: N`                    | info  | n/a            | The queued session acquired a slot. |
-| `Releasing sync lock`                                  | info  | n/a            | The session released its slot, either because it finished or because it errored. |
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `Sync concurrency limit reached, waiting for lock` | info | Auto | A new sync session is queued behind currently-active sessions. It will start when a slot frees up. |
+| `Got sync lock. Slots available: N` | info | n/a | The queued session acquired a slot. |
+| `Releasing sync lock` | info | n/a | The session released its slot, either because it finished or because it errored. |
 
-Frequent `Sync concurrency limit reached` typically means traffic exceeds the pod's headroom, or the per-pod cap is set conservatively. See [Production Readiness Guide](/maintenance-ops/production-readiness-guide).
+Frequent `Sync concurrency limit reached` typically means traffic exceeds what the pod can handle, or the per-pod cap is set too low. See [Production Readiness Guide](/maintenance-ops/production-readiness-guide).
 
-### Replication propagation (observed from the API pod)
+</Accordion>
 
-| Event                                            | Level | Recovery | When it fires |
-| ------------------------------------------------ | ----- | -------- | ------------- |
-| `Waiting for LSN checkpoint: <lsn>`              | info  | n/a      | The write checkpoint endpoint is waiting for the replicator to catch up to `<lsn>`. |
-| `Got write checkpoint: <lsn> : <checkpoint>`     | info  | n/a      | The wait completed; the checkpoint number is returned to the client. |
+<Accordion title="Replication propagation (observed from the API pod)">
+
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `Waiting for LSN checkpoint: <lsn>` | info | n/a | The write checkpoint endpoint is waiting for the replicator to catch up to `<lsn>`. |
+| `Got write checkpoint: <lsn> : <checkpoint>` | info | n/a | The wait completed; the checkpoint number is returned to the client. |
 
 A long delay between these two lines means the replicator is behind. If sustained, see [Replication Lag](/maintenance-ops/replication-lag).
 
-### Common errors in Sync & API logs
+</Accordion>
 
-| Code          | What it means | Recovery |
-| ------------- | ------------- | -------- |
-| `PSYNC_S2001` | Generic internal server error wrapper. The real cause is in the nested error. | Depends on cause |
-| `PSYNC_S2103` | JWT has expired. The client should be refreshing credentials. | Client retries |
-| `PSYNC_S2305` | Too many buckets for the user. Sync for this user is blocked until either the data or the Sync Config changes. See [Troubleshooting: Too Many Buckets](/debugging/troubleshooting#too-many-buckets-psync_s2305). | Operator action (per user) |
-| `PSYNC_S2401` | Checksum mismatch. The client deletes the affected bucket and re-fetches. No data loss. | Auto |
-| `PSYNC_S2403` | Query timed out while reading checksums (MongoDB storage). The Mongo aggregate that builds the checkpoint exceeded its timeout (50s). | Client retries |
+</AccordionGroup>
 
-For the full code list, see [Error Codes Reference](/debugging/error-codes).
+### Replicator Logs
 
----
+<AccordionGroup>
 
-## Replicator logs
-
-Produced by the replication pod that pulls changes from your source database (Postgres, MongoDB, MySQL, or MSSQL) and writes them into the PowerSync storage layer.
-
-<Note>
-Most replicator log lines are prefixed with the Sync Config identifier in brackets, for example `[powersync_69b93ff7358aa0646ff0dbca_1_e6dc]`. The format is `[powersync_<instance_id>_<group_id>_<hash>]`. The `group_id` increments when the Sync Config changes (a new version means a new group). Use this prefix to scope log queries to a particular Sync Config iteration.
-</Note>
-
-### Startup and lifecycle
+<Accordion title="Startup and lifecycle">
 
 Fired when a replication pod starts, stops, or restarts. Outside of a deploy, these usually mean the pod was killed and restarted by the supervisor.
 
-| Event                                                     | Level | Recovery | When it fires |
-| --------------------------------------------------------- | ----- | -------- | ------------- |
-| `Starting system`                                         | info  | n/a      | First line after pod boot. |
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `Starting system` | info | n/a | First line after the pod starts. |
 | `Starting Storage Engine...` / `Successfully started Storage Engine.` | info | n/a | The bucket storage backend is being connected. The `Successfully activated storage: <type>` line in between names the backend (typically `mongodb` for Cloud). |
-| `Starting Replication Engine...` / `Successfully started Replication Engine.` | info | n/a | The replication subsystem is initialising. |
-| `Starting Replicator: <id>`                               | info  | n/a      | One per source database connection (for example `postgresql-postgres`). |
+| `Starting Replication Engine...` / `Successfully started Replication Engine.` | info | n/a | The replication subsystem is initializing. |
+| `Starting Replicator: <id>` | info | n/a | One per source database connection (for example `postgresql-postgres`). |
 | `Starting Router Engine...` / `Running on port 8080` / `Successfully started Router Engine.` | info | n/a | The replicator's HTTP health and metrics endpoints are up. The replicator does not serve sync traffic. |
-| `Loaded sync config` (or `Loaded sync rules`)             | info  | n/a      | The current Sync Config was loaded from storage. Both wordings exist depending on service version. |
-| `No sync streams or rules configured - configure via API` | info  | n/a      | No Sync Config is deployed yet. |
-| `Locked replication stream for processing`                | info  | n/a      | This pod has acquired the replication lock for a Sync Config iteration. Only one pod can replicate a given iteration at a time. |
-| `Sync rules N has been locked for replication with lock ID <hex>` | info | n/a | Companion log line emitted after `Locked replication stream for processing`. The lock ID is the 8-byte hex identifier this pod is holding. Useful for confirming which pod owns the active lock. |
-| `[PSYNC_S1003] Sync rules N have been locked by another process for replication, expiring at <ts>.` | info | Auto | Pod tried to acquire the lock but another pod (or a prior incarnation of this pod) still holds it. The lock has a 60s TTL so this typically clears within a minute. Logged at `info` (not `warn`) precisely because it is expected behavior. |
-| `Successfully registered Replicator <id> with ReplicationEngine` | info | n/a   | Per-connector registration event during startup. |
-| `System started`                                          | info  | n/a      | All subsystems are up. The pod is actively replicating. |
+| `Loaded sync config` (or `Loaded sync rules`) | info | n/a | The current Sync Config was loaded from storage. Both wordings exist depending on Service version. |
+| `No sync streams or rules configured - configure via API` | info | n/a | No Sync Config is deployed yet. |
+| `Locked replication stream for processing` | info | n/a | This pod has acquired the replication lock for a Sync Config iteration. Only one pod can replicate a given iteration at a time. |
+| `Sync rules N has been locked for replication with lock ID <hex>` | info | n/a | Companion line emitted after `Locked replication stream for processing`. The lock ID is the 8-byte hex identifier this pod is holding. Useful for confirming which pod owns the active lock. |
+| `[PSYNC_S1003] Sync rules N have been locked by another process for replication, expiring at <ts>.` | info | Auto | Pod tried to acquire the lock but another pod (or a prior incarnation of this pod) still holds it. The lock has a 60s TTL, so this typically clears within a minute. Logged at `info` (not `warn`) precisely because it is expected behavior. |
+| `Successfully registered Replicator <id> with ReplicationEngine` | info | n/a | Per-connector registration event during startup. |
+| `System started` | info | n/a | All subsystems are up. The pod is actively replicating. |
 
-### Sync Config changes
+</Accordion>
 
-| Event                                                                          | Level | Recovery | When it fires |
-| ------------------------------------------------------------------------------ | ----- | -------- | ------------- |
-| `Failed to update sync config`                                                 | error | Pod restart | Sync Config update validation failed. The pod exits and supervisor restarts it. |
-| `Stopping replication job for sync rule iteration: N`                          | info  | n/a      | An older Sync Config iteration is being stopped (usually because a new iteration replaced it). |
+<Accordion title="Sync Config changes">
 
-### Shutdown sequence
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `Failed to update sync config` | error | Pod restart | Sync Config update validation failed. The pod exits and the supervisor restarts it. |
+| `Stopping replication job for sync rule iteration: N` | info | n/a | An older Sync Config iteration is being stopped, usually because a new iteration replaced it. |
+
+</Accordion>
+
+<Accordion title="Shutdown sequence">
 
 Triggered by SIGTERM (deploys, scale-down) or by a fatal error. A clean shutdown ends with `Exiting`. Lines you will see in order:
 
@@ -265,157 +387,86 @@ Successfully shut down Storage Engine.
 
 If you see `Replication failed.` or `Fatal replication error` before the shutdown lines, the pod is being restarted by the supervisor after a crash.
 
-### Initial snapshot
+</Accordion>
+
+<Accordion title="Initial snapshot">
 
 The first time a Sync Config iteration is set up, every table covered by it is copied over. The exact wording differs by source database.
 
-| Event                                                              | Source DBs | Level | Recovery | When it fires |
-| ------------------------------------------------------------------ | ---------- | ----- | -------- | ------------- |
-| `To replicate: <schema>.<table> <count>/<total>`                   | Postgres, MongoDB | info | n/a | Logged once per table before the snapshot starts. The fraction is replicated rows over estimated total. |
-| `Replicating <schema>.<table> <count>/<total> - resumable`         | Postgres   | info  | n/a      | Table snapshot is starting or resuming. `resumable` means the snapshot is chunked on the table's single-column primary key, so it can pick up after an interruption. |
-| `Replicating <schema>.<table> <count>/<total> - not resumable`     | Postgres   | info  | n/a      | The table has a composite primary key or no usable primary key, so an interrupted snapshot has to restart from the beginning. |
+| Event | Source DBs | Level | Recovery | When it fires |
+| ----- | ---------- | ----- | -------- | ------------- |
+| `To replicate: <schema>.<table> <count>/<total>` | Postgres, MongoDB | info | n/a | Logged once per table before the snapshot starts. The fraction is replicated rows over estimated total. |
+| `Replicating <schema>.<table> <count>/<total> - resumable` | Postgres | info | n/a | Table snapshot is starting or resuming. `resumable` means the snapshot is chunked on the table's single-column primary key, so it can pick up after an interruption. |
+| `Replicating <schema>.<table> <count>/<total> - not resumable` | Postgres | info | n/a | The table has a composite primary key or no usable primary key, so an interrupted snapshot has to restart from the beginning. |
 | `Replicating <schema>.<table> <count>/<total> - resuming from <pk_col> > <value>` | Postgres | info | n/a | An interrupted resumable snapshot is picking up from a stored cursor. |
-| `Replicating <schema>.<table> <count>/<total>`                     | Postgres, MongoDB | info | n/a | Progress update during a snapshot, logged per chunk flush. |
-| `Snapshotting <schema>.<table> <count>/<total>`                    | MSSQL      | info  | n/a      | MSSQL CDC equivalent of `Replicating`. |
+| `Replicating <schema>.<table> <count>/<total>` | Postgres, MongoDB | info | n/a | Progress update during a snapshot, logged per chunk flush. |
+| `Snapshotting <schema>.<table> <count>/<total>` | MSSQL | info | n/a | MSSQL CDC equivalent of `Replicating`. |
 | `Skipping <table> - snapshot already done` (or `Skipping table [<table>] - snapshot already done.`) | All connectors | info | n/a | Table has already been fully snapshotted for the current iteration. Logged on startup when resuming. |
-| `Initial replication already done`                                 | All connectors | info | n/a | All tables in the iteration are already snapshotted. The replicator goes straight to streaming. |
+| `Initial replication already done` | All connectors | info | n/a | All tables in the iteration are already snapshotted. The replicator goes straight to streaming. |
 
-### Snapshot completion and replication slot management
+</Accordion>
 
-| Event                                              | Source DBs | Level | Recovery | When it fires |
-| -------------------------------------------------- | ---------- | ----- | -------- | ------------- |
-| `Created replication slot <slot_name>`             | Postgres   | info  | n/a      | A new logical replication slot was created. Happens on first replication or after the previous slot was dropped (Sync Config changes, slot health check failure, `pg_drop_replication_slot`, `pg_upgrade`). See [Postgres Maintenance](/configuration/source-db/postgres-maintenance). |
+<Accordion title="Snapshot completion and replication slot management">
+
+| Event | Source DBs | Level | Recovery | When it fires |
+| ----- | ---------- | ----- | -------- | ------------- |
+| `Created replication slot <slot_name>` | Postgres | info | n/a | A new logical replication slot was created. Happens on first replication or after the previous slot was dropped (Sync Config changes, slot health check failure, `pg_drop_replication_slot`, `pg_upgrade`). See [Postgres Maintenance](/configuration/source-db/postgres-maintenance). |
 | `Cleaning up Postgres replication slot: <slot_name>...` | Postgres | info | n/a | A slot is being dropped, usually after Sync Config changes. The next replication run creates a fresh slot. |
 | `WAL budget: no limit configured (max_slot_wal_keep_size is unlimited).` | Postgres | info | n/a | Source Postgres has no slot retention limit. Normal. |
-| `WAL budget: ...` budget-low                       | Postgres   | warn  | Investigate | `max_slot_wal_keep_size` is set and the slot is approaching it. If the slot is invalidated, replication has to restart from snapshot. See [PSYNC_S1146](/debugging/error-codes#psync-s1xxx-replication-issues). |
-| `Marking snapshot at <lsn>`                        | MongoDB, MSSQL | info | n/a  | The snapshot transaction captured all tables at `<lsn>`. Streaming will resume from this point. |
-| `Resuming snapshot at <lsn>`                       | MongoDB, MSSQL | info | n/a  | A previously interrupted snapshot is resuming from a stored LSN. |
-| `Flushed snapshot at <op_id>`                      | MongoDB    | info  | n/a      | The MongoDB snapshotter finished writing a collection up to the resume token `<op_id>`. |
+| `WAL budget: ...` budget-low | Postgres | warn | Investigate | `max_slot_wal_keep_size` is set and the slot is approaching it. If the slot is invalidated, replication has to restart from snapshot. See [PSYNC_S1146](/debugging/error-codes#psync-s1xxx-replication-issues). |
+| `Marking snapshot at <lsn>` | MongoDB, MSSQL | info | n/a | The snapshot transaction captured all tables at `<lsn>`. Streaming will resume from this point. |
+| `Resuming snapshot at <lsn>` | MongoDB, MSSQL | info | n/a | A previously interrupted snapshot is resuming from a stored LSN. |
+| `Flushed snapshot at <op_id>` | MongoDB | info | n/a | The MongoDB snapshotter finished writing a collection up to the resume token `<op_id>`. |
 
-### Streaming replication (steady state)
+</Accordion>
 
-Once the snapshot is done, the replicator switches to streaming. These are the bulk of replicator logs in normal operation.
+<Accordion title="Streaming replication variants">
 
-| Event                                                                          | Source DBs | Level | Recovery | When it fires |
-| ------------------------------------------------------------------------------ | ---------- | ----- | -------- | ------------- |
-| `[<sync_rule>] Replicating op N <lsn>`                                         | Postgres   | info  | n/a      | Periodic progress log during initial sync streaming, every 100 operations. |
-| `[<sync_rule>] Flushed N + M + K updates, Xkb in Yms. Last op_id: Z. Replication lag: Ls` | All connectors | info | n/a | A batch of changes was flushed to bucket storage. Most common steady-state line. See fields below. |
-| `[<sync_rule>] Processed batch of N changes / X bytes in Yms`                  | MongoDB    | info  | n/a      | A batch of MongoDB change-stream events was consumed from the source. |
-| `Resume streaming at <token> / <lsn> \| Token age: Ns`                         | MongoDB    | info  | Investigate if Token age is large | The change stream resumed from a stored token. `Token age` approaching MongoDB's oplog retention window means the slot is at risk. |
-| `New collection: <schema>.<name>`                                              | MongoDB    | info  | n/a      | A new matching collection was discovered after replication started. It will be snapshotted before streaming resumes. |
-| `Enabled postImages on <db>.<collection>`                                      | MongoDB    | info  | n/a      | The replicator enabled `changeStreamPreAndPostImages` on a collection that needs it for replica identity. Done once per collection. |
+Beyond the `Flushed` line, the streaming phase emits these connector-specific lines.
 
-#### Fields on `Flushed N + M + K updates, Xkb in Yms`
+| Event | Source DBs | Level | Recovery | When it fires |
+| ----- | ---------- | ----- | -------- | ------------- |
+| `[<sync_rule>] Replicating op N <lsn>` | Postgres | info | n/a | Periodic progress log during initial sync streaming, every 100 operations. |
+| `[<sync_rule>] Processed batch of N changes / X bytes in Yms` | MongoDB | info | n/a | A batch of MongoDB change-stream events was consumed from the source. Carries structured fields `count`, `bytes`, `duration`, useful for filtering on slow batches. |
+| `Resume streaming at <token> / <lsn> \| Token age: Ns` | MongoDB | info | Investigate if Token age is large | The change stream resumed from a stored token. `Token age` approaching MongoDB's oplog retention window means the slot is at risk. |
+| `New collection: <schema>.<name>` | MongoDB | info | n/a | A new matching collection was discovered after replication started. It will be snapshotted before streaming resumes. |
+| `Enabled postImages on <db>.<collection>` | MongoDB | info | n/a | The replicator enabled `changeStreamPreAndPostImages` on a collection that needs it for replica identity. Done once per collection. |
 
-This is the single most important steady-state line. Components:
+The `Flushed` line's structured `flushed` object maps to the message components as follows:
 
-| Component                  | Meaning |
-| -------------------------- | ------- |
-| `N + M + K updates`        | `N` = bucket data rows written. `M` = bucket parameter rows written. `K` = current_data records updated (source-row mirror used for parameter recalculation). |
-| `Xkb`                      | Uncompressed size of the bucket data written in this flush. |
-| `Yms`                      | Wall-clock time the flush took. Sustained values above ~500ms indicate storage-side pressure. |
-| `Last op_id: Z`            | The highest internal op_id assigned in this flush. Monotonically increasing across all flushes for the iteration. |
-| `Replication lag: Ls`      | Seconds between when the oldest uncommitted change in this flush was made on the source database, and when it was flushed to storage. Zero or one second is healthy. Sustained values above 60s warrant investigation. See [Replication Lag](/maintenance-ops/replication-lag). |
+| Sub-field | Maps to message component |
+| --------- | ------------------------- |
+| `bucket_data_count` | `N` |
+| `parameter_data_count` | `M` |
+| `current_data_count` | `K` |
+| `duration` | `Yms` |
+| `size` | Bytes (the `Xkb` value is `size / 1024`, rounded). |
+| `replication_lag_seconds` | `Ls` |
 
-If `Replication lag` is absent, the flush had no source-side change timestamps to derive it from (typically only true for snapshot flushes, never steady-state).
+</Accordion>
 
-The same numbers are also available as a single structured `flushed` object on the log line, easier to filter on than parsing the message:
+<Accordion title="Schema changes">
 
-```json
-"flushed": {
-  "bucket_data_count": 14,
-  "parameter_data_count": 0,
-  "current_data_count": 14,
-  "duration": 5,
-  "size": 7498,
-  "replication_lag_seconds": 0
-}
-```
+| Event | Source DBs | Level | Recovery | When it fires |
+| ----- | ---------- | ----- | -------- | ------------- |
+| `Processing schema change <type> for table [<schema>.<table>]` | MySQL | info | n/a | A DDL event from the source binlog is being applied to the replicator's schema view. |
+| `Successfully processed N schema change(s).` | MySQL | info | n/a | All DDL events from one binlog chunk were applied. |
+| `Table <schema>.<table> has been dropped. Handling schema change...` | MSSQL | info | n/a | The MSSQL CDC poller noticed a tracked table was dropped or its capture instance was removed. Handled by halting replication for that table or re-snapshotting, depending on config. |
+| `Unable to retrieve schema changes for capture instance: [<name>].` | MSSQL | warn | Auto | Schema delta query failed. Usually a transient permissions or connection issue. |
 
-| Sub-field                  | Maps to message component |
-| -------------------------- | ------------------------- |
-| `bucket_data_count`        | `N` |
-| `parameter_data_count`     | `M` |
-| `current_data_count`       | `K` |
-| `duration`                 | `Yms` |
-| `size`                     | Bytes (the `Xkb` value is `size / 1024`, rounded). |
-| `replication_lag_seconds`  | `Ls` |
+</Accordion>
 
-The `Processed batch of N changes / X bytes in Yms` line (MongoDB) has its own structured fields: `count`, `bytes`, `duration`. These are useful for filtering on slow batches.
-
-### Schema changes
-
-| Event                                                                                | Source DBs | Level | Recovery | When it fires |
-| ------------------------------------------------------------------------------------ | ---------- | ----- | -------- | ------------- |
-| `Processing schema change <type> for table [<schema>.<table>]`                       | MySQL      | info  | n/a      | A DDL event from the source binlog is being applied to the replicator's schema view. |
-| `Successfully processed N schema change(s).`                                         | MySQL      | info  | n/a      | All DDL events from one binlog chunk were applied. |
-| `Table <schema>.<table> has been dropped. Handling schema change...`                 | MSSQL      | info  | n/a      | The MSSQL CDC poller noticed a tracked table was dropped or its capture instance was removed. Handled by halting replication for that table or re-snapshotting, depending on config. |
-| `Unable to retrieve schema changes for capture instance: [<name>].`                  | MSSQL      | warn  | Auto     | Schema delta query failed. Usually a transient permissions or connection issue. |
-
-### CDC polling (MSSQL only)
+<Accordion title="CDC polling (MSSQL only)">
 
 The MSSQL connector polls CDC capture tables rather than streaming a logical replication slot.
 
-| Event                                                          | Level | Recovery | When it fires |
-| -------------------------------------------------------------- | ----- | -------- | ------------- |
-| `CDC polling started with interval of Nms...`                  | info  | n/a      | Replication is starting. `N` is the polling interval in ms (default 1000). |
-| `Polling a maximum of N transactions per polling cycle.`       | info  | n/a      | The per-cycle batch limit. |
+| Event | Level | Recovery | When it fires |
+| ----- | ----- | -------- | ------------- |
+| `CDC polling started with interval of Nms...` | info | n/a | Replication is starting. `N` is the polling interval in ms (default 1000). |
+| `Polling a maximum of N transactions per polling cycle.` | info | n/a | The per-cycle batch limit. |
 | `Polling bounds are <startLSN> -> <endLSN> spanning N transaction(s).` | info | n/a | One polling cycle's range. |
-| `CDC polling stopped...`                                       | info  | n/a      | The polling loop is shutting down. |
+| `CDC polling stopped...` | info | n/a | The polling loop is shutting down. |
 
-### Replication health
+</Accordion>
 
-These are the lines most likely to look alarming. **Almost all of them are non-fatal and the replicator handles them on its own.**
-
-| Event                                                          | Source DBs | Level | Recovery | What it indicates |
-| -------------------------------------------------------------- | ---------- | ----- | -------- | ----------------- |
-| `Failed to ping connection`                                    | Postgres   | warn  | Auto     | A pooled connection failed its health check. Dropped and replaced. |
-| `KeepAlive failed, unable to post to WAL`                      | Postgres   | warn  | Auto     | The replicator could not write a keep-alive heartbeat to the source WAL. Usually transient (source briefly read-only, brief network blip). Sustained occurrences indicate credentials or permissions. |
-| `KeepAlive failed, unable to write an update to the <table>`   | MSSQL      | warn  | Auto     | Same as above for MSSQL. |
-| `Could not check RLS access for <schema>.<table>`              | Postgres   | warn  | Investigate | The replicator could not verify whether its user bypasses Row-Level Security. If RLS is in fact enforced, you will see missing data downstream. |
-| `Could not query max_slot_wal_keep_size`                       | Postgres   | warn  | Investigate | The Postgres user lacks permission to read `pg_settings`. Cosmetic but indicates a permission gap. |
-| `Query error, retrying..`                                      | MSSQL      | warn  | Auto     | A CDC query failed and is being retried. |
-| `Replication error`                                            | All        | warn  | Auto     | A non-fatal error in the replication loop. The replicator retries. |
-| `Replication failed.`                                          | All        | error | Pod restart | Top-level error from the replication job loop. The pod is being restarted by the supervisor. Persistent occurrences usually carry a [PSYNC code](/debugging/error-codes#psync-s1xxx-replication-issues) and indicate the underlying cause needs intervention. |
-| `Fatal replication error`                                      | All        | error | Pod restart | Same as above. |
-
-### Common errors in Replicator logs
-
-| Code          | What it means | Recovery |
-| ------------- | ------------- | -------- |
-| `PSYNC_S1003` | Replication stream is locked by another process. Normal for up to 1 minute after a deploy or after a process was killed; the lock has a 60s TTL. | Auto (within 1 minute) |
-| `PSYNC_S1004` | JSON nested object depth exceeds 20. Affects replication of that row. | Operator action (data fix) |
-| `PSYNC_S1146` | Postgres replication slot was invalidated (source dropped or exceeded `max_slot_wal_keep_size`). Replication restarts from snapshot. | Auto (re-snapshot) |
-| `PSYNC_S1344` | MongoDB change stream invalidated. Replication restarts with a new change stream. | Auto |
-| `PSYNC_S1345` | MongoDB change stream timed out reading from the source. | Auto (retry) |
-
-For the full code list and additional connector-specific codes, see [Error Codes Reference](/debugging/error-codes).
-
----
-
-## Filtering tips
-
-In the Dashboard log view, the search bar supports both free-text and `alias:value` filters. Full syntax in [Monitoring and Alerting: Search and Filter Logs](/maintenance-ops/monitoring-and-alerting#search-and-filter-logs).
-
-### Sync & API logs
-
-```
-user_id:<user-id>                             # one user
-rid:<request-id>                              # both ends of one session
-close_reason:"stream error"                   # errored sessions
-error:PSYNC_S2403                             # specific error code
-user_id:<user-id> close_reason:"stream error" # errored sessions for one user
-"Sync stream complete" operations_synced:0    # sessions that synced nothing
-```
-
-### Replicator logs
-
-```
-lag:>=10                       # flushes with significant lag
-"Replicating" "public.orders"  # snapshot progress for a specific table
-"Replication error"            # non-fatal retries
-"Replication failed"           # pod restarts
-"Created replication slot"     # Postgres slot recreation events
-"Processing schema change"     # MySQL DDL
-"System started"               # pod restart points
-```
+</AccordionGroup>

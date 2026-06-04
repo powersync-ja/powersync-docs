@@ -81,6 +81,8 @@ The `description` and opening paragraph must not duplicate each other — the op
 | Sync Rules | sync rules |
 | Sync Streams | sync streams |
 
+Capitalize **Service** whenever it refers to the PowerSync Service, including when it stands alone without the "PowerSync" prefix (for example, "the Service recovers on its own"). Lowercase "service" alone is ambiguous. Leave casing unchanged inside literal log output, code, field names, or identifiers.
+
 ### Tone
 
 - No promotional language: "powerful," "seamless," "breathtaking," "stands as a testament"

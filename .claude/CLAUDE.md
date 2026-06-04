@@ -151,6 +151,8 @@ Always use the left column. Never use the right.
 | Sync Rules | sync rules |
 | Sync Streams | sync streams |
 
+Capitalize **Service** whenever it refers to the PowerSync Service, including when it stands alone without the "PowerSync" prefix (for example, "the Service recovers on its own" or "depending on Service version"). Lowercase "service" alone is ambiguous and can refer to many things. Leave casing unchanged inside literal log output, code, field names, or identifiers (for example, the `service closing stream` log value or the `is_service_error` field).
+
 ## Mintlify Components
 
 ### When to Use What

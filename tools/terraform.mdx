@@ -1,0 +1,173 @@
+---
+title: "Terraform Provider"
+description: Manage PowerSync Cloud projects and instances as infrastructure-as-code.
+---
+
+Terraform is a tool for managing infrastructure as code. You describe the desired state in HCL, run `terraform apply`, and Terraform calls the relevant APIs to provision and manage your infrastructure. The PowerSync Terraform provider brings PowerSync Cloud into that workflow.
+
+<Card title="Official PowerSync Cloud Terraform Provider" icon="code" href="https://registry.terraform.io/providers/powersync-ja/powersync/latest/docs">
+    Terraform Registry
+</Card>
+
+Use it to:
+
+- Provision PowerSync in the same `terraform apply` that creates your database and other cloud resources.
+- Define dev, staging, and production environments once in version-controlled config rather than configuring each manually in the dashboard.
+- Review changes to sync configuration, replication connections, and authentication settings as Terraform plan diffs in pull requests.
+
+This guide covers PowerSync Cloud only. For self-hosted deployments, see the [self-hosting overview](/maintenance-ops/self-hosting/overview).
+
+<Info>
+**Prerequisites**
+
+- Terraform 1.5 or later
+- A PowerSync Cloud account
+- A source database. The examples in this guide use Postgres via Supabase. If your database is also managed by Terraform, you can reference it in the same configuration.
+</Info>
+
+## Get a Personal Access Token
+
+The provider authenticates using a personal access token. In the dashboard, go to **Account → Access Tokens** and create a new token. Treat it like a password. It grants account access.
+
+Set it as an environment variable before running any Terraform commands:
+
+```sh
+export PS_PAT_TOKEN="jpt_..."
+```
+
+The provider reads this environment variable automatically.
+
+## Find Your Organization ID
+
+Your organization ID appears in the dashboard URL. When you are on the organization home page, the URL contains a hex segment like `/orgs/64b3f8e1a2c4d5e6f7080912/`. That segment is your organization ID.
+
+## Configure the Provider
+
+Create a new directory and a `main.tf` file. Start with the provider declaration:
+
+```hcl
+terraform {
+  required_providers {
+    powersync = {
+      source  = "powersync-ja/powersync"
+      version = "~> 0.1"
+    }
+  }
+}
+
+provider "powersync" {
+  # admin_token is picked up from the PS_PAT_TOKEN environment variable (recommended).
+  # It can also be inlined — less secure, but if inlined via a variable the value
+  # itself can still be passed securely through Terraform's own env vars
+  # (e.g. TF_VAR_ps_admin_token).
+  # admin_token  = var.admin_token
+}
+```
+
+Then run:
+
+```sh
+terraform init
+```
+
+This downloads the provider binary from the Terraform Registry.
+
+## Create a Project
+
+Add a data source to look up your organization, then a resource to create a project:
+
+```hcl
+data "powersync_organization" "main" {
+  id = "64b3f8e1a2c4d5e6f7080912"
+}
+
+resource "powersync_project" "main" {
+  org_id = data.powersync_organization.main.id
+  name   = "my-project"
+  region = "us"
+}
+```
+
+The [`data "powersync_organization"`](https://registry.terraform.io/providers/powersync-ja/powersync/latest/docs/data-sources/organization) block reads your existing organization. Organizations are created when you sign up and are not managed as Terraform resources. The [`powersync_project`](https://registry.terraform.io/providers/powersync-ja/powersync/latest/docs/resources/project) resource creates a new project under it. Supported regions are `eu`, `us`, `jp`, `au`, and `br`.
+
+## Create an Instance
+
+Add the [`powersync_instance`](https://registry.terraform.io/providers/powersync-ja/powersync/latest/docs/resources/instance) resource, which wires together a replication connection, client authentication, and your sync configuration:
+
+```hcl
+variable "replication_password" {
+  type      = string
+  sensitive = true
+}
+
+resource "powersync_instance" "main" {
+  org_id     = data.powersync_organization.main.id
+  project_id = powersync_project.main.id
+  name       = "production"
+
+  replication_connection {
+    type     = "postgresql"
+    name     = "main"
+    hostname = "db.<project-ref>.supabase.co"
+    port     = 5432
+    username = "powersync_role"
+    password = var.replication_password
+    database = "postgres"
+    sslmode  = "verify-full"
+  }
+
+  client_auth {
+    supabase               = true
+    allow_temporary_tokens = true
+  }
+
+  sync_config_content = <<-YAML
+    config:
+      edition: 3
+    streams:
+      todos:
+        auto_subscribe: true
+        query: SELECT * FROM todos
+  YAML
+}
+```
+
+<Tip>
+You can manage your Supabase project with Terraform too, you can provision the database and PowerSync instance together in the same configuration. See the [Supabase Terraform provider](https://supabase.com/docs/guides/deployment/terraform).
+</Tip>
+
+`replication_password` is a Terraform variable. Pass its value via the environment so it never appears in plain text in your config or state files.
+
+The `sync_config_content` field takes a Sync Streams configuration as a YAML string. For larger configs, use `file("${path.module}/sync-config.yaml")` to load the configuration from a separate file. See the [Sync Streams documentation](/sync/streams/overview) for the full configuration reference.
+
+## Apply
+
+Set the replication password, then run:
+
+```sh
+export TF_VAR_replication_password="..."
+terraform plan
+terraform apply
+```
+
+`terraform plan` shows you exactly what Terraform will create before you commit to it. `terraform apply` creates the project and instance, then deploys it. When it completes, the instance is live. Run `terraform show` to see the full resource state including the instance URL.
+
+## Managing Changes
+
+To update your PowerSync instance, edit any value in your config and re-run `terraform plan` then `terraform apply`. Every change triggers a full redeploy. The instance ID and URL remain the same.
+
+## Tear Down
+
+```sh
+terraform destroy
+```
+
+This removes the instance and the project. If the project contains instances created outside of Terraform, the destroy fails. Set `force_destroy = true` on `powersync_project` to override this check.
+
+## Next Steps
+
+- [PowerSync Provider](https://registry.terraform.io/providers/powersync-ja/powersync/latest/docs) on the Terraform Registry
+- [Supported source database setup](/configuration/source-db/setup.mdx) for configuring connection with the PowerSync Service
+- [Connecting your client](/client-sdks/overview) to a PowerSync Service instance
+- [Supabase integration guide](/integrations/supabase/guide) for Supabase-specific setup: creating the `powersync_role`, configuring publications, and JWT authentication modes
+- [Sync Streams overview](/sync/streams/overview) for writing the `sync_config_content`

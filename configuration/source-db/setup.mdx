@@ -1,9 +1,9 @@
 ---
 title: "Source Database Setup"
-description: "Prepare your Postgres, MongoDB, MySQL or SQL Server database for PowerSync replication."
+description: "Prepare your Postgres, MongoDB, MySQL, SQL Server or Convex database for PowerSync replication."
 ---
 
-Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql) | [SQL Server](#sql-server)
+Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [MySQL](#mysql) | [SQL Server](#sql-server) | [Convex](#convex)
 
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
@@ -371,7 +371,7 @@ To ensure that PowerSync can read the binary log, you need to configure your MyS
 - [`enforce_gtid_consistency`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency): **`ON`**. Enforces GTID consistency. Default is **`OFF`**.
 - [`gtid_mode`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-gtids.html#sysvar_gtid_mode): **`ON`**. Enables GTID based logging. Default is **`OFF`**.
 - [`binlog_format`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_format): **`ROW`**. Sets the binary log format to row-based replication. This is required for PowerSync to correctly replicate changes. Default is **`ROW`**.
-- [`binlog_row_image`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_row_image): **`FULL`**. Captures the complete row data for each change. This is required for PowerSync to correctly replicate changes. Default is **`FULL`**. The `MINIMAL`/`NOBLOB` options will be supported in a future release. 
+- [`binlog_row_image`](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_binlog_row_image): **`FULL`**. Captures the complete row data for each change. This is required for PowerSync to correctly replicate changes. Default is **`FULL`**. The `MINIMAL`/`NOBLOB` options will be supported in a future release.
 
 These can be specified in a MySQL [option file](https://dev.mysql.com/doc/refman/8.4/en/option-files.html):
 
@@ -440,7 +440,7 @@ binlog-ignore-db=user_db
 <Note>SQL Server support is currently in a [Beta release](/resources/feature-status).</Note>
 
 <Check>
-  **Version compatibility**: 
+  **Version compatibility**:
   - PowerSync requires SQL Server 2019+ or Azure SQL
   Database.
   - SQL Server support was introduced in version 1.18.1 of the PowerSync Service.
@@ -625,7 +625,7 @@ Recommended Capture Job settings:
 
 <Note>
   For Azure SQL Database, the CDC capture and cleanup jobs are managed automatically. Manual configuration is greatly limited.
-  See [Azure CDC Customization Limitations](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql#cdc-customization). 
+  See [Azure CDC Customization Limitations](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql#cdc-customization).
   The main limitation is that the capture job polling interval cannot be modified and is fixed at 20 seconds. It is, however, still possible to [manually trigger](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql#manual-cdc-control) the capture job on demand.
 </Note>
 
@@ -648,6 +648,116 @@ Increasing this will increase throughput at the cost of increased memory usage. 
   for more details.
   We are planning to expose these settings for SQL Server source database connections in the PowerSync Dashboard for PowerSync Cloud instances.
 </Note>
+
+## <Icon icon="database" iconType="solid" size={32} /> Convex
+
+<Warning>
+  The Convex replicator is currently released as an [experimental feature](/resources/feature-status). APIs and
+  behavior may change, and the developer experience isn't yet on par with our other backend database connectors.
+  We also can't yet guarantee continued support or long-term stability. This release is intended for early testing
+  and to invite feedback. Your feedback will directly influence whether, and how, this integration evolves.
+</Warning>
+
+PowerSync reads Convex data using the Convex Streaming Export API. Initial replication pins a single Convex snapshot cursor and snapshots each selected table at that cursor. Streaming replication then reads the global `document_deltas` stream and filters rows according to your Sync Streams.
+
+Convex does not support user-defined database schemas or namespaces in the same way as SQL databases. You do not need to qualify Convex table names in Sync Streams. If you do choose to qualify them, use the default `convex` schema.
+
+### Connection Requirements
+
+PowerSync can replicate from Convex Cloud or self-hosted Convex deployments. It requires:
+
+- A Convex deployment URL.
+- A Convex deploy key. In the Convex Dashboard, go to **Settings** → **General** and generate a deploy key for the deployment PowerSync should replicate. Create the key with **Custom permissions** and include `deployment:data:view`; the **Deploy only** option does not work for PowerSync replication.
+- The `powersync_checkpoints` table and `createCheckpoint` mutation described below.
+
+<Warning>
+  Use a deploy key for the correct environment, grant only the permissions PowerSync needs, store it as a secret, and
+  rotate it if it is exposed.
+</Warning>
+
+### Checkpoint Table
+
+PowerSync uses a small Convex table to generate write checkpoint markers. Convex table names cannot start with `_`, so the table is named `powersync_checkpoints`.
+
+Add the table to your Convex schema:
+
+```typescript convex/schema.ts
+import { defineSchema, defineTable } from 'convex/server';
+import { v } from 'convex/values';
+
+export default defineSchema({
+  // ... your other tables
+
+  powersync_checkpoints: defineTable({
+    last_updated: v.float64()
+  })
+});
+```
+
+### Checkpoint Mutation
+
+Deploy a Convex mutation named `powersync_checkpoints:createCheckpoint`. PowerSync calls this mutation after recording a write checkpoint so the Convex delta stream advances even when the app is otherwise idle.
+
+```typescript convex/powersync_checkpoints.ts
+import { mutation } from './_generated/server';
+
+export const createCheckpoint = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db.query('powersync_checkpoints').first();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, { last_updated: Date.now() });
+    } else {
+      await ctx.db.insert('powersync_checkpoints', { last_updated: Date.now() });
+    }
+  }
+});
+```
+
+PowerSync excludes `powersync_checkpoints` from replicated source tables. The table exists only to advance the replication cursor for write checkpoint acknowledgements.
+
+### Latency
+
+PowerSync polls the Convex `document_deltas` endpoint for changes. This means there is an inherent latency between a write being committed in Convex and that change being replicated into PowerSync.
+
+The polling interval defaults to once every 1000ms. When self-hosting PowerSync, you can configure this with the `polling_interval_ms` connection parameter.
+
+Convex API requests time out after 60000ms by default. When self-hosting PowerSync, you can configure this with the optional `request_timeout_ms` connection parameter:
+
+```yaml service.yaml
+replication:
+  connections:
+    - type: convex
+      deployment_url: https://<your-deployment>.convex.cloud
+      deploy_key: <your-deploy-key>
+      polling_interval_ms: 1000
+      request_timeout_ms: 60000
+```
+
+Lowering `polling_interval_ms` can reduce replication latency, but it increases the number of requests made to Convex and the work performed by the PowerSync Service. For more on monitoring and reducing replication lag, see [Replication Lag](/maintenance-ops/replication-lag).
+
+### Client ID Mapping
+
+Convex generates its own document IDs and exposes them as `_id`. PowerSync clients need a stable local ID before a write is uploaded, so plan your Convex schema around a client-generated UUID rather than the Convex `_id`.
+
+<Warning>
+  Clients cannot create Convex IDs before inserting documents into Convex. Use a client-generated UUID column as the
+  synced `id` and keep `_id` as the Convex server-generated document ID. This is similar to the pattern described in
+  [Sequential ID Mapping](/client-sdks/advanced/sequential-id-mapping).
+</Warning>
+
+The client creates a UUID in its local `id` column before the write is uploaded. Your Convex mutation should store that value in a separate `uuid` field on the Convex document. PowerSync then syncs `uuid AS id` back to the client, so the client keeps the same stable local ID while Convex keeps its own server-generated `_id`.
+
+For a complete [Sync Streams](/sync/streams/overview) configuration that applies this mapping, see [Convex with ID Mapping](/sync/streams/examples#convex-with-id-mapping). For how Convex data types map to SQLite columns, see [Convex Type Mapping](/sync/types#convex-type-mapping).
+
+### Client Writes
+
+Apply queued client-side writes to Convex by calling Convex mutations from your backend connector. See [Writing Client Changes](/handling-writes/writing-client-changes#convex) for the upload path and authentication details.
+
+### Demo App
+
+For a working JavaScript example, see the [PowerSync Convex To-Do List Demo](https://github.com/powersync-community/powersync-convex-todolist-demo).
 
 ## Next Step
 

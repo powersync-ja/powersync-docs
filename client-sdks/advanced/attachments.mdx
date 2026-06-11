@@ -61,7 +61,7 @@ Most demo applications use Supabase Storage as the storage provider, but the pat
 |-------|-------------|
 | `QUEUED_UPLOAD` | File saved locally, waiting to upload to remote storage |
 | `QUEUED_DOWNLOAD` | Data model synced from another device, file needs to be downloaded |
-| `SYNCED` | File exists both locally and in remote storage, fully synchronized |
+| `SYNCED` | File exists both locally and in remote storage, fully synced |
 | `QUEUED_DELETE` | Marked for deletion from both local and remote storage |
 | `ARCHIVED` | No longer referenced in your data model, candidate for cleanup |
 
@@ -141,7 +141,7 @@ The queue needs to know which attachments exist in your data model. The `watchAt
 - **Missing attachments** - Upload them  
 - **Removed attachments** - Archive them
 
-The `watchAttachments` queries are reactive and execute whenever the watched tables change, keeping the attachment queue synchronized with your data model.
+The `watchAttachments` queries are reactive and execute whenever the watched tables change, keeping the attachment queue in sync with your data model.
 
 There are a few scenarios you might encounter:
 
@@ -663,7 +663,11 @@ const attachmentQueue = new AttachmentQueue({
         onResult: async (result) => {
           const attachments = result.rows?._array.map(row => ({
             id: row.photo_id,
-            fileExtension: 'jpg'
+            // Names the file in local storage (<id>.jpg). Either fileExtension or filename is required
+            fileExtension: 'jpg',
+            // MIME type for remote transfer (the Content-Type). Optional, never inferred
+            // from fileExtension, and preserved on the downloaded record (JS SDK only)
+            mediaType: 'image/jpeg'
           })) ?? [];
           await onUpdate(attachments);
         }
@@ -1087,7 +1091,8 @@ const photoQueue = new AttachmentQueue({
         onResult: async (result) => {
           const attachments = result.rows?._array.map(row => ({
             id: row.photo_id,
-            fileExtension: 'jpg'
+            fileExtension: 'jpg',
+            mediaType: 'image/jpeg'  // Optional: preserved on the downloaded record
           })) ?? [];
           await onUpdate(attachments);
         }
@@ -1108,7 +1113,8 @@ const documentQueue = new AttachmentQueue({
         onResult: async (result) => {
           const attachments = result.rows?._array.map(row => ({
             id: row.document_id,
-            fileExtension: 'pdf'
+            fileExtension: 'pdf',
+            mediaType: 'application/pdf'  // Optional: preserved on the downloaded record
           })) ?? [];
           await onUpdate(attachments);
         }
@@ -2354,13 +2360,13 @@ public sealed class IPFSStorageAdapter(HttpClient http) : IRemoteStorageAdapter
 `verifyAttachments()` is always called internally during `startSync()`.
 
 This method does the following:
-1- Local files exist at expected paths
-2- Repairs broken `localUri` references
-3- Archives attachments with missing files
-4- Requeues downloads for synced files with missing local copies
+1. Verifies local files exist at expected paths
+2. Repairs broken `localUri` references
+3. Archives attachments with missing files
+4. Requeues downloads for synced files with missing local copies
 
 <CodeGroup>
-```typescript Javascript/Typescript
+```typescript JavaScript/TypeScript
 await attachmentQueue.verifyAttachments();
 ```
 

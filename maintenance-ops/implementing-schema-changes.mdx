@@ -1,6 +1,6 @@
 ---
 title: "Implementing Schema Changes"
-description: "How PowerSync handles schema changes across Postgres, MongoDB, MySQL, and SQL Server during replication."
+description: "How PowerSync handles schema changes across Postgres, MongoDB, MySQL, SQL Server, and Convex during replication."
 ---
 
 ## Introduction
@@ -103,7 +103,7 @@ When the replica identity changes, the entire table is re-replicated again. This
 
 Sync Streams/Sync Rules affected by schema changes will fail "soft" — an alert would be generated, but the system will continue processing changes.
 
-#### Column changes
+#### Column Changes
 
 Column changes such as adding, dropping, renaming columns, or changing column types, are not automatically detected by PowerSync (unless it affects the replica identity as described above).
 
@@ -115,7 +115,7 @@ Removing a column will not have the values automatically removed for existing ro
 
 Changing a column type, and/or changing the value of a column using an `ALTER TABLE` statement, will not be automatically replicated to PowerSync. In some cases, the change will have no effect on PowerSync (for example changing between `VARCHAR` and `TEXT` types). When the values are expected to change, make an update to every existing row to propagate the changes.
 
-#### Publication changes
+#### Publication Changes
 
 A table is not replicated unless it is part of the [powersync publication](/configuration/source-db/setup).
 
@@ -148,6 +148,31 @@ Renaming a synced collection to a name that _is not included_ in Sync Streams (o
 Renaming an unsynced collection to a name that is included in your Sync/Streams/Sync Rules triggers an initial snapshot replication. The time required for this process depends on the collection size.
 
 Circular renames (e.g., renaming `todos` → `todos_old` → `todos`) are not directly supported. To reprocess the database after such changes, a Sync Streams/Sync Rules update must be deployed.
+
+## <Icon icon="database" iconType="solid" size={32} /> Convex Specifics
+
+<Warning>
+  The Convex replicator is currently released as an [experimental feature](/resources/feature-status). APIs and
+  behavior may change, and we can't yet guarantee continued support or long-term stability.
+</Warning>
+
+For Convex, most schema changes are document-shape changes rather than DDL events. PowerSync reads the JSON documents returned by Convex snapshots and document deltas, not Convex schema metadata, so added fields and type changes are replicated through normal Convex writes.
+
+Convex tables use `_id` as the replication identity for PowerSync. There is no source-specific primary key or replica identity definition to track.
+
+Convex validates schema changes against existing data. If you change a field type, use [Convex's migration pattern](https://stack.convex.dev/intro-to-migrations): add or allow the new shape, update existing documents with mutations, then tighten the schema once the data has moved. Convex often recommends writing migrated values to a new field for this flow. Those mutation updates should appear in `document_deltas` and replicate like other writes.
+
+You do not need to redeploy your Sync Config or re-snapshot merely because a field was added to Convex. New fields selected by your existing Sync Streams are replicated as they appear in Convex documents.
+
+If you remove a field, first make it optional in your Convex schema, then run a migration that removes the field from existing documents, and only then remove it from the schema. PowerSync stops replicating new values for that field after the data stops containing it. Previously synced values can remain on clients until the affected data is reprocessed.
+
+A re-snapshot is still required for cases that change the selected data set or invalidate the source cursor. This includes initial replication, a Sync Streams deployment that selects new existing data, restarting an incomplete initial snapshot, or recovering from a lost or expired Convex cursor.
+
+### Dropping Tables
+
+Dropping Convex tables has a known limitation. Deleting a table from the Convex dashboard does not emit per-document delete rows in `document_deltas`, so PowerSync does not automatically remove previously synced rows for that table.
+
+To decommission a table while preserving replication correctness, clear the table before deleting it. In the Convex dashboard, use **Clear Table** first, then delete the table after those document removals have replicated. Deleting documents through Convex mutations is also valid when that path emits document delete deltas. Otherwise, treat dashboard table deletion or schema-only table removal as a Sync Config deployment change and clear or re-replicate affected PowerSync state.
 
 ## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL Specifics
 
@@ -209,7 +234,7 @@ When the replication identity changes, the entire table is replicated again. Thi
 
 Sync Streams/Sync Rules affected by schema changes will fail "soft" — an alert would be generated, but the system will continue processing changes.
 
-#### Column changes
+#### Column Changes
 
 Column changes such as adding, dropping, renaming columns, or changing column types, are detected by PowerSync but will generally not result in re-replication. (Unless the replica identity was affected as described above).
 
@@ -264,7 +289,7 @@ EXEC sys.sp_cdc_enable_table
         @capture_instance = N'<NEW_CAPTURE_INSTANCE_NAME>'; -- If a capture instance for the table already exists, you have to specify a different name for the new capture instance.
 ```
 
-### Supported SQL Server schema changes:
+### Supported SQL Server Schema Changes
 
 #### CREATE table
 
@@ -285,7 +310,7 @@ PowerSync can detect a table drop by checking for the table existence when the c
 Renaming a table is automatically detected and results in the removal of the bucket data for the old table, followed by a snapshot of the newly renamed table.
 Once the snapshot is completed, replication will resume.
 
-#### Column changes
+#### Column Changes
 
 Some column changes are blocked on the database level if CDC is enabled on a table. These include:
 

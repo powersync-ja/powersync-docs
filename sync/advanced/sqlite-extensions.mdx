@@ -1,0 +1,181 @@
+---
+title: "Using SQLite Extensions"
+description: "Extend capabilities in client-side databases with custom SQLite extensions"
+---
+
+SQLite can be extended with [Run-Time Loadable Extensions](https://sqlite.org/loadext.html) contributing
+new functions, virtual tables, full-text search tokenizers and more. Since PowerSync SDKs are built ontop
+of SQLite connections, most SQLite extensions also work with PowerSync.
+
+Including custom SQLite extensions in your app is possible, but requires SDK and platform-specific setup steps.
+This document provides describes how custom extensions can be used on the different PowerSync SDKs.
+
+## Dart and Flutter
+
+### Native
+
+On native Dart and Flutter targets, custom native code can be called via `dart:ffi` and linked with
+[build hooks](https://dart.dev/tools/hooks).
+
+The `sqlite3` package used by PowerSync [contains a complete example](https://github.com/simolus3/sqlite3.dart/tree/main/sqlite3/example/custom_extension)
+adopting build hooks to link SQLite extensions.
+
+Using that example, you would call the `sqlite3.loadSqliteVectorExtension()` extension method before using PowerSync to
+ensure the extension is loaded.
+
+### Web
+
+Because dynamic linking is not generally available with WebAssembly, loading extensions on the web requires a custom
+`sqlite3.wasm` build linking both PowerSync and any additional extensions you may want to use.
+
+<Warning>This is an advanced topic, and not directly supported by PowerSync.</Warning>
+
+The `sqlite3` package provides [instructions](https://github.com/simolus3/sqlite3.dart/tree/main/sqlite3_wasm_build)
+and cmake build scripts to compile `sqlite3.wasm`.
+
+The PowerSync Dart SDK [adopts that](https://github.com/powersync-ja/powersync.dart/tree/main/packages/sqlite3_wasm_build)
+with [a patch](https://github.com/powersync-ja/powersync.dart/blob/main/packages/sqlite3_wasm_build/patches/0001-Link-PowerSync-core-extension.patch)
+to automatically load the PowerSync SQLite core extension when SQLite is loaded (in `sqlite3_os_init`).
+
+To link additional extensions, you could add similar build script additions to call their entrypoint.
+
+## JavaScript
+
+### Web
+
+Similar to Dart on the web, loading extensions with `@powersync/web` is only possible with a custom `wa-sqlite` WebAssembly
+build.
+PowerSync [forks wa-sqlite](github.com/powersync-ja/wa-sqlite) for this reason, loading custom extension requires patching
+build definitions in that repository and adding an override from your npm package manager to patch `@journeyapps/wa-sqlite`.
+
+### React Native
+
+The recommended OP-SQLite library has builtin support for custom extensions, and [excellent documentation](https://op-engineering.github.io/op-sqlite/docs/api#loading-extensions)
+on how to build and bundle them with your app.
+
+### Node.js
+
+Loading extensions is possible with `better-sqlite3` and the [`loadExtension`](https://github.com/WiseLibs/better-sqlite3/blob/HEAD/docs/api.md#loadextensionpath-entrypoint---this)
+method on databases.
+
+Because the database is created on a worker, a custom worker is necessary to customize it:
+
+```TypeScript
+// custom.worker.ts
+import Database from 'better-sqlite3';
+
+import { startPowerSyncWorker } from '@powersync/node/worker.js';
+
+async function resolveBetterSqlite3() {
+  class DatabaseWithUsedExtensions extends Database {
+    constructor(...args: any[]) {
+      super(...args);
+
+      this.loadExtension('libyourExtension.dylib');
+    }
+  }
+
+  return DatabaseWithUsedExtensions;
+}
+
+startPowerSyncWorker({ loadBetterSqlite3: resolveBetterSqlite3 });
+```
+
+This worker can then be used like this to load extension for a database:
+
+```TypeScript
+const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'test.db',
+    openWorker: (_, options) => {
+      return new Worker(new URL('./custom.worker.js', import.meta.url), options);
+    },
+  },
+});
+```
+
+For another example using custom workers, see [this section](https://github.com/powersync-ja/powersync-js/tree/main/packages/node#encryption).
+
+### Capacitor
+
+Loading custom SQLite extensions is not directly supported. On Android, you can use the [`load_extension`](https://sqlite.org/lang_corefunc.html#load_extension)
+SQL function to load extensions.
+
+On iOS, you'd have to follow the approach for [Swift](#swift) and expose your Swift helper method loading the extension
+in a way that can be called from JavaScript.
+
+## Kotlin
+
+On all platforms supported by the Kotlin SDK, a custom [`PersistentConnectionFactory`](https://powersync-ja.github.io/powersync-kotlin/common/com.powersync/-persistent-connection-factory/index.html)
+can be used to load custom SQLite extensions for PowerSync.
+
+On Android and JVM platforms, the setup for that can look like this:
+
+```
+internal class MyOpenFactory: DriverBasedInMemoryFactory<BundledSQLiteDriver>(createBundledDriver()), PersistentConnectionFactory {
+    override fun openConnection(
+        path: String,
+        openFlags: Int,
+    ): SQLiteConnection = driver.open(path, openFlags)
+
+    override fun resolveDefaultDatabasePath(dbFilename: String): String {
+        TODO("On Android, use context.getDatabasePath(dbFilename).path")
+    }
+
+    private companion object {
+        fun createBundledDriver(): BundledSQLiteDriver {
+            return BundledSQLiteDriver().also {
+                it.addPowerSyncExtension()
+
+                // TODO: Bundle and resolve extension file
+                it.addExtension("my_custom_extension_file")
+            }
+        }
+    }
+}
+```
+
+Bundling and resolving extensions requires platform-specific setup. For the JVM, the PowerSync SDK bundles the extension
+as a pre-compiled library for all target platforms as a resource. This allows using [ClassLoader](https://github.com/powersync-ja/powersync-kotlin/blob/cd8c6aede9f59f5c19fa2473798c1b2ccb035c3f/common/src/jvmMain/kotlin/com/powersync/ExtractLib.kt#L7-L46)
+APIs to extract the library to a temporary file before opening it.
+
+On Android, use [Android NDK](https://developer.android.com/ndk) to build extension sources as a library to link with your
+app. The name of the library can be passed to `addExtension` directly, as `System.loadLibrary` will resolve to it.
+
+The safest way to load extensions on Kotlin/Native targets is to use [cinterops](https://kotlinlang.org/docs/native-c-interop.html)
+building the extension as a library and making its entrypoint available from Kotlin.
+This entrypoint can then be called via [`sqlite3_auto_extension`](https://github.com/powersync-ja/powersync-kotlin/blob/cd8c6aede9f59f5c19fa2473798c1b2ccb035c3f/common/src/nativeMain/kotlin/com/powersync/ConnectionFactory.native.kt#L8-L14)
+before opening PowerSync databases.
+
+## DotNet
+
+The PowerSync DotNet SDK has builtin support for loading extensions through the `MDSQLiteOptions.Extensions` field.
+It is your responsibility to build and bundle extensions you want to use with your app so that they can be loaded.
+
+## Rust and Tauri
+
+For the Rust and Tauri SDKs, your app is expected to link SQLite directly.
+This means that regular SQLite APIs to load extensions can be used.
+
+For `sqlite-vec`, depending on [this crate](https://crates.io/crates/sqlite-vec) and calling
+`sqlite3_vec_init()` before opening a PowerSync database ensures the extension is loaded.
+
+Most other extensions have a similar entrypoint to invoke. For full control, you can also invoke
+[`register_auto_extension`](https://docs.rs/rusqlite/latest/rusqlite/auto_extension/fn.register_auto_extension.html)
+with the `_init` function of the extension (useful for statically linked extensions) or use 
+[`load_extension`](https://docs.rs/rusqlite/0.39.0/rusqlite/struct.Connection.html#method.load_extension) on a
+`Connection` before passing it to a `ConnectionPool` for the PowerSync Rust SDK.
+
+## Swift
+
+The PowerSync Swift SDK depends on [this package](https://github.com/powersync-ja/CSQLite) to link SQLite with your app.
+To add a custom extension:
+
+1. Write Swift Package Manager definitions to build and link that extension with your app too.
+2. Depend on the [PowerSync CSQLite](https://github.com/powersync-ja/CSQLite) target.
+3. Similar to the setup for PowerSync, add a [module shim](https://github.com/powersync-ja/powersync-swift/tree/main/Sources/PowerSyncCoreShim)
+   target allowing you to use the extension from Swift.
+4. Import that target and CSQLite to [load the extension statically](https://github.com/powersync-ja/powersync-swift/blob/ad9cf3d8c65dcbf059c4e5430dd35f3706ad5303/Sources/PowerSync/Implementation/sqlite3/registerPowerSyncCoreExtension.swift#L1-L17)
+   before opening a PowerSync database.
+

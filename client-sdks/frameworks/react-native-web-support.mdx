@@ -30,7 +30,7 @@ See installation instructions [here](https://www.npmjs.com/package/@powersync/we
 
 For React Native for Web, workers need to be configured when instantiating `PowerSyncDatabase`. An example of this is available [here](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-web-supabase-todolist/library/powersync/system.ts).
 
-To do this, copy the contents of `node_modules/@powersync/web/dist` to the root of your project (typically in the `public `directory). To make it easier to manage these files in the `public` directory, it is recommended to place the contents in a nested directory like `@powersync`.
+To do this, copy the contents of `node_modules/@powersync/web/dist/worker` to the root of your project (typically in the `public `directory). To make it easier to manage these files in the `public` directory, it is recommended to place the contents in a nested directory like `@powersync`.
 
 The [`@powersync/web`](https://github.com/powersync-ja/powersync-js/tree/main/packages/web) package includes a CLI utility which can copy the required assets to the `public` directory (configurable with the `--output` option).
 
@@ -49,34 +49,28 @@ const factory = new WASQLiteOpenFactory({
   dbFilename: 'sqlite.db',
 
   // Option 1: Specify a path to the database worker
-  worker: '/@powersync/worker/WASQLiteDB.umd.js'
+  worker: '/@powersync/worker.js'
 
   // Option 2: Or provide a factory function to create the worker.
   // The worker name should be unique for the database filename to avoid conflicts if multiple clients with different databases are present.
   // worker: (options) => {
-  //   if (options?.flags?.enableMultiTabs) {
-  //     return new SharedWorker(`/@powersync/worker/WASQLiteDB.umd.js`, {
-  //       name: `shared-DB-worker-${options?.dbFilename}`
-  //     });
-  //   } else {
-  //     return new Worker(`/@powersync/worker/WASQLiteDB.umd.js`, {
-  //       name: `DB-worker-${options?.dbFilename}`
-  //     });
-  //   }
+  //   return new SharedWorker(`/@powersync/worker.js`, {
+  //     name: `shared-DB-worker-${options?.dbFilename}`
+  //   });
   // }
 });
 
 this.powersync = new PowerSyncDatabaseWeb({
   schema: AppSchema,
-  database: factory,
+  factory: factory,
   sync: {
     // Option 1: You can specify a path to the sync worker
-    worker: '/@powersync/worker/SharedSyncImplementation.umd.js'
+    worker: '/@powersync/worker.js'
 
     //Option 2: Or provide a factory function to create the worker.
     // The worker name should be unique for the database filename to avoid conflicts if multiple clients with different databases are present.
     // worker: (options) => {
-    //   return new SharedWorker(`/@powersync/worker/SharedSyncImplementation.umd.js`, {
+    //   return new SharedWorker(`/@powersync/worker.js`, {
     //     name: `shared-sync-${options?.dbFilename}`
     //   });
     // }
@@ -95,6 +89,10 @@ To target both mobile and web platforms, you need to adjust the Metro configurat
 Refer to the example [here](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-web-supabase-todolist/metro.config.js). Setting `config.resolver.resolveRequest` allows Metro to behave differently based on the platform.
 
 ```js
+// Expo removes the react-native export condition for React Native web: https://github.com/expo/expo/blob/874ddfc86c0bdaeeb43f56b4386d271ba869ad47/packages/%40expo/metro-config/src/ExpoMetroConfig.ts#L309
+// The PowerSync web SKD needs to be resolved with an RN-specific export condition to work with Metro.
+config.resolver.unstable_conditionsByPlatform.web.push('react-native-web');
+
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (platform === 'web') {
     // Depending on `@powersync/web` for functionality, ignore mobile specific dependencies.
@@ -103,7 +101,7 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
         type: 'empty'
       };
     }
-    const mapping = { 'react-native': 'react-native-web', '@powersync/web': '@powersync/web/dist/index.umd.js' };
+    const mapping = { 'react-native': 'react-native-web' };
     if (mapping[moduleName]) {
       console.log('remapping', moduleName);
       return context.resolveRequest(context, mapping[moduleName], platform);
@@ -143,15 +141,14 @@ if (PowerSyncDatabaseNative) {
     }
   });
 } else {
-  const factory = new WASQLiteOpenFactory({
-    dbFilename: 'sqlite.db',
-    worker: '/@powersync/worker/WASQLiteDB.umd.js'
-  });
   this.powersync = new PowerSyncDatabaseWeb({
     schema: AppSchema,
-    database: factory,
+    database: {
+      dbFilename: 'sqlite.db',
+      worker: '/@powersync/worker.js'
+    },
     sync: {
-      worker: '/@powersync/worker/SharedSyncImplementation.umd.js'
+      worker: '/@powersync/worker.js'
     }
   });
 }
@@ -220,16 +217,3 @@ import { prompt } from 'util/prompt';
 />;
 ```
 
-### 5. Configure UMD Target
-
-React Native Web requires the UMD target of `@powersync/web` (available at `@powersync/web/umd`). To fully support this target version, configure the following in your project:
-
-1. Add `config.resolver.unstable_enablePackageExports = true;` to your `metro.config.js` file.
-
-2. TypeScript projects: In the `tsconfig.json` file specify the `moduleResolution` to be `Bundler`.
-
-```json
- "compilerOptions": {
-    "moduleResolution": "Bundler"
-  }
-```

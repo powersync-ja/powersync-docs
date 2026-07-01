@@ -169,7 +169,7 @@ export const db = new PowerSyncDatabase({
   In SDK versions lower than 1.2.0, you will need to use the deprecated [WASQLitePowerSyncDatabaseOpenFactory](https://powersync-ja.github.io/powersync-js/web-sdk/classes/WASQLitePowerSyncDatabaseOpenFactory) syntax to instantiate the database.
 </Note>
 
-Once you've instantiated your PowerSync database, call the [connect()](https://powersync-ja.github.io/powersync-js/web-sdk/classes/AbstractPowerSyncDatabase#connect) method to sync data with your backend.
+Once you've instantiated your PowerSync database, call the [connect()](https://powersync-ja.github.io/powersync-js/web-sdk/classes/PowerSyncDatabase#connect) method to sync data with your backend.
 
 <LocalOnly />
 
@@ -295,20 +295,29 @@ const deleteList = async (id) => {
 ## Configure Logging
 
 ```js
-import { createBaseLogger, LogLevel } from '@powersync/web';
+import { createConsoleLogger, LogLevels } from '@powersync/web';
 
-const logger = createBaseLogger();
-
-// Configure the logger to use the default console output
-logger.useDefaults();
-
-// Set the minimum log level to DEBUG to see all log messages
-// Available levels: DEBUG, INFO, WARN, ERROR, TRACE, OFF
-logger.setLevel(LogLevel.DEBUG);
+// Create a logger with trace minimum level to see all log messages
+// Available levels: trace, debug, info, warn, error
+const logger = createConsoleLogger({ minLevel: LogLevels.trace });
 ```
 
 <Tip>
   Enable verbose output in the developer tools for detailed logs.
+  Note that the PowerSync SDK relies on web workers, which inherit the logger from the main database while using a separate log level.
+  To pass a consistent log level to workers, also pass it to the sync and database workers:
+
+  ```TypeScript
+  const db = new PowerSyncDatabase(
+    database: {
+      dbFileName: '...',
+      databaseWorkerLogLevel: LogLevels.trace,
+    },
+    sync: {
+      logLevel: LogLevels.trace,
+    }
+  );
+  ```
 </Tip>
 
 Additionally, the [WASQLiteDBAdapter](https://powersync-ja.github.io/powersync-js/web-sdk/classes/WASQLiteDBAdapter) opens SQLite connections inside a shared web worker. This worker can be inspected in Chrome by accessing:
@@ -361,23 +370,21 @@ pnpm upgrade @powersync/web @journeyapps/wa-sqlite
 
 This SDK supports two methods for streaming sync commands:
 
-1. **WebSocket (Default)**
-   - The implementation leverages RSocket for handling reactive socket streams.
-   - Back-pressure is effectively managed through client-controlled command requests.
-   - Sync commands are transmitted efficiently as BSON (binary) documents.
-   - This method is **recommended** since it will support the future [BLOB column support](https://roadmap.powersync.com/c/88-support-for-blob-column-types) feature.
-2. **HTTP Streaming (Legacy)**
-   - This is the original implementation method.
-   - This method will not support the future BLOB column feature.
+1. **HTTP Streaming (Default)**
+   - This is the default and recommended connection method.
+2. **WebSocket**
+   - This implementation leverages RSocket based on WebSocket connections.
+   - Window sizes for flow control and back-pressure are customizable, set `fetchStrategy` to `Buffered` (default) or `Sequential`.
+   - On the web, there is no compelling reason to use WebSockets over HTTP response streams.
 
-By default, the `PowerSyncDatabase.connect()` method uses WebSocket. You can optionally specify the `connectionMethod` to override this:
+By default, the `PowerSyncDatabase.connect()` method uses HTTP streaming. You can optionally specify the `connectionMethod` to override this:
 
 ```js
-// WebSocket (default)
+// HTTP Streaming (default)
 powerSync.connect(connector);
 
-// HTTP Streaming
-powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP });
+// WebSocket
+powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.WEB_SOCKET });
 ```
 
 ### SQLite Virtual File Systems
@@ -403,15 +410,9 @@ import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/
 
 export const db = new PowerSyncDatabase({
   schema: AppSchema,
-  database: new WASQLiteOpenFactory({
+  database: {
     dbFilename: 'exampleVFS.db',
-    vfs: WASQLiteVFS.OPFSCoopSyncVFS,
-    flags: {
-      enableMultiTabs: typeof SharedWorker !== 'undefined'
-    }
-  }),
-  flags: {
-    enableMultiTabs: typeof SharedWorker !== 'undefined'
+    vfs: WASQLiteVFS.OPFSCoopSyncVFS
   }
 });
 ```
@@ -427,10 +428,10 @@ import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/
 
 export const db = new PowerSyncDatabase({
   schema: AppSchema,
-  database: new WASQLiteOpenFactory({
+  database: {
     dbFilename: 'exampleVFS.db',
     vfs: WASQLiteVFS.AccessHandlePoolVFS
-  })
+  }
 });
 ```
 
@@ -449,11 +450,11 @@ import { PowerSyncDatabase, WASQLiteOpenFactory, WASQLiteVFS } from '@powersync/
 
 export const db = new PowerSyncDatabase({
   schema: AppSchema,
-  database: new WASQLiteOpenFactory({
+  database: {
     dbFilename: 'exampleVFS.db',
     vfs: WASQLiteVFS.OPFSWriteAheadVFS,
     additionalReaders: 2
-  })
+  }
 });
 ```
 
@@ -510,15 +511,11 @@ async function listVfsEntries() {
   * For Safari, use the [`OPFSCoopSyncVFS`](/client-sdks/reference/javascript-web#sqlite-virtual-file-systems) virtual file system to ensure stable multi-tab functionality.
 </Warning>
 
-Using PowerSync between multiple tabs is supported on some web browsers. Multiple tab support relies on shared web workers for database and sync streaming operations. When enabled, shared web workers named `shared-DB-worker-[dbFileName]` and `shared-sync-[dbFileName]` will be created.
+Using PowerSync between multiple tabs is supported on some web browsers. Multiple tab support relies on shared web workers for database and sync streaming operations. When enabled, a shared web worker named `shared-powersync-[dbFileName]` will be created.
+Depending on the setup, the shared worker is responsible for:
 
-#### `shared-DB-worker-[dbFileName]`
-
-The shared database worker will ensure writes to the database will instantly be available between tabs.
-
-#### `shared-sync-[dbFileName]`
-
-The shared sync worker connects directly to the PowerSync backend instance and applies changes to the database. Note that the shared sync worker will call the `fetchCredentials` and `uploadData` method of the latest opened available tab. Closing a tab will shift the latest tab to the previously opened one.
+1. __Sync__: The shared sync worker connects directly to the PowerSync backend instance and applies changes to the database. Note that the shared sync worker will call the `fetchCredentials` and `uploadData` method of the latest opened available tab. Closing a tab will shift the latest tab to the previously opened one.
+2. __Database operations__: When using an IndexedDB-based VFS, the SDK can open database connections in a shared worker to ensure writes to the database will instantly be available between tabs.
 
 Currently, using the SDK in multiple tabs without enabling the [enableMultiTabs](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/web/src/db/adapters/web-sql-flags.ts#L23) flag will spawn a standard web worker per tab for DB operations. These workers are safe to operate on the DB concurrently, however changes from one tab may not update watches on other tabs. Only one tab can sync from the PowerSync instance at a time. The sync status will not be shared between tabs, only the oldest tab will connect and display the latest sync status.
 
@@ -530,13 +527,7 @@ export const db = new PowerSyncDatabase({
   database: {
     dbFilename: 'my_app_db.sqlite'
   },
-  flags: {
-    /**
-     * Multiple tab support is enabled by default if available.
-     * This can be disabled by setting this flag to false.
-     */
-    enableMultiTabs: false
-  }
+  enableMultiTabs: false
 });
 ```
 
@@ -544,59 +535,50 @@ export const db = new PowerSyncDatabase({
 
 This guide provides an overview of the customizable flags available for the `PowerSyncDatabase` in the JavaScript Web SDK. These flags allow you to enable or disable specific features to suit your application's requirements.
 
-#### Configuring Flags
+#### Configuring Options
 
-You can configure flags during the initialization of the `PowerSyncDatabase`. Flags can be set using the `flags` property, which allows you to enable or disable specific functionalities.
+You can configure these options during the initialization of `PowerSyncDatabase` as top-level constructor properties.
 
 ```javascript
-import { PowerSyncDatabase, resolveWebPowerSyncFlags, WebPowerSyncFlags } from '@powersync/web';
+import { PowerSyncDatabase } from '@powersync/web';
 import { AppSchema } from '@/library/powersync/AppSchema';
 
-// Define custom flags
-const customFlags: WebPowerSyncFlags = resolveWebPowerSyncFlags({
-  enableMultiTabs: true,
-  broadcastLogs: true,
-  disableSSRWarning: false,
-  ssrMode: false,
-  useWebWorker: true,
-});
-
-// Create the PowerSync database instance
 export const db = new PowerSyncDatabase({
   schema: AppSchema,
   database: {
     dbFilename: 'example.db',
+    enableMultiTabs: true,
   },
-  flags: customFlags,
+  broadcastLogs: true,
 });
 ```
 
 #### Available Flags
-<ParamField path="enableMultiTabs">
+<ParamField path="database.enableMultiTabs">
     default: `true`
 
     Enables support for multiple tabs using shared web workers. When enabled, multiple tabs can interact with the same database and sync data seamlessly.
 </ParamField>
 
 <ParamField path="broadcastLogs">
-    default: `false`
+    default: `true`
 
     Enables the broadcasting of logs for debugging purposes. This flag helps monitor shared worker logs in a multi-tab environment.
 </ParamField>
 
-<ParamField path="disableSSRWarning">
+<ParamField path="database.disableSSRWarning">
     default: `false`
 
     Disables warnings when running in SSR (Server-Side Rendering) mode.
 </ParamField>
 
-<ParamField path="ssrMode">
+<ParamField path="database.ssrMode">
     default: `false`
 
     Enables SSR mode. In this mode, only empty query results will be returned, and syncing with the backend is disabled.
 </ParamField>
 
-<ParamField path="useWebWorker">
+<ParamField path="database.useWebWorker">
     default: `true`
 
     Enables the use of web workers for database operations. Disabling this flag also disables multi-tab support.
@@ -614,8 +596,6 @@ export const db = new PowerSyncDatabase({
   schema: AppSchema,
   database: {
     dbFilename: 'my_app_db.sqlite',
-  },
-  flags: {
     enableMultiTabs: false,
   },
 });
@@ -623,24 +603,7 @@ export const db = new PowerSyncDatabase({
 
 When disabled, each tab will use independent workers, and changes in one tab will not automatically propagate to others.
 
-**Example 2: SSR Mode**
-
-To enable SSR mode and suppress warnings:
-
-```javascript
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: 'my_app_db.sqlite',
-  },
-  flags: {
-    ssrMode: true,
-    disableSSRWarning: true,
-  },
-});
-```
-
-**Example 3: Verbose Debugging with Broadcast Logs**
+**Example 2: Verbose Debugging with Broadcast Logs**
 
 To enable detailed logging for debugging:
 
@@ -649,10 +612,12 @@ export const db = new PowerSyncDatabase({
   schema: AppSchema,
   database: {
     dbFilename: 'my_app_db.sqlite',
+    databaseWorkerLogLevel: LogLevels.debug,
   },
-  flags: {
-    broadcastLogs: true,
+  sync: {
+    logLevel: LogLevels.debug,
   },
+  logger: createConsoleLogger({ minSeverity: LogLevels.debug }),
 });
 ```
 
@@ -661,7 +626,4 @@ Logs will include detailed insights into database and sync operations.
 #### Recommendations
 
 1. **Set `enableMultiTabs`** to `true` if your application requires seamless data sharing across multiple tabs.
-2. **Set `useWebWorker`** to `true` for efficient database operations using web workers.
-3. **Set `broadcastLogs`** to `true` during development to troubleshoot and monitor database and sync operations.
-4. **Set `disableSSRWarning`** to `true` when running in SSR mode to avoid unnecessary console warnings.
-5. **Test combinations** of flags to validate their behavior in your application's specific use case.
+2. **Set `broadcastLogs`** to `true` during development to troubleshoot and monitor database and sync operations.

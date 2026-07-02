@@ -1,0 +1,63 @@
+name: Docs Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+    paths:
+      - '**.mdx'
+      - 'snippets/**'
+
+concurrency:
+  group: docs-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review Writing Standards
+    runs-on: ubuntu-latest
+    # Skip draft PRs and PRs from forks (secrets are not available to forks)
+    if: >
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Review documentation changes
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are reviewing pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            Read .claude/agents/document-reviewer.md and apply its review checklist to the
+            documentation changes in this PR. Use `gh pr diff ${{ github.event.pull_request.number }}`
+            to see the changes.
+
+            Scope:
+            - Review only content that this PR adds or modifies. Do not flag pre-existing
+              issues in unchanged parts of a file.
+            - CI already runs Vale and the link checkers. Follow the reviewer instructions
+              on which checks to skip; focus on the judgment calls.
+            - Read the full file for any changed .mdx file when you need surrounding context
+              (frontmatter, heading hierarchy, tab order).
+
+            Reporting:
+            - Post each specific issue as an inline comment on the relevant line using
+              mcp__github_inline_comment__create_inline_comment. Include the rule violated
+              and a suggested fix.
+            - Post one summary comment with `gh pr comment` giving the overall assessment
+              (Approve / Approve with minor fixes / Needs revision) and anything that does
+              not map to a single line.
+            - If there are no issues, post only the summary comment saying the changes pass
+              the writing standards review.
+          claude_args: |
+            --model claude-sonnet-5
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"

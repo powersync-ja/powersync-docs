@@ -1,0 +1,188 @@
+---
+title: "Usage Metrics API"
+description: Query usage metrics for your PowerSync Cloud instances programmatically, including storage size, concurrent connections, and replicated and synced data.
+hidden: true
+---
+
+<Warning>
+  This API is in early access and is not officially supported yet. Endpoints, request formats, and response formats may change without notice, and no guarantees or SLAs apply. If you rely on this API, [please let us know](/resources/contact-us).
+</Warning>
+
+The Usage Metrics API exposes the same instance metrics shown in the [Metrics view](/maintenance-ops/monitoring-and-alerting#usage-metrics) of the PowerSync Dashboard. There are two endpoints:
+
+* Granular usage: a time series of values for a single metric, bucketed by minute, hour, or day.
+* Total usage: a single aggregate value for a metric over a time window. This is useful for "sum over period" figures.
+
+Both endpoints operate on one PowerSync instance per request.
+
+## Authentication
+
+Both endpoints require Bearer token authentication:
+
+```
+Authorization: Bearer <token>
+```
+
+To generate a token, go to [user account settings → Access Tokens](https://dashboard.powersync.com/account/access-tokens) in the PowerSync Dashboard.
+
+The token must belong to a user with read access to the instance being queried.
+
+## Common Request Fields
+
+Both endpoints accept a JSON body via POST, with `Content-Type: application/json`. Every request includes these fields:
+
+| Parameter | Type | Description | Required |
+| --------- | ---- | ----------- | -------- |
+| `org_id` | string | PowerSync organization ID | Yes |
+| `app_id` | string | PowerSync project ID | Yes |
+| `instance_id` | string | PowerSync instance ID | Yes |
+
+You can get these IDs from the Dashboard URL while on an instance view.
+
+## Granular Usage
+
+Returns a time series of values for a single metric over the requested window.
+
+```
+POST https://powersync-usage.journeyapps.com/api/v1/usage/granular
+```
+
+### Request Body
+
+In addition to the [common fields](#common-request-fields):
+
+| Parameter | Type | Description | Required |
+| --------- | ---- | ----------- | -------- |
+| `metric` | string (enum) | Metric to query. See [Granular Metrics](#granular-metrics). | Yes |
+| `granularity` | string (enum) | Bucket size: `minute`, `hour`, or `day`. See [Granularity and Limits](#granularity-and-limits). | Yes |
+| `start` | string (ISO 8601) | Start of the window | Yes |
+| `end` | string (ISO 8601) | End of the window | Yes |
+
+### Granular Metrics
+
+| `metric` | Unit | Description | Bucket value |
+| -------- | ---- | ----------- | ------------ |
+| `storage-size` | bytes | Total data stored for the instance | Peak in bucket |
+| `concurrent-connections` | count | Concurrent client connections | Peak in bucket |
+| `operations-replicated` | count | Rows replicated from the source database | Total in bucket |
+| `operations-synced` | count | Operations synced to clients | Total in bucket |
+| `data-replicated` | bytes | Data replicated from the source database | Total in bucket |
+| `data-synced` | bytes | Data synced to clients | Total in bucket |
+| `replication-lag` | seconds | Replication lag | Peak in bucket |
+
+<Note>
+  Query `replication-lag` at `minute` or `hour` granularity. At `day` granularity this metric does not currently return the daily peak, so the values are not meaningful.
+</Note>
+
+### Granularity and Limits
+
+| `granularity` | Behavior |
+| ------------- | -------- |
+| `minute` | Live data only. The window (`end` − `start`) must be 24 hours or less, otherwise the request is rejected. |
+| `hour` | Combines archived and live data to cover the full window. |
+| `day` | Archived data only. Each point is one calendar day, aggregated in the instance region's timezone. |
+
+Buckets are aligned to whole hours and days and are not trimmed to your requested window. If your `start` or `end` falls inside a bucket, the edge buckets can include data from outside the window or omit the partial period. For example, an hourly request for 12:30 to 16:40 against archived data returns buckets ending 13:00 through 16:00: the first bucket covers 12:00 to 13:00, including data from before your requested start, and the period from 16:00 to 16:40 is not included. For predictable coverage, align `start` and `end` to bucket boundaries.
+
+### Example Request
+
+```bash
+curl --location 'https://powersync-usage.journeyapps.com/api/v1/usage/granular' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer <token>' \
+  --data '{
+    "org_id": "674f1a2b3c8d9e0012a45b67",
+    "app_id": "674f1a5c3c8d9e0012a45b89",
+    "instance_id": "6750c3d47e2f1a0013b56c9a",
+    "metric": "data-synced",
+    "granularity": "hour",
+    "start": "2025-12-01T00:00:00.000Z",
+    "end": "2025-12-02T00:00:00.000Z"
+  }'
+```
+
+### Response Body
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `data.values` | array | Time-series data points |
+| `data.values[].t` | string (ISO 8601) | Bucket timestamp. For hourly buckets this is the bucket end, so a value at `01:00` covers the hour from `00:00` to `01:00`. For daily buckets it is the day. |
+| `data.values[].v` | number | Value for the bucket, in the metric's unit |
+
+### Example Response
+
+```json
+{
+  "data": {
+    "values": [
+      { "t": "2025-12-01T01:00:00.000Z", "v": 524288 },
+      { "t": "2025-12-01T02:00:00.000Z", "v": 1048576 },
+      { "t": "2025-12-01T03:00:00.000Z", "v": 786432 }
+    ]
+  }
+}
+```
+
+## Total Usage
+
+Returns a single aggregate value for a metric over the requested window.
+
+```
+POST https://powersync-usage.journeyapps.com/api/v1/usage/total
+```
+
+Totals are computed from archived data, which is updated hourly. Usage from roughly the last hour is not yet included in the result.
+
+### Request Body
+
+In addition to the [common fields](#common-request-fields):
+
+| Parameter | Type | Description | Required |
+| --------- | ---- | ----------- | -------- |
+| `metric` | string (enum) | Metric to query. See [Total Metrics](#total-metrics). | Yes |
+| `start` | string (ISO 8601) | Start of the window | Yes |
+| `end` | string (ISO 8601) | End of the window | Yes |
+
+### Total Metrics
+
+| `metric` | Unit | Description |
+| -------- | ---- | ----------- |
+| `data-processing` | bytes | Data replicated from the source database plus data synced to clients, over the period |
+| `sync-operations` | count | Operations synced to clients over the period |
+| `data-synced` | bytes | Data synced to clients over the period |
+
+### Example Request
+
+```bash
+curl --location 'https://powersync-usage.journeyapps.com/api/v1/usage/total' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer <token>' \
+  --data '{
+    "org_id": "674f1a2b3c8d9e0012a45b67",
+    "app_id": "674f1a5c3c8d9e0012a45b89",
+    "instance_id": "6750c3d47e2f1a0013b56c9a",
+    "metric": "data-synced",
+    "start": "2025-12-01T00:00:00.000Z",
+    "end": "2025-12-08T00:00:00.000Z"
+  }'
+```
+
+### Response Body
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `data.value` | number | Aggregate value over the window, in the metric's unit |
+
+### Example Response
+
+```json
+{
+  "data": {
+    "value": 7340032
+  }
+}
+```
+
+## Self-Hosted Deployments
+
+The Usage Metrics API is a PowerSync Cloud service. Self-hosted deployments expose the same underlying instance metrics directly from the PowerSync Service via a Prometheus-compatible endpoint, which you can scrape with Prometheus or any compatible monitoring system. See [Monitoring a self-hosted PowerSync Service](/maintenance-ops/self-hosting/monitoring) for details.

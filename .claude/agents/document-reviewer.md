@@ -38,6 +38,7 @@ These require judgment. Each item maps to a section of CLAUDE.md; apply the full
 9. **Links and navigation**: internal links use relative paths, never absolute URLs; new pages appear in `docs.json` navigation; moved or removed pages have redirects.
 10. **Sync Streams policy**: no new content that teaches or promotes Sync Rules; where both appear side by side, the examples must return the same data with matching filters.
 11. **Technical accuracy**: flag claims, APIs, or examples you cannot verify.
+12. **Legal and compliance content**: contractual or commercial terms may deviate from standard terminology (for example, "Synchronization Service" in the HIPAA shared-responsibility table). Don't "fix" these; outside legal contexts, the standard terms apply.
 
 ## Output Format
 

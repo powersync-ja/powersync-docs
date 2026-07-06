@@ -28,15 +28,15 @@ Deterministic checks run in CI. Don't re-report what they catch:
 These require judgment. Each item maps to a section of CLAUDE.md; apply the full rule as written there.
 
 1. **Frontmatter**: `title` and `description` present; description and opening paragraph don't duplicate each other.
-2. **Structure**: most important information first; prerequisites at the start of procedures; heading hierarchy starts at H2; headings in Title Case; no verb-first headings except procedural steps.
+2. **Structure**: most important information first; prerequisites at the start of procedures; heading hierarchy starts at H2; headings in Title Case; no imperative-verb headings except procedural steps (the sitewide "Get Started" and "Need Help?" conventions, question headings, and gerund headings like "Reading Data" are fine).
 3. **Voice and tone**: second person, active voice, present tense; no promotional language ("gamechanging," "plays a vital role," or similar); no editorializing ("it's important to note," "in conclusion") or difficulty-minimizing words ("simply," "just," "easily," "obviously"); no filler words in titles or descriptions ("Comprehensive," "Complete"); direct statements over "moreover"/"furthermore"/"additionally"; jargon defined on first use; no generic introductions or concluding summaries that repeat the page.
 4. **Insider terms**: "local-first" and "offline-first" only with context. Prefer describing the outcome: the app responds instantly and stays functional in poor network conditions.
-5. **Dashes**: no dashes joining clauses in running prose; write two sentences. Genuinely parenthetical asides, headings, and code are fine.
+5. **Dashes**: no dash joining two statements that could each stand as a sentence. Trailing fragments/asides, link-list annotations ("- [Project](url) - Description"), headings, code, and table cells are fine.
 6. **Bold**: reserved for terms being defined and critical distinctions a skimming reader would miss.
-7. **Components**: the right Mintlify component for the job (`<Steps>` for procedures, `<Tabs>` for platforms, `<CodeGroup>` for multi-language examples, appropriate callouts); SDK tab order JS, Dart, Kotlin, Swift, .NET, Rust; images wrapped in `<Frame caption="...">` with descriptive alt text.
+7. **Components**: the right Mintlify component for the job (`<Steps>` for procedures, `<Tabs>` for platforms, `<CodeGroup>` for multi-language examples, appropriate callouts); SDK order in any ordered UI element (`<Tabs>`, `<CodeGroup>`, `<AccordionGroup>`, card lists) is JS variants, Dart, Kotlin, Swift, .NET, Rust; images wrapped in `<Frame caption="...">` with descriptive alt text.
 8. **Code examples**: language tag on every block; realistic data; no real secrets; filenames only on self-hosted examples; no SQL table aliases unless required.
 9. **Links and navigation**: internal links use relative paths, never absolute URLs; new pages appear in `docs.json` navigation; moved or removed pages have redirects.
-10. **Sync Streams policy**: no new content that teaches or promotes Sync Rules; where both appear side by side, the examples must return the same data with matching filters.
+10. **Sync Streams policy**: no new content that teaches or promotes Sync Rules; where both appear side by side, the examples must return the same data with matching filters. In prose, "(or legacy Sync Rules)" is the approved pairing but only once per page or major section; later mentions omit Sync Rules.
 11. **Technical accuracy**: flag claims, APIs, or examples you cannot verify.
 12. **Legal and compliance content**: contractual or commercial terms may deviate from standard terminology (for example, "Synchronization Service" in the HIPAA shared-responsibility table). Don't "fix" these; outside legal contexts, the standard terms apply.
 

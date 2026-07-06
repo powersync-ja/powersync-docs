@@ -1,6 +1,6 @@
 ---
 title: "Consistency"
-description: "How PowerSync uses checkpoints and causal consistency to keep client data consistent with the backend."
+description: "How PowerSync uses checkpoints and causal+ consistency to keep client data consistent with the backend."
 ---
 
 ## PowerSync: Designed for Causal+ Consistency
@@ -9,7 +9,7 @@ PowerSync is designed to have [causal+ consistency](https://jepsen.io/consistenc
 
 ## How It Works: Checkpoints
 
-A checkpoint is a single point-in-time on the server (similar to an [LSN in Postgres](https://www.postgresql.org/docs/current/datatype-pg-lsn.html)) with a consistent state — only fully committed transactions are part of the state.
+A checkpoint is a single point-in-time on the server (similar to an [LSN in Postgres](https://www.postgresql.org/docs/current/datatype-pg-lsn.html)) with a consistent state: only fully committed transactions are part of the state.
 
 The client only updates its local state when it has all the data matching a checkpoint, and then it updates the state to exactly match that of the checkpoint. There is no intermediate state while downloading large sets of changes such as large server-side transactions. Different tables and [buckets](/architecture/powersync-service#bucket-system) are all included in the same consistent checkpoint, to ensure that the state is consistent over all data in the client.
 
@@ -51,7 +51,7 @@ In an online-only application, the user typically sees the error as soon as it o
 
 Special care must be taken so that issues such as those do not block the upload queue. The upload queue in the PowerSync Client SDK is a blocking [FIFO](https://en.wikipedia.org/wiki/FIFO_%28computing_and_electronics%29) queue, and the queue cannot advance if the backend does not <Tooltip tip="The typical implementation is that your backend API returns a 2xx response to acknowledge a change, and a 4xx response to reject it. And then in your implementation of the 'uploadData()' function on the client, only when a 2xx response is received, the transaction is marked as complete and removed from the upload queue.">acknowledge a mutation</Tooltip>. And as mentioned above, if the queue cannot be cleared, the client does not move on to the next checkpoint of synced data.
 
-There is no single correct choice on how to handle write failures such as mentioned above — the best action depends on the specific application and scenario. However, we do have some suggestions for general approaches:
+There is no single correct choice for handling write failures like these. The best action depends on the specific application and scenario. However, we do have some suggestions for general approaches:
 
 1. In general, consider relaxing constraints somewhat on the backend where they are not absolutely required. It may be better to accept data that is somewhat inconsistent (e.g. a client not applying all expected validations), rather than discarding the data completely.
 2. If it is critical to preserve all client mutations and preserve the order of mutations:

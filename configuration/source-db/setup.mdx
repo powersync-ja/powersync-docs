@@ -267,6 +267,7 @@ Due to the logical replication requirement, not all Postgres hosting providers a
   **Version compatibility**: PowerSync requires MongoDB version 6.0 or greater.
 </Check>
 <Tip>For more information on migrating from MongoDB Atlas Device Sync to PowerSync, see our [migration guide](/migration-guides/atlas-device-sync).</Tip>
+<Note>PowerSync also supports **Azure DocumentDB** (formerly Azure Cosmos DB for MongoDB vCore) through this same MongoDB connector, as an [experimental](/resources/feature-status) feature. See [Azure DocumentDB](#azure-documentdb-cosmos-db-for-mongodb-vcore) below for supported variants and limitations.</Note>
 
 ### Permissions Required: MongoDB Atlas
 
@@ -350,6 +351,40 @@ Post-images can be configured for PowerSync instances as follows:
 ### MongoDB Atlas Private Endpoints Using AWS PrivateLink
 
 If you need to use private endpoints with MongoDB Atlas, see [Private Endpoints](/configuration/source-db/private-endpoints) (AWS only).
+
+### Azure DocumentDB (Cosmos DB for MongoDB vCore)
+
+<Warning>
+  Azure DocumentDB support is **experimental**. APIs and behavior may change, and it is not yet covered by SLAs. See [Feature Status](/resources/feature-status) for what this means for production readiness and support.
+</Warning>
+
+PowerSync replicates from Azure DocumentDB (formerly Azure Cosmos DB for MongoDB vCore) through this same MongoDB connector. There is no separate connector or configuration: keep `type: mongodb`, point it at your connection string, and PowerSync detects DocumentDB automatically. Setup, permissions, and connection steps are the same as MongoDB above, except for the Post Images setting noted below.
+
+#### Supported Variants
+
+"Cosmos DB" spans several Microsoft products that are not interchangeable for replication. PowerSync supports only the vCore engine:
+
+| Variant | Supported |
+| --- | --- |
+| [Azure DocumentDB](https://learn.microsoft.com/en-us/azure/documentdb/) / Azure Cosmos DB for MongoDB vCore | Yes |
+| [Azure Cosmos DB for MongoDB (RU-based)](https://learn.microsoft.com/en-us/azure/cosmos-db/mongodb/find-request-unit-charge) | No |
+| [Azure Cosmos DB for NoSQL](https://learn.microsoft.com/en-us/azure/cosmos-db/nosql/) | No |
+| Self-hosted open-source DocumentDB engine ([`documentdb-local`](https://documentdb.io/docs/documentdb-local)) | No |
+
+The RU-based model is a different engine with a different change-stream implementation. To use it with PowerSync, [migrate it to Azure DocumentDB](https://learn.microsoft.com/en-us/azure/cosmos-db/mongodb/how-to-migrate-documentdb) first. A source that does not report as DocumentDB is treated as standard MongoDB (Atlas, self-hosted, or replica set) and is unaffected.
+
+#### Limitations to Check Before You Connect
+
+DocumentDB is not fully MongoDB-compatible. The following behaviors differ from a standard MongoDB source. For full details, see the [DocumentDB limitations notes](https://github.com/powersync-ja/powersync-service/blob/main/docs/documentdb/documentdb-limitations.md) in the `powersync-service` repository.
+
+- **Post-images are not supported.** Set [Post Images](#post-images) to **Off** (`post_images: off`, the default). The `auto_configure` and `read_only` modes fail on DocumentDB. This does not reduce correctness. DocumentDB always includes the full current document on update events, so updates and deletes still replicate correctly. Only the post-image consistency modes are unavailable.
+- **Collection drop and rename are not replicated.** Dropping or renaming a replicated collection is not propagated, so already-synced rows remain in PowerSync storage under the old name. To recover, redeploy your Sync Streams (or legacy Sync Rules) to trigger a resync. Regular inserts, updates, and deletes are unaffected.
+- **Large documents are limited and replicate slowly.** Rows of 15 MiB or larger are dropped with a logged error. This is a standard PowerSync limit, but it is more reachable on DocumentDB because every change event carries the full document. Large documents also replicate much more slowly than on standard MongoDB and can briefly delay the change stream.
+- **Large initial snapshots need storage v3 or later.** DocumentDB retains only a limited amount of change-feed history. On storage v1 and v2, a large or busy source can age its resume position out of that window before the initial snapshot finishes, causing replication to restart and loop. Storage v3 and later avoid this by streaming during the snapshot.
+
+Do not drop the internal `_powersync_checkpoints` collection or delete its documents. Doing so disrupts replication.
+
+For implementation and design details, including how PowerSync handles checkpoints and log sequence numbers (LSNs) on DocumentDB, see the [DocumentDB LSN and sentinel checkpoints](https://github.com/powersync-ja/powersync-service/blob/main/docs/documentdb/documentdb-lsn-sentinel-checkpoints.md) notes.
 
 
 ## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL

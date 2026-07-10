@@ -457,14 +457,54 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
+#### 3. In-Memory VFS
+
+Since version 1.39.0 of the `@powersync/web` package, you can use an in-memory database with `WASQLiteVFS.InMemoryVFS`.
+It runs queries faster than any other single-threaded VFS (both IndexedDB and OPFS, except the write-ahead VFS).
+
+No data is persisted: local writes are lost if they aren't uploaded before the tab is closed, and all data is resynced whenever
+a tab is opened. This makes it unsuitable for apps that need to work offline, but a good fit for:
+
+- Development, where starting from a fresh database on every load makes it easy to reproduce issues from a clean state.
+- Online-only apps with very frequent queries and small datasets.
+
+<Warning>
+When using in-memory databases in production scenarios, consider watching `SELECT * FROM ps_crud LIMIT 1` to detect whether outstanding
+local mutations exist and indicate that state to the user. A `beforeunload` event listener can also be useful in this state to
+call `preventDefault()` on tab close events, causing browsers to ask for confirmation before closing the tab.
+</Warning>
+
+With Chrome and Firefox on Desktop, this VFS will use a shared worker to enable multi-tab support by default, meaning that all
+tabs have access to the same data and will share a sync worker.
+This behavior can be enabled or disabled on all browsers by passing the [`enableMultiTabs` flag](#available-flags).
+
+If support for multi-tabs is not desired, consider giving each tab a uniquely-named PowerSync instance. The in-memory database
+would not be shared across tabs in either case, but only one PowerSync database with the same name can sync at a time.
+Unique names ensure databases across tabs are fully independent:
+
+```js
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: new WASQLiteOpenFactory({
+    dbFilename: `memory-${crypto.randomUUID()}.db`,
+    vfs: WASQLiteVFS.InMemoryVFS
+  }),
+  flags: {
+    enableMultiTabs: false
+  }
+});
+```
+
 #### VFS Compatibility Matrix
 
 | VFS Type            | Multi-Tab (Standard) | Multi-Tab (Safari/iOS) | Concurrent Reads | Best For                                       |
 | ------------------- | -------------------- | ---------------------- | ---------------- | ---------------------------------------------- |
-| IDBBatchAtomicVFS   | ✅                   | ❌                     | ❌               | Broadest compatibility, minimal setup          |
-| OPFSCoopSyncVFS     | ✅                   | ✅                     | ❌               | Multi-tab + Safari/iOS support                 |
-| AccessHandlePoolVFS | ❌                   | ❌                     | ❌               | Single-tab, single worker, access-handle OPFS  |
+| IDBBatchAtomicVFS   | ✅                   | ❌                     | ❌               | Broadest compatibility, minimal setup           |
+| OPFSCoopSyncVFS     | ✅                   | ✅                     | ❌               | Multi-tab + Safari/iOS support                  |
+| AccessHandlePoolVFS | ❌                   | ❌                     | ❌               | Single-tab, single worker, access-handle OPFS   |
 | OPFSWriteAheadVFS   | ✅                   | ❌                     | ✅               | Chromium only; parallel reads via WAL + readers |
+| InMemoryVFS         | ✅                   | ❌                     | ❌               | Development, small data sizes                   |
+
 
 **Note**: There are known issues with OPFS (all variants) when using Safari's incognito mode.
 

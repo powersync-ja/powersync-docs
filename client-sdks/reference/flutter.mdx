@@ -348,9 +348,56 @@ class TodosWidget extends StatelessWidget {
   }
 }
 ```
+
 ## Configure Logging
 
 Since version 1.1.2 of the SDK, logging is enabled by default and outputs logs from PowerSync to the console in debug mode.
+
+To disable this, or to configure logging in release-mode configurations, use the `logger` parameter on the `PowerSyncDatabase` constructor.
+PowerSync uses [`package:logging`](https://pub.dev/packages/logging) to emit logs. See that package for additional information.
+
+## Custom HTTP Clients and Headers
+
+PowerSync uses a streaming HTTP response to connect to the PowerSync service. The SDK uses the default `Client()` from the
+[http package](https://pub.dev/packages/http) for that, which relies on `HttpClient` from `dart:io` on native platforms and `fetch()`
+on the web.
+
+You can also supply a custom HTTP client. This can be used to enable a faster HTTP implementation like [`cronet_http`](https://pub.dev/packages/cronet_http),
+or to add custom request headers that may be required if you run the PowerSync service behind a reverse-proxy.
+
+```dart
+import 'package:http/http.dart';
+import 'package:powersync/powersync.dart';
+
+final class _AddHeaderClient extends BaseClient {
+  final Client inner;
+
+  _AddHeaderClient([Client? inner]) : inner = inner ?? Client();
+
+  @override
+  Future<StreamedResponse> send(BaseRequest request) {
+    request.headers['x-my-custom-header'] = 'set for all requests';
+    return inner.send(request);
+  }
+
+  @override
+  void close() => inner.close();
+}
+
+Future<void> connect(PowerSyncDatabase db) async {
+  await db.connect(
+    connector: MyBackendConnector(db),
+    options: SyncOptions(
+      httpClient: _AddHeaderClient.new
+    ),
+  );
+}
+```
+
+<Note>
+  On the web, PowerSync uses a shared worker for the sync process. As Dart objects cannot be shared between tabs and workers, the worker will use a
+  random tab as a proxy to send requests. This can slow down the sync process slightly.
+</Note>
 
 ## Additional Usage Examples
 

@@ -77,7 +77,7 @@ If the description adequately introduces the page, the body can open directly wi
 
 - **Title Case** for all headings: "Getting Started with Sync Streams"
 - Heading hierarchy starts at H2 — H1 is the page title from frontmatter
-- Never start a heading with a verb unless it is a procedural step (e.g., "Configure Your Backend")
+- Never start a heading with an imperative verb unless it is a procedural step ("Configure Your Backend" as a step is fine). These are not violations: the sitewide conventions "Get Started" and "Need Help?", question headings, and gerund headings that name an activity ("Reading Data", "Writing Data")
 
 ### Bold and Emphasis
 
@@ -91,14 +91,20 @@ Do not bold phrases simply because they seem important. If something warrants at
 - **`with` block inside a stream** (stream-level, scoped to that stream) → write as a sentence instead
 - **requirement**: some detail → expand into a sentence or use a callout
 
-### Dashes as Clause Connectors
+### Dashes
 
-Do not use " — " or " - " to join two clauses in running prose. Write two sentences instead.
+Do not use a dash (" — " or " - ") to join two statements that could each stand as a sentence. Split them into two sentences, or use a colon if the second half explains the first.
 
-- **Bad**: "Local CTEs take precedence over global CTEs — if a stream defines a CTE with the same name, the stream-level definition is used."
-- **Good**: "Local CTEs take precedence over global CTEs. If a stream defines a CTE with the same name as a global CTE, the stream-level definition is used within that stream."
+- **Bad**: "Local CTEs take precedence — if a stream defines a CTE with the same name, the stream-level definition is used."
+- **Good**: "Local CTEs take precedence. If a stream defines a CTE with the same name, the stream-level definition is used."
 
-Dashes are acceptable in headings, code, and genuinely parenthetical asides.
+Dashes are fine when they don't join full statements:
+
+- Trailing fragments or asides: "…operation history — generally as `PUT` or `REMOVE` operations."
+- Link-list annotations: "- [Project Name](url) - Short description" (use " - " consistently, with spaces on both sides)
+- Headings, code, and table cells
+
+Test: read what follows the dash. If it has its own subject and verb and could end with a period, split it.
 
 ### American English
 
@@ -168,16 +174,18 @@ Always use the left column. Never use the right.
 | `<Info>` | Neutral background context |
 | `<Check>` | Success confirmations |
 
-### SDK Tab Order
+### SDK Order
 
-When showing code examples across SDKs, always use this order:
+When listing SDKs or platforms in any ordered UI element (`<Tabs>`, `<CodeGroup>`, `<AccordionGroup>`, card lists), use this order:
 
-1. **JS** (most common)
+1. **JS** variants first (React Native, Web, Node.js)
 2. **Dart**
 3. **Kotlin**
 4. **Swift**
 5. **.NET**
 6. **Rust**
+
+Platform-specific extras (e.g. Capacitor, Tauri) go after the JS variants they belong to.
 
 ### Images
 
@@ -218,6 +226,8 @@ Start with action-oriented language: "Use [component] to..." rather than "The [c
 Sync Rules documentation already exists in the repo and should be kept accurate, but do not proactively reference Sync Rules in new pages or examples. If a page currently shows both in tabs, do not add new parallel Sync Rules examples to it.
 
 When existing content shows both side by side, the examples must return the same data. If one side uses `auth.user_id()` or other filters, the other must too.
+
+When an existing page mentions Sync Rules alongside Sync Streams in prose, the approved phrasing is "[Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview))" — but use the full parenthetical only once per page (or major section). Later mentions should omit Sync Rules.
 
 ## Vale Vocabulary
 

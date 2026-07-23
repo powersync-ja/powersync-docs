@@ -277,13 +277,46 @@ let db = PowerSyncDatabase(
 
 The `DefaultLogger` supports the following severity levels: `.debug`, `.info`, `.warn`, `.error`. 
 
+## App Groups and App Extensions
+
+By default, the Swift SDK stores databases in `applicationSupportDirectory`. If you want to share local databases
+between multiple apps in an app group, provide an absolute path (starting with `/`) as `dbFilename` when calling
+`PowerSyncDatabase`.
+The path should point towards a file in the app group's [shared container](https://developer.apple.com/documentation/xcode/configuring-app-groups#Access-an-app-groups-shared-container).
+
+<Warning>
+  Support for app groups and extensions was added in version 1.15, and is experimental.
+</Warning>
+
+With app groups and extensions, multiple processes might access the database at the same time. SQLite uses shared memory
+and file locking to make this safe, but there are still concerns that aren't relevant when the database is only accessed
+from a single context:
+
+1. Concurrent writes to the database are not allowed. Within a process, the PowerSync SDK uses Swift actors to schedule
+   writes. Outside of SQLite using file locks, there is no additional coordination for multi-process access.
+    - Consider using [`PRAGMA busy_timeout`](https://sqlite.org/pragma.html#pragma_busy_timeout) to make SQLite wait longer.
+    - Be ready to handle `SQLITE_BUSY` errors if multiple processes attempt to write to the database.
+2. Do not call `connect()` in more than one process: If two processes attempt to connect to the PowerSync service for
+   the same database, this wastes resources and can also lead to concurrency issues. If you share databases with extensions
+   or app groups, ensure there is only one context responsible for connecting.
+3. Avoid multiple versions of the Swift SDK: While the SQLite file format is stable and databases can safely be accessed
+   from multiple processes using their own SQLite version, the PowerSync SDK is not designed with this in mind.
+   In particular, opening the same database file from multiple processes can cause PowerSync-internal migrations to get
+   reverted.
+   This is not a concern for app extensions released as part of the same bundle, but something to be aware of for
+   app groups.
+
 ## Additional Usage Examples
 
 For more usage examples including accessing connection status, monitoring sync progress, and waiting for initial sync, see the [Usage Examples](/client-sdks/usage-examples) page.
 
 ## ORM Support
 
-PowerSync supports the [GRDB](/client-sdks/orms/swift/grdb) library for Swift.
+PowerSync officially supports the [GRDB](/client-sdks/orms/swift/grdb) library for Swift.
+
+Additionally, [Asier G. Morato](https://github.com/asiergmorato) contributed a [Swift Data integration](https://github.com/powersync-community/swift-data)
+for PowerSync, allowing Swift Data models to be persisted and synced through a PowerSync database.
+Note that the integration is community-owned and not officially supported by PowerSync.
 
 ## Troubleshooting
 

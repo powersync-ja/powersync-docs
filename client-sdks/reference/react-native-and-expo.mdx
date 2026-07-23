@@ -109,60 +109,23 @@ Next, you need to instantiate the PowerSync database. PowerSync streams changes 
 
 **Example**:
 
-<Tabs>
-    <Tab title="React Native Quick SQLite">
-        For getting started and testing PowerSync use the [@journeyapps/react-native-quick-sqlite](https://github.com/powersync-ja/react-native-quick-sqlite) package.
-        <Note>By default, this SDK requires @journeyapps/react-native-quick-sqlite as a peer dependency.</Note>
+```typescript powersync/system.ts
+import { PowerSyncDatabase } from '@powersync/react-native';
+import { AppSchema } from './Schema';
 
-        ```typescript powersync/system.ts
-        import { PowerSyncDatabase } from '@powersync/react-native';
-        import { AppSchema } from './Schema';
+export const powersync = new PowerSyncDatabase({
+  // The schema you defined in the previous step
+  schema: AppSchema,
+  database: {
+    // Filename for the SQLite database — it's important to only instantiate one instance per file.
+    // For other database options see,
+    // https://powersync-ja.github.io/powersync-js/web-sdk/globals#sqlopenoptions
+    dbFilename: 'powersync.db'
+  }
+});
+```
 
-        export const powersync = new PowerSyncDatabase({
-            // The schema you defined in the previous step
-            schema: AppSchema,
-            // For other options see,
-            // https://powersync-ja.github.io/powersync-js/web-sdk/globals#powersyncopenfactoryoptions
-            database: {
-                // Filename for the SQLite database — it's important to only instantiate one instance per file.
-                // For other database options see,
-                // https://powersync-ja.github.io/powersync-js/web-sdk/globals#sqlopenoptions
-                dbFilename: 'powersync.db'
-            }
-        });
-        ```
-    </Tab>
-    <Tab title="OP-SQLite">
-        If you want to include encryption with SQLCipher use the [@powersync/op-sqlite](https://www.npmjs.com/package/@powersync/op-sqlite) package.
-        <Note>If you've already installed `@journeyapps/react-native-quick-sqlite`, You will have to uninstall it and then install both `@powersync/op-sqlite` and it's peer dependency `@op-engineering/op-sqlite` to use this.</Note>
-
-        ```typescript powersync/system.ts
-        import { PowerSyncDatabase } from '@powersync/react-native';
-        import { OPSqliteOpenFactory } from '@powersync/op-sqlite'; // Add this import
-        import { AppSchema } from './Schema';
-
-        // Create the factory
-        const opSqlite = new OPSqliteOpenFactory({
-            dbFilename: 'powersync.db'
-        });
-
-        export const powersync = new PowerSyncDatabase({
-            // For other options see,
-            schema: AppSchema,
-            // Override the default database
-            database: opSqlite
-        });
-        ```
-    </Tab>
-</Tabs>
-
-<Note>
-**SDK versions lower than 1.8.0**
-
-In SDK versions lower than 1.8.0, you will need to use the deprecated [RNQSPowerSyncDatabaseOpenFactory](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/RNQSPowerSyncDatabaseOpenFactory) syntax to instantiate the database.
-</Note>
-
-Once you've instantiated your PowerSync database, call the [connect()](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/AbstractPowerSyncDatabase#connect) method to sync data with your backend.
+Once you've instantiated your PowerSync database, call the [connect()](https://powersync-ja.github.io/powersync-js/react-native-sdk/classes/PowerSyncDatabase#connect) method to sync data with your backend.
 
 <LocalOnly />
 
@@ -377,16 +340,11 @@ export const ListsWidget = () => {
 ## Configure Logging
 
 ```js
-import { createBaseLogger, LogLevel } from '@powersync/react-native';
+import { createConsoleLogger, LogLevels } from '@powersync/react-native';
 
-const logger = createBaseLogger();
-
-// Configure the logger to use the default console output
-logger.useDefaults();
-
-// Set the minimum log level to DEBUG to see all log messages
-// Available levels: DEBUG, INFO, WARN, ERROR, TRACE, OFF
-logger.setLevel(LogLevel.DEBUG);
+// Create a logger with trace minimum level to see all log messages
+// Available levels: trace, debug, info, warn, error
+const logger = createConsoleLogger({ minLevel: LogLevels.trace });
 ```
 
 <Tip>
@@ -416,17 +374,17 @@ Run the below command in your project folder:
 <Tabs>
   <Tab title="npm">
 ```bash
-npm upgrade @powersync/react-native @journeyapps/react-native-quick-sqlite
+npm upgrade @powersync/react-native
 ```
   </Tab>
   <Tab title="yarn">
 ```bash
-yarn upgrade @powersync/react-native @journeyapps/react-native-quick-sqlite
+yarn upgrade @powersync/react-native
 ```
   </Tab>
   <Tab title="pnpm">
 ```bash
-pnpm upgrade @powersync/react-native @journeyapps/react-native-quick-sqlite
+pnpm upgrade @powersync/react-native
 ```
   </Tab>
 </Tabs>
@@ -437,31 +395,30 @@ pnpm upgrade @powersync/react-native @journeyapps/react-native-quick-sqlite
 
 This SDK supports two methods for streaming sync commands:
 
-1. **WebSocket (Default)**
+1. **HTTP Streaming (Default)**
+   - This is the default streaming method for Expo apps.
+2. **WebSocket (Fallback)**
    - The implementation leverages RSocket for handling reactive socket streams.
-   - Back-pressure is effectively managed through client-controlled command requests.
-   - Sync commands are transmitted efficiently as BSON (binary) documents.
-   - This method is **recommended** since it will support the future [BLOB column support](https://roadmap.powersync.com/c/88-support-for-blob-column-types) feature.
+   - This is necessary on React Native without Expo, as `fetch()` in React Native does not support streaming responses.
+   - Window sizes for flow control and back-pressure are customizable, set `fetchStrategy` to `Buffered` (default) or `Sequential`.
 
-2. **HTTP Streaming (Legacy)**
-   - This is the original implementation method.
-   - This method will not support the future BLOB column feature.
-
-By default, the `PowerSyncDatabase.connect()` method uses WebSocket. You can optionally specify the `connectionMethod` to override this:
+By default, the `PowerSyncDatabase.connect()` method uses HTTP on Expo apps (with `expo/fetch` as an HTTP client) and WebSockets
+for plain React Native apps. You can optionally specify the `connectionMethod` to override this:
 
 ```js
-// WebSocket (default)
+// Default (HTTP on Expo apps, WebSocket on plain React Native).
 powerSync.connect(connector);
 
-// HTTP Streaming
+// HTTP Streaming, throws if no HTTP client with support for streaming responses is available.
 powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.HTTP });
+
+// Explicitly use Web Sockets
+powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.WEB_SOCKET });
 ```
 
 ### Android: Flipper Network Plugin for HTTP Streams
 
-**Not needed when using websockets, which is the default since `@powersync/react-native@1.11.0`.**
-
-If you are connecting to PowerSync using HTTP streams, you require additional configuration on Android. React Native does not support streams out of the box, so we use the [polyfills mentioned](/client-sdks/reference/react-native-and-expo#installation). There is currently an open [issue](https://github.com/facebook/flipper/issues/2495) where the Flipper network plugin does not allow Stream events to fire. This plugin needs to be [disabled](https://stackoverflow.com/questions/69235694/react-native-cant-connect-to-sse-in-android/69235695#69235695) in order for HTTP streams to work.
+If you are connecting to PowerSync using HTTP streams (the default), you require additional configuration on Android. React Native does not support streams out of the box, so we use the [polyfills mentioned](/client-sdks/reference/react-native-and-expo#installation). There is currently an open [issue](https://github.com/facebook/flipper/issues/2495) where the Flipper network plugin does not allow Stream events to fire. This plugin needs to be [disabled](https://stackoverflow.com/questions/69235694/react-native-cant-connect-to-sse-in-android/69235695#69235695) in order for HTTP streams to work.
 
 **If you are using Java (Expo < 50):**
 

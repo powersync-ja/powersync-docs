@@ -1,22 +1,22 @@
 ---
 title: "MongoDB Atlas Device Sync Migration Guide"
 description: "Migrate from MongoDB Atlas Device Sync to PowerSync with step-by-step instructions."
-sidebarTitle: "MongoDB Atlas Device Sync Migration Guide"
+sidebarTitle: "Migrate from MongoDB Atlas Device Sync"
 ---
 
 ## Introduction
 
-Migrating from the deprecated MongoDB Atlas Device Sync to PowerSync allows you to benefit from efficient data sync using open and proven technologies. Users get always-available, instantly-responsive offline-first apps that also stream data updates in real-time when online.
+Migrating from the discontinued MongoDB Atlas Device Sync to PowerSync allows you to benefit from efficient data sync using open and proven technologies. Users get always-available, instantly-responsive offline-first apps that also stream data updates in real-time when online.
 
 ## Why PowerSync?
 
 PowerSync’s [history](https://www.powersync.com/company) goes as far back as 2009, when the original version of the sync engine was developed as part of an app development platform used by some of the world’s largest industrial companies to power offline-capable apps deployed in harsh environments.
 
-PowerSync was spun off as a standalone product in 2023, and gives engineering teams a proven, open and robust sync engine with a familiar **server-client** [architecture](/architecture/architecture-overview).
+PowerSync was spun off as a standalone product in 2023, and gives engineering teams a proven, open and robust sync engine with a familiar server-client [architecture](/architecture/architecture-overview).
 
-PowerSync’s MongoDB connector has been **developed in collaboration with MongoDB** to provide an easy setup process. It reached **General Availability (GA) status** with its [V1 release](https://www.powersync.com/blog/powersyncs-mongodb-connector-hits-ga-with-version-1-0) and is fully supported for production use. Multiple MongoDB customers currently use PowerSync in production environments.
+PowerSync’s MongoDB connector has been developed in collaboration with MongoDB to provide an easy setup process. It reached General Availability (GA) status with its [V1 release](https://www.powersync.com/blog/powersyncs-mongodb-connector-hits-ga-with-version-1-0) and is fully supported for production use. Multiple MongoDB customers currently use PowerSync in production environments.
 
-The server-side [PowerSync Service](/architecture/powersync-service) connects to MongoDB and pre-processes and pre-indexes data to be efficiently synced to users based on defined _Sync Streams_ (or legacy _Sync Rules_). Client applications embedding the _PowerSync Client SDK_ connect to the PowerSync Service to sync only a relevant subset of data to each user, based on the Sync Streams (or legacy Sync Rules). Incremental updates in MongoDB are synced to clients in real-time.
+The server-side [PowerSync Service](/architecture/powersync-service) connects to MongoDB and pre-processes and pre-indexes data to be efficiently synced to users based on defined _Sync Streams_ (or legacy _Sync Rules_). Client applications embedding the _PowerSync Client SDK_ connect to the PowerSync Service to sync only a relevant subset of data to each user, based on the Sync Streams/Rules. Incremental updates in MongoDB are synced to clients in real-time.
 
 Client applications get a SQLite database that they can read from and write to. PowerSync provides for bi-directional syncing so that mutations in the client-side SQLite database are automatically synced back to the source MongoDB database. If users are offline or have patchy connectivity, PowerSync automatically manages network failures and retries.
 
@@ -37,13 +37,13 @@ If you need further assistance at any point, you can:
 If you have MongoDB Atlas Device Sync deployed today, at a high level your architecture will look something like this:
 
 <Frame caption="Architecture before migration: MongoDB Atlas Device Sync setup">
-  <img src="/images/migration-guides/mongodb-before.png" />
+  <img src="/images/migration-guides/mongodb-before.png" alt="Architecture diagram of a MongoDB Atlas Device Sync setup before migration" />
 </Frame>
 
 Migrating to PowerSync results in this architecture: (new components in green)
 
 <Frame caption="Architecture after migration: PowerSync replacing Atlas Device Sync">
-  <img src="/images/migration-guides/mongodb-after.png" />
+  <img src="/images/migration-guides/mongodb-after.png" alt="Architecture diagram after migration, with PowerSync replacing Atlas Device Sync" />
 </Frame>
 
 Here is a quick overview of the resulting PowerSync architecture:
@@ -51,10 +51,10 @@ Here is a quick overview of the resulting PowerSync architecture:
 * **Authentication**: PowerSync piggybacks off your app’s existing [authentication](/configuration/auth/overview), and JWTs are used to authenticate between clients and the PowerSync Service. If you are using Atlas Device SDKs for authentication, you will need to implement an authentication provider.
 * **PowerSync Client SDKs** use **SQLite** under the hood. Even though MongoDB is a "NoSQL" document database, PowerSync’s use of SQLite works well with MongoDB, since the [PowerSync protocol](/architecture/powersync-protocol) is schemaless (it syncs schemaless JSON data) and we dynamically apply a [client-side schema](/intro/setup-guide#define-your-client-side-schema) to the data in SQLite using SQLite views. Client-side queries can be written in SQL or you can make use of an ORM (we provide a few [ORM integrations](https://www.powersync.com/blog/using-orms-with-powersync)). Working with embedded documents and arrays from MongoDB is easy with SQLite due to [its JSON support](/client-sdks/advanced/query-json-in-sqlite).
 * **Reads vs Writes**: PowerSync handles syncing of reads differently from writes (mutations)
-   * **Reads**: The PowerSync Service connects to your MongoDB database for real-time replication of data, and syncs data to clients based on [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). Sync Streams/Rules are more flexible than MongoDB Realm Flexible Sync, but are defined on the server-side, not on the client-side.
+   * **Reads**: The PowerSync Service connects to your MongoDB database for real-time replication of data, and syncs data to clients based on [Sync Streams](/sync/streams/overview). Sync Streams are more flexible than MongoDB Realm Flexible Sync, but are defined on the server-side, not on the client-side.
    * **Writes**: The client-side application can perform writes (mutations) directly on the SQLite database. The PowerSync Client SDK automatically places those mutations into an [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) and invokes an `uploadData()` function (defined by you) as needed to upload those mutations sequentially to your backend application.
 * **Authorization**: Authorization is controlled separately for reads vs. writes.
-   * **Reads**: The [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) control which users can access which data.
+   * **Reads**: The [Sync Streams](/sync/streams/overview) control which users can access which data.
    * **Writes**: Your backend application controls authorization for how users can modify data, when it receives uploaded mutations from clients.
 * **Backend Application**: PowerSync requires a backend API interface to upload mutations to MongoDB (and optionally for custom authentication too). There are currently two options:
    * **"Bring your own backend"**: If you already have a backend application as part of your stack, you should use your existing backend. If you don’t yet have one, but would like to run your own backend, we have example implementations available. See the [instructions below](#2-accept-uploads-on-the-backend) for more details.
@@ -104,7 +104,7 @@ There are two options:
 
 #### Using Your Own Custom Backend API
 
-This option gives you complete control over the backend. The simplest backend implementation is to simply apply mutations to MongoDB as they are received, which results in a last-write-wins conflict resolution strategy. See [App Backend Setup](/configuration/app-backend/setup) and [Writing Client Changes](/handling-writes/writing-client-changes) for more details.
+This option gives you complete control over the backend. The simplest backend implementation is to apply mutations to MongoDB as they are received, which results in a last-write-wins conflict resolution strategy. See [App Backend Setup](/configuration/app-backend/setup) and [Writing Client Changes](/handling-writes/writing-client-changes) for more details.
 
 We have [example backend implementations](/intro/examples#backend-examples) available (e.g. Node.js, Django, Rails, .NET).
 

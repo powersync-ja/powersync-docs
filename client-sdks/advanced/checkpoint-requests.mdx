@@ -104,7 +104,27 @@ The upload response remains the authority on whether your backend accepted, chan
 
 ## Asynchronous Upload Backends
 
-The managed flow assumes that `uploadData()` returns only after your backend commits the uploaded changes to the source database. If your backend queues uploads for later processing, make your existing connector conform to `CustomCheckpointRequestConnector`:
+The managed flow assumes that `uploadData()` returns only after your backend commits the uploaded changes to the source database. If your backend queues uploads for later processing, use the same source-side behavior described in [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints). That page uses the previous name for checkpoint acknowledgements.
+
+The difference on the client is that the PowerSync Client SDK generates the checkpoint request ID and sends it to your backend through `CustomCheckpointRequestConnector`.
+
+### Checkpoint Request IDs
+
+The SDK persists an increasing checkpoint request ID in the local database. When connecting, it sends its current ID to the backend to reconcile the local counter with any state the backend still holds. The SDK uses the ID returned by the backend as the starting point before allocating later requests.
+
+Store the greatest request ID received for each authenticated user and PowerSync client ID. When handling a request:
+
+1. If the submitted ID is greater than the stored ID, record and process the submitted ID.
+2. If the submitted ID is equal to or less than the stored ID, do not move the stored value backward.
+3. Return the greater of the submitted and stored IDs.
+
+This comparison makes repeated and stale requests idempotent. It also handles seeding after the local request counter has been reset. For example, if the client submits ID `1` while the backend still holds ID `42`, return `42`. The SDK then continues allocating IDs after `42`.
+
+You can delete stored request records after an appropriate retention period. While a record exists, return its value during reconciliation so the SDK can resume from that value.
+
+### Swift Connector
+
+Make your existing connector conform to `CustomCheckpointRequestConnector` and forward the request to your application backend:
 
 ```swift
 extension BackendConnector: CustomCheckpointRequestConnector {
@@ -122,8 +142,4 @@ extension BackendConnector: CustomCheckpointRequestConnector {
 }
 ```
 
-Your backend must process the checkpoint request after all earlier uploads for that client. It must then write the increasing request ID into the source-side checkpoint mechanism so PowerSync can observe it through replication.
-
-Treat requests as idempotent because the SDK may post the same ID again after reconnecting. Return the newest request ID already recorded for that user and client when it is greater than the submitted ID. The connector must use your application's own authentication for this call because `postCheckpointRequest()` does not receive the PowerSync sync token.
-
-See [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints) for the source-side setup used by asynchronous upload pipelines. That page uses the previous name for checkpoint acknowledgements.
+The connector must use your application's own authentication for this call because `postCheckpointRequest()` does not receive the PowerSync sync token.

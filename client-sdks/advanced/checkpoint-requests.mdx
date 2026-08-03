@@ -1,0 +1,129 @@
+---
+title: "Checkpoint Requests (Alpha)"
+sidebarTitle: "Checkpoint Requests"
+description: "Wait for the local database to reach a point-in-time sync boundary with checkpoint requests."
+---
+
+Use a checkpoint request when your app needs to confirm that the local database has applied all relevant source changes through a specific point. For example, you can use one to implement pull-to-refresh after the initial sync has already completed.
+
+<Warning>
+Checkpoint requests are an alpha API and may change. Client support is currently available only for Swift and requires PowerSync Service version 1.24.0 or later. Support for other SDKs is planned.
+</Warning>
+
+## How Checkpoint Requests Work
+
+When you create a checkpoint request, the PowerSync Service records the source database's current replication position. The PowerSync Client SDK then waits until a checkpoint that covers that position has been completely synced and applied to the local database.
+
+A checkpoint request is a point-in-time barrier. You cannot supply an arbitrary source position. The PowerSync Service captures the position when it handles the request.
+
+Checkpoint requests differ from `waitForFirstSync()`:
+
+- `waitForFirstSync()` waits for the first complete sync after the database starts syncing.
+- `requestCheckpoint()` creates a new boundary and lets you wait for the local database to reach it, even after the initial sync has completed.
+
+See [Consistency](/architecture/consistency) for more information about how PowerSync applies complete checkpoints.
+
+## Prerequisites
+
+Before creating a checkpoint request:
+
+1. Use a PowerSync Swift SDK release that supports the alpha checkpoint request API.
+2. Run PowerSync Service version 1.24.0 or later.
+3. Connect with `checkpointMode` set to `.requests()`.
+
+```swift
+try await database.connect(
+    connector: connector,
+    options: ConnectOptions(checkpointMode: .requests())
+)
+```
+
+The default checkpoint mode is `.legacy`. Calling `requestCheckpoint()` in legacy mode throws `CheckpointRequestError.checkpointRequestsNotEnabled`.
+
+## Waiting for a New Sync Boundary
+
+Create a request and wait for it to sync before reading the refreshed local state:
+
+```swift
+func refreshLocalData() async throws {
+    let checkpoint = try await database.requestCheckpoint()
+    try await checkpoint.waitForSync(timeout: 30)
+    // Local queries now include changes covered by the requested checkpoint.
+}
+```
+
+`requestCheckpoint()` requires an active or connecting sync client. You can call it while the client is connecting, but the device must be online for the checkpoint request to reach the PowerSync Service. If the device is offline or the sync client is reconnecting, the call waits for a connection and continues once the service is reachable.
+
+Creating the request does not have its own timeout, so it may remain suspended while the sync client retries its connection. Cancel the calling task if you need to stop waiting for request creation.
+
+The timeout passed to `waitForSync(timeout:)` only limits how long you wait for the created checkpoint to be applied locally.
+
+## Handling Wait Failures
+
+Handle request creation and waiting errors separately when your app needs different recovery behavior:
+
+```swift
+do {
+    let checkpoint = try await database.requestCheckpoint()
+    try await checkpoint.waitForSync(timeout: 30)
+} catch CheckpointWaitError.timeout {
+    showRefreshMessage("The refresh timed out. Try again.")
+} catch CheckpointWaitError.disconnected {
+    showRefreshMessage("Reconnect before refreshing again.")
+} catch let error as any CheckpointError {
+    showRefreshMessage(error.localizedDescription)
+}
+```
+
+A request remains valid across a disconnect. After reconnecting with `.requests()`, you can call `waitForSync()` again on the same request. Discard existing request values after clearing the local PowerSync database because clearing it resets the persisted request state.
+
+`waitForSync()` also fails if the sync client reports an upload or download error. Wait for sync to recover before retrying.
+
+## Relationship to Local Writes
+
+When `.requests()` mode is enabled, the PowerSync Client SDK also uses checkpoint request IDs internally after it finishes uploading the local write queue. This preserves PowerSync's normal consistency guarantee without requiring you to call `requestCheckpoint()` for each local write.
+
+You can create an explicit checkpoint request while local writes are waiting to upload. PowerSync does not apply the requested checkpoint while those writes are pending. After the upload queue is empty, the PowerSync Client SDK creates another checkpoint request as its upload target. If the explicit request was created first, this upload target has a newer request ID, supersedes the earlier request, and captures a source position after the upload has completed.
+
+`waitForSync()` considers the explicit request complete when the same or a newer checkpoint request has been applied locally. If the explicit request is created after the upload target instead, it captures an even later source position. You can therefore write locally and wait for the uploaded result to return through sync:
+
+```swift
+try await database.execute(
+    sql: "INSERT INTO tasks (id, description) VALUES (uuid(), ?)",
+    parameters: ["Review the project plan"]
+)
+
+let checkpoint = try await database.requestCheckpoint()
+try await checkpoint.waitForSync(timeout: 30)
+// The pending write has uploaded and its source state has synced locally.
+```
+
+This behavior relies on `uploadData()` returning only after your backend has committed the uploaded changes to the source database. See [Writing Client Changes](/handling-writes/writing-client-changes#why-must-my-write-endpoint-be-synchronous) for this requirement.
+
+The upload response remains the authority on whether your backend accepted, changed, or rejected a mutation. A synced checkpoint request only confirms that PowerSync and the local database have progressed through the captured source boundary.
+
+## Asynchronous Upload Backends
+
+The managed flow assumes that `uploadData()` returns only after your backend commits the uploaded changes to the source database. If your backend queues uploads for later processing, make your existing connector conform to `CustomCheckpointRequestConnector`:
+
+```swift
+extension BackendConnector: CustomCheckpointRequestConnector {
+    func postCheckpointRequest(
+        _ checkpointRequestId: Int64,
+        clientId: String
+    ) async throws -> Int64 {
+        let response = try await backendAPI.createCheckpointRequest(
+            checkpointRequestId: checkpointRequestId,
+            clientId: clientId
+        )
+
+        return response.checkpointRequestId
+    }
+}
+```
+
+Your backend must process the checkpoint request after all earlier uploads for that client. It must then write the increasing request ID into the source-side checkpoint mechanism so PowerSync can observe it through replication.
+
+Treat requests as idempotent because the SDK may post the same ID again after reconnecting. Return the newest request ID already recorded for that user and client when it is greater than the submitted ID. The connector must use your application's own authentication for this call because `postCheckpointRequest()` does not receive the PowerSync sync token.
+
+See [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints) for the source-side setup used by asynchronous upload pipelines. That page uses the previous name for checkpoint acknowledgements.

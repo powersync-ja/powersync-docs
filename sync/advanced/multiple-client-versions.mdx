@@ -3,23 +3,55 @@ title: "Multiple Client Versions"
 description: "Handle multiple client app versions that require different output schemas from Sync Streams."
 ---
 
-When schema changes are additive, old clients would just ignore the new tables and columns, and no special handling is required. However, in some cases, the schema changes may be more drastic and may need separate Sync Streams (or Sync Rules) based on the client version.
+When schema changes are additive, old clients ignore the new tables and columns, and no special handling is required. More drastic changes, such as renaming tables or changing a table's structure, can break older app versions that are still in use. In these cases, define separate versions of the affected [Sync Streams](/sync/streams/overview) so that each client version receives the tables and columns it expects.
 
-To distinguish between client versions, clients can pass version information to the PowerSync Service. In [Sync Streams](/sync/streams/overview), these are called connection parameters (accessed via `connection.parameter()`). In legacy [Sync Rules](/sync/rules/overview), these are called [client parameters](/sync/rules/client-parameters).
+<Note>
+The PowerSync Service has one active sync configuration at a time. Deploying a new version replaces the previous one. The Service does not keep older versions running for older clients, since maintaining multiple versions would multiply bucket storage and processing overhead. Instead, version the affected streams within the single active configuration, using either approach below.
+</Note>
 
-Example to use different table names based on the client's `schema_version`:
+## Versioning by Stream Name
+
+With Sync Streams, the most convenient approach is usually to define a new stream alongside the old one. New app versions subscribe to the new stream, while older app versions continue subscribing to the old one.
+
+For example, suppose a new app version changes the structure of the `assets` table in its [client-side schema](/intro/setup-guide#define-your-client-side-schema), defining it as `assets_v2`, while older app versions still define `assets`. Define a new stream alongside the existing one, using an alias to map the source `assets` table to the new client-side name:
+
+```yaml
+streams:
+  # Old stream, kept for backward compatibility with older app versions.
+  # Remove it once those versions are no longer in use.
+  user_assets:
+    query: SELECT * FROM assets WHERE user_id = auth.user_id()
+
+  # New app versions subscribe to this stream.
+  # The alias maps the table to the new client-side name.
+  user_assets_v2:
+    query: SELECT * FROM assets AS assets_v2 WHERE user_id = auth.user_id()
+```
+
+```js
+// New app versions subscribe to the new stream
+const subscription = await db.syncStream('user_assets_v2').subscribe();
+```
+
+Once the older app versions are no longer in use, remove the old stream from your configuration and deploy the change.
+
+## Versioning with Connection Parameters
+
+Alternatively, clients can pass version information to the PowerSync Service as [connection parameters](/sync/streams/parameters#connection-parameters), and stream queries can filter on that version so each stream only returns data to matching client versions. In legacy [Sync Rules](/sync/rules/overview), these are called [client parameters](/sync/rules/client-parameters).
+
+The same `assets` use case, implemented with a `schema_version` connection parameter:
 
 <Tabs>
   <Tab title="Sync Streams">
     ```yaml
     # Client passes connection params: {"schema_version": <version>}
     streams:
-      assets_v1:
-        query: SELECT * FROM assets AS assets_v1
+      user_assets:
+        query: SELECT * FROM assets
                WHERE user_id = auth.user_id()
                AND connection.parameter('schema_version') = '1'
 
-      assets_v2:
+      user_assets_v2:
         query: SELECT * FROM assets AS assets_v2
                WHERE user_id = auth.user_id()
                AND connection.parameter('schema_version') = '2'
@@ -28,13 +60,13 @@ Example to use different table names based on the client's `schema_version`:
   <Tab title="Sync Rules (Legacy)">
     ```yaml
     # Client passes in: "params": {"schema_version": <version>}
-      assets_v1:
+      user_assets:
         parameters: SELECT request.user_id() AS user_id
           WHERE request.parameters() ->> 'schema_version' = '1'
         data:
-          - SELECT * FROM assets AS assets_v1 WHERE user_id = bucket.user_id
+          - SELECT * FROM assets WHERE user_id = bucket.user_id
 
-      assets_v2:
+      user_assets_v2:
         parameters: SELECT request.user_id() AS user_id
           WHERE request.parameters() ->> 'schema_version' = '2'
         data:

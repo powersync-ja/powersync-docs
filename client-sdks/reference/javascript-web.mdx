@@ -539,7 +539,7 @@ async function listVfsEntries() {
 ### Multiple Tab Support
 
 <Warning>
-  * Full multi-tab support relies on shared web workers, which are disabled by default on Android, iOS, and Safari. On these platforms, the SDK falls back to sharing sync status across tabs, as described below.
+  * Full multi-tab support relies on shared web workers, which are disabled by default on Android, iOS, and Safari. On these platforms, the SDK falls back to a less reliable broadcast-based mechanism, as described below.
   * For Safari, use the [`OPFSCoopSyncVFS`](/client-sdks/reference/javascript-web#sqlite-virtual-file-systems) virtual file system to ensure stable multi-tab functionality.
 </Warning>
 
@@ -561,9 +561,9 @@ export const db = new PowerSyncDatabase({
 
 #### Behavior Without Shared Workers
 
-When multi-tab support is disabled, whether explicitly or because the platform does not support it, each tab spawns a standard web worker for database operations. These workers can safely operate on the database concurrently, but changes made in one tab may not update watched queries in other tabs. Only one tab connects and syncs at a time, and only that tab's `fetchCredentials` and `uploadData` methods are called.
+When multi-tab support is disabled, whether explicitly or because the platform does not support it, each tab spawns a standard web worker for database operations. These workers can safely operate on the database concurrently. Only one tab connects and syncs at a time, and only that tab's `fetchCredentials` and `uploadData` methods are called.
 
-Since version 2.1.0 of the SDK, the syncing tab shares its sync status with other tabs over a broadcast channel. Fields like `hasSynced` and download progress update in every tab, and sync stream subscriptions made in any tab are included in the active sync connection. This provides limited multi-tab support on platforms where shared workers are unavailable.
+The SDK still tries to share state across tabs using broadcast channels (since version 2.1.0 of the SDK): update notifications for watched queries, the sync status (fields like `hasSynced` and download progress), and sync stream subscriptions made in any tab. This is less reliable than shared workers, so updates may not reach every tab.
 
 ### Using PowerSyncDatabase Flags
 
@@ -635,7 +635,7 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
-When disabled, each tab uses independent workers. Database changes made in one tab do not automatically update watched queries in other tabs, but the syncing tab still shares its sync status across tabs (since version 2.1.0 of the SDK).
+When disabled, each tab uses independent workers. The SDK tries to share sync status and update notifications for watched queries across tabs, but this is less reliable than shared workers. See [Behavior Without Shared Workers](#behavior-without-shared-workers).
 
 **Example 2: Verbose Debugging with Broadcast Logs**
 

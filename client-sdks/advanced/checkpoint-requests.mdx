@@ -1,25 +1,31 @@
 ---
 title: "Checkpoint Requests (Alpha)"
 sidebarTitle: "Checkpoint Requests"
-description: "Wait for the local database to reach a point-in-time sync boundary with checkpoint requests."
+description: "Use checkpoint requests to wait until the local database has caught up with the current server state."
 ---
 
-Use a checkpoint request when your app needs to confirm that the local database has applied all relevant source changes through a specific point. For example, you can use one to implement pull-to-refresh after the initial sync has already completed.
+PowerSync syncs continuously in the background, and [sync status](/client-sdks/usage-examples#accessing-powersync-connection-status-information) fields like `connected`, `downloading`, and `hasSynced` tell you that this is happening. What they cannot tell you is whether the data on the device is up to date with the server right now. Checkpoint requests let you confirm this: you request a marker of the current server state, then wait until the local database has caught up to it.
 
 <Warning>
 Checkpoint requests are an alpha API and may change. Client support is currently available only for Swift and requires PowerSync Service version 1.24.0 or later. Support for other SDKs is planned.
 </Warning>
 
+Use a checkpoint request whenever your app needs to confirm that it is up to date with the server, after the initial sync has already completed. Example use cases include:
+
+- Pull-to-refresh: resolve the refresh indicator only once the device has caught up with the server, instead of hiding it after an arbitrary delay.
+- Push notifications: when a user opens a notification, wait until the data it refers to has synced before rendering the screen.
+- Backend processing: after your backend finishes a job and writes the result to the source database, know when that result is available locally.
+- App startup or foregrounding: show a "syncing latest changes" state that ends exactly when the device is caught up.
+
+Checkpoint requests are related to, but different from, [waitForFirstSync()](/client-sdks/usage-examples#wait-for-the-initial-sync-to-complete). `waitForFirstSync()` resolves once, when the first complete sync finishes. A checkpoint request can be created at any time after that, and confirms that the local database has caught up with the server as of the moment you created it.
+
 ## How Checkpoint Requests Work
 
-When you create a checkpoint request, the PowerSync Service records the source database's current replication position. The PowerSync Client SDK then waits until a checkpoint that covers that position has been completely synced and applied to the local database.
+During normal sync, the PowerSync Service groups changes from the source database into checkpoints, and the PowerSync Client SDK applies each checkpoint to the local database as a single consistent unit. This happens continuously in the background. Checkpoint requests add a way to point at a specific checkpoint: one that reflects server state at or after the moment you asked.
 
-A checkpoint request is a point-in-time barrier. You cannot supply an arbitrary source position. The PowerSync Service captures the position when it handles the request.
+When you call `requestCheckpoint()`, the PowerSync Service records the source database's current replication position. `waitForSync()` then resolves once a checkpoint that covers that position has been completely synced and applied to the local database. At that point, everything the source database contained when the Service handled the request is present locally.
 
-Checkpoint requests differ from `waitForFirstSync()`:
-
-- `waitForFirstSync()` waits for the first complete sync after the database starts syncing.
-- `requestCheckpoint()` creates a new boundary and lets you wait for the local database to reach it, even after the initial sync has completed.
+You cannot supply an arbitrary point in time. The PowerSync Service always captures the source database's position at the moment it handles the request.
 
 See [Consistency](/architecture/consistency) for more information about how PowerSync applies complete checkpoints.
 
@@ -38,25 +44,25 @@ try await database.connect(
 )
 ```
 
-The default checkpoint mode is `.legacy`. Calling `requestCheckpoint()` in legacy mode throws `CheckpointRequestError.checkpointRequestsNotEnabled`.
+Checkpoint requests are opt-in. Without this connect option, calling `requestCheckpoint()` throws an error.
 
-## Waiting for a New Sync Boundary
+## Waiting for the Latest Server Data
 
-Create a request and wait for it to sync before reading the refreshed local state:
+Create a checkpoint request, then wait for it to sync before reading the refreshed data:
 
 ```swift
 func refreshLocalData() async throws {
     let checkpoint = try await database.requestCheckpoint()
     try await checkpoint.waitForSync(timeout: 30)
-    // Local queries now include changes covered by the requested checkpoint.
+    // Local queries now reflect server state from when the request was made.
 }
 ```
 
-`requestCheckpoint()` requires an active or connecting sync client. You can call it while the client is connecting, but the device must be online for the checkpoint request to reach the PowerSync Service. If the device is offline or the sync client is reconnecting, the call waits for a connection and continues once the service is reachable.
+`requestCheckpoint()` requires that the database is connected or connecting. The device must be online for the request to reach the PowerSync Service. If it is offline or the sync client is reconnecting, the call waits and continues once the Service is reachable.
 
-Creating the request does not have its own timeout, so it may remain suspended while the sync client retries its connection. Cancel the calling task if you need to stop waiting for request creation.
+Creating the request has no timeout of its own, so it can stay suspended while the sync client retries its connection. Cancel the calling task if you need to stop waiting.
 
-The timeout passed to `waitForSync(timeout:)` only limits how long you wait for the created checkpoint to be applied locally.
+The timeout passed to `waitForSync(timeout:)` only limits how long you wait for the checkpoint to sync and apply locally.
 
 ## Handling Wait Failures
 
@@ -100,7 +106,7 @@ try await checkpoint.waitForSync(timeout: 30)
 
 This behavior relies on `uploadData()` returning only after your backend has committed the uploaded changes to the source database. See [Writing Client Changes](/handling-writes/writing-client-changes#why-must-my-write-endpoint-be-synchronous) for this requirement.
 
-The upload response remains the authority on whether your backend accepted, changed, or rejected a mutation. A synced checkpoint request only confirms that PowerSync and the local database have progressed through the captured source boundary.
+The upload response remains the authority on whether your backend accepted, changed, or rejected a mutation. A synced checkpoint request only confirms that PowerSync and the local database have progressed through the source database position the request captured.
 
 ## Asynchronous Upload Backends
 

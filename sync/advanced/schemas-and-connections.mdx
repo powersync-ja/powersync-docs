@@ -1,6 +1,6 @@
 ---
 title: "Schemas and Connections"
-description: "Configure Postgres schema usage in Sync Streams/Rules queries, connect to high-availability replicas, and plan for multiple database connections."
+description: "Configure Postgres schema usage in Sync Streams/Rules queries, including wildcard schemas for schema-per-tenant setups, and connect to high-availability replicas."
 ---
 
 ## Schemas (Postgres)
@@ -11,6 +11,31 @@ When no schema is specified, the Postgres `public` schema is used for every quer
 -- Note: the schema must be in double quotes
 SELECT * FROM "other"."assets"
 ```
+
+## Wildcard Schemas (Postgres)
+
+<Note>
+  Wildcard schemas require [Sync Streams](/sync/streams/overview) with `edition: 3` and PowerSync Service v1.24.0 or later. They are currently only supported for Postgres connections.
+</Note>
+
+Use `%` as a wildcard in the schema name to match tables with the same name across multiple schemas. `"%"` matches every schema, and a prefix such as `"tenant_%"` matches every schema whose name starts with `tenant_`. The wildcard can only be the last character of the schema name, and the schema must be in double quotes. Postgres system schemas (`pg_*` and `information_schema`) are never matched.
+
+Combine a wildcard schema with the [`schema()` function](/sync/supported-sql#functions), which returns the schema each row was replicated from, to filter rows by schema. This supports schema-per-tenant databases (a single database with one identical schema per tenant): one stream covers every tenant schema, and each client syncs only its own tenant's data, resolved from a JWT claim.
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  work_orders:
+    query: SELECT * FROM "%".work_orders WHERE work_orders.schema() = auth.parameter('tenant_schema')
+```
+
+In this example, rows are grouped into a bucket per schema, and each client syncs only the bucket matching the `tenant_schema` claim in its JWT. Rows from all matched schemas sync into a single client-side table, named after the table in the query (`work_orders` here).
+
+<Note>
+Each matched table must be part of the [PowerSync publication](/configuration/source-db/setup#3-create-powersync-publication). Tables that are not in the publication are skipped.
+</Note>
 
 ## High Availability / Replicated Databases (Postgres)
 

@@ -216,7 +216,7 @@ Start with action-oriented language: "Use [component] to..." rather than "The [c
 - Use relative links for internal pages: `/sync/streams/overview`
 - Update `docs.json` when adding, moving, or removing pages
 - Add redirects in `docs.json` for any moved content
-- Check for broken links: `npx mintlify broken-links`
+- Check for broken links: `npx mintlify broken-links`. Mintlify requires Node 20.17–24; if the default `node` is newer, prefix with `PATH="/opt/homebrew/opt/node@24/bin:$PATH"`
 - Never use absolute URLs for internal links
 
 ## Sync Streams and Sync Rules

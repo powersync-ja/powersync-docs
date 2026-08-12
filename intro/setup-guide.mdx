@@ -1201,15 +1201,28 @@ Read data using SQL queries. The data comes from your client-side SQLite databas
       // Use db.GetAll() to fetch all rows:
       var lists = await db.GetAll<ListResult>("SELECT * FROM lists");
 
-      // Watch for changes to query results
-      var query = await db.Watch("SELECT * FROM lists", null, new WatchHandler<ListResult>
-      {
-          OnResult = (results) => Console.WriteLine($"Lists updated: {results.Length} items"),
-          OnError = (error) => Console.WriteLine($"Error: {error.Message}")
-      });
+      // Watch for changes to query results:
+      // Register listener synchronously on the calling thread...
+      var cts = new CancellationTokenSource();
+      var listener = db.Watch<ListResult>("SELECT * FROM lists", null, new SQLWatchOptions { Signal = cts.Token });
 
-      // Call query.Dispose() to stop watching for updates
-      query.Dispose();
+      // ...then listen to changes on another thread (or await foreach directly if already in an async context)
+      _ = Task.Run(async () =>
+      {
+          try
+          {
+              await foreach (var results in listener)
+              {
+                  Console.WriteLine($"Lists updated: {results.Length} items");
+              }
+          } catch (Exception e)
+          {
+              Console.WriteLine($"Error: {e.Message}");
+          }
+      }, cts.Token);
+
+      // To stop watching, cancel the token:
+      cts.Cancel();
       ```
 
       ```rust Rust

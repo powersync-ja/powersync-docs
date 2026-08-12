@@ -1,0 +1,180 @@
+---
+title: "Electric Cloud Migration Guide"
+description: "Migrate from Electric Cloud to PowerSync Cloud with step-by-step instructions."
+sidebarTitle: "Migrate from Electric Cloud"
+---
+
+Electric announced that it is joining Databricks and that Electric Cloud is shutting down in September 2026. Their official guidance is to move to either self-hosted Electric or another provider. This guide is for users looking to migrate to an alternative cloud provider of a Postgres-backed sync engine, namely PowerSync.
+
+This is an implementation guide for teams already using Electric Cloud's current Postgres Sync service. It assumes Postgres remains the system of record and covers high-level concepts to assist with a migration.
+
+## Concepts
+
+PowerSync Sync Streams are analogous to Electric Shapes, not Electric Streams. Electric Streams is a separate product and is out of scope for this guide.
+
+While Electric Shapes and PowerSync Sync Streams both control partial sync, there are significant differences meaning that Shape to Sync Stream migration will most likely not be 1-for-1, and re-designing partial sync will most likely be required.
+
+A key architectural difference between Electric Shapes and Sync Streams is that Shapes are created on demand from the client, per request, while Sync Streams are declared as named queries ahead of time that clients then dynamically subscribe to when needed, each subscription passing its own parameters. This architecture drives how authorization, offline behavior, and writes work. The table below summarizes the specific differences between Electric Shapes and Sync Streams across these and other key dimensions.
+
+| Dimension | Electric (Shapes) | PowerSync (Sync Streams) |
+|-----------|-------------------|--------------------------|
+| Definition | Client-side, per request. Using `table` and optional `where`, `columns`, and `queryable_columns` parameters. Each parameter set identifies a distinct Shape. | Server-side, names SQL queries in a deployed YAML config. Clients subscribe by name and supply parameters; `auto_subscribe` starts a stream automatically. |
+| Relational scope | Single table only. Use subqueries to filter, or multiple Shapes to sync related data. | JOIN supported. One stream can carry multiple queries. |
+| Filter language | Supported Postgres WHERE expressions, positional parameters, arrays, and subqueries. No non-deterministic functions. \[[ref](https://electric.ax/docs/sync/guides/shapes#supported-operators)\] | SQL subset with inner joins, subqueries, CTEs, and transformations; no GROUP BY, ORDER BY, LIMIT, or UNION. No non-deterministic functions. \[[ref](/sync/supported-sql)\] |
+| Authorization model | "Production apps should request shapes through your backend API for authorization and security". \[[ref](https://electric.ax/docs/sync/guides/shapes#defining-shapes)\] | Sync Stream queries define download access using signed JWT claims. Treat client-provided subscription parameters as untrusted. |
+| Client store | In-memory rows by default. Persistence and offline behavior require a separate client store or integration, such as PGlite or TanStack DB collections. | SQLite with a declared AppSchema. The Web SDK uses persistent IndexedDB by default; additional VFSes are available, and an in-memory VFS is optional. |
+| Local queries | `shape.rows`, `useShape`, TanStack DB live queries. | SQL against SQLite (`useQuery`, `watch()`). Also supports the TanStack DB interface and SQLite ORMs like Drizzle. |
+| Writes | Electric provides read-path sync only. The app defines its write path. | Local INSERT, UPDATE and DELETE operations enter a FIFO upload queue. Developer-defined `uploadData()` applies mutations via the developers' existing backend, which authorizes and applies them. |
+| Primary keys and types | Must always include Postgres primary key columns. | Each synced table requires a single unique text `id` column. Columns can be aliased, concatenated or cast \[[ref](/sync/advanced/client-id)\]. The PowerSync TanStack DB integration provides automatic support for rich types. \[[ref](https://tanstack.com/db/latest/docs/collections/powersync-collection)\] |
+| Performance consideration | Shape filter design affects throughput. \[[ref](https://electric.ax/docs/sync/guides/shapes#throughput)\] | Bucket cardinality affects sync performance. \[[ref](/sync/rules/organize-data-into-buckets#limit-on-number-of-buckets-per-client)\] |
+
+## Migration
+
+Both Electric Sync and PowerSync codebases are public, so agents should generally not struggle with implementing migrations. Also see the PowerSync [agent resources](/tools/ai-tools). If you need assistance, join the [PowerSync Discord](https://discord.gg/powersync).
+
+### Overview of Migration Steps
+
+1. [Configure Postgres](#configure-postgres)
+2. [Connect PowerSync to Postgres](#connect-powersync-to-postgres)
+3. [Define and Test Sync Streams](#define-and-test-sync-streams)
+4. [Set Up Authentication](#set-up-authentication)
+5. [Migrate the Frontend Code](#migrate-the-frontend-code)
+
+### Configure Postgres
+
+Create a Postgres role and publication as described in the [source database setup documentation](/configuration/source-db/setup).
+
+- It is not possible to reuse the Electric publication, since PowerSync requires a publication named `powersync`.
+- `BYPASSRLS` is commonly used for the PowerSync role. This is because Sync Stream definitions enforce authorization.
+
+### Connect PowerSync to Postgres
+
+Connect your PowerSync instance to your Postgres environment using the [Dashboard](/configuration/source-db/connection) or the [CLI](/tools/cli#cloud-workflows).
+
+Since the PowerSync Service connects directly to Postgres, various network-level security mechanisms are [supported](/configuration/source-db/security-and-ip-filtering).
+
+### Define and Test Sync Streams
+
+In this step you will write your Sync Streams YAML. This will:
+
+- Define how subsets of your Postgres data are synced to SQLite (on the client).
+- Move download authorization into Sync Stream queries. You keep write authorization in your backend. PowerSync uses signed JWT claims for access checks. Sync Streams accept client parameters, but these should not be relied on for authorization checks.
+
+Refer to the [Sync Streams documentation](/sync/streams/overview). If the [supported Sync Streams SQL](/sync/supported-sql) doesn't support the specific query you are trying to write, sync the required streams and then run ORDER BY, LIMIT, aggregates, joins, etc. in local SQLite.
+
+#### Example
+
+A Shape that syncs a user's projects as follows:
+
+```tsx
+const { data } = useShape({
+  url: `http://localhost:3000/v1/shape`,
+  params: {
+    table: `projects`,
+    where: `owner_id = ${currentSession().userId}`,
+  },
+})
+```
+
+Can be defined in Sync Streams as this `my_projects` stream:
+
+```yaml
+streams:
+  my_projects:
+    query: SELECT * FROM projects WHERE owner_id = auth.user_id()
+```
+
+You can then define a separate Sync Stream to sync each project's tasks (`project_tasks` stream), where the client provides the `project_id`:
+
+```yaml
+streams:
+  my_projects:
+    ...
+
+  project_tasks:
+    query: |
+      SELECT * FROM tasks
+      WHERE project_id = subscription.parameter('project_id')
+        AND project_id IN (SELECT id FROM projects WHERE owner_id = auth.user_id())
+```
+
+#### Run a Sync Test from the PowerSync Dashboard
+
+Once you've defined your Sync Streams, you can run a Sync Test in the PowerSync Dashboard to validate that data is syncing to the client as expected.
+
+### Set Up Authentication
+
+Electric relies on a backend to validate requests to Shapes. With PowerSync that logic is contained in your Sync Stream queries, and clients are then able to connect to the PowerSync Service with a JWT minted from your backend, instead of using the backend as a step in the middle.
+
+`auth.user_id` illustrates this in the Sync Streams example from above:
+
+```yaml
+    query: SELECT * FROM projects WHERE owner_id = auth.user_id()
+```
+
+Our [authentication documentation](/configuration/auth/overview) covers how to set this up.
+
+### Migrate the Frontend Code
+
+The PowerSync client owns a local SQLite database that intelligently merges rows from all active Sync Streams. It exposes local SQL and live query (watch) APIs. It optionally records local writes into a FIFO upload queue. Note that migrations from PGlite to SQLite are possible but out of scope for this guide.
+
+PowerSync provides SDKs for many platforms: JS/TS (Web, React Native, Node, Capacitor and Tauri), Dart, Kotlin, Swift, .NET and Rust. This section only covers Web JS/TS.
+
+<Steps>
+  <Step title="Install the PowerSync Web SDK">
+    [Install](/client-sdks/reference/javascript-web#installation) the PowerSync Web SDK with `pnpm install @powersync/web`.
+  </Step>
+  <Step title="Define the Client-Side Schema">
+    Use the PowerSync Dashboard or CLI to generate the client-side SQLite schema ([docs](/client-sdks/reference/javascript-web#1-define-the-client-side-schema)). Note that an `id` column is added automatically. It will look similar to this:
+
+    ```js
+    import { column, Schema, Table } from '@powersync/web'
+
+    const projects = new Table({
+      name: column.text,
+      owner_id: column.text,
+    })
+
+    const tasks = new Table({
+      project_id: column.text,
+      title: column.text,
+      status: column.text,
+    }, { indexes: { by_project: ['project_id'] } })
+
+    export const AppSchema = new Schema({ projects, tasks })
+    ```
+  </Step>
+  <Step title="Instantiate the PowerSync Database">
+    [Instantiate](/client-sdks/reference/javascript-web#2-instantiate-the-powersync-database) the PowerSyncDatabase. Note that you must only create one PowerSyncDatabase instance for each database file.
+
+    ```js
+    import { PowerSyncDatabase } from '@powersync/web'
+
+    export const db = new PowerSyncDatabase({
+      schema: AppSchema,
+      database: { dbFilename: 'powersync-v1.db' },
+    })
+    ```
+
+    The Web SDK uses a persistent IndexedDB VFS by default. [Select another VFS](/client-sdks/reference/javascript-web#sqlite-virtual-file-systems) if you have specific browser, performance, or multi-tab requirements.
+  </Step>
+  <Step title="Integrate with Your Backend">
+    [Integrate](/client-sdks/reference/javascript-web#3-integrate-with-your-backend) with your backend. This requires implementing two methods for `PowerSyncBackendConnector`:
+
+    - `fetchCredentials()` returns the JWT used to authenticate against PowerSync and download synced data, as well as the PowerSync Cloud endpoint.
+    - `uploadData()` defines how local mutations are sent to your backend API. You should be able to simply re-use the existing backend you have in place today.
+  </Step>
+  <Step title="Replace Client-Side Queries">
+    This is where the bulk of the work will take place, but agents should be pretty good at it. Below are some more tips to get you going:
+
+    - Replace shape [handle/offset usage](https://electric.ax/docs/sync/guides/shapes#subscribing-to-shapes) with [waitForFirstSync()](/client-sdks/usage-examples#wait-for-the-initial-sync-to-complete) and Sync Stream [status checks](/sync/streams/client-usage#checking-sync-status).
+    - Tie on-demand Sync Stream subscriptions to component or route lifetime. The PowerSync React Hooks can [automatically subscribe/unsubscribe](/sync/streams/client-usage#framework-integrations).
+    - When subscribing to a Sync Stream on the client, the TTL can be overridden. The default is 24 hours: a shorter TTL reduces disk usage, a longer TTL improves page reload performance.
+    - When logging the user out or switching accounts, only use `disconnectAndClear()` once the upload queue has been emptied, otherwise local mutations will get discarded.
+  </Step>
+  <Step title="Implement Writes">
+    Electric is read-path only, so in a way writes are out of scope of this migration guide. However, it's highly recommended to use the PowerSync upload queue to ensure consistency instead of sending mutations directly to your backend. You might notice data flicker on the client if you write directly to your backend APIs and bypass the PowerSync upload queue.
+
+    Follow [this guide](/configuration/app-backend/client-side-integration) for integrating the PowerSync upload queue with your backend APIs.
+  </Step>
+</Steps>

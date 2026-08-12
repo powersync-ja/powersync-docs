@@ -207,7 +207,7 @@ export class Connector {
     // Implement uploadData to send local changes to your backend service.
     // You can omit this method if you only want to sync data from the database to the client
 
-    // See example implementation here: https://docs.powersync.com/client-sdks/reference/javascript-web#3-integrate-with-your-backend
+    // See example implementation here: https://docs.powersync.com/client-sdks/usage-examples#send-changes-in-local-data-to-your-backend-service
   }
 }
 ```
@@ -539,19 +539,15 @@ async function listVfsEntries() {
 ### Multiple Tab Support
 
 <Warning>
-  * Multiple tab support is not currently available on Android. 
+  * Full multi-tab support relies on shared web workers, which are disabled by default on Android, iOS, and Safari. On these platforms, the SDK falls back to a less reliable broadcast-based mechanism, as described below.
   * For Safari, use the [`OPFSCoopSyncVFS`](/client-sdks/reference/javascript-web#sqlite-virtual-file-systems) virtual file system to ensure stable multi-tab functionality.
 </Warning>
 
-Using PowerSync between multiple tabs is supported on some web browsers. Multiple tab support relies on shared web workers for database and sync streaming operations. When enabled, a shared web worker named `shared-powersync-[dbFileName]` will be created.
-Depending on the setup, the shared worker is responsible for:
+Using PowerSync between multiple tabs is supported on most desktop browsers. Multiple tab support relies on shared web workers for database and sync operations. When enabled, the SDK creates a shared web worker named `shared-powersync-[dbFileName]`.
 
-1. __Sync__: The shared sync worker connects directly to the PowerSync backend instance and applies changes to the database. Note that the shared sync worker will call the `fetchCredentials` and `uploadData` method of the latest opened available tab. Closing a tab will shift the latest tab to the previously opened one.
-2. __Database operations__: When using an IndexedDB-based VFS, the SDK can open database connections in a shared worker to ensure writes to the database will instantly be available between tabs.
+The shared sync worker connects to the PowerSync Service and applies changes to the database on behalf of all tabs. It calls the `fetchCredentials` and `uploadData` methods of the most recently opened tab. When that tab closes, the worker uses the previously opened tab instead. When using an IndexedDB-based VFS, the SDK can also open database connections in a shared worker so that writes made in one tab are instantly available in the others.
 
-Currently, using the SDK in multiple tabs without enabling the [enableMultiTabs](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/web/src/db/adapters/web-sql-flags.ts#L23) flag will spawn a standard web worker per tab for DB operations. These workers are safe to operate on the DB concurrently, however changes from one tab may not update watches on other tabs. Only one tab can sync from the PowerSync instance at a time. The sync status will not be shared between tabs, only the oldest tab will connect and display the latest sync status.
-
-Support is enabled by default if available. This can be disabled as below:
+Multi-tab support is enabled by default where available. You can disable it with the [`enableMultiTabs` flag](#available-flags):
 
 ```js
 export const db = new PowerSyncDatabase({
@@ -562,6 +558,12 @@ export const db = new PowerSyncDatabase({
   },
 });
 ```
+
+#### Behavior Without Shared Workers
+
+When multi-tab support is disabled, whether explicitly or because the platform does not support it, each tab spawns a standard web worker for database operations. These workers can safely operate on the database concurrently. Only one tab connects and syncs at a time, and only that tab's `fetchCredentials` and `uploadData` methods are called.
+
+The SDK still tries to share state across tabs using broadcast channels (since version 2.1.0 of the SDK): update notifications for watched queries, the sync status (fields like `hasSynced` and download progress), and sync stream subscriptions made in any tab. This is less reliable than shared workers, so updates may not reach every tab.
 
 ### Using PowerSyncDatabase Flags
 
@@ -587,7 +589,7 @@ export const db = new PowerSyncDatabase({
 
 #### Available Flags
 <ParamField path="database.enableMultiTabs">
-    default: `true`
+    default: `true` (`false` on Android, iOS, and Safari)
 
     Enables support for multiple tabs using shared web workers. When enabled, multiple tabs can interact with the same database and sync data seamlessly.
 </ParamField>
@@ -633,7 +635,7 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
-When disabled, each tab will use independent workers, and changes in one tab will not automatically propagate to others.
+When disabled, each tab uses independent workers. The SDK tries to share sync status and update notifications for watched queries across tabs, but this is less reliable than shared workers. See [Behavior Without Shared Workers](#behavior-without-shared-workers).
 
 **Example 2: Verbose Debugging with Broadcast Logs**
 

@@ -74,7 +74,7 @@ The **Attachment Table** is a local-only table that stores metadata about each f
 **Metadata stored:**
 - `id` - Unique attachment identifier (UUID)
 - `filename` - File name with extension (e.g., `photo-123.jpg`)
-- `localUri` - Path to file in local storage
+- `localUri` - Reference to the file in local storage. The format is platform-specific: a file path on native platforms and Node.js, or an internal `indexeddb://` reference on web
 - `size` - File size in bytes
 - `mediaType` - MIME type (e.g., `image/jpeg`)
 - `state` - Current sync state (see states above)
@@ -96,6 +96,8 @@ The **Remote Storage Adapter** is an interface you implement to connect PowerSyn
 - `downloadFile(attachment)` - Download file from cloud storage
 - `deleteFile(attachment)` - Delete file from cloud storage
 
+In the JavaScript/TypeScript SDK, this adapter backs the default [attachment transport](#attachment-transport), which delegates upload, download, and delete to it. A queue configured with a `transportAdapter` instead does not use a remote storage adapter at all.
+
 **Common pattern:**
 For security reasons, client-side implementations should use **signed URLs**
 1. Request a signed upload/download URL from your backend
@@ -115,6 +117,8 @@ The **Local Storage Adapter** handles file persistence on the device. PowerSync 
 - `fileExists(path)` - Check if file exists
 - `getLocalUri(filename)` - Get full path for a filename
 
+In the JavaScript/TypeScript SDK, adapters that can relocate a file without loading it into memory implement the `StreamingLocalStorageAdapter` subinterface, which adds `moveFile(sourceUri, targetUri)`. Configuring the queue with a streaming-capable adapter enables [`saveFileFromUri`](#upload-an-attachment). The Node.js, Expo, and React Native FS adapters are streaming-capable; the web IndexedDB adapter is not.
+
 **Built-in adapters:**
 - **IndexedDB** - For web browsers (`IndexDBFileSystemStorageAdapter`)
 - **Node.js Filesystem** - For Node/Electron (`NodeFileSystemAdapter`)
@@ -122,8 +126,28 @@ The **Local Storage Adapter** handles file persistence on the device. PowerSync 
 - **Native mobile storage** - For Flutter, Kotlin, Swift
 
 <Warning>
-The React Native local storage adapter requires Expo 54 or later.
+The React Native local storage adapter requires Expo 54 or later. The Expo streaming transport requires Expo 56 or later.
 </Warning>
+
+### Attachment Transport
+
+The **Attachment Transport** owns all remote operations for an attachment: upload, download, and delete. It is available in the JavaScript/TypeScript SDK only.
+
+By default, the queue wraps your remote storage adapter in an internal buffered transport. It reads the entire file into JS memory as an `ArrayBuffer` before handing it to the remote storage adapter, and the reverse for downloads. This works well for small files, but large files can cause memory pressure, particularly in React Native on lower-end devices.
+
+To avoid this, pass an `AttachmentTransportAdapter` in the queue's `transportAdapter` option. A transport implements three methods:
+
+- `upload(attachment)` - Transfer the file at `attachment.localUri` to remote storage
+- `download(attachment)` - Fetch the remote file into `attachment.localUri` (the queue assigns the destination path before the call)
+- `delete(attachment)` - Remove the file from remote storage
+
+Because a transport owns the entire transfer, it can stream bytes natively between the file on disk and the network without materializing them in the JS heap. PowerSync provides streaming transports for Node.js and React Native, created from their local storage adapters with `createTransportAdapter`; see [Transferring Large Files Without Buffering](#transferring-large-files-without-buffering).
+
+You can configure the queue with either a `remoteStorage` or a `transportAdapter`, but not both. Supplying both, or neither, is a TypeScript compile-time error. A queue configured with a `transportAdapter` handles all remote operations through it and does not use a remote storage adapter.
+
+<Note>
+The transport API requires `@powersync/web` v3.0.0, `@powersync/react-native` v2.0.3, or `@powersync/node` v0.21.0 or later. React Native also requires `@powersync/attachments-storage-react-native` v0.1.0 or later.
+</Note>
 
 ### Attachment Queue
 
@@ -386,6 +410,24 @@ const remoteStorage = {
     });
   }
 };
+
+// Optional (React Native and Node.js): a streaming transport for large files.
+// It streams bytes directly between disk and network and owns
+// upload/download/delete; configure it in place of remoteStorage.
+// Created from the Expo, React Native FS, or Node.js local storage adapter.
+// See "Transferring Large Files Without Buffering" below for a full example.
+//
+// const transportAdapter = localStorage.createTransportAdapter({
+//   resolveUpload: async (attachment) => ({
+//     url: await getSignedUploadUrl(attachment.filename)
+//   }),
+//   resolveDownload: async (attachment) => ({
+//     url: await getSignedDownloadUrl(attachment.filename)
+//   }),
+//   deleteFile: async (attachment) => {
+//     await deleteFromStorage(attachment.filename);
+//   }
+// });
 ```
 
 ```dart Flutter
@@ -653,6 +695,9 @@ const attachmentQueue = new AttachmentQueue({
   db: db,  // PowerSync database instance
   localStorage,
   remoteStorage,
+  // Or a transportAdapter in place of remoteStorage (provide exactly one);
+  // it owns all remote operations. See "Attachment Transport" above.
+  // transportAdapter,
   
   // Define which attachments exist in your data model
   watchAttachments: (onUpdate) => {
@@ -1359,6 +1404,24 @@ async function uploadProfilePhoto(imageBlob: Blob, userId: string) {
 // 3. Update user record in same transaction
 // 4. Automatically upload file in background
 // 5. Update state to SYNCED when complete
+
+// For files already on disk (e.g. a captured video or audio recording),
+// saveFileFromUri queues the upload without reading the file into memory.
+// Requires a streaming-capable local storage adapter (StreamingLocalStorageAdapter:
+// Node.js, Expo, or React Native FS; not available on web).
+async function attachRecording(localUri: string, recordingId: string) {
+  return attachmentQueue.saveFileFromUri({
+    localUri,  // path to the existing file
+    fileExtension: 'm4a',
+    mediaType: 'audio/mp4',
+    updateHook: async (tx, attachment) => {
+      await tx.execute(
+        'UPDATE recordings SET audio_id = ? WHERE id = ?',
+        [attachment.id, recordingId]
+      );
+    }
+  });
+}
 ```
 
 ```dart Flutter
@@ -1488,6 +1551,8 @@ The `updateHook` parameter is the recommended way to link attachments to your da
 <CodeGroup>
 
 ```typescript JavaScript/TypeScript
+import { AttachmentState } from '@powersync/web';
+
 // Downloads happen automatically when watchAttachments references a file
 
 async function getProfilePhotoUri(userId: string): Promise<string | null> {
@@ -1509,42 +1574,61 @@ async function getProfilePhotoUri(userId: string): Promise<string | null> {
     return null;
   }
   
-  if (attachment.state === 'SYNCED' && attachment.local_uri) {
+  if (attachment.state === AttachmentState.SYNCED && attachment.local_uri) {
     return attachment.local_uri;
   }
   
   return null;
 }
 
-// Example: Display image in React with watch query
+// Example: display the image in React on web. On web, local_uri is an
+// internal indexeddb:// reference, so read the bytes through the local
+// storage adapter and convert them to an object URL. On React Native and
+// Node.js, local_uri is a real file path and can be used directly
+// (e.g. <Image source={{ uri: localUri }} /> in React Native).
 function ProfilePhoto({ userId }: { userId: string }) {
-  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   
   useEffect(() => {
+    let objectUrl: string | null = null;
+    
     const watch = db.watch(
-      `SELECT a.local_uri, a.state 
+      `SELECT a.local_uri, a.media_type, a.state 
        FROM users u 
        LEFT JOIN attachments a ON a.id = u.photo_id 
        WHERE u.id = ?`,
       [userId],
       {
-        onResult: (result) => {
+        onResult: async (result) => {
           const row = result.rows?._array[0];
-          if (row?.state === 'SYNCED' && row?.local_uri) {
-            setPhotoUri(row.local_uri);
+          if (row?.state === AttachmentState.SYNCED && row?.local_uri) {
+            const buffer = await localStorage.readFile(row.local_uri);
+            const nextUrl = URL.createObjectURL(
+              new Blob([buffer], { type: row.media_type ?? 'image/jpeg' })
+            );
+            if (objectUrl) {
+              URL.revokeObjectURL(objectUrl);
+            }
+            objectUrl = nextUrl;
+            setPhotoUrl(nextUrl);
           }
         }
       }
     );
     
-    return () => watch.close();
+    return () => {
+      watch.close();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
   }, [userId]);
   
-  if (!photoUri) {
+  if (!photoUrl) {
     return <div>Loading photo...</div>;
   }
   
-  return <img src={photoUri} alt="Profile" />;
+  return <img src={photoUrl} alt="Profile" />;
 }
 ```
 
@@ -1787,6 +1871,10 @@ internal sealed class PhotoState
 ```
 
 </CodeGroup>
+
+<Note>
+On the web SDK, `local_uri` is an internal `indexeddb://` reference rather than a URL the browser can load. Passing it directly to an `<img src>` fails with `net::ERR_UNKNOWN_URL_SCHEME`. Read the file through the local storage adapter and convert it to an object URL first, as shown in the JavaScript/TypeScript example above. Native SDKs return a real file path that can be used directly.
+</Note>
 
 ### Delete an Attachment
 
@@ -2151,6 +2239,54 @@ var queue = new AttachmentQueue(new AttachmentQueueOptions
 ```
 </CodeGroup>
 
+### Transferring Large Files Without Buffering
+
+This section applies to the JavaScript/TypeScript SDK only.
+
+The default attachment transport buffers the entire file in JS memory during a transfer. This limits the practical attachment size, particularly in React Native: a large video can exhaust the JS heap on lower-end devices. The [Attachment Transport](#attachment-transport) API removes this limit by streaming bytes directly between the file on disk and the network.
+
+Streaming is opt-in. A local storage adapter paired with a `remoteStorage` always uses the default buffered path, on every platform. To stream instead, call the storage adapter's `createTransportAdapter` method and pass the result as the queue's `transportAdapter`:
+
+- `ExpoFileSystemStorageAdapter` (`@powersync/attachments-storage-react-native`) - The transport streams with Expo's native `File.upload`/`File.downloadFileAsync`. Using the transport requires Expo 56 or later; using only the storage adapter requires Expo 54
+- `ReactNativeFileSystemStorageAdapter` (`@powersync/attachments-storage-react-native`) - The transport streams with `uploadFiles`/`downloadFile` from `@dr.pogodin/react-native-fs`, uploading as a raw binary `PUT` by default
+- `NodeFileSystemAdapter` (`@powersync/node`) - The transport streams with `fetch` and Node.js filesystem streams
+
+All three transports take the same options. `resolveUpload` and `resolveDownload` map an attachment to the HTTP request that transfers its bytes, typically a signed URL from your backend. `deleteFile` performs the remote delete, which is a plain remote call rather than a byte transfer.
+
+```typescript
+import { AttachmentQueue } from '@powersync/react-native';
+import { ExpoFileSystemStorageAdapter } from '@powersync/attachments-storage-react-native';
+
+const localStorage = new ExpoFileSystemStorageAdapter();
+
+// Streams bytes natively and owns upload/download/delete. No remoteStorage needed.
+const transportAdapter = localStorage.createTransportAdapter({
+  resolveUpload: async (attachment) => ({
+    url: await getSignedUploadUrl(attachment.filename), // from your backend
+    mimeType: attachment.mediaType ?? 'application/octet-stream'
+  }),
+  resolveDownload: async (attachment) => ({
+    url: await getSignedDownloadUrl(attachment.filename)
+  }),
+  deleteFile: async (attachment) => {
+    await deleteFromStorage(attachment.filename); // your backend or storage SDK call
+  }
+});
+
+const attachmentQueue = new AttachmentQueue({
+  db,
+  localStorage,
+  transportAdapter, // owns all remote operations; used in place of remoteStorage
+  watchAttachments: (onUpdate) => {
+    // Same as in Initialize Attachment Queue
+  }
+});
+
+await attachmentQueue.startSync();
+```
+
+For files your app produces on disk (camera captures, recordings, exports), combine a native transport with [`saveFileFromUri`](#upload-an-attachment). The file moves into managed storage and uploads without ever being read into memory; `saveFile` would read it into an `ArrayBuffer` just to write it back to disk.
+
 ### Custom Storage Adapters
 
 The following is an example of how to implement a custom storage adapter for IPFS:
@@ -2354,6 +2490,41 @@ public sealed class IPFSStorageAdapter(HttpClient http) : IRemoteStorageAdapter
 ```
 
 </CodeGroup>
+
+### Custom Transport Adapters
+
+In the JavaScript/TypeScript SDK, you can also implement [`AttachmentTransportAdapter`](#attachment-transport) yourself. Because a transport owns the entire upload or download, it can do more than move bytes. Some use cases are:
+
+- **Resumable transfers** - The queue retries a failed operation by calling the transport again on the next sync interval. A transport built on a resumable protocol such as [tus](https://tus.io) or S3 multipart upload continues from the last confirmed offset instead of restarting from zero. Downloads can resume a partial file with HTTP `Range` requests
+- **Encryption** - Encrypt files before upload and decrypt them after download for end-to-end encrypted attachments
+- **Platform-specific transfer APIs** - Hand the transfer to an OS-level API, as the built-in React Native transports do
+
+```typescript
+import {
+  AttachmentRecord,
+  AttachmentTransportAdapter,
+  LocatedAttachmentRecord
+} from '@powersync/web';
+
+class ResumableTransportAdapter implements AttachmentTransportAdapter {
+  async upload(attachment: LocatedAttachmentRecord): Promise<void> {
+    // attachment.localUri points at the source file. Transfer it to remote
+    // storage, e.g. in chunks that resume from the last confirmed offset
+    // if a previous attempt was interrupted.
+  }
+
+  async download(attachment: LocatedAttachmentRecord): Promise<void> {
+    // attachment.localUri is the destination path, assigned by the queue.
+    // Fetch the remote file into it.
+  }
+
+  async delete(attachment: AttachmentRecord): Promise<void> {
+    // Remove the file from remote storage.
+  }
+}
+```
+
+Throwing from any method marks the operation as failed; the queue retries it on the next sync interval, subject to your [error handler](#error-handling).
 
 ### Verification and Recovery
 

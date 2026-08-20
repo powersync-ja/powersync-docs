@@ -4,7 +4,7 @@ description: "How to configure a self-hosted PowerSync Service instance with a c
 sidebarTitle: "Self-Hosted Instances"
 ---
 
-A PowerSync instance is a running deployment of the [PowerSync Service](/architecture/powersync-service): it replicates data from your source database and streams it to clients based on your [Sync Streams](/sync/streams/overview). When self-hosting, you run the service in your own infrastructure and configure each instance with a config file, as described below.
+A PowerSync instance is a running deployment of the [PowerSync Service](/architecture/powersync-service): it replicates data from your source database and streams it to clients based on your [Sync Streams](/sync/streams/overview). When self-hosting, you run the Service in your own infrastructure and configure each instance with a config file, as described below.
 
 ## Configure Your Instance
 
@@ -15,7 +15,7 @@ A self-hosted instance needs four things before clients can sync:
 3. Client authentication. See [Authentication Setup](/configuration/auth/overview). When getting started, you can use temporary [development tokens](/configuration/auth/development-tokens) instead of setting up a full auth provider.
 4. A sync configuration defining what data syncs to which clients, written as [Sync Streams](/sync/streams/overview).
 
-You define all of these in the service config file, along with some operational settings. The sync configuration is usually kept in a separate file that the main config references (recommended), but can also be defined inline. The skeleton below shows the most common options; the [Configuration Reference](#configuration-reference) documents all of them.
+You define all of these in the main config file, along with some operational settings. We recommend keeping the sync configuration in a separate file that the main config references, though it can also be defined inline. The skeleton below shows the most common options; the [Configuration Reference](#configuration-reference) documents all of them.
 
 ```yaml service.yaml
 # Settings for source database replication
@@ -53,8 +53,7 @@ storage:
 # The port which the PowerSync API server will listen on (defaults to 8080)
 port: 8080
 
-# Specify Sync Streams or legacy Sync Rules (see the sync_config section below).
-# Referencing a separate file is recommended so you can edit streams/rules without nesting YAML.
+# Sync configuration (see the sync_config section below)
 sync_config:
   path: sync-config.yaml
 
@@ -80,7 +79,7 @@ telemetry:
 system:
   # Service logging configuration
   logging:
-    # Log level for the service logs
+    # Log level for the Service logs
     level: info #  'silly', 'debug', 'verbose', 'http', 'info', 'warn', 'error'
     format: text # 'json' or 'text'
 ```
@@ -148,18 +147,17 @@ The config file supports the following top-level keys, documented in the section
 | [`migrations`](#migrations)    | Storage database schema migration behavior                                  |
 | [`system`](#system)            | Service logging                                                             |
 | [`metadata`](#metadata)        | Custom metadata key-value pairs                                             |
-| [`parameters`](#parameters)    | Global parameters                                                           |
 
 ### `replication`
 
-Specify the connection to your source database in `replication.connections`. Only one connection is currently supported; multiple connection support is on the roadmap.
+The `replication` section defines the source database that PowerSync replicates data from. Specify the connection details in `replication.connections`. Only one connection is currently supported; multiple connection support is on our roadmap.
 
 For instructions on preparing your source database, see [Source Database Setup](/configuration/source-db/setup).
 
 <Note>
-  If you are using hosted Supabase, you will need to enable IPv6 for Docker as per [the Docker docs](https://docs.docker.com/config/daemon/ipv6/)
+  If you are using hosted Supabase, you will need to enable IPv6 for Docker as per [the Docker docs](https://docs.docker.com/config/daemon/ipv6/).
 
-  If your host OS does not support Docker IPv6 e.g. macOS, you will need to run Supabase locally.
+  If your host OS does not support Docker IPv6 (e.g. macOS), run Supabase locally instead.
 
   This is because Supabase only allows direct database connections over IPv6. PowerSync cannot connect using the connection pooler.
 </Note>
@@ -179,7 +177,7 @@ All connection types support these common options:
 </ResponseField>
 
 <ResponseField name="debug_api" type="boolean" default="false">
-  When enabled, allows executing queries against this connection through the service's admin API (authenticated using [`api.tokens`](#api)).
+  When enabled, allows executing queries against this connection through the Service's admin API (authenticated using [`api.tokens`](#api)).
 </ResponseField>
 
 <ResponseField name="reject_ip_ranges" type="string[]">
@@ -386,6 +384,14 @@ The remaining options depend on the connection type:
       The database schema to replicate from.
     </ResponseField>
 
+    <ResponseField name="cacert" type="string">
+      CA certificate content in PEM format.
+    </ResponseField>
+
+    <ResponseField name="tls_servername" type="string">
+      Use a servername for TLS that is different from `hostname`.
+    </ResponseField>
+
     <ResponseField name="authentication" type="object">
       Alternative authentication configuration, instead of `username` and `password`.
       <Expandable title="properties">
@@ -570,7 +576,7 @@ storage:
   uri: postgresql://powersync_storage_user:secure_password@storage-db:5432/postgres
 ```
 
-Postgres storage accepts the same connection options as a [Postgres replication connection](#replication): `uri`, `hostname`, `port`, `username`, `password`, `database`, `sslmode`, `cacert`, `client_certificate`, `client_private_key` and `tls_servername`. In addition, batch limits can be tuned:
+Postgres storage accepts the same connection options as a [Postgres replication connection](#replication): `uri`, `hostname`, `port`, `username`, `password`, `database`, `sslmode`, `cacert`, `client_certificate`, `client_private_key`, `tls_servername`, `slot_name_prefix` and `connect_timeout`. In addition, batch limits can be tuned:
 
 <ResponseField name="batch_limits" type="object">
   Limits for batch operations during replication. Increasing these limits can improve replication performance, at the cost of higher memory usage.
@@ -622,37 +628,23 @@ Separate Postgres servers are required for replication connections (i.e. source 
 
 ### `port`
 
+The `port` setting determines where clients and tools connect to your instance. Change it if the default conflicts with another service in your deployment.
+
 <ResponseField name="port" type="number" default="8080">
   The port on which the PowerSync API server will listen for connections. Can be specified as a number or string.
 </ResponseField>
 
 ### `sync_config`
 
-Your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) configuration can be in a separate file (recommended) or inline in the main config. The `sync_config:` key and its options work the same for Sync Streams and legacy Sync Rules.
-
-<ResponseField name="path" type="string">
-  Path to the Sync Streams/Sync Rules YAML file. Ensure the file is available at that path, e.g. in the same directory as your main config or on a mounted volume.
-</ResponseField>
-
-<ResponseField name="content" type="string">
-  Inline Sync Streams/Sync Rules content as a string, as an alternative to `path`.
-</ResponseField>
-
-<ResponseField name="exit_on_error" type="boolean" default="true">
-  Whether to exit the process if there is an error parsing the Sync Streams/Sync Rules configuration.
-</ResponseField>
-
-<Note>
-  The top-level `sync_rules` key is a deprecated alias for `sync_config`. Use `sync_config` in new configurations.
-</Note>
-
-<Tip>
-  Referencing a separate file with `path:` keeps your main config tidy and makes editing Sync Streams easier.
-</Tip>
+The `sync_config` section points the Service at your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) definition, usually a separate file referenced with `path`:
 
 <CodeGroup>
-```yaml Separate File (Recommended)
-# sync-config.yaml (reference from main config with sync_config: path: sync-config.yaml)
+```yaml service.yaml
+sync_config:
+  path: sync-config.yaml
+```
+
+```yaml sync-config.yaml
 config:
   edition: 3
 streams:
@@ -660,32 +652,25 @@ streams:
     auto_subscribe: true
     query: SELECT * FROM todos WHERE owner_id = auth.user_id()
 ```
-
-```yaml Inline
-sync_config:
-  content: |
-    config:
-      edition: 3
-    streams:
-      todos:
-        auto_subscribe: true
-        query: SELECT * FROM todos WHERE owner_id = auth.user_id()
-```
 </CodeGroup>
 
-<Tip>
-  To verify that your Sync Streams are functioning correctly, inspect the contents of your bucket storage database. For example, if you are running MongoDB in Docker, run the following:
+<ResponseField name="path" type="string">
+  Path to the sync configuration YAML file. Ensure the file is available at that path, e.g. in the same directory as your main config or on a mounted volume.
+</ResponseField>
 
-  ```bash
-  docker exec -it {MongoDB container name} mongosh "mongodb://{MongoDB service host}/{MongoDB database name}" --eval "db.bucket_data.find().pretty()"
-  # Example
-  docker exec -it self-host-demo-mongo-1 mongosh "mongodb://localhost:27017/powersync_demo" --eval "db.bucket_data.find().pretty()"
-  ```
-</Tip>
+<ResponseField name="content" type="string">
+  The sync configuration inline as a string, as an alternative to `path`.
+</ResponseField>
+
+<ResponseField name="exit_on_error" type="boolean" default="true">
+  Whether to exit the process if there is an error parsing the sync configuration.
+</ResponseField>
+
+The top-level `sync_rules` key is a deprecated alias for `sync_config`. Use `sync_config` in new configurations.
 
 ### `client_auth`
 
-Authentication of client (application end user) connections is configured in the `client_auth` section. For more details, see [Client Authentication](/configuration/auth/overview).
+The `client_auth` section defines how the Service verifies your app's users when they connect to sync. Clients authenticate with JWTs, which the Service validates using the settings here. For more details, see [Client Authentication](/configuration/auth/overview).
 
 ```yaml service.yaml
 client_auth:
@@ -748,8 +733,10 @@ client_auth:
 
 ### `api`
 
+The `api` section protects the Service's admin API routes with access tokens, and sets limits that protect the Service from excessive load. Configure `tokens` if you use the [PowerSync CLI](/tools/cli) against this instance; the limits rarely need changing.
+
 <ResponseField name="tokens" type="string[]">
-  Access tokens for the service's admin API routes, provided by clients as a Bearer token. Authentication of these routes is disabled if no tokens are configured.
+  Access tokens for the Service's admin API routes, provided by clients as a Bearer token. Authentication of these routes is disabled if no tokens are configured.
 </ResponseField>
 
 <ResponseField name="parameters" type="object">
@@ -762,7 +749,7 @@ client_auth:
       Maximum concurrency when fetching data from storage. This should not be significantly more than `storage.max_pool_size`, otherwise it would block on the pool. Increasing this can significantly increase memory usage in some cases.
     </ResponseField>
     <ResponseField name="max_buckets_per_connection" type="number" default="1000">
-      Maximum number of buckets for each connection. More buckets increase latency and memory usage. While the actual number is controlled by your sync configuration, this hard limit ensures that the service errors instead of crashing when the sync configuration is misconfigured.
+      Maximum number of buckets for each connection. More buckets increase latency and memory usage. While the actual number is controlled by your sync configuration, this hard limit ensures that the Service errors instead of crashing when the sync configuration is misconfigured.
     </ResponseField>
     <ResponseField name="max_parameter_query_results" type="number" default="1000">
       Related to `max_buckets_per_connection`, but this limit applies directly to parameter query results, before they are converted into a unique set of buckets.
@@ -778,7 +765,7 @@ client_auth:
 
 ### `telemetry`
 
-See [Usage Reporting](/maintenance-ops/self-hosting/usage-reporting) and [Monitoring](/maintenance-ops/self-hosting/monitoring) for details.
+The `telemetry` section controls the operational metrics the Service shares with PowerSync and exposes for your own monitoring. See [Usage Reporting](/maintenance-ops/self-hosting/usage-reporting) and [Monitoring](/maintenance-ops/self-hosting/monitoring) for details.
 
 <ResponseField name="disable_telemetry_sharing" type="boolean" required>
   When `true`, disables sharing of anonymized usage metrics with the PowerSync telemetry service.
@@ -797,7 +784,7 @@ See [Usage Reporting](/maintenance-ops/self-hosting/usage-reporting) and [Monito
 Configures how health check status is exposed. See [Health Checks](/maintenance-ops/self-hosting/healthchecks) for details on the available probes and endpoints.
 
 <ResponseField name="probes" type="object">
-  Mechanisms for exposing health check data. If this is not configured, the service defaults to legacy behavior for backwards compatibility (filesystem probes always enabled, plus HTTP probes depending on the service mode). When `probes` is configured, each mechanism requires explicit opt-in.
+  Mechanisms for exposing health check data. If this is not configured, the Service defaults to legacy behavior for backwards compatibility (filesystem probes always enabled, plus HTTP probes depending on the Service mode). When `probes` is configured, each mechanism requires explicit opt-in.
   <Expandable title="properties">
     <ResponseField name="use_filesystem" type="boolean" default="false">
       Enables exposing health check status via filesystem files.
@@ -813,17 +800,21 @@ Configures how health check status is exposed. See [Health Checks](/maintenance-
 
 ### `migrations`
 
+The `migrations` section controls whether the Service updates its bucket storage database schema automatically when a new version starts up. Most deployments can keep the default automatic behavior.
+
 <ResponseField name="disable_auto_migration" type="boolean" default="false">
   When `true`, disables automatic storage database schema migrations on startup. Migrations can then be triggered externally by altering the container `command`.
 </ResponseField>
 
 ### `system`
 
+The `system` section configures how the Service itself runs. Currently this covers logging.
+
 <ResponseField name="logging" type="object">
   Service logging configuration.
   <Expandable title="properties">
     <ResponseField name="level" type="string" default="info">
-      Log level for the service logs: `silly`, `debug`, `verbose`, `http`, `info`, `warn`, or `error`. The `PS_LOG_LEVEL` environment variable takes precedence over this option.
+      Log level for the Service logs: `silly`, `debug`, `verbose`, `http`, `info`, `warn`, or `error`. The `PS_LOG_LEVEL` environment variable takes precedence over this option.
     </ResponseField>
     <ResponseField name="format" type="string">
       Log output format: `json` or `text`. Defaults to `text`, or to `json` when the `NODE_ENV` environment variable is set to `production`. The `PS_LOG_FORMAT` environment variable takes precedence over this option.
@@ -833,12 +824,14 @@ Configures how health check status is exposed. See [Health Checks](/maintenance-
 
 ### `metadata`
 
+Use `metadata` to attach custom labels to an instance, for example to tell your staging and production deployments apart in error reports.
+
 <ResponseField name="metadata" type="object">
-  Custom metadata key-value pairs (string values) for the service.
-</ResponseField>
+  Custom key-value pairs (string values) that identify this instance. When error reporting to Sentry is enabled by setting the `SENTRY_DSN` environment variable, these pairs are attached as tags to reported errors.
 
-### `parameters`
-
-<ResponseField name="parameters" type="object">
-  Global parameters (number, string, boolean or null values) that can be referenced in the sync configuration.
+  ```yaml service.yaml
+  metadata:
+    environment: staging
+    region: eu-west-1
+  ```
 </ResponseField>

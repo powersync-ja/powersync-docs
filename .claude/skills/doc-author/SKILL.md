@@ -78,6 +78,7 @@ The `description` and opening paragraph must not duplicate each other — the op
 | Postgres | PostgreSQL |
 | partial sync | dynamic partial replication |
 | PowerSync Service | powersync service |
+| the Service (short for the PowerSync Service) | the service |
 | Sync Rules | sync rules |
 | Sync Streams | sync streams |
 

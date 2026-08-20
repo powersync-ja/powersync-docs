@@ -154,8 +154,11 @@ Always use the left column. Never use the right.
 | Postgres | PostgreSQL |
 | partial sync | dynamic partial replication |
 | PowerSync Service | powersync service |
+| the Service (short for the PowerSync Service) | the service |
 | Sync Rules | sync rules |
 | Sync Streams | sync streams |
+
+When referring to the PowerSync Service in shortened form, write "the Service" (capitalized), never "the service". Generic services (a Docker Compose service, a third-party service) stay lowercase.
 
 ## Mintlify Components
 

@@ -96,7 +96,7 @@ The **Remote Storage Adapter** is an interface you implement to connect PowerSyn
 - `downloadFile(attachment)` - Download file from cloud storage
 - `deleteFile(attachment)` - Delete file from cloud storage
 
-In the JavaScript/TypeScript SDK, apps that transfer large files can replace this adapter with a streaming transport on React Native and Node.js; see [Transferring Large Files Without Buffering](#transferring-large-files-without-buffering).
+In the JavaScript SDKs, this adapter receives the full file as one in-memory buffer. On React Native and Node.js, you can replace the adapter with a streaming transport to move large files without this buffer. See [Transferring Large Files Without Buffering](#transferring-large-files-without-buffering).
 
 For security reasons, client-side implementations should use signed URLs:
 
@@ -2145,7 +2145,7 @@ var queue = new AttachmentQueue(new AttachmentQueueOptions
 ### Transferring Large Files Without Buffering
 
 <Note>
-This section applies to the JavaScript/TypeScript SDK only. In the Dart and Kotlin SDKs, the remote storage interface is already stream-based (`Stream`/`Flow`), so transfers can avoid buffering. The Swift SDK currently receives files as `Data` and has no streaming equivalent yet.
+This section applies to the JavaScript SDKs only. In the Dart and Kotlin SDKs, the remote storage interface is already stream-based (`Stream`/`Flow`), so transfers can avoid buffering. The Swift SDK currently receives files as `Data` and has no streaming equivalent yet.
 </Note>
 
 By default, the queue transfers files by buffering them through JS memory: the entire file is read into an `ArrayBuffer` before it is handed to the remote storage adapter, and the reverse for downloads. This works well for small files but limits the practical attachment size, particularly in React Native, where a large video can exhaust the JS heap on lower-end devices.
@@ -2224,40 +2224,15 @@ async function attachRecording(localUri: string, recordingId: string) {
 
 ### Custom Transport Adapters
 
-In the JavaScript/TypeScript SDK, you can also implement [`AttachmentTransportAdapter`](#transferring-large-files-without-buffering) yourself. A custom remote storage adapter can already customize where bytes go, but it always receives the file as a full in-memory buffer. A transport works from the file's path instead, which enables:
+In the JavaScript SDKs, you can also write your own [transport adapter](#transferring-large-files-without-buffering). A custom remote storage adapter always receives the file as one full in-memory buffer. A custom transport receives the file's path instead. This makes the following possible:
 
 - **Buffer-free transfers** - Let a native package transfer directly between the file system and the network, bypassing JS entirely, as the built-in transports do
 - **Resumable transfers** - The queue retries a failed operation by calling the transport again on the next sync interval. A transport built on a resumable protocol such as [tus](https://tus.io) or S3 multipart upload can continue from the last confirmed offset instead of restarting from zero. Downloads can resume a partial file with HTTP `Range` requests
 - **Encryption** - Encrypt files before upload and decrypt them after download for end-to-end encrypted attachments, without holding the whole file in memory
 
-```typescript
-import {
-  AttachmentRecord,
-  AttachmentTransportAdapter,
-  LocatedAttachmentRecord
-} from '@powersync/web';
+To build your own transport, implement the [`AttachmentTransportAdapter`](https://powersync-ja.github.io/powersync-js/common/interfaces/AttachmentTransportAdapter.html) interface. It has three methods: `upload(attachment)`, `download(attachment)`, and `delete(attachment)`. For a working reference, see the built-in [`NodeFileSystemTransportAdapter`](https://github.com/powersync-ja/powersync-js/blob/main/packages/node/src/attachments/NodeFileSystemTransportAdapter.ts), which streams with `fetch` and Node.js filesystem streams.
 
-class ResumableTransportAdapter implements AttachmentTransportAdapter {
-  async upload(attachment: LocatedAttachmentRecord): Promise<void> {
-    // attachment.localUri points at the source file. Transfer it to remote
-    // storage, e.g. in chunks that resume from the last confirmed offset
-    // if a previous attempt was interrupted.
-  }
-
-  async download(attachment: LocatedAttachmentRecord): Promise<void> {
-    // attachment.localUri is the destination path, assigned by the queue.
-    // Fetch the remote file into it.
-  }
-
-  async delete(attachment: AttachmentRecord): Promise<void> {
-    // Remove the file from remote storage.
-  }
-}
-```
-
-For a working reference, see the built-in [`NodeFileSystemTransportAdapter`](https://github.com/powersync-ja/powersync-js/blob/main/packages/node/src/attachments/NodeFileSystemTransportAdapter.ts), which streams with `fetch` and Node.js filesystem streams.
-
-Throwing from any method marks the operation as failed; the queue retries it on the next sync interval, subject to your [error handler](#error-handling).
+The queue retries failed operations on the next sync interval, subject to your [error handler](#error-handling).
 
 ### Custom Storage Adapters
 

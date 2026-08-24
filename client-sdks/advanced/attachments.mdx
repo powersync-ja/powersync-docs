@@ -1,6 +1,6 @@
 ---
 title: "Attachments / Files"
-description: "Sync file attachments like images and PDFs without storing them in the database, using an offline-first queue for uploads and downloads."
+description: "Sync file attachments like images and PDFs without storing them in the database, using a local queue that uploads and downloads files in the background."
 ---
 
 ## Introduction
@@ -15,7 +15,7 @@ Instead, PowerSync uses a **metadata + storage provider pattern**: sync small me
 
 - **Optimal performance** - Database stays small and fast
 - **Automatic queue management** - Background uploads/downloads with retry logic
-- **Offline-first support** - Local files available immediately, sync happens in background
+- **Works offline** - Local files available immediately, sync happens in background
 - **Cache management** - Automatic cleanup of unused files
 - **Platform flexibility** - Works across web, mobile, and desktop
 
@@ -69,7 +69,7 @@ Most demo applications use Supabase Storage as the storage provider, but the pat
 
 ### Attachment Table
 
-The **Attachment Table** is a local-only table that stores metadata about each file. It's not synced through PowerSync's Sync Streams/Rules - instead, it's managed entirely by the attachment queue on each device.
+The **Attachment Table** is a local-only table that stores metadata about each file. It's not synced through PowerSync's Sync Streams - Instead, it's managed entirely by the attachment queue on each device.
 
 **Metadata stored:**
 - `id` - Unique attachment identifier (UUID)
@@ -89,7 +89,7 @@ The **Attachment Table** is a local-only table that stores metadata about each f
 
 ### Remote Storage Adapter
 
-The **Remote Storage Adapter** is an interface you implement to connect PowerSync with your cloud storage provider. It's completely platform-agnostic - Implementations can use S3, Supabase Storage, Cloudflare R2, Azure Blob, or even IPFS.
+The **Remote Storage Adapter** is an interface you implement to connect PowerSync with your cloud storage provider. It's completely platform-agnostic - implementations can use S3, Supabase Storage, Cloudflare R2, Azure Blob, or even IPFS.
 
 **Interface methods:**
 - `uploadFile(fileData, attachment)` - Upload file to cloud storage
@@ -98,8 +98,8 @@ The **Remote Storage Adapter** is an interface you implement to connect PowerSyn
 
 In the JavaScript/TypeScript SDK, apps that transfer large files can replace this adapter with a streaming transport; see [Transferring Large Files Without Buffering](#transferring-large-files-without-buffering).
 
-**Common pattern:**
-For security reasons, client-side implementations should use **signed URLs**
+For security reasons, client-side implementations should use signed URLs:
+
 1. Request a signed upload/download URL from your backend
 2. Your backend validates permissions and generates a temporary URL
 3. Client uploads/downloads directly to storage using the signed URL
@@ -151,51 +151,11 @@ The `watchAttachments` queries are reactive and execute whenever the watched tab
 
 There are a few scenarios you might encounter:
 
-**Single Attachment Type**
+- **Single attachment type** - Watch one table. For example, if users have profile photos: `SELECT photo_id FROM users WHERE photo_id IS NOT NULL`
+- **Multiple attachment types, single queue** - Combine queries with SQL `UNION ALL` to watch attachments across different tables (e.g., `users.photo_id`, `documents.document_id`) in one queue
+- **Multiple attachment types, multiple queues** - Create a separate queue per attachment type. Each queue watches its own table(s) with a simpler query, allowing independent configuration, at the cost of some extra memory
 
-For a single attachment type, you watch one table. For example, if users have profile photos:
-
-```sql
-SELECT photo_id FROM users WHERE photo_id IS NOT NULL
-```
-
-**Multiple Attachment Types - Single Queue**
-
-You can watch multiple attachment types using a single queue by combining queries with SQL `UNION` or `UNION ALL`. This allows you to monitor attachments across different tables (e.g., `users.photo_id`, `documents.document_id`, `videos.video_id`) in one queue. Each attachment type may have different file extensions, which can be handled in the query by selecting the extension from your data model or using type-specific defaults.
-
-For example:
-
-```sql
-SELECT photo_id as id, photo_file_extension as file_extension
-FROM users 
-WHERE photo_id IS NOT NULL
-
-UNION ALL
-
-SELECT document_id as id, document_file_extension as file_extension
-FROM documents 
-WHERE document_id IS NOT NULL
-
-UNION ALL
-
-SELECT video_id as id, video_file_extension as file_extension
-FROM videos 
-WHERE video_id IS NOT NULL
-```
-
-Use `UNION ALL` when you want to include all rows (including duplicates), or `UNION` when you want to automatically deduplicate results. For attachment watching, `UNION ALL` is typically preferred since attachment IDs should already be unique.
-
-<Note>
-The UNION query executes whenever any of the watched tables change, which may have higher database overhead compared to watching a single table. Implementation examples are shown in the [Initialize Attachment Queue](#initialize-attachment-queue) section below.
-</Note>
-
-**Multiple Attachment Types - Multiple Queues**
-
-Alternatively, you can create separate queues for different attachment types. Each queue watches its own specific table(s) with simpler queries, allowing for independent configuration and management.
-
-<Note>
-Multiple queues may use more memory, but each queue watches simpler queries. Implementation examples are shown in the [Initialize Attachment Queue](#initialize-attachment-queue) section below.
-</Note>
+Implementation examples for all three are shown in the [Initialize Attachment Queue](#initialize-attachment-queue) section below.
 
 ## Implementation Guide
 
@@ -854,9 +814,11 @@ The `watchAttachments` callback is crucial - it tells the queue which files your
 
 #### Watching Multiple Attachment Types
 
-When watching multiple attachment types, you need to provide the `fileExtension` for each attachment. You can store this in your data model tables or derive it from other fields. Here are examples for both patterns:
+When watching multiple attachment types, you need to provide the `fileExtension` for each attachment. You can store this in your data model tables or derive it from other fields.
 
-**Pattern 2: Single Queue with UNION**
+**Single Queue with UNION ALL**
+
+Combining queries with `UNION ALL` lets one queue watch attachments across different tables. Use `UNION ALL` rather than `UNION`: attachment IDs should already be unique, so deduplication is unnecessary. The combined query executes whenever any of the watched tables change, which may have higher database overhead than watching a single table.
 
 <CodeGroup>
 
@@ -1082,7 +1044,9 @@ internal sealed class AttachmentRef
 
 </CodeGroup>
 
-**Pattern 3: Multiple Queues**
+**Multiple Queues**
+
+Alternatively, create separate queues for different attachment types. Each queue watches its own table(s) with a simpler query, allowing independent configuration and management, at the cost of some extra memory.
 
 <CodeGroup>
 
@@ -2517,16 +2481,8 @@ This method does the following:
 await attachmentQueue.verifyAttachments();
 ```
 
-```dart Flutter
-Coming soon, need to expose the function publicly
-```
-
 ```swift Swift
 try await attachmentQueue.waitForInit()
-```
-
-```kotlin Kotlin
-Coming soon, need to expose the function publicly
 ```
 
 ```csharp .NET
@@ -2534,6 +2490,10 @@ await queue.VerifyAttachmentsAsync();
 ```
 
 </CodeGroup>
+
+<Note>
+In the Flutter and Kotlin SDKs, this method is not yet exposed publicly. It still runs automatically during `startSync()`.
+</Note>
 
 ### Cache Management
 
@@ -2599,11 +2559,11 @@ await queue.ExpireCacheAsync();
 
 </CodeGroup>
 
-### Offline-First Considerations
+### Offline Behavior
 
-The attachment queue is designed for offline-first apps:
+The attachment queue keeps working in poor or no network conditions:
 
-- **Local-first operations** - Files are saved locally immediately, synced later
+- **Local saves** - Files are saved locally immediately, synced later
 - **Automatic retry** - Failed uploads/downloads retry when connection returns
 - **Queue persistence** - Queue state survives app restarts
 - **Conflict-free** - Files are immutable, identified by UUID

@@ -10,8 +10,6 @@ If a user syncs too many buckets, or you hit a `PSYNC_S2305` error, this page sh
 
 PowerSync enforces two limits per user, both with a default of 1,000. One is the number of unique buckets. The other is the number of parameter query results, counted before duplicates are removed. Exceeding either fails the sync with a `PSYNC_S2305` error. The fix is different for each, so start by finding out which one you hit from the error message. See [Limits](/sync/streams/bucket-count#limits) for the full difference.
 
-<BucketCountExampleApp />
-
 ## Diagnosing High Bucket Count
 
 ### Reading the Error Message First
@@ -57,13 +55,13 @@ New checkpoint: 800178 | write: null | buckets: 7 | param_results: 6 ["5#org_dat
 
 The [Sync Diagnostics Client](/tools/diagnostics-client) shows the buckets for one user. It does not load for a user who is over the limit, because that user's sync fails before the data loads. Use the instance logs and the error breakdown for those users. The client shows the bucket count, which may not be the limit you reached. Confirm the limit from the error message.
 
+<BucketCountExampleApp />
+
 ## Reducing Bucket Count
 
 Start with the strategy that matches your query pattern. Most high counts come from hierarchical or many-to-many data, where denormalizing the scope key gives the biggest reduction.
 
-<AccordionGroup>
-
-<Accordion title="Consolidate streams using multiple queries per stream">
+### Multiple Queries per Stream
 
 Use `queries` instead of separate streams to group related tables. All queries in a stream that filter the same way share one bucket per value. See [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream).
 
@@ -96,9 +94,7 @@ streams:
       - SELECT * FROM profiles WHERE user_id = auth.user_id()
 ```
 
-</Accordion>
-
-<Accordion title="Denormalize the scope key for hierarchical data">
+### Denormalizing the Scope Key
 
 This is the most effective fix for parent-child data. When chained queries through org → project → task create too many buckets, filter every table with the same top-level parameter, such as `org_id`. A bucket's key must be a column on the table you sync (see [The Partition Key Must Exist on the Row](#the-partition-key-must-exist-on-the-row) below). So this works only if the child tables have that column. If tasks only have `project_id`, add `org_id` to the tasks table.
 
@@ -129,9 +125,7 @@ streams:
       - SELECT * FROM tasks WHERE org_id IN user_orgs
 ```
 
-</Accordion>
-
-<Accordion title="Query the membership table directly instead of through it">
+### Querying the Membership Table Directly
 
 When a subquery or JOIN through a membership table creates N buckets, query the membership table directly with a direct auth filter. Use no subquery and no JOIN. You often need fields from the related table, such as the org name, alongside each membership row. Denormalize those fields onto the membership table so they are available without a JOIN.
 
@@ -151,9 +145,7 @@ streams:
     query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
 ```
 
-</Accordion>
-
-<Accordion title="Many-to-many via a JSON array column">
+### Many-to-Many via a JSON Array Column
 
 A join through a link table creates one bucket per row of the table you select from. For assets linked to projects through `project_assets`, you get one bucket per asset.
 
@@ -187,9 +179,7 @@ streams:
 
 The `INNER JOIN user_projects` syncs only assets that belong to at least one of the user's projects. The bucket key is the project ID, so the count matches the number of projects, not assets.
 
-</Accordion>
-
-<Accordion title="Restructure to use subscription parameters">
+### Subscription Parameters for On-Demand Sync
 
 Buckets are created per active subscription, not from every possible value. Use `subscription.parameter('project_id')` so the count is bounded by how many subscriptions the client has active.
 
@@ -214,10 +204,6 @@ streams:
 ```
 
 The client subscribes when the user opens a project and unsubscribes when they leave. This works only when the user does not need every record available offline at the same time.
-
-</Accordion>
-
-</AccordionGroup>
 
 ## Edge Cases and Gotchas
 

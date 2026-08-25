@@ -1,42 +1,22 @@
 ---
 title: "Bucket Count and Limits"
-description: "How Sync Streams create buckets, how to count them, and how to stay within the per-user bucket and parameter limits."
+description: "How your stream queries determine each user's bucket count, and the two per-user limits that cap it."
 sidebarTitle: "Bucket Count"
 ---
 
-PowerSync groups the rows a client syncs into internal partitions called buckets. Every user has a limit on how many buckets they can sync, and some query shapes create more buckets than others. This page explains how streams turn into buckets, how to count them, how to read the limits, and how to bring a high count back down.
+import BucketCountExampleApp from '/snippets/bucket-count-example-app.mdx';
 
-If you have hit a `PSYNC_S2305` error, jump to [Diagnosing High Bucket Count](#diagnosing-high-bucket-count).
+PowerSync groups the rows a client syncs into internal partitions called buckets. Every user has a limit on how many buckets they can sync, and some query patterns create more buckets than others. This page explains how Sync Streams turn into buckets, how to count them, and how to read the limits.
+
+Already syncing too many buckets, or hit a `PSYNC_S2305` error? See [Reducing Bucket Count](/sync/streams/reducing-bucket-count) to diagnose and fix it.
 
 ## What Is a Bucket?
 
-A bucket is a group of rows that PowerSync syncs together as one unit. When you define a stream, PowerSync splits the matching rows into buckets so it can sync each client the exact subset of data it needs. You do not create or name buckets yourself. PowerSync creates them for you based on your stream queries.
+A bucket is a group of rows that PowerSync syncs together as one unit. When you define a Sync Stream, PowerSync splits the matching rows into buckets so it can sync each client the exact subset of data it needs. You do not create or name buckets yourself. PowerSync creates them for you based on your stream queries.
 
-For the wider picture of why buckets exist and how they make sync efficient, see [Bucket System](/architecture/powersync-service#bucket-system). This page focuses understanding how many buckets does your configuration create, and how do you keep that number under control.
+For the wider picture of why buckets exist and how they make sync efficient, see [Bucket System](/architecture/powersync-service#bucket-system). This page focuses on understanding how many buckets your configuration creates and how to keep that number under control.
 
-## The Example App
-
-Every example on this page uses the same app. It has organizations, projects, tasks, assets, and documents.
-
-```mermaid
-erDiagram
-  users ||--o{ org_membership : has
-  orgs ||--o{ org_membership : has
-  orgs ||--o{ projects : has
-  projects ||--o{ tasks : has
-  projects ||--o{ project_assets : links
-  assets ||--o{ project_assets : links
-  orgs ||--o{ documents : has
-```
-
-Here is how the tables relate:
-
-- A user belongs to one or more organizations. The `org_membership` table links a `user_id` to an `org_id`.
-- Each project belongs to one organization through `org_id`. Each project also has a plain text `region` column such as `us-east`.
-- Each task belongs to one project through `project_id`.
-- Projects and assets link through the `project_assets` table.
-- Each document has an `owner_id`, a `shared_with` user, and an `org_id`.
-- The `categories` table is shared reference data. It has no owner and no links to the other tables, so it does not appear in the diagram above.
+<BucketCountExampleApp />
 
 ## How Sync Streams Create Buckets
 
@@ -159,7 +139,7 @@ streams:
       WHERE projects.org_id IN user_orgs
 ```
 
-This stream syncs tasks, but tasks have no `org_id`. They only have `project_id`. A bucket's key must be a column on the table you sync (see [The Partition Key Must Exist on the Row](#the-partition-key-must-exist-on-the-row)). So PowerSync keys these buckets on `project_id`, not `org_id`. It makes one bucket for each project.
+This stream syncs tasks, but tasks have no `org_id`. They only have `project_id`. A bucket's key must be a column on the table you sync (see [The Partition Key Must Exist on the Row](/sync/streams/reducing-bucket-count#the-partition-key-must-exist-on-the-row)). So PowerSync keys these buckets on `project_id`, not `org_id`. It makes one bucket for each project.
 
 Compare this to the subquery above. That stream syncs `projects`, which has `org_id`, so it keys on org. This stream syncs `tasks`, which only has `project_id`, so it keys on project. The table you sync decides the key.
 
@@ -187,6 +167,8 @@ The subquery, JOIN, and many-to-many examples above each run a *parameter lookup
 </Note>
 
 ## How Bucket Counts Combine
+
+Real streams often combine more than one filter. These examples show how the counts stack up, so you can spot the patterns that grow fastest.
 
 ### Two Filters Multiply
 
@@ -292,7 +274,7 @@ Two compile-time limits protect you from runaway expansion. A single stream can 
 
 ## Limits
 
-PowerSync limits how much a single user can sync. There are **two** limits. Both default to 1,000. And they both raise the same error, `PSYNC_S2305`. However, They measure different things, here's how to understand both.
+PowerSync limits how much a single user can sync. There are **two** limits. Both default to 1,000, and both raise the same error, `PSYNC_S2305`. They measure different things, so you need to understand both.
 
 | Limit | What it counts | Global buckets counted? |
 |---|---|---|
@@ -331,284 +313,20 @@ This is why a checkpoint log can read `buckets: 7 | param_results: 6`. One globa
 The parameter limit can stop a sync while the bucket count still looks safe. A user can fail with far fewer than 1,000 buckets, because their parameter lookups returned more than 1,000 rows. Always check both numbers.
 </Warning>
 
-### Sync Rules Compared to Sync Streams
-
-If you are moving from legacy [Sync Rules](/sync/rules/overview), this distinction is new. In Sync Rules, the two limits were effectively the same number: each parameter-query result became one bucket, so the counts matched. In [Sync Streams](/sync/streams/overview), queries can produce buckets and parameter rows at different rates, so the two limits can diverge.
-
-## Diagnosing High Bucket Count
-
-### Reading the Error Message First
-
-The `PSYNC_S2305` message tells you which limit you reached. The fix is different for each, so read it first.
-
-- `Too many buckets` means you reached the bucket limit. Reduce the number of unique buckets.
-- `Too many parameter query results` means you reached the parameter limit. Reduce the number of rows your parameter lookups return.
-
-```mermaid
-flowchart TD
-  E["PSYNC_S2305 error"] --> M{"Which message?"}
-  M -->|"Too many buckets"| Bk["Reduce unique buckets"]
-  M -->|"Too many parameter query results"| Pr["Reduce parameter rows"]
-  Bk --> D["Denormalize the scope key,<br/>or merge streams"]
-  Pr --> D
-```
-
-### The Contributor Breakdown
-
-The `PSYNC_S2305` log includes a breakdown of the streams that contribute the most.
-
-- For a bucket-limit error, it lists streams by bucket count, highest first.
-- For a parameter-limit error, it lists the streams that returned the most rows, and then the stream that reached zero budget. Each listed stream shows how many rows it returned. The failing stream instead shows how much budget was left when it failed.
-
-<Warning>
-For a parameter-limit error, the last stream in the breakdown is the one that ran when the budget reached zero. This stream is not always the cause. PowerSync adds up parameter results across streams in order. The last stream is only the one that crossed the line. Check every stream in the breakdown, not just the last one.
-</Warning>
-
-### Checkpoint Logs
-
-Checkpoint logs record the counts for each connection. Find them in your [instance logs](/maintenance-ops/monitoring-and-alerting). For example:
-
-```text
-New checkpoint: 800178 | write: null | buckets: 7 | param_results: 6 ["5#org_data|0[\"ef718ff3...\"]","5#org_data|1[\"1ddeddba...\"]", ...]
-```
-
-- `buckets` is the number of unique buckets for this connection.
-- `param_results` is the total number of parameter rows for this connection.
-- The array lists the bucket names. Each name already includes its parameter value. The list stops after 20 names.
-
-### Sync Diagnostics Client
-
-The [Sync Diagnostics Client](/tools/diagnostics-client) shows the buckets for one user. It does not load for a user who is over the limit, because that user's sync fails before the data loads. Use the instance logs and the error breakdown for those users. The client shows the bucket count, which may not be the limit you reached. Confirm the limit from the error message.
-
-## Reducing Bucket Count
-
-Start with the strategy that matches your query shape. Most high counts come from hierarchical or many-to-many data, where denormalizing the scope key gives the biggest reduction.
-
-<AccordionGroup>
-
-<Accordion title="Consolidate streams using multiple queries per stream">
-
-Use `queries` instead of separate streams to group related tables. All queries in a stream that filter the same way share one bucket per value. See [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream).
-
-**Before**: 5 separate streams, each with a direct `auth.user_id()` filter, create 5 buckets per user:
-
-```yaml
-streams:
-  user_settings:
-    query: SELECT * FROM settings WHERE user_id = auth.user_id()
-  user_prefs:
-    query: SELECT * FROM preferences WHERE user_id = auth.user_id()
-  user_org_list:
-    query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
-  user_region:
-    query: SELECT * FROM region_members WHERE user_id = auth.user_id()
-  user_profile:
-    query: SELECT * FROM profiles WHERE user_id = auth.user_id()
-```
-
-**After**: 1 stream with 5 queries creates 1 bucket per user:
-
-```yaml
-streams:
-  user_data:
-    queries:
-      - SELECT * FROM settings WHERE user_id = auth.user_id()
-      - SELECT * FROM preferences WHERE user_id = auth.user_id()
-      - SELECT * FROM org_membership WHERE user_id = auth.user_id()
-      - SELECT * FROM region_members WHERE user_id = auth.user_id()
-      - SELECT * FROM profiles WHERE user_id = auth.user_id()
-```
-
-</Accordion>
-
-<Accordion title="Denormalize the scope key for hierarchical data">
-
-This is the most effective fix for parent-child data. When chained queries through org → project → task create too many buckets, filter every table with the same top-level parameter, such as `org_id`. A bucket's key must be a column on the table you sync (see [Edge Cases](#the-partition-key-must-exist-on-the-row) below). So this works only if the child tables have that column. If tasks only have `project_id`, add `org_id` to the tasks table.
-
-**Before**: chained queries create 10 + 500 = 510 buckets for 10 orgs with 50 projects each. Projects and tasks share buckets because they use the same filter. Orgs use a different filter, so they add their own buckets:
-
-```yaml
-streams:
-  org_projects_tasks:
-    with:
-      user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
-      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
-    queries:
-      - SELECT * FROM orgs WHERE id IN user_orgs
-      - SELECT * FROM projects WHERE id IN user_projects
-      - SELECT * FROM tasks WHERE project_id IN user_projects
-```
-
-**After**: add `org_id` to the tasks table, then filter every table by org. This creates 10 buckets:
-
-```yaml
-streams:
-  org_projects_tasks:
-    with:
-      user_orgs: SELECT org_id FROM org_membership WHERE user_id = auth.user_id()
-    queries:
-      - SELECT * FROM orgs WHERE id IN user_orgs
-      - SELECT * FROM projects WHERE org_id IN user_orgs
-      - SELECT * FROM tasks WHERE org_id IN user_orgs
-```
-
-</Accordion>
-
-<Accordion title="Query the membership table directly instead of through it">
-
-When a subquery or JOIN through a membership table creates N buckets, query the membership table directly with a direct auth filter. Use no subquery and no JOIN. You often need fields from the related table, such as the org name, alongside each membership row. Denormalize those fields onto the membership table so they are available without a JOIN.
-
-**Before**: N org memberships create N buckets:
-
-```yaml
-streams:
-  org_data:
-    query: SELECT * FROM orgs WHERE id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
-```
-
-**After**: 1 bucket per user, with org fields denormalized onto `org_membership`:
-
-```yaml
-streams:
-  my_org_memberships:
-    query: SELECT * FROM org_membership WHERE user_id = auth.user_id()
-```
-
-</Accordion>
-
-<Accordion title="Many-to-many via a JSON array column">
-
-A join through a link table creates one bucket per row of the table you select from. For assets linked to projects through `project_assets`, you get one bucket per asset.
-
-Add a denormalized `project_ids` JSON array column to `assets`, maintained with database triggers. Then use `json_each()` to traverse it. This lets PowerSync key the bucket by project ID instead of asset ID.
-
-**Before**: one bucket per asset. 2,000 assets create 2,000 buckets:
-
-```yaml
-streams:
-  assets_in_projects:
-    with:
-      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
-    query: |
-      SELECT assets.* FROM assets
-      JOIN project_assets ON project_assets.asset_id = assets.id
-      WHERE project_assets.project_id IN user_projects
-```
-
-**After**: key by project. 50 projects create 50 buckets:
-
-```yaml
-streams:
-  assets_in_projects:
-    with:
-      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
-    query: |
-      SELECT assets.* FROM assets
-      INNER JOIN json_each(assets.project_ids) AS p
-      INNER JOIN user_projects ON p.value = user_projects.id
-```
-
-The `INNER JOIN user_projects` syncs only assets that belong to at least one of the user's projects. The bucket key is the project ID, so the count matches the number of projects, not assets.
-
-</Accordion>
-
-<Accordion title="Restructure to use subscription parameters">
-
-Buckets are created per active subscription, not from every possible value. Use `subscription.parameter('project_id')` so the count is bounded by how many subscriptions the client has active.
-
-**Before**: a subquery returns all of the user's projects. 50 projects create 50 buckets:
-
-```yaml
-streams:
-  project_tasks:
-    with:
-      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
-    query: SELECT * FROM tasks WHERE project_id IN user_projects
-```
-
-**After**: the client subscribes per project on demand. 3 open projects create 3 buckets:
-
-```yaml
-streams:
-  project_tasks:
-    with:
-      user_projects: SELECT id FROM projects WHERE org_id IN (SELECT org_id FROM org_membership WHERE user_id = auth.user_id())
-    query: SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id') AND project_id IN user_projects
-```
-
-The client subscribes when the user opens a project and unsubscribes when they leave. This works only when the user does not need every record available offline at the same time.
-
-</Accordion>
-
-</AccordionGroup>
-
-## Edge Cases and Gotchas
-
-### The Partition Key Must Exist on the Row
-
-A bucket's key must be a value that physically exists on a row of the table you sync. You cannot split a table into buckets by a column it does not have. This is why denormalizing the scope key onto child tables is the standard fix. If tasks only have `project_id`, you cannot key their buckets by `org_id` until you add `org_id` to the tasks table.
-
-### Subscription Parameters Choose Buckets, They Do Not Re-Partition Them
-
-A subscription parameter lets the client choose which existing buckets to sync. It does not change how those buckets are defined.
-
-For a parameter to select a bucket, its value must match a value on the row being synced. For example, each task has a `project_id`, so you can use that column to group tasks into project buckets:
-
-```yaml
-streams:
-  project_tasks:
-    query: SELECT * FROM tasks WHERE project_id = subscription.parameter('project_id')
-```
-
-Assets for example are different. An asset can belong to multiple projects, so the asset row does not have a single `project_id`. Passing a `project_id` as a subscription parameter therefore cannot make PowerSync group those assets by project. The asset row has no project ID to match against.
-
-If you want to sync assets by project, the asset row needs to contain a project reference first. For example, you could add a `project_ids` array column as described in [Reducing Bucket Count](#reducing-bucket-count).
-
-### Correlated Joins Behave Like Subqueries
-
-A correlated JOIN and an `IN (subquery)` compile to the same internal form. They create the same number of buckets. Rewriting one as the other does not reduce the count.
-
-### CTEs Cannot Reference Each Other
-
-Each CTE must be self-contained. A CTE cannot reference another CTE by name. If it does, the deploy fails. Inline the nested subquery instead. See [CTE limitations](/sync/streams/ctes#limitations).
-
-### Global Buckets Multiply Storage and Cost
-
-A stream with no filter creates one global bucket that every user syncs. Under `auto_subscribe: true`, every write to that table fans out to every user. This drives up synced data volume and cost. Scope global buckets carefully, and only mark truly shared reference data as global.
-
-### Bucket Storage Does Not Shrink When You Archive
-
-Buckets are append-only. Marking a row as archived does not remove it from bucket storage on its own. A row leaves storage only when it stops matching the data query, through a hard delete or a filter on the table's own column. Storage reclaims space during [compaction](/maintenance-ops/compacting-buckets). Filtering through a parent table does not shrink a child table's stored data.
-
-### Total Buckets Are Not the Same as Buckets Per User
+<Note>
+In legacy [Sync Rules](/sync/rules/overview), these two limits were effectively one number, because each parameter-query result became one bucket. In Sync Streams they can diverge.
+</Note>
+
+### Total Buckets vs Buckets Per User
 
 The 1,000 limit applies to each individual user, not to your whole instance. Your PowerSync Service can track millions of buckets in total, as long as each user syncs fewer than the limit. A large total bucket count is not a problem on its own.
 
-## Increasing the Limit
-
-Raise the limit only after you exhaust the reduction strategies above.
-
-Before you raise it, weigh the cost. Sync overhead scales roughly linearly with the number of buckets per user. Doubling the bucket count roughly doubles sync latency for a single operation. It also roughly doubles CPU and memory use on the server and the client. Many operations inside a single bucket scale much more efficiently than many buckets. The 1,000 default exists to encourage fewer, larger buckets and to protect the service from excessive counts.
-
-On PowerSync Cloud, you can request a higher limit on [Team and Enterprise](https://www.powersync.com/pricing) plans, up to 10,000. The limit applies per user, so your instance can still track far more buckets in total.
-
-For self-hosted deployments, set the limits under `api.parameters`:
-
-```yaml service.yaml
-api:
-  parameters:
-    max_buckets_per_connection: 5000
-    max_parameter_query_results: 5000
-```
-
-Set both. Raising one without the other still leaves you capped by the limit you did not change.
-
 ## Related Pages
 
+- [Reducing Bucket Count](/sync/streams/reducing-bucket-count) diagnoses and fixes a high bucket count.
 - [Writing Queries](/sync/streams/queries) covers the query syntax that determines your bucket count.
 - [Common Table Expressions (CTEs)](/sync/streams/ctes) covers shared filtering logic.
 - [Using Parameters](/sync/streams/parameters) covers auth, subscription, and connection parameters.
 - [Examples, Patterns & Demos](/sync/streams/examples) covers real-world stream shapes.
 - [Bucket System](/architecture/powersync-service#bucket-system) covers how buckets work internally.
-- [Troubleshooting](/debugging/troubleshooting#too-many-buckets-psync_s2305) covers the `PSYNC_S2305` error.
 - [Performance and Limits](/resources/performance-and-limits) lists the Service limits.

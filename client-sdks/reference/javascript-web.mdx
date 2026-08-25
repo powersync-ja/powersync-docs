@@ -488,22 +488,37 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
-#### 4. Multi-Threaded In-Memory SQLite Connection Pool
+#### VFS / Option Compatibility Matrix
+
+| VFS Type / Option         | Multi-Tab (Standard) | Multi-Tab (Safari/iOS) | Concurrent Reads | Best For                                       |
+| ------------------------- | -------------------- | ---------------------- | ---------------- | ---------------------------------------------- |
+| IDBBatchAtomicVFS         | ✅                   | ❌                     | ❌               | Broadest compatibility, minimal setup           |
+| OPFSCoopSyncVFS           | ✅                   | ✅                     | ❌               | Multi-tab + Safari/iOS support                  |
+| AccessHandlePoolVFS       | ❌                   | ❌                     | ❌               | Single-tab, single worker, access-handle OPFS   |
+| OPFSWriteAheadVFS         | ✅                   | ❌                     | ✅               | Chromium only; parallel reads via WAL + readers |
+| InMemoryVfs               | ✅                   | ❌                     | ❌               | Development, small data sizes                   |
+| InMemoryWriteAheadLogPool | ❌ (isolated per tab)| ❌ (isolated per tab)  | ✅               | Highly concurrent, non-persistent workloads; requires cross-origin isolation |
+
+
+**Note**: There are known issues with OPFS (all variants) when using Safari's incognito mode.
+
+
+### Multi-Threaded In-Memory SQLite Connection Pool
 
 Since version 2.2.0, the `@powersync/web` package provides an experimental, per-tab in-memory SQLite connection pool for highly concurrent query workloads.
-This is separate from the single-threaded WASQLiteVFS.InMemoryVfs option and is configured through `opened`, rather than `database.vfs`. Instead of writing files to OPFS, it uses `SharedArrayBuffer` to coordinate an in-memory database across workers.
+This is separate from the single-threaded `WASQLiteVFS.InMemoryVfs` option and is configured through `opened`, rather than `database.vfs`. Instead of writing files to OPFS, it uses `SharedArrayBuffer` to coordinate an in-memory database across workers.
 
 <Note>This setup is experimental and might change in the future.</Note>
 
 The pool creates `numWorkers` SQLite connections in dedicated web workers. One worker is the designated writer, while the remaining workers are used as additional readers. The writer can also serve reads while it is idle.
 
-Read-only transactions can execute in parallel, including while the writer appends changes to a custom in-memory write-ahead overlay. The database and write-ahead-log buffers are backed by growable `SharedArrayBuffers` shared across the workers. This parallelism benefits workloads with overlapping queries. It does not inherently make an individual sequential query faster, and additional workers increase startup time and memory usage.
+Read-only transactions can execute in parallel, including while the writer appends changes to a custom in-memory write-ahead overlay. The database and write-ahead-log buffers are backed by growable `SharedArrayBuffer` objects shared across the workers. This parallelism benefits workloads with overlapping queries. It does not inherently make an individual sequential query faster, and additional workers increase startup time and memory usage.
 
 Each pool instance is independent and belongs to one tab. Its data is not persisted or shared across tabs, and the application cannot assign it a database filename. Opening or refreshing a tab creates a fresh database that must be resynced. Any local writes that have not been uploaded are lost when the tab closes.
 
 This option requires cross-origin isolation and browser support for growable `SharedArrayBuffer``. Checkpoints briefly block other database access.
 
-In summary, this connection pool is primarily relevant when all of the following apply:
+This connection pool is primarily relevant when all of the following apply:
 
 1. You need highly concurrent, high-performance queries in your app.
 2. At the same time, the overall database size (or at least the actively synced part of the database) is relatively small, as it gets
@@ -526,20 +541,6 @@ export const db = new PowerSyncDatabase({
   }),
 });
 ```
-
-#### VFS Compatibility Matrix
-
-| VFS Type / Option         | Multi-Tab (Standard) | Multi-Tab (Safari/iOS) | Concurrent Reads | Best For                                       |
-| ------------------------- | -------------------- | ---------------------- | ---------------- | ---------------------------------------------- |
-| IDBBatchAtomicVFS         | ✅                   | ❌                     | ❌               | Broadest compatibility, minimal setup           |
-| OPFSCoopSyncVFS           | ✅                   | ✅                     | ❌               | Multi-tab + Safari/iOS support                  |
-| AccessHandlePoolVFS       | ❌                   | ❌                     | ❌               | Single-tab, single worker, access-handle OPFS   |
-| OPFSWriteAheadVFS         | ✅                   | ❌                     | ✅               | Chromium only; parallel reads via WAL + readers |
-| InMemoryVfs               | ✅                   | ❌                     | ❌               | Development, small data sizes                   |
-| InMemoryWriteAheadLogPool | ❌ (isolated per tab)| ❌ (isolated per tab)  | ✅               | Highly concurrent, non-persistent workloads; requires cross-origin isolation |
-
-
-**Note**: There are known issues with OPFS (all variants) when using Safari's incognito mode.
 
 ### Managing OPFS Storage
 

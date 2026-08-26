@@ -9,7 +9,7 @@ PowerSync syncs continuously in the background and [SyncStatus](/client-sdks/usa
 Checkpoint requests let you catch up on demand: you request a marker of the current server state, then wait until the local database has caught up to it. Waiting covers uploads as well as downloads: a request created after local writes confirms that those writes have been uploaded and their results have synced back (see [Relationship to Local Writes](#relationship-to-local-writes)).
 
 <Warning>
-Checkpoint requests are an alpha API and may change. Client support is currently available for Swift and requires PowerSync Service version 1.24.0 or later. Support for the JavaScript SDKs is [in progress](https://github.com/powersync-ja/powersync-js/pull/1072), and other SDKs will follow.
+Checkpoint requests are an alpha API and may change. Support requires PowerSync Service version 1.24.0 or later. Checkpoint requests are not currently available for the DotNet and Rust SDKs.
 </Warning>
 
 Example use cases include:
@@ -37,16 +37,37 @@ See [Consistency](/architecture/consistency) for more information about how Powe
 
 Before creating a checkpoint request:
 
-1. Run PowerSync Swift SDK v1.16.0 or later.
-2. Run PowerSync Service v1.24.0 or later.
-3. Connect with `checkpointMode` set to `.requests()`.
+1. Run PowerSync Service v1.24.0 or later.
+2. Opt-in to the checkpoint requests with the `checkpointMode` option when calling `connect()`.
 
-```swift
+<CodeGroup>
+```typescript JavaScript/TypeScript
+await db.connect(connector, { checkpointMode: 'requests' });
+```
+
+```dart Dart
+await db.connect(
+  connector: connector,
+  options: SyncOptions(checkpointMode: .requests()),
+);
+```
+
+```kotlin Kotlin
+database.connect(
+    connector,
+    options = SyncOptions(
+        checkpointMode = CheckpointMode.Requests(),
+    )
+)
+```
+
+```swift Swift
 try await database.connect(
     connector: connector,
     options: ConnectOptions(checkpointMode: .requests())
 )
 ```
+</CodeGroup>
 
 <Note>
     Checkpoint requests are currently opt-in while this feature is in alpha. Without this connect option, calling `requestCheckpoint()` throws an error. Checkpoint requests will be enabled by default in a future release.
@@ -56,25 +77,96 @@ try await database.connect(
 
 Create a checkpoint request, then wait for it to sync before reading the refreshed data:
 
-```swift
+<CodeGroup>
+```typescript JavaScript/TypeScript
+async function refreshLocalData() {
+  const checkpoint = await database.requestCheckpoint();
+  await checkpoint.waitForSync({ signal: AbortSignal.timeout(30_000) });
+}
+```
+
+```dart Dart
+Future<void> refreshLocalData() async {
+  final checkpoint = await database.requestCheckpoint();
+  await checkpoint.waitForSync(
+    abortTrigger: Future.pause(Duration(seconds: 30))
+  );
+}
+```
+
+```kotlin Kotlin
+suspend fun refreshLocalData() async throws {
+    val checkpoint = database.requestCheckpoint()
+    withTimeout(30.seconds) {
+        checkpoint.waitForSync()
+    }
+}
+```
+
+```swift Swift
 func refreshLocalData() async throws {
     let checkpoint = try await database.requestCheckpoint()
     try await checkpoint.waitForSync(timeout: 30)
     // Local queries now reflect server state from when the request was made.
 }
 ```
+</CodeGroup>
 
 `requestCheckpoint()` requires that the database is connected or connecting. The device must be online for the request to reach the PowerSync Service. If it is offline or the sync client is reconnecting, the call waits and continues once the Service is reachable.
 
 Creating the request has no timeout of its own, so it can stay suspended while the sync client retries its connection. Cancel the calling task if you need to stop waiting.
 
-The timeout passed to `waitForSync(timeout:)` only limits how long you wait for the checkpoint to sync and apply locally.
+Aborting a `waitForSync` call or configuring a timeout does not remove the checkpoint, it only limits how long your wait for the checkpoint to sync and apply locally.
 
 ## Handling Wait Failures
 
 Handle request creation and waiting errors separately when your app needs different recovery behavior:
 
-```swift
+<CodeGroup>
+```typescript JavaScript/TypeScript
+const signal = AbortSignal.timeout(30_000);
+
+try {
+  const checkpoint = await database.requestCheckpoint();
+  await checkpoint.waitForSync({ signal });
+} catch (e) {
+  if (signal.aborted) {
+    showRefreshMessage('The refresh timed out. Try again.');
+  } else {
+    showRefreshMessage(`Could not wait for checkpoint: ${e}`);
+  }
+}
+```
+
+```dart Dart
+try {
+  final checkpoint = await database.requestCheckpoint();
+  await checkpoint.waitForSync(
+    abortTrigger: Future.pause(Duration(seconds: 30))
+  );
+} on AbortException {
+  showRefreshMessage('The refresh timed out. Try again.');
+} catch (e) {
+  showRefreshMessage('Could not wait for checkpoint: $e');
+}
+```
+
+```kotlin Kotlin
+try {
+    val checkpoint = database.requestCheckpoint()
+    withTimeout(30.seconds) {
+        checkpoint.waitForSync()
+    }
+} catch (e: TimeoutCancellationException) {
+    showRefreshMessage("The refresh timed out. Try again.")
+} catch (e: CheckpointRequestException.Disconnected) {
+    showRefreshMessage("Reconnect before refreshing again.")
+} catch (e: Exception) {
+    // Other checkpoint exceptions
+}
+```
+
+```swift Swift
 do {
     let checkpoint = try await database.requestCheckpoint()
     try await checkpoint.waitForSync(timeout: 30)
@@ -86,6 +178,7 @@ do {
     showRefreshMessage(error.localizedDescription)
 }
 ```
+</CodeGroup>
 
 A request remains valid across a disconnect. After reconnecting with `.requests()`, you can call `waitForSync()` again on the same request. Discard existing request values after clearing the local PowerSync database because clearing it resets the persisted request state.
 
@@ -93,13 +186,38 @@ A request remains valid across a disconnect. After reconnecting with `.requests(
 
 ## Relationship to Local Writes
 
-PowerSync never applies a checkpoint while local writes are waiting to upload, so sync cannot revert your own pending changes. When `.requests()` mode is enabled, the PowerSync Client SDK maintains this guarantee with checkpoint requests: each time it finishes uploading the local write queue, it internally creates a request that captures a source position from after the upload completed. You do not need to call `requestCheckpoint()` for your own writes.
+PowerSync never applies a checkpoint while local writes are waiting to upload, so sync cannot revert your own pending changes. The PowerSync Client SDK maintains this guarantee with checkpoint requests: each time it finishes uploading the local write queue, it internally creates a request that captures a source position from after the upload completed. You do not need to call `requestCheckpoint()` for your own writes.
 
 `waitForSync()` considers a request complete when the same or a newer checkpoint request has been applied locally. This makes explicit requests safe to combine with pending writes. If you create a request while local writes are waiting to upload, it is not applied while they are pending; once the upload queue empties, the SDK's newer internal request supersedes it and captures a source position from after the upload. If you create the request after the SDK's internal request instead, it captures an even later position.
 
 In both cases, waiting on the request also waits for the pending upload and for its result to sync back. You can therefore write locally and wait for the uploaded result to return through sync:
 
-```swift
+<CodeGroup>
+```typescript JavaScript/TypeScript
+await database.execute('INSERT INTO tasks (id, description) VALUES (uuid(), ?)', ['Review the project plan']);
+const checkpoint = await database.requestCheckpoint();
+await checkpoint.waitForSync();
+```
+
+```dart Dart
+await database.execute(
+  'INSERT INTO tasks (id, description) VALUES (uuid(), ?)',
+  ['Review the project plan'],
+);
+final checkpoint = await database.requestCheckpoint();
+await checkpoint.waitForSync();
+```
+
+```kotlin Kotlin
+database.execute(
+    "INSERT INTO tasks (id, description) VALUES (uuid(), ?)",
+    listOf("Review the project plan")
+)
+val checkpoint = database.requestCheckpoint()
+checkpoint.waitForSync()
+```
+
+```swift Swift
 try await database.execute(
     sql: "INSERT INTO tasks (id, description) VALUES (uuid(), ?)",
     parameters: ["Review the project plan"]
@@ -109,6 +227,7 @@ let checkpoint = try await database.requestCheckpoint()
 try await checkpoint.waitForSync(timeout: 30)
 // The pending write has uploaded and its source state has synced locally.
 ```
+</CodeGroup>
 
 This behavior relies on `uploadData()` returning only after your backend has committed the uploaded changes to the source database. See [Writing Client Changes](/handling-writes/writing-client-changes#why-must-my-write-endpoint-be-synchronous) for the reason your write endpoint must be synchronous.
 
@@ -136,11 +255,65 @@ This comparison makes repeated and stale requests idempotent. It also handles se
 
 You can delete stored request records after an appropriate retention period. While a record exists, return its value during reconciliation so the SDK can resume from that value.
 
-### Swift Connector
+### Connector changes
 
-Make your existing connector conform to `CustomCheckpointRequestConnector` and forward the request to your application backend:
+To make the PowerSync client SDK post checkpoint requests to your backend instead of to the PowerSync Service,
+declare support for checkpoint requests on your backend connector:
 
-```swift
+- For JavaScript, implement the optional `postCheckpointRequest` method.
+- For Dart, mix in the `CustomCheckpointRequestConnector` class.
+- For Kotlin, implement `CustomCheckpointRequestConnector`.
+- For Swift, make your connector conform to `CustomCheckpointRequestConnector` 
+
+Forward the request to your application backend:
+
+<CodeGroup>
+```typescript JavaScript/TypeScript
+class MyBackendConnector implements PowerSyncBackendConnector {
+  // ... also implement fetchCredentials and uploadData
+
+  async postCheckpointRequest(clientId: string, requestId: string): Promise<string> {
+    const response = await MyBackendConnector.createCheckpointRequest(clientId, requestId);
+    return response.checkpointRequestId;
+  }
+}
+```
+
+```dart Dart
+final class MyBackendConnector extends PowerSyncBackendConnector
+    with CustomCheckpointRequestConnector {
+  // ... also implement fetchCredentials and uploadData
+
+  @override
+  Future<String> postCheckpointRequest(
+    String clientId,
+    String requestId,
+  ) async {
+    final response = await myBackend.createCheckpointRequest(
+      clientId,
+      requestId,
+    );
+    return response.checkpointRequestId;
+  }
+}
+```
+
+```kotlin Kotlin
+class MyBackendConnector: PowerSyncBackendConnector(), CustomCheckpointRequestConnector {
+    override suspend fun fetchCredentials(): PowerSyncCredentials? = TODO()
+    override suspend fun uploadData(database: PowerSyncDatabase) = TODO()
+
+    override suspend fun postCheckpointRequest(
+        clientId: String,
+        requestId: Long
+    ): Long {
+        val response = myBackend.createCheckpointRequest(clientId, requestId)
+        return response.checkpointRequestId
+    }
+}
+```
+
+```swift Swift
 extension BackendConnector: CustomCheckpointRequestConnector {
     func postCheckpointRequest(
         _ checkpointRequestId: Int64,
@@ -155,5 +328,11 @@ extension BackendConnector: CustomCheckpointRequestConnector {
     }
 }
 ```
+</CodeGroup>
 
 The connector must use your application's own authentication for this call because `postCheckpointRequest()` does not receive the PowerSync sync token.
+
+<Tip>
+Checkpoint ids are positive integers between 1 and 2⁶³ - 1 (inclusive). For compatibility with JavaScript numbers,
+the JavaScript and Dart client SDKs represent requests as strings.
+</Tip>

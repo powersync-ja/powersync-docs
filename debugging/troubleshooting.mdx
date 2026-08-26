@@ -13,24 +13,21 @@ description: "Diagnose and fix common PowerSync issues using logs, diagnostics, 
 
 This client-side error or similar typically occurs when PowerSync is used in conjunction with either another SQLite library or the standard system SQLite library. PowerSync is generally not compatible with multiple SQLite sources. If another SQLite library exists in your project dependencies, remove it if it is not required. In some cases, there might be other workarounds. For example, in Flutter projects, we've seen this issue with `sqflite 2.2.6`, but `sqflite 2.3.3+1` does not throw the same exception.
 
-### Too Many Buckets (`PSYNC_S2305`)
+### `PSYNC_S2305`: Too many buckets / Parameter query results
 
 PowerSync groups the data each user syncs into internal partitions called [buckets](/architecture/powersync-service#bucket-system). Each user has a limit on how many they can sync. When a user exceeds it, their sync fails with a `PSYNC_S2305` error in your Sync & API logs.
 
-Two limits sit behind this error, both with a [default of 1,000](/resources/performance-and-limits):
+This error is caused by one of two limits, both with a [default of 1,000](/resources/performance-and-limits):
 
 - **Buckets per connection**: the unique buckets a user syncs. The message reads `Too many buckets: N (limit of M)`.
 - **Parameter query results**: the rows your parameter lookups return, counted before duplicates are removed. The message reads `Too many parameter query results (limit of N)`.
 
-Read the message to see which limit you reached. The fix is different for each.
+Read the message to see which limit you reached, since the fix is different for each. Your logs also show where the count comes from:
 
-To diagnose:
+- The same `PSYNC_S2305` log entry includes a breakdown of the streams contributing the most. For a parameter-limit error, the last stream listed is the one that ran when the limit was reached. That stream is not always the cause, so check every stream in the breakdown.
+- Checkpoint logs record `buckets` and `param_results` for each connection, so you can see how close a user is to either limit. Find them in your [instance logs](/maintenance-ops/monitoring-and-alerting).
 
-- The `PSYNC_S2305` log includes a breakdown of the streams contributing the most. For a parameter-limit error, the last stream listed is the one that ran when the budget hit zero. That stream is not always the cause, so check every stream in the breakdown.
-- Checkpoint logs record `buckets` and `param_results` for each connection. Find them in your [instance logs](/maintenance-ops/monitoring-and-alerting).
-- The [Sync Diagnostics Client](/tools/diagnostics-client) shows a user's buckets, but it will not load for a user who is already over the limit, since their sync fails first.
-
-To diagnose and resolve this, see [Reducing Bucket Count](/sync/advanced/reducing-bucket-count). For how buckets are counted in the first place, see [Bucket Count](/sync/streams/bucket-count).
+To further diagnose and resolve this error, see [Reducing Bucket Count](/sync/advanced/reducing-bucket-count). For how buckets are generated and counted in the first place, see [Bucket Count](/sync/streams/bucket-count).
 
 ## Tools
 

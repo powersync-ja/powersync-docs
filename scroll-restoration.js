@@ -8,13 +8,13 @@
   // Mintlify scrolls this inner element, not window — don't switch to document.documentElement.
   const contentSelector = "#content-container";
   // Content height isn't ready immediately after nav; retry until layout settles.
-  const restoreDelays = [100, 300, 600, 900, 1200];
+  const scrollRestorationDelays = [100, 300, 600, 900, 1200];
   const replaceState = window.history.replaceState.bind(window.history);
 
   let contentContainer;
   let currentRoute = routeKey(window.location.href);
-  let restoreTimers = [];
-  let isRestoring = false;
+  let scrollRestorationTimers = [];
+  let isRestoringScrollPosition = false;
   // Next.js App Router stores internal state on history.state.__NA which we need to preserve when changing hash.
   let routerState = window.history.state?.__NA ? window.history.state : null;
 
@@ -33,6 +33,9 @@
     }
   }
 
+  // Mintlify seems to use history.replaceState for hash/heading links, which updates the URL
+  // fragment but drops Next.js App Router state (history.state.__NA).This function repairs the current entry
+  // before leaving so going back restores both the page and the anchor correctly.
   function fixHashHistoryEntry() {
     if (!routerState || window.history.state?.__NA) return;
 
@@ -43,7 +46,7 @@
     );
   }
 
-  function readSaved(route) {
+  function readScrollPosition(route) {
     try {
       const value = window.sessionStorage.getItem(storageKey(route));
       if (value === null) return null;
@@ -65,7 +68,7 @@
     }
   }
 
-  function writeSaved(route, position, hash) {
+  function writeScrollPosition(route, position, hash) {
     try {
       window.sessionStorage.setItem(
         storageKey(route),
@@ -76,11 +79,11 @@
     }
   }
 
-  function savePosition() {
+  function saveScrollPosition() {
     const container = document.querySelector(contentSelector);
-    if (!container || isRestoring) return;
+    if (!container || isRestoringScrollPosition) return;
 
-    writeSaved(
+    writeScrollPosition(
       routeKey(window.location.href),
       container.scrollTop,
       window.location.hash,
@@ -98,7 +101,7 @@
   }
 
   function scrollToHash(hash) {
-    cancelRestoration();
+    cancelScrollRestoration();
 
     if (!hash) {
       contentContainer?.scrollTo({ top: 0, behavior: "smooth" });
@@ -125,31 +128,31 @@
     const nextContainer = document.querySelector(contentSelector);
     if (!nextContainer || nextContainer === contentContainer) return;
 
-    contentContainer?.removeEventListener("scroll", savePosition);
+    contentContainer?.removeEventListener("scroll", saveScrollPosition);
     contentContainer = nextContainer;
-    contentContainer.addEventListener("scroll", savePosition, {
+    contentContainer.addEventListener("scroll", saveScrollPosition, {
       passive: true,
     });
   }
 
-  function cancelRestoration() {
-    restoreTimers.forEach(window.clearTimeout);
-    restoreTimers = [];
-    isRestoring = false;
+  function cancelScrollRestoration() {
+    scrollRestorationTimers.forEach(window.clearTimeout);
+    scrollRestorationTimers = [];
+    isRestoringScrollPosition = false;
   }
 
-  function restorePosition(route, staleContainer) {
-    const saved = readSaved(route);
+  function restoreScrollPosition(route, staleContainer) {
+    const saved = readScrollPosition(route);
     if (saved === null) return;
 
-    cancelRestoration();
-    isRestoring = true;
+    cancelScrollRestoration();
+    isRestoringScrollPosition = true;
 
-    for (const delay of restoreDelays) {
-      restoreTimers.push(
+    for (const delay of scrollRestorationDelays) {
+      scrollRestorationTimers.push(
         window.setTimeout(() => {
           if (routeKey(window.location.href) !== route) {
-            cancelRestoration();
+            cancelScrollRestoration();
             return;
           }
 
@@ -163,9 +166,9 @@
             behavior: "smooth",
           });
 
-          if (delay === restoreDelays.at(-1)) {
-            restoreTimers = [];
-            isRestoring = false;
+          if (delay === scrollRestorationDelays.at(-1)) {
+            scrollRestorationTimers = [];
+            isRestoringScrollPosition = false;
           }
         }, delay),
       );
@@ -180,7 +183,7 @@
     rememberRouterState();
 
     if (routeChanged) {
-      restorePosition(nextRoute, staleContainer);
+      restoreScrollPosition(nextRoute, staleContainer);
     } else {
       // The browser does not scroll Mintlify's inner container on hash-only popstate.
       scrollToHash(window.location.hash);
@@ -189,7 +192,7 @@
   }
 
   function beforeLeavePage() {
-    savePosition();
+    saveScrollPosition();
     fixHashHistoryEntry();
   }
 
@@ -227,14 +230,14 @@
   );
 
   for (const eventName of ["wheel", "touchstart", "pointerdown", "keydown"]) {
-    window.addEventListener(eventName, cancelRestoration, {
+    window.addEventListener(eventName, cancelScrollRestoration, {
       capture: true,
       passive: true,
     });
   }
 
   window.addEventListener("popstate", handleHistoryChange);
-  window.addEventListener("pagehide", savePosition);
+  window.addEventListener("pagehide", saveScrollPosition);
 
   window.addEventListener("pageshow", (event) => {
     rememberRouterState();
@@ -242,7 +245,7 @@
 
     const navigation = window.performance.getEntriesByType("navigation")[0];
     if (event.persisted || navigation?.type === "back_forward") {
-      restorePosition(routeKey(window.location.href));
+      restoreScrollPosition(routeKey(window.location.href));
     }
   });
 

@@ -16,8 +16,8 @@ PowerSync enforces two limits per user, both with a default of 1,000. One is the
 
 The `PSYNC_S2305` message tells you which limit you reached. The fix is different for each, so read it first.
 
-- `Too many buckets` means you reached the bucket limit. Reduce the number of unique buckets.
-- `Too many parameter query results` means you reached the parameter limit. Reduce the number of rows your parameter lookups return.
+- `Too many buckets` means you reached the bucket limit. Reduce the number of unique buckets. Any strategy below helps.
+- `Too many parameter query results` means you reached the parameter limit. Reduce the rows your parameter lookups return. Only some strategies help here: [Denormalizing the Scope Key](#denormalizing-the-scope-key) and [Querying the Membership Table Directly](#querying-the-membership-table-directly) cut the lookups themselves, so they lower both counts.
 
 ```mermaid
 flowchart TD
@@ -63,6 +63,8 @@ Start with the strategy that matches your query pattern. Most high counts come f
 
 ### Multiple Queries per Stream
 
+**Reduces:** bucket count.
+
 Use `queries` instead of separate streams to group related tables. All queries in a stream that filter the same way share one bucket per value. See [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream).
 
 **Before**: 5 separate streams, each with a direct `auth.user_id()` filter, create 5 buckets per user.
@@ -92,6 +94,8 @@ streams:
 
 ### Denormalizing the Scope Key
 
+**Reduces:** bucket count and parameter query results.
+
 This is the most effective fix for parent-child data. When chained queries through org → project → task create too many buckets, filter every table with the same top-level parameter, such as `org_id`. A bucket's key must be a column on the table you sync (see [The Partition Key Must Exist on the Row](#the-partition-key-must-exist-on-the-row) below). So this works only if the child tables have that column. If tasks only have `project_id`, add `org_id` to the tasks table.
 
 **Before**: chained queries create 10 + 500 = 510 buckets for 10 orgs with 50 projects each. Projects and tasks share buckets because they use the same filter. Orgs use a different filter, so they add their own buckets.
@@ -114,6 +118,8 @@ streams:
 
 ### Querying the Membership Table Directly
 
+**Reduces:** bucket count and parameter query results.
+
 When a subquery or JOIN through a membership table creates N buckets, query the membership table directly with a direct auth filter. Use no subquery and no JOIN. You often need fields from the related table, such as the org name, alongside each membership row. Denormalize those fields onto the membership table so they are available without a JOIN.
 
 **Before**: N org memberships create N buckets.
@@ -129,6 +135,8 @@ streams:
 ```
 
 ### Many-to-Many via a JSON Array Column
+
+**Reduces:** bucket count.
 
 A join through a link table creates one bucket per row of the table you select from. For assets linked to projects through `project_assets`, you get one bucket per asset.
 
@@ -150,6 +158,8 @@ streams:
 The `INNER JOIN user_projects` syncs only assets that belong to at least one of the user's projects. The bucket key is the project ID, so the count matches the number of projects, not assets.
 
 ### Subscription Parameters for On-Demand Sync
+
+**Reduces:** bucket count.
 
 Buckets are created per active subscription, not from every possible value. Use `subscription.parameter('project_id')` so the count is bounded by how many subscriptions the client has active.
 

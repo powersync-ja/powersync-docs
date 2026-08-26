@@ -97,6 +97,29 @@
     );
   }
 
+  function scrollToHash(hash) {
+    cancelRestoration();
+
+    if (!hash) {
+      contentContainer?.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    const fragment = hash.slice(1);
+    let decodedFragment = fragment;
+
+    try {
+      decodedFragment = decodeURIComponent(fragment);
+    } catch {
+      // Fall back to the literal fragment when the hash is malformed.
+    }
+
+    const target =
+      document.getElementById(decodedFragment) ??
+      document.getElementById(fragment);
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   // mintlify replaces #content-container with a new node when navigating; move the scroll listener to the new node.
   function bindContentContainer() {
     const nextContainer = document.querySelector(contentSelector);
@@ -159,7 +182,8 @@
     if (routeChanged) {
       restorePosition(nextRoute, staleContainer);
     } else {
-      // Same route, hash-only change — restore scroll from storage, just re-bind listener.
+      // The browser does not scroll Mintlify's inner container on hash-only popstate.
+      scrollToHash(window.location.hash);
       bindContentContainer();
     }
   }

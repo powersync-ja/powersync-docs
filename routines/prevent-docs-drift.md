@@ -20,8 +20,8 @@ sources:
   - https://github.com/powersync-ja/powersync-dashboard
 mcp_connections: none
 created: 2026-05-11
-routine_updated: 2026-08-13
-last_synced: 2026-08-27 
+routine_updated: 2026-08-31
+last_synced: 2026-08-31
 ---
 
 > Everything below the rule is the routine's prompt. See [README.md](./README.md) for how to change it.

@@ -2,7 +2,7 @@
 name: Prevent docs drift
 routine_id: trig_0168FuGVcgdCTwr7kp4uTnFK
 url: https://claude.ai/code/routines/trig_0168FuGVcgdCTwr7kp4uTnFK
-schedule: "0 6,12 * * *"        # UTC; 08:00 and 14:00 Africa/Johannesburg, daily
+schedule: "0 6,12 * * *" 
 environment: Default (env_01VavGkkeThcQLeR2o4nCgfJ, anthropic_cloud)
 model: not set (routine default)
 allowed_tools: [Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch]

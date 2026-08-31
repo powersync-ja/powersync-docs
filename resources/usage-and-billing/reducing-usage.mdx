@@ -1,0 +1,70 @@
+---
+title: "Reducing Usage"
+description: "Practical ways to lower the data synced and data hosted metrics on PowerSync Cloud."
+sidebarTitle: "Reducing Usage"
+---
+
+Two of the billed PowerSync Cloud metrics grow with how your app syncs, rather than with how much source data you have: data synced, the uncompressed bytes streamed from the PowerSync Service to clients, and data hosted, the bucket data stored for your instances. This page covers ways to reduce them, starting with changes that lower both metrics at once. To first find out where your usage comes from, see [Usage Troubleshooting](/resources/usage-and-billing/usage-and-billing-faq#usage-troubleshooting).
+
+## Where to Start
+
+### Syncing Only What the App Needs
+
+Every table, row and column selected by your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) is stored in buckets and downloaded by each device the query applies to, and global streams are downloaded by every device. Remove tables and columns the app does not use, and filter out rows the app no longer needs, such as archived or historical records. Selecting fewer columns reduces stored and downloaded sizes, although it does not reduce the number of sync operations.
+
+### Keeping Large Files Out of Synced Rows
+
+Large columns, such as base64-encoded files, long JSON documents or binary blobs, inflate every download of the rows that contain them. Store files in a storage provider like S3 or Supabase Storage and sync only small metadata records that reference them. The SDKs include [attachment helpers](/client-sdks/advanced/attachments) that manage uploads, downloads and local caching for this pattern.
+
+### Compacting and Defragmenting
+
+Buckets hold an operations history so that existing clients can download incremental changes. Over time that history grows, which increases hosted data and makes new installations download far more than the current data. Two maintenance operations trim it:
+
+- Compacting removes history that later operations have made redundant. PowerSync Cloud compacts all buckets automatically once per day, and you can trigger it manually from the instance's **Settings** view in the [Dashboard](https://dashboard.powersync.com/) or with the [CLI](/tools/cli). Self-hosted deployments can use the CLI as well, or run the `compact` command in the Docker image on a schedule.
+- Defragmenting handles what compacting cannot. The oldest remaining `PUT` operation in a bucket blocks compacting of everything after it, so buckets that mix rarely-changed rows with frequently-updated ones keep accumulating history. Defragmenting touches rows so the whole history can compact away, either via the **Defragment** button in the same **Settings** view or by updating rows on a schedule. The trade-off is that existing clients re-sync each touched row, so pick a frequency that fits your update patterns.
+
+If the [Sync Diagnostics Client](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app) shows far more operations than rows, defragmenting is likely to help. Where a bucket mixes frequently-updated rows with rows that rarely change, also consider splitting them into separate buckets, so the stable rows stop blocking compacting for the rest. [Compacting Buckets](/maintenance-ops/compacting-buckets) covers the mechanics, strategies and trade-offs in detail.
+
+### Reducing Bucket Fan-Out
+
+A row is stored and synced once for each bucket it belongs to, so streams that place the same rows in many buckets multiply both stored and downloaded volume. See [Reducing Bucket Count](/sync/advanced/reducing-bucket-count).
+
+## Reducing Data Synced
+
+Most excessive data synced comes from devices downloading the same data repeatedly, not from new data being created. Before optimizing queries, check whether your clients re-download data they already had.
+
+### Avoiding Unnecessary Full Re-Syncs
+
+A device that loses its local database has to download everything it syncs from scratch. A full download once after a fresh install is expected. The same device doing it repeatedly usually points to one of these causes:
+
+- The app calls `disconnectAndClear()` when a user signs out. This wipes the local database, so the next session starts from nothing. Use `disconnect()` instead, unless local data must be removed, for example when a different user can sign in on the same device.
+- Web clients run without persistent storage. When the browser cannot persist the database, such as in private browsing or when persistence is not configured, every session re-downloads everything.
+- App code deletes or recreates the database file as part of its own lifecycle.
+
+### Reconnect Loops
+
+A client that reconnects every few minutes downloads a small amount on every reconnection, and hundreds of reconnections a day add up. Open one `PowerSyncDatabase` per session and call `.connect()` once, rather than reconnecting on window focus changes or on every token refresh. To spot this pattern, search [Instance logs](/maintenance-ops/monitoring-and-alerting#instance-logs) for `"sync stream complete"` and look for the same user or client appearing in quick succession. See [Repetitive Syncing by the Same User](/resources/usage-and-billing/usage-and-billing-faq#repetitive-syncing-by-the-same-user) for troubleshooting steps.
+
+### On-Demand Data with Sync Streams
+
+Data that does not need to work offline does not have to live on every device. With Sync Streams, the app can [subscribe](/sync/streams/client-usage) to a stream only while the data is needed, for example while a specific screen is open. Streams with `auto_subscribe: true` behave like always-on buckets, so when migrating from Sync Rules you can keep everything auto-subscribed at first and move individual streams to on-demand subscriptions where it pays off.
+
+### Writes That Do Not Change Data
+
+PowerSync tracks changes at the row level. Any update to a synced row creates a new operation and syncs to every device that has the row, whether or not a value actually changed. Even `UPDATE mytable SET id = id` generates an operation for each affected row, and each operation also grows the history that compacting has to clean up. Batch jobs are a common source: a nightly job that rewrites a table causes every active device to re-download those rows the next day. Restrict such jobs to rows whose values actually change, for example with a `WHERE` clause that compares old and new values.
+
+### Deployments
+
+Deploying changes to Sync Streams recreates buckets, and existing clients re-sync the updated buckets. Batch your changes rather than deploying many small updates.
+
+## Reducing Data Hosted
+
+Data hosted covers the bucket data stored for your instances, including the history of operations. It can be larger than your source database, since history accumulates and one row can be stored in multiple buckets. The largest reductions come from the changes under [Where to Start](#where-to-start): syncing less data, keeping the operations history compacted, and reducing bucket fan-out.
+
+### Non-Production Instances
+
+Your plan's included usage applies to your organization as a whole, so staging and development instances draw from the same allowance as production. A staging instance that replicates the full production dataset can double your hosted data on its own. Point non-production instances at a smaller dataset where possible.
+
+## Still Seeing High Usage?
+
+If usage stays high after these changes, work through [Usage Troubleshooting](/resources/usage-and-billing/usage-and-billing-faq#usage-troubleshooting) to identify the source, or [contact us](/resources/contact-us) with what you found.

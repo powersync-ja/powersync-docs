@@ -11,6 +11,11 @@ This reference documents PowerSync error codes organized by component, with trou
 - **PSYNC_R0001**:
   Catch-all [Sync Config](/sync/overview) parsing error, if no more specific error is available
 
+- **PSYNC_R2201**:
+  A table or schema wildcard (`%`) is not supported by the configured source connector.
+  
+  Wildcard support is connector-specific. For example, SQL Server requires exact table and schema names, while some other connectors support table wildcards but not schema wildcards.
+
 ## PSYNC_Sxxxx: Service issues
 
 - **PSYNC_S0001**:
@@ -253,13 +258,32 @@ This reference documents PowerSync error codes organized by component, with trou
 ### PSYNC_S16xx: MSSQL replication issues
 
 - **PSYNC_S1601**:
-  A replicated source table's capture instance has been dropped during a polling cycle.
+  The CDC capture instance a replicated source table was bound to has been dropped.
   
   Possible causes:
   - CDC has been disabled for the table.
   - The table has been dropped, which also drops the capture instance.
   
-  Replication for the table will only resume once CDC has been re-enabled for the table.
+  Replication stops and requires a Sync Config deployment. Re-enabling CDC creates a new capture instance, which the existing replication process will not adopt.
+
+- **PSYNC_S1602**:
+  A table in the Sync Config is not ready to be replicated.
+  
+  Possible causes:
+  - CDC has not been enabled for the table.
+  - The table does not exist in the source database.
+  
+  For a table that has not been replicated by this deployment before, replication starts once the table exists and has CDC enabled, without a new Sync Config deployment.
+  
+  For a table this deployment was already replicating, re-enabling CDC is not enough: the new capture instance has a different object ID, so the next attempt fails with `PSYNC_S1601` until the Sync Config is redeployed.
+
+- **PSYNC_S1603**:
+  A replicated source table was dropped, renamed, recreated, or no longer matches the source identity selected by the current replication process.
+  
+  Replication stops because the table may still have unread changes. A Sync Config deployment is required to adopt the replacement. Existing replicated data is retained until then.
+
+- **PSYNC_S1604**:
+  MSSQL connection configuration error.
 
 ### PSYNC_S2xxx: Service API
 
@@ -346,12 +370,12 @@ This does not include auth configuration errors on the service.
   View the replicator logs to see if the Sync Streams/Rules are being processed.
 
 - **PSYNC_S2304**:
-  Maximum active concurrent connections limit has been reached.
+  Maximum active concurrent clients limit has been reached.
 
 - **PSYNC_S2305**:
-  Too many buckets.
+  Too many buckets, or too many parameter query results.
 
-  There is a limit on the number of buckets per active connection (default of 1,000). See [Too Many Buckets (Troubleshooting)](/debugging/troubleshooting#too-many-buckets-psync_s2305) for how to diagnose and resolve this, and [Performance and Limits](/resources/performance-and-limits) for the limit details.
+  This code covers two limits per active connection, both with a default of 1,000: the number of unique buckets (`Too many buckets`) and the number of parameter query results returned before deduplication (`Too many parameter query results`). Read the message to see which limit you reached, then see [Reducing Bucket Count](/sync/advanced/reducing-bucket-count) to diagnose and resolve this error.
 
 ### PSYNC_S24xx: Sync API errors - MongoDB Storage
 
@@ -397,4 +421,7 @@ This does not include auth configuration errors on the service.
   Sync Streams API disabled.
   
   When a Sync Streams/Rules file is configured, the dynamic Sync Streams API is disabled.
+
+- **PSYNC_S4106**:
+  Sync Config reprocess is blocked because another Sync Config is deploying.
 

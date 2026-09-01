@@ -3,7 +3,7 @@ title: "S3 Bucket Storage"
 description: "Learn when S3 bucket storage can improve initial sync and how to configure it for self-hosted deployments."
 ---
 
-S3 bucket storage is an optional way for PowerSync to store data that it has prepared for client sync. Instead of keeping all of this data in MongoDB, PowerSync can keep larger blocks in Amazon S3 or an S3-compatible object store.
+S3 bucket storage is an optional extension to MongoDB bucket storage. PowerSync keeps the metadata and small blocks in MongoDB, and can move larger blocks of prepared sync data to Amazon S3 or an S3-compatible object store.
 
 ## Why Use S3 Bucket Storage?
 
@@ -11,30 +11,25 @@ During an initial sync, a new or reinstalled client downloads all the data it su
 
 This benefit applies when data moves from the PowerSync Service to clients. It does not make the first replication from your source database into PowerSync faster. Your client connections and SDK configuration do not change.
 
-Object storage becomes part of the sync path. If PowerSync cannot read a required object, the affected client sync waits until object storage is available again.
+Because object storage becomes part of the sync path, an object-store outage can temporarily interrupt client sync. PowerSync Client SDKs reconnect and resume sync after access recovers.
 
 <Note>
   S3 bucket storage stores PowerSync's internal sync data. To store files uploaded by your application, use the separate [Attachments](/client-sdks/advanced/attachments) pattern.
 </Note>
 
-## Beta Status and Release Plan
+## Availability
 
 S3 bucket storage is [Beta](/resources/feature-status) in PowerSync Service v1.26.0. It uses storage version 4, which has a stable storage format. S3 bucket storage itself remains Beta.
 
 During the Beta, self-hosted deployments must opt in. Configure MongoDB bucket storage with both `object_storage` and storage version 4. Selecting version 4 without configuring `object_storage` keeps all bucket data in MongoDB. Version 4 is the latest stable storage version, but v1.26.0 continues to use version 2 by default.
 
-| Deployment | Beta availability |
-| --- | --- |
-| PowerSync Cloud | PowerSync manages the bucket storage, storage version, and any object store used by your instance. You do not create an S3 bucket or add S3 credentials. |
-| Self-hosted PowerSync | You provide an S3-compatible object store and enable it in the PowerSync Service configuration. The setup and operating instructions below apply to you. |
+The setup and operating instructions on this page apply to self-hosted PowerSync. PowerSync Cloud manages its bucket storage and storage version internally. You do not create an object-storage bucket or add object-storage credentials to a Cloud instance.
 
 **Postgres bucket storage is not supported.** This limitation applies only to the bucket storage used by a self-hosted PowerSync Service. You can use a Postgres source database when MongoDB provides the bucket storage.
 
-TODO: confirm when when storage version 4 will become the default
-
 ## How S3 Bucket Storage Works
 
-PowerSync prepares source data for client sync and groups it into [buckets](/architecture/powersync-service#bucket-system). Without S3 bucket storage, MongoDB holds all of this prepared data.
+PowerSync prepares source data for client sync and groups it into [buckets](/architecture/powersync-service#bucket-system). In the self-hosted configuration described on this page, MongoDB normally holds the prepared data as the bucket storage database. S3 bucket storage offloads larger blocks from MongoDB. Self-hosted deployments that use Postgres bucket storage follow a separate storage path and cannot enable this feature.
 
 When you enable S3 bucket storage:
 
@@ -55,9 +50,11 @@ You need:
 - An Amazon S3 bucket or compatible object store that the PowerSync Service can reach.
 - Permission to list the bucket and to read, write, and delete objects under the configured prefix.
 
+You can use S3 bucket storage with Sync Streams or legacy Sync Rules. It does not depend on which type of Sync Config selects the data.
+
 <Steps>
   <Step title="Prepare the Object Store">
-    Create a dedicated bucket, or choose a unique `prefix` for each PowerSync instance. This prevents one instance from reading or deleting another instance's files.
+    Create a dedicated bucket, or choose a unique `prefix` for each PowerSync instance. This prevents key collisions and prevents one instance's cleanup from deleting another instance's files. Use separate credentials or access policies if the instances must not be able to read each other's files.
 
     Disable object versioning on the bucket. PowerSync deletes files that it no longer needs. If versioning is enabled, the object store keeps old file versions and continues charging for their storage.
 
@@ -99,7 +96,7 @@ You need:
         query: SELECT * FROM lists WHERE owner_id = auth.user_id()
     ```
 
-    The first version 4 deployment reprocesses all data selected by that Sync Config. Clients keep using the current data until the new copy is ready. After the switch, they download the data they subscribe to again. Later changes can use [incremental reprocessing](/sync/advanced/incremental-reprocessing) to reprocess only changed streams when its requirements are met.
+    The first version 4 deployment reprocesses all data selected by that Sync Config. Clients keep using the current data until the new copy is ready. After the switch, they download the data they subscribe to again. Later changes can use [incremental reprocessing](/sync/advanced/incremental-reprocessing) to reuse unchanged compiled definitions when its requirements are met.
   </Step>
 </Steps>
 
@@ -144,23 +141,23 @@ You need:
   </Accordion>
 
   <Accordion title="Common Provider Settings">
-    S3-compatible providers differ in how they address buckets:
+    S3-compatible providers differ in how they address buckets. Use these as starting values and confirm them against your provider's documentation and your bucket configuration:
 
     | Provider | `endpoint` | `region` | `force_path_style` |
     | --- | --- | --- | --- |
     | Amazon S3 | Omit | Bucket region | `false` |
     | MinIO with local or basic addressing | MinIO endpoint | Usually `us-east-1` | `true` |
     | MinIO with wildcard DNS | MinIO endpoint | Usually `us-east-1` | `false` |
-    | Cloudflare R2 | Account endpoint | `auto` | `false` |
-    | DigitalOcean Spaces | Regional endpoint | `us-east-1` | `false` |
-    | Backblaze B2 | Regional endpoint | Account region | `false` |
-    | Wasabi | Regional endpoint | Bucket region | `true` |
+    | [Cloudflare R2](https://developers.cloudflare.com/r2/api/s3/api/) | Account endpoint | `auto` | `false` |
+    | [DigitalOcean Spaces](https://docs.digitalocean.com/products/spaces/reference/s3cmd/#test-the-credentials-with-an-aws-sdk) | Regional endpoint | `us-east-1` | `false` |
+    | [Backblaze B2](https://www.backblaze.com/docs/cloud-storage-call-the-s3-compatible-api) | Regional endpoint | Account region | `false` |
+    | [Wasabi](https://docs.wasabi.com/apidocs/rest-api-introduction) | Regional endpoint | Bucket region | `true` (recommended) |
 
-    Confirm these values with your provider before deploying them.
+    Wasabi supports both path-style and virtual-hosted-style requests, but recommends path-style requests for broader bucket-name compatibility. Backblaze B2 also supports both styles; use `true` for a bucket name containing periods because virtual-hosted-style HTTPS requests do not support those names.
   </Accordion>
 
   <Accordion title="Request Timeout Modes">
-    PowerSync stops stalled object-storage requests so that they do not block sync indefinitely. Choose `defaults_mode` based on where PowerSync runs:
+    PowerSync stops stalled object-storage operations so that they do not block sync indefinitely. Each mode controls the connection timeout, per-attempt request timeout, complete operation deadline across AWS SDK retries, and time allowed to wait for a concurrency slot. Choose `defaults_mode` based on where PowerSync runs:
 
     | Value | Use when |
     | --- | --- |
@@ -169,7 +166,7 @@ You need:
     | `cross-region` | PowerSync and object storage run in different regions. |
     | `mobile` | The connection has unusually high latency. |
 
-    If you do not set `defaults_mode`, PowerSync uses `AWS_DEFAULTS_MODE` when available and otherwise uses the `standard` behavior.
+    If you do not set `defaults_mode`, PowerSync uses `AWS_DEFAULTS_MODE` when available and otherwise uses the `standard` timeout profile. A timeout ends that operation and the current sync request. It does not keep one request open for the duration of an object-store outage.
   </Accordion>
 </AccordionGroup>
 

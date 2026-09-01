@@ -20,8 +20,8 @@ sources:
   - https://github.com/powersync-ja/powersync-dashboard
 mcp_connections: none
 created: 2026-05-11
-routine_updated: 2026-08-31
-last_synced: 2026-08-31
+routine_updated: 2026-09-01
+last_synced: 2026-09-01
 ---
 
 > Everything below the rule is the routine's prompt. See [README.md](./README.md) for how to change it.
@@ -52,11 +52,11 @@ You file issues only. You never write documentation copy, suggest phrasing, pres
 
   *Filed automatically by Claude Code (`<model>`). A human must verify the scope, prepare the docs PR, and publish it only once this update has been released.*
 
-## Step 1: Index Existing [Drift] Issues
+## Step 1: Index Existing [Divergence] Issues
 
 Build this index before anything else. Steps 2, 5, and 6 all read from it.
 
-Every `[Drift]` title ends with `(<repo> #<PR number>)`, and the body links the source PR. Enumerate with `list_issues` at `perPage` 50, paginating until exhausted: open issues, plus issues closed in the last 30 days. Record each issue's source PR references from its title and body.
+Every `[Divergence]` title ends with `(<repo> #<PR number>)`, and the body links the source PR. Issues filed before September 2026 use the legacy `[Drift]` prefix with the same format: index those too, and treat both prefixes identically everywhere an existing issue matters. New issues always use `[Divergence]`. Enumerate with `list_issues` at `perPage` 50, paginating until exhausted: open issues, plus issues closed in the last 30 days. Record each issue's source PR references from its title and body.
 
 `search_issues` is not trustworthy here. GitHub's issue search index is eventually consistent and intermittently returns nothing for issues that exist. Use it only to supplement the enumeration; an empty search result is never proof that no duplicate exists.
 
@@ -139,7 +139,7 @@ When you can't tell whether two items are the same feature, comment on the exist
 
 A PR carrying only Tier 2 items still gets an issue, with "None identified." under high priority. That is a normal outcome, not an exception.
 
-Title: `[Drift] <tense-neutral description> (<source repo> #<PR number>)`
+Title: `[Divergence] <tense-neutral description> (<source repo> #<PR number>)`
 
 Body:
 
@@ -159,7 +159,7 @@ Body:
 
 ## Step 6: Sweep Open Issues for Status Changes
 
-For each open `[Drift]` issue in your index, pull every source PR URL from its body and comments and check each PR's current state. Post a status comment only when the state has changed since filing and no `[Status Update]` comment for that PR URL already exists.
+For each open issue in your index, pull every source PR URL from its body and comments and check each PR's current state. Post a status comment only when the state has changed since filing and no `[Status Update]` comment for that PR URL already exists.
 
 ```
 **[Status Update]** Source PR <link> is now <merged on YYYY-MM-DD | closed without merge on YYYY-MM-DD>.

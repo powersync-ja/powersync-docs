@@ -120,7 +120,7 @@ Below are the most commonly used components. For full props and all 24 component
 
 ### Tabs and code groups
 
-```mdx
+````mdx
 <Tabs>
   <Tab title="npm">
     ```bash
@@ -133,9 +133,9 @@ Below are the most commonly used components. For full props and all 24 component
     ```
   </Tab>
 </Tabs>
-```
+````
 
-```mdx
+````mdx
 <CodeGroup>
 
 ```javascript example.js
@@ -147,7 +147,7 @@ greeting = "Hello, world!"
 ```
 
 </CodeGroup>
-```
+````
 
 ### Cards and columns
 

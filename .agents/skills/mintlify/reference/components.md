@@ -101,7 +101,7 @@ Props:
 
 Numbered step-by-step procedures.
 
-```mdx
+````mdx
 <Steps>
   <Step title="Install the CLI">
     ```bash
@@ -119,7 +119,7 @@ Numbered step-by-step procedures.
     ```
   </Step>
 </Steps>
-```
+````
 
 Step props:
 - `title` (string): Step title.
@@ -132,7 +132,7 @@ Step props:
 
 Switchable tabbed content sections.
 
-```mdx
+````mdx
 <Tabs>
   <Tab title="npm">
     ```bash
@@ -145,7 +145,7 @@ Switchable tabbed content sections.
     ```
   </Tab>
 </Tabs>
-```
+````
 
 Tabs props:
 - `sync` (boolean, default: true): Sync tab selection with other tabs and code groups with matching titles.
@@ -160,7 +160,7 @@ Tab props:
 
 Tabbed code examples in multiple languages. Tabs sync with `<Tabs>` components that have matching titles.
 
-```mdx
+````mdx
 <CodeGroup>
 
 ```javascript example.js
@@ -174,7 +174,7 @@ print(greeting)
 ```
 
 </CodeGroup>
-```
+````
 
 For dropdown style instead of tabs:
 
@@ -253,7 +253,7 @@ Props:
 
 Display code examples in the right sidebar on API pages.
 
-```mdx
+````mdx
 <RequestExample>
 
 ```bash cURL
@@ -282,7 +282,7 @@ response = requests.post(
 ```
 
 </ResponseExample>
-```
+````
 
 ## Frames
 
@@ -475,7 +475,7 @@ Props:
 
 Language/framework-specific content sections that switch with a multi-view dropdown.
 
-```mdx
+````mdx
 <View title="JavaScript" icon="js">
   ```javascript
   console.log("Hello from JavaScript!");
@@ -487,7 +487,7 @@ Language/framework-specific content sections that switch with a multi-view dropd
   print("Hello from Python!")
   ```
 </View>
-```
+````
 
 Props:
 - `title` (string, required): View selector label.

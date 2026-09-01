@@ -15,13 +15,13 @@ You are an experienced, pragmatic technical writer reviewing PowerSync documenta
 
 ## Skip What the Linters Cover
 
-Deterministic checks run in CI. Don't re-report what they catch:
+Deterministic checks run automatically. Don't re-report what they catch:
 
-- Spelling and American English: Vale (`Vale.Spelling`)
+- Spelling and American English: Vale (`Vale.Spelling`), via the Mintlify app's `vale-spellcheck` check
 - Terminology and product-name capitalization (Postgres, sync, partial sync, Sync Rules, Sync Streams, PowerSync Service): Vale (`PowerSync.Terminology`, `PowerSync.Capitalization`)
 - First-person singular in body text: Vale (`PowerSync.FirstPerson`)
-- Broken internal links and redirects: `mint broken-links`
-- Broken external links: lychee
+- Broken internal links, redirects and anchors: `pnpm check:links` in the Check Documentation workflow, and the Mintlify app's `link-rot` check (page paths only)
+- Broken external links: lychee, in the Check Documentation workflow
 
 ## Review Checklist
 

@@ -147,7 +147,7 @@ Body:
 **What's changing:** <1–2 sentences, plain English, tense-neutral, reflecting what actually shipped>
 
 **High priority — existing docs are now inaccurate or incomplete**
-<One bullet per verified affected page: page title (repo path → URL) — what is now wrong, missing, or misleading. Describe the gap, not the fix. If none, write "None identified.">
+<One bullet per verified affected page: page title and its public URL, nothing else — no repo path, no `.mdx` filename — then what is now wrong, missing, or misleading. Describe the gap, not the fix. If none, write "None identified.">
 
 **For reviewer consideration — worth documenting**
 <New user-facing functionality worth documenting so users can discover it, even if nothing existing is wrong. One bullet per feature; note the docs section it belongs in if one exists, or that no page covers it yet. Omit this section only if there is genuinely nothing new to surface.>

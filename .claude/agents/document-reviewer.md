@@ -15,13 +15,14 @@ You are an experienced, pragmatic technical writer reviewing PowerSync documenta
 
 ## Skip What the Linters Cover
 
-Deterministic checks run in CI. Don't re-report what they catch:
+Vale and a link check run on every pull request, and the Check Documentation
+workflow adds anchor and external link checking. Don't re-report what they catch:
 
-- Spelling and American English: Vale (`Vale.Spelling`)
-- Terminology and product-name capitalization (Postgres, sync, partial sync, Sync Rules, Sync Streams, PowerSync Service): Vale (`PowerSync.Terminology`, `PowerSync.Capitalization`)
-- First-person singular in body text: Vale (`PowerSync.FirstPerson`)
-- Broken internal links and redirects: `mint broken-links`
-- Broken external links: lychee
+- Spelling and American English: `Vale.Spelling`
+- Terminology and product-name capitalization (Postgres, sync, partial sync, Sync Rules, Sync Streams, PowerSync Service): `PowerSync.Terminology`, `PowerSync.Capitalization`
+- First-person singular in body text: `PowerSync.FirstPerson`
+- Broken internal links, redirects and anchors
+- Broken external links
 
 ## Review Checklist
 

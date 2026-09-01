@@ -58,16 +58,18 @@ streams:
 
 ## Storage Version
 
-The PowerSync Service stores replicated bucket data in [bucket storage](/architecture/powersync-service#bucket-storage). That data uses a storage version that can evolve when you deploy new Sync Streams or Sync Rules. This versioning approach avoids large upfront migrations on existing bucket data when the Service introduces bigger storage changes. Each time your sync config is deployed and processed, the bucket data written for that deployment uses a specific storage version.
+A storage version tells the PowerSync Service how to organize prepared sync data in the [bucket storage database](/architecture/powersync-service#bucket-storage).
+
+Changing the version does not rewrite the current data in place. When you next deploy the Sync Config, PowerSync prepares a new copy using the selected version. Clients continue using the current copy until the new one is ready. This avoids taking the instance offline for a bucket storage migration.
 
 ### Optional `config.storage_version`
 
-You can pin the bucket storage version by setting it under the `config` block:
+You can choose the bucket storage version in the `config` block:
 
 ```yaml
 config:
   edition: 3
-  storage_version: 2 # version 2 (stable) and 3 (unstable) are currently supported
+  storage_version: 4
 
 streams:
   todos:
@@ -76,18 +78,33 @@ streams:
 
 ### When to Set `storage_version` Explicitly
 
-In most deployments you can omit `storage_version`. The PowerSync Service then uses the latest stable storage version it supports. You should only set this field if you need more control, e.g.:
+When you omit `storage_version`, the PowerSync Service uses its configured default. Self-hosted MongoDB bucket storage defaults to version 2 unless you set `storage.default_storage_version` in `service.yaml`. PowerSync Cloud manages this setting for you.
 
-1. Service downgrade: If you need to run an older Service version that only supports up to a given storage version, deploy sync config with that `storage_version`, wait until reprocessing for that deployment has finished, then downgrade the Service.
-2. Experiments: Opt into an odd, unstable storage version in non-production environments.
-3. Delaying a storage upgrade: Change other sync config while keeping bucket data on an older stable storage version until you are ready for the newer format.
+Set `storage_version` when you need to:
 
-### Stable and Experimental Versions
+- Use [incremental reprocessing](/sync/advanced/incremental-reprocessing) or [S3 bucket storage](/configuration/powersync-service/s3-bucket-storage), which require version 4.
+- Keep an existing Sync Config on version 2 while you prepare for the version 4 deployment.
+- Prepare for a Service downgrade. Select a version supported by the older Service, deploy the Sync Config, and wait for the new copy to finish before downgrading.
 
-The service distinguishes stable and experimental storage versions as follows:
+For self-hosted deployments, you can make version 4 the default for newly deployed Sync Configs:
 
-- Even numbers (for example `2`, `4`) denote stable formats. Once a stable version is supported, newer Service releases are expected to keep supporting it until it is officially deprecated.
-- Odd numbers (for example `3`) denote unstable formats. The layout may change without notice and support may be removed in a future release. Use odd versions only for testing, not production.
+```yaml service.yaml
+storage:
+  type: mongodb
+  uri: !env PS_MONGO_STORAGE_URI
+  default_storage_version: 4
+```
+
+Changing this setting affects only later Sync Config deployments. Redeploy an existing config to move it to version 4. The first version 4 deployment reads all selected source data and prepares a new copy.
+
+### Supported Stable Versions
+
+| Version | Bucket storage | Behavior |
+| --- | --- | --- |
+| `2` | MongoDB or Postgres | Previous stable format. |
+| `4` | MongoDB | Can improve initial sync performance with S3 bucket storage and limit reprocessing after Sync Config changes. Postgres bucket storage does not support version 4. |
+
+A stable format means future Service versions can continue reading data written with that version until it is officially deprecated. This is separate from feature maturity: incremental reprocessing and S3 bucket storage are currently in [Beta](/resources/feature-status).
 
 ## Supported Fixes
 

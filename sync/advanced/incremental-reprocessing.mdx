@@ -1,0 +1,119 @@
+---
+title: "Incremental Reprocessing"
+description: "Deploy Sync Config changes with less source database processing and fewer repeated client downloads."
+---
+
+When you deploy a Sync Config change, PowerSync may need to read rows from your source database again and prepare new sync data. **Incremental reprocessing** limits this reprocessing to the Sync Streams you changed. This can shorten deployment time, reduce load on the source database, and prevent clients from downloading unchanged data again.
+
+Incremental reprocessing applies to Sync Config deployments. Normal inserts, updates, and deletes already flow through ongoing replication without rebuilding the config.
+
+For example, if your config contains ten streams and you change one, PowerSync keeps the prepared data for the other nine. It reads the source data needed for the changed stream, then switches to the new config when that data is ready. Clients keep syncing normally during reprocessing.
+
+## Beta Status and Release Plan
+
+Incremental reprocessing is [Beta](/resources/feature-status) in PowerSync Service v1.26.0. It requires a MongoDB source database, MongoDB bucket storage, Sync Streams edition 3, and [storage version 4](/sync/advanced/compatibility#storage-version).
+
+During the Beta, self-hosted deployments must opt in by selecting storage version 4. Version 4 has a stable storage format, but v1.26.0 continues to use version 2 by default. There is no separate incremental reprocessing setting. After the first version 4 deployment finishes, later eligible Sync Config deployments use incremental reprocessing automatically.
+
+For PowerSync Cloud, PowerSync manages the storage version. You do not configure `default_storage_version` for a Cloud instance.
+
+**Postgres support is not yet available.** A Postgres source database cannot use incremental reprocessing, even on PowerSync Cloud. Self-hosted deployments also cannot use it with Postgres bucket storage. These configurations continue to reprocess all data selected by a new Sync Config.
+
+TODO: confirm when when storage version 4 will become the default
+
+{/* TODO: Confirm the PowerSync Cloud Beta availability, the post-Beta default, and the target releases for Postgres source and bucket storage support. */}
+
+## What Happens During a Deployment
+
+PowerSync keeps the current Sync Config active while it prepares your changes:
+
+1. It checks which streams and event definitions changed.
+2. It keeps the existing sync data for anything unchanged.
+3. It reads the source rows needed for new or changed streams.
+4. It switches to the new config after that data is ready.
+5. It deletes sync data that the old config no longer needs.
+
+Clients continue to use the current config until step 4. They never see a partly processed config.
+
+## Reprocessing by Change Type
+
+| Config change | What PowerSync does |
+| --- | --- |
+| Add a stream or query | Reads the source rows selected by the new query. |
+| Change selected columns, filters, source tables, or parameters | Reads matching source rows again and prepares new data for the changed stream. |
+| Remove a stream or query | Stops using its sync data after the new config becomes active. No new source read is needed for the removal. |
+| Rename a stream | Treats the renamed stream as new and rebuilds its data. |
+| Change only SQL formatting or capitalization | Usually keeps the existing data because the query behavior did not change. |
+
+PowerSync favors correctness when it compares the old and new queries. If it cannot tell that two queries produce the same sync data, it rebuilds the affected data.
+
+<Note>
+  Reordering queries within a stream can sometimes make PowerSync treat the stream as changed. Keep query order stable unless you need to change it.
+</Note>
+
+## What Clients Download
+
+Clients do not download unchanged streams again. They continue from their existing sync position for those streams.
+
+After the new config becomes active, clients download data for new or changed streams that they subscribe to. PowerSync keeps the old and new versions of changed data while it prepares the deployment, so bucket storage can grow temporarily. The old data is removed after the switch.
+
+If a change affects every stream, PowerSync may still need to read and prepare almost all selected data again.
+
+## When PowerSync Rebuilds Everything
+
+PowerSync must read all data selected by the Sync Config again when it cannot safely reuse the existing copy. This happens when:
+
+- Your setup does not meet the requirements above. For example, your source database or bucket storage database is not MongoDB, or your Sync Streams do not use edition 3.
+- You move an existing Sync Config to storage version 4 for the first time.
+- MongoDB has already deleted source changes that PowerSync still needs to read.
+- You explicitly restart processing or use the **Defragment** action.
+
+During a full rebuild, clients keep using the current data until the new copy is ready. After the switch, clients download all data they subscribe to again. This can temporarily increase source database load, bucket storage, and data synced to clients.
+
+Use [bucket compacting](/maintenance-ops/compacting-buckets) for routine cleanup. Use defragmenting or forced reprocessing only when you intend to rebuild data or PowerSync has lost access to the required MongoDB change history.
+
+## Custom Checkpoint Events
+
+The same behavior applies to `event_definitions` used by [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints):
+
+- An unchanged event keeps its existing checkpoint state.
+- A new or changed event reads the source table again.
+- Clients continue using checkpoints from the current event until the new Sync Config is ready.
+
+This prevents checkpoint data from a partly processed config from reaching clients.
+
+## Enabling Incremental Reprocessing
+
+Set MongoDB bucket storage to use storage version 4 for newly deployed Sync Configs:
+
+```yaml service.yaml
+storage:
+  type: mongodb
+  uri: !env PS_MONGO_STORAGE_URI
+  default_storage_version: 4
+```
+
+Use Sync Streams edition 3. You can also select storage version 4 in the Sync Config so that the requirement is visible in the same file:
+
+```yaml sync-config.yaml
+config:
+  edition: 3
+  storage_version: 4
+
+streams:
+  user_tasks:
+    auto_subscribe: true
+    query: SELECT * FROM tasks WHERE owner_id = auth.user_id()
+```
+
+The first version 4 deployment prepares all selected data. Later deployments can reuse data from that deployment.
+
+## Checking What a Deployment Rebuilt
+
+The [replication logs](/maintenance-ops/monitoring-and-alerting#instance-logs) summarize the comparison:
+
+- `Reused definitions` lists data that PowerSync kept. It does not read that data from the source again.
+- `New definitions` lists data that PowerSync must read and prepare.
+- `Definitions to drop after switching` lists old data that PowerSync removes after the new config becomes active.
+
+Check these entries after a deployment if it takes longer than expected or causes more source database load than expected.

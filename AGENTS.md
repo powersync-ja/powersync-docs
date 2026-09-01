@@ -22,7 +22,7 @@ It is built with [Mintlify](https://mintlify.com) using MDX files.
 | `.claude/commands/lint-docs.md` | `/lint-docs` slash command |
 | `.github/vale/config/vocabularies/PowerSync/accept.txt` | Accepted technical terms for Vale linting |
 | `routines/README.md` | Scheduled Claude Code cloud agents (routines) that act on this repo, and how to update them |
-| `routines/prevent-docs-drift.md` | Prompt for the twice-daily drift check that files `[Drift]` issues here (live copy runs at claude.ai/code/routines) |
+| `routines/prevent-docs-drift.md` | Prompt for the twice-daily divergence check that files `[Divergence]` issues here (live copy runs at claude.ai/code/routines) |
 
 ## Project Structure
 

@@ -1,22 +1,21 @@
 ---
 title: "Self-Hosted Instance Configuration"
-description: "Configure self-hosted PowerSync Service deployments using YAML or environment variables."
+description: "How to configure a self-hosted PowerSync Service instance with a config file, and a reference of all available options."
 sidebarTitle: "Self-Hosted Instances"
 ---
 
-## Configuration Methods
+A PowerSync instance is a running deployment of the [PowerSync Service](/architecture/powersync-service): it replicates data from your source database and streams it to clients based on your [Sync Streams](/sync/streams/overview). When self-hosting, you run the Service in your own infrastructure and configure each instance with a config file, as described below.
 
-The PowerSync Service is configured using key/value pairs in a config file, and supports the following configuration methods:
+## Configure Your Instance
 
-1. Inject config as an environment variable (which contains the Base64 encoding of a config file)
-2. Use a config file mounted on a volume
-3. Specify the config as a command line parameter (again Base64 encoded)
+A self-hosted instance needs four things before clients can sync:
 
-Both YAML and JSON config files are supported. You can see examples of the above configuration methods in the [docker-compose](https://github.com/powersync-ja/self-host-demo/blob/d61cea4f1e0cc860599e897909f11fb54420c3e6/docker-compose.yaml#L46) file of our `self-host-demo` app.
+1. A connection to your [source database](/configuration/source-db/setup), which PowerSync replicates data from.
+2. A [bucket storage](/architecture/powersync-service#bucket-storage) database, where the PowerSync Service stores the data it prepares for syncing to clients. MongoDB and Postgres are supported.
+3. [Client authentication](/configuration/auth/overview). When getting started, you can use temporary [development tokens](/configuration/auth/development-tokens) instead of setting up a full auth provider.
+4. A sync configuration defining what data syncs to which clients, written as [Sync Streams](/sync/streams/overview).
 
-## Configuration File Structure
-
-Below is a skeleton config file you can copy and paste to edit locally:
+You define all of these in the main config file, along with some operational settings. We recommend keeping the sync configuration in a separate file that the main config references, though it can also be defined inline. The skeleton below shows the most common options; the [Configuration Reference](#configuration-reference) documents all of them.
 
 ```yaml service.yaml
 # Settings for source database replication
@@ -51,11 +50,10 @@ storage:
   # uri: postgresql://powersync_storage_user:secure_password@storage-db:5432/postgres
   # sslmode: disable
 
-# The port which the PowerSync API server will listen on
-port: 80
+# The port which the PowerSync API server will listen on (defaults to 8080)
+port: 8080
 
-# Specify Sync Streams or legacy Sync Rules (see Sync Streams section below).
-# Referencing a separate file is recommended so you can edit streams/rules without nesting YAML.
+# Sync configuration (see the sync_config section below)
 sync_config:
   path: sync-config.yaml
 
@@ -71,96 +69,505 @@ client_auth:
   # JWKS audience
   audience: ['powersync-dev', 'powersync']
 
-  # Settings for telemetry reporting
-  # See https://docs.powersync.com/maintenance-ops/self-hosting/usage-reporting
-  telemetry:
-    # Opt out of reporting anonymized usage metrics to PowerSync telemetry service
-    disable_telemetry_sharing: false
+# Settings for telemetry reporting
+# See https://docs.powersync.com/maintenance-ops/self-hosting/usage-reporting
+telemetry:
+  # Opt out of reporting anonymized usage metrics to PowerSync telemetry service
+  disable_telemetry_sharing: false
 
 # System-level configuration options
 system:
   # Service logging configuration
   logging:
-    # Log level for the service logs
+    # Log level for the Service logs
     level: info #  'silly', 'debug', 'verbose', 'http', 'info', 'warn', 'error'
     format: text # 'json' or 'text'
 ```
 
-### Example
-
-A detailed `service.yaml` config example with additional comments can be found here:
-
-<Card title="self-host-demo/config/service.yaml at main · powersync-ja/self-host-demo" icon="github" horizontal href="https://github.com/powersync-ja/self-host-demo/blob/main/config/service.yaml">
-  
+<Card title="Example service.yaml" icon="github" horizontal href="https://github.com/powersync-ja/self-host-demo/blob/main/config/service.yaml">
+  The config used by our `self-host-demo` app. Use the demo as a working reference for your own setup.
 </Card>
 
-### Config File Schema
+## Supplying the Config File
 
-The config file schema is available here:
+Both YAML and JSON config files are supported. The PowerSync Service can read the config in three ways:
 
-<Card title="@powersync/service-schema" icon="file-brackets-curly" horizontal href="https://unpkg.com/@powersync/service-schema@latest/json-schema/powersync-config.json">
-  
-</Card>
+1. From a config file mounted on a volume
+2. From an environment variable containing the Base64 encoding of the config file
+3. From a command line parameter (also Base64 encoded)
 
-## Source Database Connections
+You can see examples of these methods in the [docker-compose](https://github.com/powersync-ja/self-host-demo/blob/d61cea4f1e0cc860599e897909f11fb54420c3e6/docker-compose.yaml#L46) file of our `self-host-demo` app.
 
-Specify the connection to your source database in the `replication` section of the config file:
+### Environment Variable Substitution
+
+The config file uses custom tags for environment variable substitution.
+
+`!env [variable name]` substitutes the value of the environment variable named `[variable name]`. For example, with the environment variable `PS_MONGO_URI=mongodb://mongo:27017/powersync`, the YAML
 
 ```yaml service.yaml
-# Settings for source database replication
-replication:
-  # Specify database connection details
-  # Note only 1 connection is currently supported
-  # Multiple connection support is on the roadmap
-  connections:
-    - type: postgresql
-      # The PowerSync server container can access the Postgres DB via the DB's service name.
-      # In this case the hostname is pg-db
-
-      # The connection URI or individual parameters can be specified.
-      uri: postgresql://postgres:mypassword@pg-db:5432/postgres
-
-      # SSL settings
-      sslmode: disable # 'verify-full' (default) or 'verify-ca' or 'disable'
-      # Note: 'disable' is only suitable for local/private networks, not for public networks
+storage:
+  type: mongodb
+  uri: !env PS_MONGO_URI
 ```
 
-For details on connecting to your source database, see [Connect PowerSync to Your Source Database](/intro/setup-guide#3-connect-powersync-to-your-source-database) in the Setup Guide.
+resolves to `uri: mongodb://mongo:27017/powersync`.
+
+Only environment variables with names starting with `PS_` can be substituted.
+
+Substituted values are strings. For options that expect a number or boolean, append `::number` or `::boolean` to the variable name to cast the value. A `::boolean` cast accepts `true` or `false`.
+
+```yaml service.yaml
+storage:
+  max_pool_size: !env PS_STORAGE_POOL_SIZE::number
+
+telemetry:
+  disable_telemetry_sharing: !env PS_DISABLE_TELEMETRY::boolean
+```
+
+## Configuration Reference
+
+The config file supports the following top-level keys, documented in the sections below:
+
+| Key                            | Purpose                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| [`replication`](#replication)  | Source database connection(s) to replicate from                             |
+| [`storage`](#storage)          | Bucket storage database connection                                          |
+| [`port`](#port)                | Port for the PowerSync API server                                           |
+| [`sync_config`](#sync_config)  | Sync Streams (or legacy Sync Rules) definition                              |
+| [`client_auth`](#client_auth)  | JWT authentication for client connections                                   |
+| [`api`](#api)                  | Admin API tokens and performance/safety limits                              |
+| [`telemetry`](#telemetry)      | Telemetry sharing and Prometheus metrics                                    |
+| [`healthcheck`](#healthcheck)  | Health check probe mechanisms                                               |
+| [`migrations`](#migrations)    | Storage database schema migration behavior                                  |
+| [`system`](#system)            | Service logging                                                             |
+
+
+<Tip>
+  A machine-readable [JSON schema](https://unpkg.com/@powersync/service-schema@latest/json-schema/powersync-config.json) of the config file is available, published as `@powersync/service-schema`.
+
+  Add this comment to the top of your YAML config file to get validation and autocomplete in editors that support the [YAML language server](https://github.com/redhat-developer/yaml-language-server) (for example VS Code with the YAML extension):
+
+  ```yaml
+  # yaml-language-server: $schema=https://unpkg.com/@powersync/service-schema@latest/json-schema/powersync-config.json
+  ```
+</Tip>
+
+### `replication`
+
+The `replication` section defines the source database that PowerSync replicates data from. Specify the connection details in `replication.connections`. Only one connection is currently supported; multiple connection support is on our roadmap.
+
+For instructions on preparing your source database, see [Source Database Setup](/configuration/source-db/setup).
 
 <Note>
-  If you are using hosted Supabase, you will need to enable IPv6 for Docker as per [the Docker docs](https://docs.docker.com/config/daemon/ipv6/)
+  Hosted Supabase only allows direct database connections over IPv6, and PowerSync cannot connect using the connection pooler. You can:
 
-  If your host OS does not support Docker IPv6 e.g. macOS, you will need to run Supabase locally.
-
-  This is because Supabase only allows direct database connections over IPv6 — PowerSync cannot connect using the connection pooler.
+  - Enable IPv6 for Docker as per [the Docker docs](https://docs.docker.com/config/daemon/ipv6/).
+  - Enable IPv4 on your Supabase project.
+  - Run Supabase locally.
 </Note>
 
-## Bucket Storage Database
+All connection types support these common options:
 
-The PowerSync Service requires a storage database to store the data and metadata for [buckets](/architecture/powersync-service#bucket-system). You can use either MongoDB or Postgres for this purpose. The bucket storage database should be specified in the `storage` section of the config file:
+<ResponseField name="type" type="string" required>
+  The connection type. One of `postgresql`, `mongodb`, `mysql`, `mssql`, or `convex`.
+</ResponseField>
 
-```yaml service.yaml
-# Connection settings for bucket storage (MongoDB and Postgres are supported)
-storage:
-  # Option 1: MongoDB Storage
-  type: mongodb
-  uri: mongodb://mongo:27017/powersync_demo
-  # Use these if authentication is required. The user should have `readWrite` and `dbAdmin` roles
-  # username: myuser
-  # password: mypassword
+<ResponseField name="id" type="string" default="default">
+  Unique identifier for the connection. Optional when only a single connection is present.
+</ResponseField>
 
-  # Option 2: Postgres Storage
-  # type: postgresql
-  # This accepts the same parameters as a Postgres replication source connection
-  # uri: postgresql://powersync_storage_user:secure_password@storage-db:5432/postgres
-  # sslmode: disable
-```
+<ResponseField name="tag" type="string" default="default">
+  Additional meta tag for the connection, used for categorization or grouping.
+</ResponseField>
+
+The remaining options depend on the connection type:
+
+<AccordionGroup>
+  <Accordion title="Postgres connection options">
+    ```yaml service.yaml
+    replication:
+      connections:
+        - type: postgresql
+          uri: postgresql://postgres:mypassword@pg-db:5432/postgres
+          sslmode: verify-full
+    ```
+
+    <ResponseField name="uri" type="string">
+      Connection URI in the format `postgresql://user:password@hostname:5432/database`. Individual connection parameters take precedence over values in the URI.
+    </ResponseField>
+
+    <ResponseField name="hostname" type="string">
+      Database hostname. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="port" type="number" default="5432">
+      Database port.
+    </ResponseField>
+
+    <ResponseField name="username" type="string">
+      Database username. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="password" type="string">
+      Database password. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="database" type="string">
+      Database name. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="sslmode" type="string" default="verify-full">
+      SSL mode: `verify-full`, `verify-ca`, or `disable`. `disable` is only suitable for local/private networks, not for public networks.
+    </ResponseField>
+
+    <ResponseField name="cacert" type="string">
+      CA certificate content in PEM format. Required for `verify-ca`, optional for `verify-full`.
+    </ResponseField>
+
+    <ResponseField name="client_certificate" type="string">
+      Client certificate content in PEM format, for TLS client authentication.
+    </ResponseField>
+
+    <ResponseField name="client_private_key" type="string">
+      Client private key content in PEM format, for TLS client authentication.
+    </ResponseField>
+
+    <ResponseField name="tls_servername" type="string">
+      Use a servername for TLS that is different from `hostname`.
+    </ResponseField>
+
+    <ResponseField name="slot_name_prefix" type="string" default="powersync_">
+      Prefix for Postgres logical replication slot names and replication stream names.
+    </ResponseField>
+
+    <ResponseField name="max_pool_size" type="number" default="8">
+      Maximum number of connections to the source database, per Service process.
+    </ResponseField>
+
+    <ResponseField name="connect_timeout" type="number">
+      Connection timeout in seconds. Takes precedence over a `connect_timeout` query parameter in the URI.
+    </ResponseField>
+
+    <ResponseField name="snapshot_socket_timeout" type="number" default="30">
+      Idle timeout in seconds for snapshot connection sockets. If the storage database cannot keep up during the initial snapshot, a storage flush can stall the snapshot for longer than this timeout, which closes the source connection mid-snapshot. This appears in the Service logs as `Socket timed out` errors during the initial snapshot. Increase the timeout if you see these errors. Available since Service version 1.26.0.
+    </ResponseField>
+
+    <ResponseField name="heartbeat_interval_seconds" type="number" default="60">
+      Interval in seconds between source connection heartbeats. Must be between 5 and 60. Available since Service version 1.24.0.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="MongoDB connection options">
+    ```yaml service.yaml
+    replication:
+      connections:
+        - type: mongodb
+          uri: mongodb+srv://myuser:mypassword@cluster0.abcde.mongodb.net/mydatabase
+          post_images: auto_configure
+    ```
+
+    <ResponseField name="uri" type="string" required>
+      Connection URI in the format `mongodb://` or `mongodb+srv://`. Standard connection options such as `connectTimeoutMS`, `socketTimeoutMS`, `serverSelectionTimeoutMS`, `maxPoolSize` and `maxIdleTimeMS` can be set as query parameters in the URI.
+    </ResponseField>
+
+    <ResponseField name="database" type="string">
+      Database name. Defaults to the database in the URI path.
+    </ResponseField>
+
+    <ResponseField name="username" type="string">
+      Database username. Defaults to the username in the URI.
+    </ResponseField>
+
+    <ResponseField name="password" type="string">
+      Database password. Defaults to the password in the URI.
+    </ResponseField>
+
+    <ResponseField name="post_images" type="string" default="off">
+      Controls how change stream post-images are used: `off`, `auto_configure`, or `read_only`. `auto_configure` is recommended for new instances. See [Post Images](/configuration/source-db/setup#post-images) for details on each option.
+    </ResponseField>
+
+    <ResponseField name="heartbeat_interval_seconds" type="number" default="60">
+      Interval in seconds between source connection heartbeats. Must be between 5 and 60. Available since Service version 1.24.0.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="MySQL connection options">
+    <Note>MySQL support is currently in a [Beta release](/resources/feature-status).</Note>
+
+    ```yaml service.yaml
+    replication:
+      connections:
+        - type: mysql
+          uri: mysql://repl_user:mypassword@mysql-db:3306/inventory
+    ```
+
+    <ResponseField name="uri" type="string">
+      Connection URI in the format `mysql://user:password@hostname:3306/database`. Individual connection parameters take precedence over values in the URI.
+    </ResponseField>
+
+    <ResponseField name="hostname" type="string">
+      Database hostname. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="port" type="number" default="3306">
+      Database port.
+    </ResponseField>
+
+    <ResponseField name="username" type="string">
+      Database username. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="password" type="string">
+      Database password. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="database" type="string">
+      Database name. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="cacert" type="string">
+      CA certificate content in PEM format.
+    </ResponseField>
+
+    <ResponseField name="client_certificate" type="string">
+      Client certificate content in PEM format, for TLS client authentication.
+    </ResponseField>
+
+    <ResponseField name="client_private_key" type="string">
+      Client private key content in PEM format, for TLS client authentication.
+    </ResponseField>
+
+    <ResponseField name="binlog_queue_memory_limit" type="number" default="50">
+      The combined size in MB of binlog events that can be queued in memory before throttling is applied.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="SQL Server connection options">
+    <Note>SQL Server support is currently in a [Beta release](/resources/feature-status). Also see [SQL Server Additional Configuration](/configuration/source-db/sql-server-additional-configuration).</Note>
+
+    ```yaml service.yaml
+    replication:
+      connections:
+        - type: mssql
+          uri: mssql://powersync_user:mypassword@mssql-db:1433/inventory
+    ```
+
+    <ResponseField name="uri" type="string">
+      Connection URI in the format `mssql://user:password@hostname:1433/database`. Individual connection parameters take precedence over values in the URI.
+    </ResponseField>
+
+    <ResponseField name="hostname" type="string">
+      Database hostname. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="port" type="number" default="1433">
+      Database port.
+    </ResponseField>
+
+    <ResponseField name="username" type="string">
+      Database username. Required if not specified in `uri` or `authentication`.
+    </ResponseField>
+
+    <ResponseField name="password" type="string">
+      Database password. Required if not specified in `uri` or `authentication`.
+    </ResponseField>
+
+    <ResponseField name="database" type="string">
+      Database name. Required if not specified in `uri`.
+    </ResponseField>
+
+    <ResponseField name="schema" type="string" default="dbo">
+      The database schema to replicate from.
+    </ResponseField>
+
+    <ResponseField name="cacert" type="string">
+      CA certificate content in PEM format. Available since Service version 1.25.0.
+    </ResponseField>
+
+    <ResponseField name="tls_servername" type="string">
+      Use a servername for TLS that is different from `hostname`. Available since Service version 1.25.0.
+    </ResponseField>
+
+    <ResponseField name="authentication" type="object">
+      Alternative authentication configuration, instead of `username` and `password`.
+      <Expandable title="properties">
+        <ResponseField name="type" type="string" required>
+          Authentication method: `default` (SQL Server login) or `azure-active-directory-service-principal-secret`.
+        </ResponseField>
+        <ResponseField name="options" type="object" required>
+          For `default`: `userName` and `password`. For `azure-active-directory-service-principal-secret`: `clientId`, `clientSecret` and `tenantId` from your registered Azure application.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="additionalConfig" type="object">
+      Additional replication settings.
+      <Expandable title="properties">
+        <ResponseField name="pollingIntervalMs" type="number" default="1000">
+          Interval in milliseconds to wait between CDC polling cycles.
+        </ResponseField>
+        <ResponseField name="pollingBatchSize" type="number" default="10">
+          Maximum number of transactions to poll per polling cycle.
+        </ResponseField>
+        <ResponseField name="trustServerCertificate" type="boolean" default="false">
+          Whether to trust the server certificate. Set to `true` for local development and self-signed certificates.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="heartbeat_interval_seconds" type="number" default="60">
+      Interval in seconds between source connection heartbeats. Must be between 5 and 60. Available since Service version 1.24.0.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="Convex connection options">
+    <Note>The Convex replicator is currently released as an [experimental feature](/resources/feature-status) and is available since Service version v1.22.0. See [Convex source database setup](/configuration/source-db/setup#convex).</Note>
+
+    ```yaml service.yaml
+    replication:
+      connections:
+        - type: convex
+          deployment_url: https://happy-animal-123.convex.cloud
+          deploy_key: !env PS_CONVEX_DEPLOY_KEY
+    ```
+
+    <ResponseField name="deployment_url" type="string" required>
+      The URL of your Convex deployment.
+    </ResponseField>
+
+    <ResponseField name="deploy_key" type="string" required>
+      A deploy key for the Convex deployment, used to authenticate against the Convex Streaming Export API.
+    </ResponseField>
+
+    <ResponseField name="polling_interval_ms" type="number" default="1000">
+      Interval in milliseconds between polling for new changes.
+    </ResponseField>
+
+    <ResponseField name="request_timeout_ms" type="number" default="60000">
+      Timeout in milliseconds for requests to the Convex API.
+    </ResponseField>
+  </Accordion>
+</AccordionGroup>
+
+### `storage`
+
+The PowerSync Service requires a storage database to store the data and metadata for [buckets](/architecture/powersync-service#bucket-system). You can use either MongoDB or Postgres for this purpose.
 
 <Note>
   The _bucket storage database_ is separate from your _source database_.
 </Note>
 
-### MongoDB Storage
+<ResponseField name="type" type="string" required>
+  The storage backend type: `mongodb` or `postgresql`.
+</ResponseField>
+
+<ResponseField name="max_pool_size" type="number" default="8">
+  Maximum number of connections to the storage database, per Service process.
+</ResponseField>
+
+<ResponseField name="default_storage_version" type="number" default="2">
+  Storage version to use when deploying a sync configuration that does not specify a storage version. You typically do not need to change this. See [Storage Version](/sync/advanced/compatibility#storage-version) for the available versions and how they interact with the sync configuration's `storage_version` field. Available since Service version 1.26.0.
+</ResponseField>
+
+#### MongoDB Storage
+
+```yaml service.yaml
+storage:
+  type: mongodb
+  uri: mongodb://mongo:27017/powersync_demo
+```
+
+<ResponseField name="uri" type="string" required>
+  Connection URI in the format `mongodb://` or `mongodb+srv://`.
+</ResponseField>
+
+<ResponseField name="database" type="string">
+  Database name. Defaults to the database in the URI path.
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  Database username. Defaults to the username in the URI. See **Required Permissions** below for the roles the user needs.
+</ResponseField>
+
+<ResponseField name="password" type="string">
+  Database password. Defaults to the password in the URI.
+</ResponseField>
+
+<ResponseField name="clear_batch_throttle_rate" type="number" default="0.2">
+  Throttles the clearing of old bucket data after deploying a new sync configuration, by pausing between batches. The pause is proportional to the previous batch duration. Increase this to reduce the impact of clear operations on the storage cluster, or use `0` to clear as fast as possible. Must be between 0 and 20. Available since Service version 1.24.0.
+</ResponseField>
+
+<ResponseField name="bulk_read_preference" type="string">
+  Read preference for bulk checksum and bucket data reads: `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, or `nearest`. If unset, MongoDB driver defaults are used. This is an experimental option and may be removed in a future release. Available since Service version 1.23.2.
+</ResponseField>
+
+<ResponseField name="object_storage" type="object">
+  Experimental support for storing large bucket data chunks in S3-compatible object storage instead of MongoDB. Available since Service version 1.24.0. Requires storage version 3, which is not the default. Set `storage_version: 3` under the `config` block of your sync config, as described in [Storage Version](/sync/advanced/compatibility#optional-config-storage_version).
+
+  <Expandable title="properties">
+    <ResponseField name="type" type="string" required>
+      Must be `s3`.
+    </ResponseField>
+    <ResponseField name="bucket" type="string" required>
+      Name of the S3 bucket.
+    </ResponseField>
+    <ResponseField name="region" type="string">
+      Region of the S3 bucket.
+    </ResponseField>
+    <ResponseField name="prefix" type="string">
+      Key prefix for stored objects.
+    </ResponseField>
+    <ResponseField name="endpoint" type="string">
+      Custom endpoint, for S3-compatible object storage providers.
+    </ResponseField>
+    <ResponseField name="force_path_style" type="boolean">
+      Use path-style addressing, required by some S3-compatible providers.
+    </ResponseField>
+    <ResponseField name="access_key_id" type="string">
+      Access key ID for authentication.
+    </ResponseField>
+    <ResponseField name="secret_access_key" type="string">
+      Secret access key for authentication.
+    </ResponseField>
+    <ResponseField name="concurrency_limit" type="number" default="16">
+      Maximum number of concurrent object storage requests.
+    </ResponseField>
+    <ResponseField name="defaults_mode" type="string" default="standard">
+      Sets the timeouts for all object storage requests at once, based on the expected latency between the Service and the object storage endpoint, mirroring the AWS SDK's [smart configuration defaults](https://docs.aws.amazon.com/sdkref/latest/guide/feature-smart-config-defaults.html). `standard` is safe for most deployments, so you can usually leave this unset. Use `in-region` when the Service and the bucket run in the same region and you want stalled requests to fail faster, or `mobile` when the endpoint is slow enough that the standard timeouts cause spurious failures. `cross-region` is accepted for compatibility with the AWS SDK.
+
+      When this option is unset, the Service reads the `AWS_DEFAULTS_MODE` environment variable, then falls back to `standard`. Setting `defaults_mode` in an AWS shared config file has no effect. Available since Service version 1.26.0.
+    </ResponseField>
+    <ResponseField name="inline_threshold_bytes" type="number" default="16384">
+      Chunks smaller than this byte threshold stay inline in MongoDB instead of being offloaded to object storage.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+##### Required Permissions
+
+The Service creates and manages all collections and indexes in the storage database itself, so no manual schema setup is needed. When authentication is enabled, the user needs the built-in `readWrite` and `dbAdmin` roles on the storage database:
+
+```
+readWrite@<storage_database>
+dbAdmin@<storage_database>
+```
+
+No access beyond the storage database is required. The `readWrite` role covers regular operation, including creating and dropping collections and indexes. The `dbAdmin` role is additionally needed to drop the database when an instance is torn down.
+
+Create the user with:
+
+```javascript
+use powersync_demo
+db.createUser({
+  user: "powersync_storage_user",
+  pwd: "secure_password",
+  roles: ["readWrite", "dbAdmin"]
+})
+```
+
+MongoDB authenticates against the database where the user was created, so creating the user in the storage database itself works with the connection URI shown above. If you create the user in a different database, such as `admin`, add `authSource=admin` to the connection URI. On MongoDB Atlas, assign the same two roles restricted to the storage database.
+
+##### Replica Set Requirement
 
 MongoDB requires at least one replica set node. A single node is fine for development/staging environments, but a 3-node replica set is recommended [for production](/maintenance-ops/self-hosting/deployment-architecture) deployments.
 
@@ -174,7 +581,7 @@ mongosh "mongodb+srv://powersync.abcdef.mongodb.net/" --apiVersion 1 --username 
 
 If you are rolling your own Docker environment, you can include this init script in your `docker-compose` file to configure a replica set as once-off operation:
 
-```yaml
+```yaml docker-compose.yaml
   # Initializes the MongoDB replica set. This service will not usually be actively running
   mongo-rs-init:
     image: mongo:7.0
@@ -187,11 +594,34 @@ If you are rolling your own Docker environment, you can include this init script
       - 'sleep 10 && mongosh --host mongo:27017 --eval ''try{rs.status().ok && quit(0)} catch {} rs.initiate({_id: "rs0", version: 1, members: [{ _id: 0, host : "mongo:27017" }]})'''
 ```
 
-### Postgres Storage
+#### Postgres Storage
 
-Available since version 1.3.8 of the [`powersync-service`](https://hub.docker.com/r/journeyapps/powersync-service), you can use Postgres as an alternative bucket storage database.
+You can use Postgres as an alternative bucket storage database.
 
-#### Database Setup
+```yaml service.yaml
+storage:
+  type: postgresql
+  uri: postgresql://powersync_storage_user:secure_password@storage-db:5432/postgres
+```
+
+Postgres storage accepts the same connection options as a [Postgres replication connection](#replication): `uri`, `hostname`, `port`, `username`, `password`, `database`, `sslmode`, `cacert`, `client_certificate`, `client_private_key`, `tls_servername` and `connect_timeout`. In addition, batch limits can be tuned:
+
+<ResponseField name="batch_limits" type="object">
+  Limits for batch operations during replication. Increasing these limits can improve replication performance, at the cost of higher memory usage.
+  <Expandable title="properties">
+    <ResponseField name="max_estimated_size" type="number" default="5000000">
+      Maximum estimated byte size of operations written in a single transaction.
+    </ResponseField>
+    <ResponseField name="max_record_count" type="number" default="2000">
+      Maximum number of records written in a single transaction.
+    </ResponseField>
+    <ResponseField name="max_current_data_batch_size" type="number" default="50000000">
+      Maximum byte size of `current_data` documents looked up at a time.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+##### Database Setup
 
 You'll need to create a dedicated user and schema for PowerSync bucket storage. You can either:
 
@@ -213,11 +643,9 @@ GRANT USAGE ON SCHEMA powersync TO powersync_storage_user;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA powersync TO powersync_storage_user;
 ```
 
-#### Demo App
-
 A demo app with Postgres bucket storage is available [here](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-postgres-bucket-storage).
 
-#### Postgres Version Requirements
+##### Postgres Version Requirements
 
 Separate Postgres servers are required for replication connections (i.e. source database) and bucket storage **if using Postgres versions below 14**.
 
@@ -226,17 +654,25 @@ Separate Postgres servers are required for replication connections (i.e. source 
 | Below 14         | Separate servers are required for the source and bucket storage. Replication will be blocked if the same server is detected.                                                                                        |
 | 14 and above     | The source database and bucket storage database can be on the same server. Using the same database (with separate schemas) is supported but may lead to higher CPU usage. Using separate servers remains an option. |
 
-## Sync Streams
+### `port`
 
-Your Sync Streams (or legacy Sync Rules) configuration can be in a separate file (recommended) or inline in the main config. The `sync_config:` key is used for both Sync Streams and Sync Rules.
+The `port` setting determines where clients and tools connect to your instance. Change it if the default conflicts with another service in your deployment.
 
-<Tip>
-  **Separate file**: Referencing a file with `path:` keeps your main config tidy and makes editing Sync Streams/Sync Rules easier. Ensure the file is available at that path (e.g. in the same directory as your main config or on a mounted volume).
-</Tip>
+<ResponseField name="port" type="number" default="8080">
+  The port on which the PowerSync API server will listen for connections. Can be specified as a number or string.
+</ResponseField>
+
+### `sync_config`
+
+The `sync_config` section points the Service at your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) definition, usually a separate file referenced with `path`:
 
 <CodeGroup>
-```yaml Sync Streams — Separate File (Recommended)
-# sync-config.yaml (reference from main config with sync_config: path: sync-config.yaml)
+```yaml service.yaml
+sync_config:
+  path: sync-config.yaml
+```
+
+```yaml sync-config.yaml
 config:
   edition: 3
 streams:
@@ -244,57 +680,25 @@ streams:
     auto_subscribe: true
     query: SELECT * FROM todos WHERE owner_id = auth.user_id()
 ```
-
-```yaml Sync Streams — Inline
-sync_config:
-  content: |
-    config:
-      edition: 3
-    streams:
-      todos:
-        auto_subscribe: true
-        query: SELECT * FROM todos WHERE owner_id = auth.user_id()
-```
-
-```yaml Sync Rules — Separate File (Legacy)
-# sync-config.yaml (reference from main config with sync_config: path: sync-config.yaml)
-bucket_definitions:
-  global:
-    data:
-      - SELECT * FROM lists
-      - SELECT * FROM todos
-```
-
-```yaml Sync Rules — Inline (Legacy)
-sync_config:
-  content: |
-    bucket_definitions:
-      global:
-        data:
-          - SELECT * FROM lists
-          - SELECT * FROM todos
-```
 </CodeGroup>
 
-For more information, see [Sync Streams](/sync/streams/overview) (recommended) or [Sync Rules](/sync/rules/overview) (legacy).
+<ResponseField name="path" type="string">
+  Path to the sync configuration YAML file. Ensure the file is available at that path, e.g. in the same directory as your main config or on a mounted volume.
+</ResponseField>
 
-<Check>
-  To verify that your Sync Rules are functioning correctly, inspect the contents of your bucket storage database.
+<ResponseField name="content" type="string">
+  The sync configuration inline as a string, as an alternative to `path`.
+</ResponseField>
 
-  #### MongoDB Example
+<ResponseField name="exit_on_error" type="boolean" default="true">
+  Whether to exit the process if there is an error parsing the sync configuration.
+</ResponseField>
 
-  If you are running MongoDB in Docker, run the following:
+The top-level `sync_rules` key is a deprecated alias for `sync_config`. Use `sync_config` in new configurations.
 
-  ```bash
-  docker exec -it {MongoDB container name} mongosh "mongodb://{MongoDB service host}/{MongoDB database name}" --eval "db.bucket_data.find().pretty()"
-  # Example
-  docker exec -it self-host-demo-mongo-1 mongosh "mongodb://localhost:27017/powersync_demo" --eval "db.bucket_data.find().pretty()"
-  ```
-</Check>
+### `client_auth`
 
-## Client Authentication
-
-Client authentication is configured in the `client_auth` section:
+The `client_auth` section defines how the Service verifies your app's users when they connect to sync. Clients authenticate with JWTs, which the Service validates using the settings here. For more details, see [Client Authentication](/configuration/auth/overview).
 
 ```yaml service.yaml
 client_auth:
@@ -318,22 +722,115 @@ client_auth:
   audience: ['powersync-dev', 'powersync']
 ```
 
+<ResponseField name="jwks_uri" type="string | string[]">
+  URI or array of URIs pointing to JWKS endpoints, used to fetch public keys for JWT verification.
+</ResponseField>
+
+<ResponseField name="jwks" type="object">
+  Inline JWKS configuration, as an alternative or in addition to `jwks_uri`.
+  <Expandable title="properties">
+    <ResponseField name="keys" type="object[]" required>
+      An array of JSON Web Keys (JWKs). Supported key types are RSA (`RS256`, `RS384`, `RS512`), HMAC (`HS256`, `HS384`, `HS512`), OKP (`EdDSA` with `Ed25519` or `Ed448`) and EC (`ES256`, `ES384`, `ES512` with curves `P-256`, `P-384` or `P-521`). See [Custom Authentication](/configuration/auth/custom) for details.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="supabase" type="boolean" default="false">
+  Enables Supabase authentication integration. JWKS details are derived from the Supabase connection. See [Supabase Auth](/configuration/auth/supabase-auth).
+</ResponseField>
+
+<ResponseField name="supabase_jwt_secret" type="string">
+  Legacy JWT secret for Supabase authentication (HS256 shared secret).
+</ResponseField>
+
+<ResponseField name="audience" type="string[]">
+  Valid audiences for JWT validation.
+</ResponseField>
+
 <Note>
   For production environments, we recommend using JWKS with asymmetric keys (RS256, EdDSA, or ECDSA) rather than shared secrets (HS256). Asymmetric keys provide better security through public/private key separation and easier key rotation. See [Custom Authentication](/configuration/auth/custom) for more details.
 </Note>
 
-For more details, see [Client Authentication](/configuration/auth/overview).
+### `api`
 
-## Environment Variables
+The `api` section protects the Service's admin API routes with access tokens, and sets limits that protect the Service from excessive load. Configure `tokens` if you use the [PowerSync CLI](/tools/cli) against this instance; the limits rarely need changing.
 
-The config file uses custom tags for environment variable substitution.
+<ResponseField name="tokens" type="string[]">
+  Access tokens for the Service's admin API routes, provided by clients as a Bearer token. If no tokens are configured, the admin API routes reject all requests.
+</ResponseField>
 
-Using `!env [variable name]` will substitute the value of the environment variable named `[variable name]`.
+<ResponseField name="parameters" type="object">
+  Performance and safety parameters for the API.
+  <Expandable title="properties">
+    <ResponseField name="max_concurrent_connections" type="number" default="200">
+      Maximum number of connections (HTTP streams or WebSockets) per API process.
+    </ResponseField>
+    <ResponseField name="max_data_fetch_concurrency" type="number" default="10">
+      Maximum concurrency when fetching data from storage. This should not be significantly more than `storage.max_pool_size`, otherwise it would block on the pool. Increasing this can significantly increase memory usage in some cases.
+    </ResponseField>
+    <ResponseField name="max_buckets_per_connection" type="number" default="1000">
+      Maximum number of buckets for each connection. More buckets increase latency and memory usage. While the actual number is controlled by your sync configuration, this hard limit ensures that the Service errors instead of crashing when the sync configuration is misconfigured.
+    </ResponseField>
+    <ResponseField name="max_parameter_query_results" type="number" default="1000">
+      Related to `max_buckets_per_connection`, but this limit applies directly to parameter query results, before they are converted into a unique set of buckets.
+    </ResponseField>
+    <ResponseField name="checkpoint_request_retention_minutes" type="number" default="60">
+      Number of minutes to keep client-requested write checkpoint records. Expired records are removed by the compact job. Must be a positive integer. Available since Service version 1.24.0.
+    </ResponseField>
+    <ResponseField name="bucket_count_cache_ttl_minutes" type="number" default="60">
+      How long to keep cached bucket counts before refreshing them, in minutes. Bucket counts may be affected by compacting. Available since Service version 1.23.2.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
 
-Only environment variables with names starting with `PS_` can be substituted.
+### `telemetry`
 
-See examples here:
+The `telemetry` section controls the operational metrics the Service shares with PowerSync and exposes for your own monitoring. See [Usage Reporting](/maintenance-ops/self-hosting/usage-reporting) and [Monitoring](/maintenance-ops/self-hosting/monitoring) for details.
 
-<Card title="self-host-demo/config/service.yaml at main · powersync-ja/self-host-demo" icon="github" horizontal href="https://github.com/powersync-ja/self-host-demo/blob/main/config/service.yaml">
-  
-</Card>
+<ResponseField name="disable_telemetry_sharing" type="boolean" required>
+  When `true`, disables sharing of anonymized usage metrics with the PowerSync telemetry service.
+</ResponseField>
+
+<ResponseField name="prometheus_port" type="number">
+  Port on which Prometheus metrics will be exposed. When set, metrics will be available on this port for scraping.
+</ResponseField>
+
+### `healthcheck`
+
+Configures how health check status is exposed. See [Health Checks](/maintenance-ops/self-hosting/healthchecks) for details on the available probes and endpoints.
+
+<ResponseField name="probes" type="object">
+  Mechanisms for exposing health check data. If this is not configured, the Service defaults to legacy behavior for backwards compatibility (filesystem probes always enabled, plus HTTP probes depending on the Service mode). When `probes` is configured, each mechanism requires explicit opt-in.
+  <Expandable title="properties">
+    <ResponseField name="use_filesystem" type="boolean" default="false">
+      Enables exposing health check status via filesystem files.
+    </ResponseField>
+    <ResponseField name="use_http" type="boolean" default="false">
+      Enables exposing health check status via HTTP endpoints.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `migrations`
+
+The `migrations` section controls whether the Service updates its bucket storage database schema automatically when a new version starts up. Most deployments can keep the default automatic behavior.
+
+<ResponseField name="disable_auto_migration" type="boolean" default="false">
+  When `true`, disables automatic storage database schema migrations on startup. Migrations can then be triggered externally by altering the container `command`.
+</ResponseField>
+
+### `system`
+
+The `system` section configures how the Service itself runs. Currently this covers logging.
+
+<ResponseField name="logging" type="object">
+  Service logging configuration.
+  <Expandable title="properties">
+    <ResponseField name="level" type="string" default="info">
+      Log level for the Service logs: `silly`, `debug`, `verbose`, `http`, `info`, `warn`, or `error`. The `PS_LOG_LEVEL` environment variable takes precedence over this option.
+    </ResponseField>
+    <ResponseField name="format" type="string">
+      Log output format: `json` or `text`. Defaults to `text`, or to `json` when the `NODE_ENV` environment variable is set to `production`. The `PS_LOG_FORMAT` environment variable takes precedence over this option.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

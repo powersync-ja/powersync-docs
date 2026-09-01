@@ -38,8 +38,9 @@ These require judgment. Each item maps to a section of CLAUDE.md; apply the full
 8. **Code examples**: language tag on every block; realistic data; no real secrets; filenames only on self-hosted examples; no SQL table aliases unless required.
 9. **Links and navigation**: internal links use relative paths, never absolute URLs; new pages appear in `docs.json` navigation; moved or removed pages have redirects.
 10. **Sync Streams policy**: no new content that teaches or promotes Sync Rules; where both appear side by side, the examples must return the same data with matching filters. In prose, "(or legacy Sync Rules)" is the approved pairing but only once per page or major section; later mentions omit Sync Rules.
-11. **Technical accuracy**: flag claims, APIs, or examples you cannot verify.
-12. **Legal and compliance content**: contractual or commercial terms may deviate from standard terminology (for example, "Synchronization Service" in the HIPAA shared-responsibility table). Don't "fix" these; outside legal contexts, the standard terms apply.
+11. **"the Service" shorthand**: shortened references to the PowerSync Service are capitalized ("the Service", never "the service"). Generic services (a Docker Compose service, a third-party service) stay lowercase. Vale cannot distinguish these; judge from context.
+12. **Technical accuracy**: flag claims, APIs, or examples you cannot verify.
+13. **Legal and compliance content**: contractual or commercial terms may deviate from standard terminology (for example, "Synchronization Service" in the HIPAA shared-responsibility table). Don't "fix" these; outside legal contexts, the standard terms apply.
 
 ## Output Format
 

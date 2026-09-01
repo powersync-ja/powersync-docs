@@ -21,6 +21,8 @@ It is built with [Mintlify](https://mintlify.com) using MDX files.
 | `.claude/commands/review-docs.md` | `/review-docs` slash command |
 | `.claude/commands/lint-docs.md` | `/lint-docs` slash command |
 | `.github/vale/config/vocabularies/PowerSync/accept.txt` | Accepted technical terms for Vale linting |
+| `routines/README.md` | Scheduled Claude Code cloud agents (routines) that act on this repo, and how to update them |
+| `routines/prevent-docs-drift.md` | Prompt for the twice-daily drift check that files `[Drift]` issues here (live copy runs at claude.ai/code/routines) |
 
 ## Project Structure
 
@@ -29,6 +31,7 @@ docs.json          # Site config and navigation (required reading)
 *.mdx              # Documentation pages
 snippets/          # Reusable MDX components
 images/            # Static assets
+routines/          # Prompts for the scheduled Claude Code cloud agents that act on this repo
 ```
 
 ## Essential Standards

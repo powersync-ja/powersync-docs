@@ -61,6 +61,7 @@ We use the following icons for supported backend databases and SDKs:
 - Postgres: `icon="elephant"`
 - MongoDB: `icon="leaf"`
 - MySQL: `icon="dolphin"`
+- Azure DocumentDB: `icon="microsoft"`
 - SQL Server: `icon="server"`
 - Flutter: `icon="flutter"`
 - React Native: `icon="react"`

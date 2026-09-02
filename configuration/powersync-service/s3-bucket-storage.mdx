@@ -3,7 +3,7 @@ title: "S3 Bucket Storage"
 description: "Learn when S3 bucket storage can improve initial sync and how to configure it for self-hosted deployments."
 ---
 
-S3 bucket storage is an optional extension to MongoDB bucket storage. PowerSync keeps the metadata and small blocks in MongoDB, and can move larger blocks of prepared sync data to Amazon S3 or an S3-compatible object store.
+S3 bucket storage is an optional extension to MongoDB bucket storage for self-hosted deployments. PowerSync keeps the metadata and small blocks in MongoDB, and can move larger blocks of prepared sync data to Amazon S3 or an S3-compatible object store.
 
 ## Why Use S3 Bucket Storage?
 
@@ -19,17 +19,15 @@ Because object storage becomes part of the sync path, an object-store outage can
 
 ## Availability
 
-S3 bucket storage is [Beta](/resources/feature-status) in PowerSync Service v1.26.0. It uses storage version 4, which has a stable storage format. S3 bucket storage itself remains Beta.
+S3 bucket storage is [Beta](/resources/feature-status) in PowerSync Service v1.26.0. You can opt in on self-hosted deployments only. On PowerSync Cloud, PowerSync manages bucket storage for you, so there is nothing to configure.
 
-During the Beta, self-hosted deployments must opt in. Configure MongoDB bucket storage with both `object_storage` and storage version 4. Selecting version 4 without configuring `object_storage` keeps all bucket data in MongoDB. Version 4 is the latest stable storage version, but v1.26.0 continues to use version 2 by default.
+To opt in, configure MongoDB bucket storage with both `object_storage` and [storage version 4](/sync/advanced/compatibility#storage-version). Version 4 has a stable storage format, but v1.26.0 continues to use version 2 by default. Selecting version 4 without `object_storage` keeps all bucket data in MongoDB.
 
-The setup and operating instructions on this page apply to self-hosted PowerSync. PowerSync Cloud manages its bucket storage and storage version internally. You do not create an object-storage bucket or add object-storage credentials to a Cloud instance.
-
-**Postgres bucket storage is not supported.** This limitation applies only to the bucket storage used by a self-hosted PowerSync Service. You can use a Postgres source database when MongoDB provides the bucket storage.
+**Postgres bucket storage cannot use this feature.** The MongoDB requirement applies only to the bucket storage database. Your source database can be Postgres or any other supported database.
 
 ## How S3 Bucket Storage Works
 
-PowerSync prepares source data for client sync and groups it into [buckets](/architecture/powersync-service#bucket-system). In the self-hosted configuration described on this page, MongoDB normally holds the prepared data as the bucket storage database. S3 bucket storage offloads larger blocks from MongoDB. Self-hosted deployments that use Postgres bucket storage follow a separate storage path and cannot enable this feature.
+PowerSync prepares source data for client sync and groups it into [buckets](/architecture/powersync-service#bucket-system). MongoDB holds this prepared data as the bucket storage database, and S3 bucket storage offloads the larger blocks from it.
 
 When you enable S3 bucket storage:
 
@@ -39,7 +37,7 @@ When you enable S3 bucket storage:
 
 Clients connect only to the PowerSync Service. They never connect directly to your object store.
 
-## Configure S3 Bucket Storage for Self-Hosted PowerSync
+## Configure S3 Bucket Storage
 
 ### Requirements
 
@@ -96,7 +94,7 @@ You can use S3 bucket storage with Sync Streams or legacy Sync Rules. It does no
         query: SELECT * FROM lists WHERE owner_id = auth.user_id()
     ```
 
-    The first version 4 deployment reprocesses all data selected by that Sync Config. Clients keep using the current data until the new copy is ready. After the switch, they download the data they subscribe to again. Later changes can use [incremental reprocessing](/sync/advanced/incremental-reprocessing) to reuse unchanged compiled definitions when its requirements are met.
+    The first version 4 deployment reprocesses all data selected by that Sync Config. Clients keep using the current data until the new copy is ready. After the switch, they download the data they subscribe to again. Later changes can use [incremental reprocessing](/sync/advanced/incremental-reprocessing) to reuse the data for unchanged streams when its requirements are met.
   </Step>
 </Steps>
 
@@ -170,7 +168,7 @@ You can use S3 bucket storage with Sync Streams or legacy Sync Rules. It does no
   </Accordion>
 </AccordionGroup>
 
-## Monitoring Self-Hosted Storage
+## Monitoring Object Storage
 
 Enable the [Prometheus metrics endpoint](/maintenance-ops/self-hosting/monitoring) and monitor:
 
@@ -181,7 +179,7 @@ Do not add the per-config values together to calculate the bucket size. During a
 
 Completed [sync logs](/maintenance-ops/monitoring-and-alerting#instance-logs) include `ms.s3`, the time spent waiting for object storage. If this value grows while MongoDB timings remain stable, check object-store latency, throttling, and the network path from PowerSync.
 
-## Cleanup and Teardown for Self-Hosted Storage
+## Cleanup and Teardown
 
 PowerSync deletes files as their sync data is replaced or removed. Keep the scheduled [compacting job](/maintenance-ops/compacting-buckets) running so it can combine small blocks and remove files that are no longer needed.
 

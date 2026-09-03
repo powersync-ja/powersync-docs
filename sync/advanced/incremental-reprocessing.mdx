@@ -1,0 +1,104 @@
+---
+title: "Incremental Reprocessing"
+description: "Deploy Sync Config changes with less source database processing and fewer repeated client downloads."
+---
+
+Without incremental reprocessing, every Sync Config deployment reads all data selected by the config from your source database and prepares a complete new copy of the sync data. On large databases this can take a long time, and clients download all data again even when only a small part of the config changed.
+
+**Incremental reprocessing** reprocesses only the stream definitions that changed. Unchanged streams keep their prepared sync data, so deployments finish faster, the source database does less work, and clients do not download unchanged data again.
+
+Incremental reprocessing applies to Sync Config deployments. Normal inserts, updates, and deletes flow through ongoing replication and do not reprocess anything.
+
+## Availability
+
+Incremental reprocessing is [Beta](/resources/feature-status) in PowerSync Service v1.26.0. It requires a MongoDB source database, MongoDB bucket storage, [Sync Streams](/sync/streams/overview), and [storage version 4](/sync/advanced/compatibility#storage-version).
+
+During the Beta, deployments must opt in by selecting storage version 4 in the Sync Config. Version 4 has a stable storage format, but v1.26.0 continues to use version 2 by default.
+
+```yaml
+config:
+  edition: 3
+  storage_version: 4
+```
+
+Self-hosted deployments can also set `default_storage_version: 4` in the `storage` section of `service.yaml` to apply it to all newly deployed Sync Configs. There is no separate incremental reprocessing setting. After the first version 4 deployment finishes, later eligible Sync Config deployments use incremental reprocessing automatically.
+
+**Postgres is not supported.** A Postgres source database cannot use incremental reprocessing, even on PowerSync Cloud. Self-hosted deployments also cannot use it with Postgres bucket storage. These configurations continue to reprocess all data selected by a new Sync Config.
+
+## What Happens During a Deployment
+
+PowerSync keeps the current Sync Config active while it prepares your changes:
+
+1. It compares the new config with the current one.
+2. It keeps the existing sync data for unchanged streams.
+3. It reads the source rows needed for new or changed streams.
+4. It switches to the new config after that data is ready.
+5. It deletes sync data that the old config no longer needs.
+
+Clients keep syncing normally during reprocessing and never see a partly processed config. Processing runs alongside ongoing replication, so the current config also stays up to date while PowerSync prepares the new one.
+
+## What Gets Reprocessed
+
+Only the streams that changed:
+
+- Adding a stream reads only the source data that the new stream selects.
+- Removing a stream deletes its sync data without reading anything from the source database.
+- Renaming a stream is treated as removing the old stream and adding a new one, so its data is rebuilt.
+- Changing a stream's queries reprocesses the data for that stream. Other streams are unaffected.
+
+Within a changed stream, PowerSync reuses existing data where it can. It compares what each query stores rather than the YAML text, so edits that do not change the stored sync data need no reprocessing. For example, changing how a query reads request parameters only changes how PowerSync evaluates the query for each client:
+
+```sql
+SELECT * FROM projects WHERE user_id = auth.user_id()
+-- Changing to auth.jwt() ->> 'owner' needs no reprocessing:
+SELECT * FROM projects WHERE user_id = auth.jwt() ->> 'owner'
+```
+
+Changing which data is stored, such as filtering on `owner_id` instead of `user_id`, changes how rows are grouped for sync, so PowerSync rebuilds that stream's data.
+
+Two exceptions to keep in mind:
+
+- Queries in the same stream can share prepared data. Adding or changing one query can rebuild data for other queries in that stream.
+- PowerSync favors correctness. When it cannot confirm that a change keeps the stored sync data identical, it rebuilds the affected data. A deployment that reprocesses more than you expect is not an error. [Check the logs](#checking-what-a-deployment-rebuilt) to see what was reused.
+
+## Checking What a Deployment Rebuilt
+
+After a deployment, the [replication logs](/maintenance-ops/monitoring-and-alerting#instance-logs) summarize the comparison:
+
+```
+info: Incremental reprocessing sync config update:
+Reused definitions:
+  - type=bucket_data, id=1, name=user_lists|0
+  - type=bucket_data, id=2, name=user_projects|0
+New definitions:
+  - type=bucket_data, id=6, name=user_tasks|0, tables=tasks
+Definitions to drop after switching:
+  - type=bucket_data, id=5, name=user_tasks|0
+```
+
+- `Reused definitions` lists data that PowerSync kept. It does not read that data from the source again.
+- `New definitions` lists data that PowerSync must read and prepare.
+- `Definitions to drop after switching` lists old data that PowerSync removes after the new config becomes active.
+
+Definitions are more granular than streams. One stream can appear as several entries. Check these entries when a deployment takes longer or causes more source database load than you expect.
+
+## What Clients Download
+
+Clients keep their data for unchanged streams and continue from their existing sync position. After the new config becomes active, they download data only for new or rebuilt streams that they subscribe to.
+
+PowerSync keeps both the old and new versions of changed data while it prepares the deployment, so bucket storage can grow temporarily. The old data is removed after the switch.
+
+## When PowerSync Rebuilds Everything
+
+PowerSync reads all data selected by the Sync Config again when it cannot safely reuse the existing copy. This happens when:
+
+- Your setup does not meet the requirements above. For example, your source database or bucket storage database is not MongoDB, or you use legacy Sync Rules.
+- You move an existing Sync Config to storage version 4 for the first time.
+- MongoDB has already deleted source changes that PowerSync still needs to read.
+- You explicitly restart replication or use the PowerSync Dashboard's **Defragment** action. Both rebuild all sync data instead of reusing it.
+
+During a full rebuild, clients keep using the current data until the new copy is ready. After the switch, they download all data they subscribe to again. For routine cleanup of bucket operation history, use [bucket compacting](/maintenance-ops/compacting-buckets) instead of redeploying.
+
+## Custom Checkpoint Events
+
+The `event_definitions` used by [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints) follow the same rules as stream queries. An unchanged event keeps its existing checkpoint data, while a new or changed event reads its source table again. Clients continue using checkpoints from the current config until the new config is ready.

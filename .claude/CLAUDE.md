@@ -183,6 +183,7 @@ Always use the left column. Never use the right.
 | PowerSync Service | powersync service |
 | Sync Rules | sync rules |
 | Sync Streams | sync streams |
+| Sync Config | sync config (except in code, e.g. `sync_config`, `sync-config.yaml`) |
 
 ## Mintlify Components
 

@@ -205,7 +205,7 @@ Always use the left column. Never use the right.
 
 When listing SDKs or platforms in any ordered UI element (`<Tabs>`, `<CodeGroup>`, `<AccordionGroup>`, card lists), use this order:
 
-1. **JS** variants first (React Native, Web, Node.js)
+1. **JS** variants first (Web, React Native, Node.js)
 2. **Dart**
 3. **Kotlin**
 4. **Swift**

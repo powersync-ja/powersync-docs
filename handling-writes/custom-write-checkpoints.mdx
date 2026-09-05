@@ -1,16 +1,18 @@
 ---
-title: "Data Pipelines"
-sidebarTitle: "Data Pipelines"
-description: "Use Custom Write Checkpoints to track asynchronous data uploads through chained data pipelines and confirm write completion on the client."
+title: 'Data Pipelines'
+sidebarTitle: 'Data Pipelines'
+description: 'Use Custom Write Checkpoints to track asynchronous data uploads through chained data pipelines and confirm write completion on the client.'
 ---
 
 <Note>
-**Availability**:
-Custom Write Checkpoints are available for customers on our [Team and Enterprise](https://www.powersync.com/pricing) plans.
+  **Availability**: Custom Write Checkpoints are available for customers on our [Team and
+  Enterprise](https://www.powersync.com/pricing) plans.
 </Note>
 
 <Note>
-The alpha [Checkpoint Requests](/client-sdks/advanced/checkpoint-requests) API uses the term "custom checkpoint requests" for asynchronous upload backends. Client support is currently available for Swift. This page retains the previous "Custom Write Checkpoints" name for the source-side configuration.
+  The alpha [Checkpoint Requests](/client-sdks/advanced/checkpoint-requests) API uses the term "custom checkpoint
+  requests" for asynchronous upload backends. Client support is currently available for Swift. This page retains the
+  previous "Custom Write Checkpoints" name for the source-side configuration.
 </Note>
 
 To ensure [consistency](/architecture/consistency), PowerSync relies on Write Checkpoints. These checkpoints ensure that clients have uploaded their own local changes/mutations to the server before applying downloaded data from the server to the local database.
@@ -21,12 +23,12 @@ The default Write Checkpoints implementation relies on uploads being acknowledge
 
 Problems occur if the persistence in the source database happens _asynchronously_. If the client's upload is meant to mutate the source database (and eventually does), but this is delayed, it will effectively seem as if the client's uploaded changes were reverted on the server, and then applied again thereafter.
 
-Chained *data pipelines* are a common example of asynchronous uploads -- e.g. data uploads are first written to a different upstream database, or a separate queue for processing, and then finally replicated to the 'source database' (to which PowerSync is connected). 
+Chained _data pipelines_ are a common example of asynchronous uploads -- e.g. data uploads are first written to a different upstream database, or a separate queue for processing, and then finally replicated to the 'source database' (to which PowerSync is connected).
 
 For example, consider the following data pipeline:
 
 1. The client makes a change locally and the local database is updated.
-2. The client uploads this change to the server. 
+2. The client uploads this change to the server.
 3. The server resolves the request and writes the change into an intermediate database (not the source database yet).
 4. The client thinks the upload is complete (i.e. persisted into the source database). It requests a Write Checkpoint from the PowerSync Service.
 5. The PowerSync Service increments the replication `HEAD` in the source database, and creates a Write Checkpoint for the client. The Write Checkpoint number is returned and recorded in the client.
@@ -49,8 +51,11 @@ The PowerSync Service then needs to process the (ordered) replication events and
 
 A self-hosted Node.js demo with Postgres is available here:
 
-<Card title="Custom Write Checkpoints (Node.js + Postgres)" icon="github" href="https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-custom-checkpoints/README.md" horizontal>
-</Card>
+<Card
+  title="Custom Write Checkpoints (Node.js + Postgres)"
+  icon="github"
+  href="https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-custom-checkpoints/README.md"
+  horizontal></Card>
 
 ## Implementation Details
 
@@ -93,9 +98,16 @@ create publication powersync for table public.lists, public.todos, public.checkp
 
 ### Sync Rules Requirements
 
-For clients using the [Checkpoint Requests](/client-sdks/advanced/checkpoint-requests) API, enable the `checkpoint_requests` event in your sync configuration. This event maps rows from the `checkpoints` table to the `CheckpointPayload` payload.
+With [storage version 4](/sync/advanced/compatibility#storage-version), each sync configuration can use only one event definition to produce custom checkpoints. Choose the event based on the clients that the configuration supports:
+
+- Use `checkpoint_requests` to support the [Checkpoint Requests](/client-sdks/advanced/checkpoint-requests) API. These records are temporary and can expire.
+- Use `write_checkpoints` only if every client uses the legacy Custom Write Checkpoints flow. These records are retained because legacy clients do not retry expired checkpoints automatically.
+
+For `checkpoint_requests`, the `is_legacy` field is optional. When it is omitted, PowerSync treats the payload as a checkpoint request that can expire. If the configuration supports only Checkpoint Requests, omit it:
 
 ```yaml
+# sync-rules.yaml
+
 event_definitions:
   # Note this event is only supported for customers on [Team and Enterprise](https://www.powersync.com/pricing) plans.
   checkpoint_requests:
@@ -104,23 +116,40 @@ event_definitions:
       - SELECT user_id, checkpoint, client_id FROM checkpoints
 ```
 
-Use the `write_checkpoints` event only for clients using the legacy Custom Write Checkpoints flow:
+For a configuration that supports only legacy clients, use `write_checkpoints` without an `is_legacy` field:
 
 ```yaml
 # sync-rules.yaml
 
-# Register the custom write_checkpoints event
 event_definitions:
+  # Note this event is only supported for customers on [Team and Enterprise](https://www.powersync.com/pricing) plans.
   write_checkpoints:
     payloads:
-      #  This defines where the replicated Custom Write Checkpoints should be extracted from
+      # This defines where the replicated legacy Custom Write Checkpoints should be extracted from
       - SELECT user_id, checkpoint, client_id FROM checkpoints
+```
 
-# Define Sync Rules as usual
-bucket_definitions:
-  global:
-    data:
-    ...
+#### Rolling Out Checkpoint Requests
+
+During a rolling rollout, older app versions may continue to create legacy checkpoints while newer versions create checkpoint requests. Configure only the `checkpoint_requests` event and mark the legacy payloads so the PowerSync Service can apply the correct retention behavior:
+
+- Set `is_legacy` to `true` for legacy checkpoint records. These records cannot expire because older clients do not retry them automatically.
+- Omit `is_legacy` from checkpoint request records. The PowerSync Service can expire and delete these temporary records.
+
+You can store both record types in one table or in separate tables. We recommend separate tables because they keep the different retention behavior explicit. Mark only the legacy table's payload:
+
+```yaml
+# sync-rules.yaml
+
+event_definitions:
+  # Note this event is only supported for customers on [Team and Enterprise](https://www.powersync.com/pricing) plans.
+  checkpoint_requests:
+    payloads:
+      # Legacy Custom Write Checkpoints must be retained
+      - SELECT user_id, checkpoint, client_id, true AS is_legacy
+        FROM legacy_checkpoints
+      # Checkpoint Requests can expire, so is_legacy is omitted
+      - SELECT user_id, checkpoint, client_id FROM checkpoint_requests
 ```
 
 ### Application
@@ -147,7 +176,7 @@ Your client backend connector should make a call to the application backend to c
 
  async function getCheckpoint(clientId: string): string {
   /**
-   * Should perform a request to the application backend which should create the 
+   * Should perform a request to the application backend which should create the
    * Write Checkpoint record and return the corresponding checkpoint number.
    */
   return "the Write Checkpoint number from the request";

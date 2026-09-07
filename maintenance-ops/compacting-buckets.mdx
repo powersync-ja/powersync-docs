@@ -24,7 +24,7 @@ When using PowerSync Cloud, compact logs are available in the Dashboard's **Logs
 
 For self-hosted setups (PowerSync Open Edition & PowerSync Enterprise Self-Hosted Edition), the `compact` command in the Docker image can be used to compact all buckets. This can be run manually, or on a regular schedule using Kubernetes [CronJob](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/) or similar scheduling functionality.
 
-On storage version 4, the experimental `compact --incremental-only` option runs the lower-cost incremental bucket and parameter-index compacting paths. You can schedule this mode more frequently. It skips bucket compacting for Sync Configs on older storage versions, so keep a regular full `compact` job if your instance still has configs on those versions.
+On [storage version 4](/sync/advanced/storage-version-4), the experimental `compact --incremental-only` option runs only the lower-cost incremental compacting steps, so you can schedule it more often. Keep the regular full `compact` job as well.
 
 [Defragmenting](/maintenance-ops/compacting-buckets#defragmenting) may still be required.
 
@@ -165,7 +165,7 @@ There are two mechanisms with different scopes:
    WHERE last_updated < now() - interval '1 week';
    ```
 
-2. **Force a full reprocess.** In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, open **Settings**, and use **Defragment** in the "Compact operation history" section. This action forces a new replication stream even when the deployment could otherwise use incremental reprocessing. It rebuilds all prepared sync data and makes clients download all subscribed data again. Use it for one-time cleanup when you intend to rebuild the entire Sync Config.
+2. **Force a full reprocess.** In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, open **Settings**, and use **Defragment** in the "Compact operation history" section. This rebuilds all sync data, even when [incremental reprocessing](/sync/advanced/storage-version-4#incremental-reprocessing) would otherwise apply, and clients download all their data again. Use it for one-time cleanup of the entire Sync Config.
 
 ### Defragmenting Trade-offs
 
@@ -178,9 +178,9 @@ Key considerations:
 
 ## Sync Streams Deployments
 
-With [incremental reprocessing](/sync/advanced/incremental-reprocessing) (currently in Beta; supported only with Sync Streams, a MongoDB source database, and MongoDB bucket storage), PowerSync reuses the prepared data for unchanged streams. This reduces reprocessing during the deployment and prevents clients from downloading unchanged data again. Reused buckets also keep their operation history, so a deployment no longer acts like defragmenting every bucket.
+Without incremental reprocessing, deploying [Sync Streams](/sync/streams/overview) recreates all buckets from scratch. This has the same effect as defragmenting and compacting every bucket, and clients download all their data again. With [incremental reprocessing](/sync/advanced/storage-version-4#incremental-reprocessing) (Beta), unchanged streams keep their buckets and operation history, so a deployment no longer clears their history.
 
-Without incremental reprocessing, a deployment reads all data selected by the Sync Config and creates new buckets for it. Clients then download that data again. Do not redeploy a Sync Config for routine history cleanup. Use compacting, targeted source-row updates, or the Dashboard's full-reprocess **Defragment** action according to the scope of cleanup you need.
+Do not redeploy a Sync Config for routine history cleanup. Use compacting, targeted source-row updates, or the Dashboard's **Defragment** action instead.
 
 ## Technical Details
 

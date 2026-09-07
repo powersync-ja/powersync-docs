@@ -1,0 +1,178 @@
+---
+title: "Storage Version 4"
+description: "Opt in to storage version 4 for faster sync, incremental reprocessing of Sync Streams changes, and S3 object storage."
+---
+
+Storage version 4 is a new version of the format the PowerSync Service uses to store the data it syncs to clients. It is in [Beta](/resources/feature-status) as of PowerSync Service v1.26.0.
+
+Compared to version 2, it provides:
+
+- Faster sync and faster reprocessing after a deployment.
+- [Incremental reprocessing](#incremental-reprocessing): a Sync Streams deployment reprocesses only the streams you added or changed. Clients no longer download all their data again after every deployment.
+- [S3 object storage](#s3-object-storage): larger blocks of synced data move from the storage database to S3. This removes the main bottleneck when many clients sync at once or sync large amounts of data.
+
+## Availability
+
+The PowerSync Cloud and self-hosted columns below apply during the Beta only. Once storage version 4 is generally available, it is the default for all instances and you no longer need to opt in. S3 object storage is then also enabled on all PowerSync Cloud instances. Self-hosted deployments configure it themselves.
+
+| | Source database | Sync Config | PowerSync Cloud (Beta) | Self-hosted (Beta) |
+| --- | --- | --- | --- | --- |
+| Storage version 4 | Any | Sync Streams or Sync Rules | Free plan: automatic. Other plans: [opt in](#opt-in). | [Opt in](#opt-in) |
+| Incremental reprocessing | MongoDB | Sync Streams | Included with version 4 | Included with version 4 |
+| S3 object storage | Any | Sync Streams or Sync Rules | Enabled per instance by PowerSync on request | [Configure it yourself](#s3-object-storage) |
+
+Storage version 4 requires MongoDB as the [bucket storage database](/architecture/powersync-service#bucket-storage). PowerSync Cloud always uses MongoDB. Self-hosted deployments with Postgres bucket storage cannot use version 4.
+
+Incremental reprocessing for Postgres and other source databases is planned. See the [proposal](https://github.com/orgs/powersync-ja/discussions/349) for background. It is not supported for legacy [Sync Rules](/sync/rules/overview). If you still use Sync Rules, [migrate to Sync Streams](/sync/streams/migration).
+
+## Opt In
+
+Version 4 is not the default in PowerSync Service v1.26.0. Moving a Sync Config to version 4 runs like any other deployment:
+
+1. PowerSync reprocesses all data selected by your Sync Config in the background. The current version keeps serving clients, so there is no downtime.
+2. When the new copy is ready, PowerSync switches to it. On PowerSync Cloud, this appears as a new deploy event in the PowerSync Dashboard.
+3. Clients download their data again once, as after any deployment before version 4.
+
+After this first deployment, later Sync Streams deployments use incremental reprocessing automatically when your instance meets its requirements. There is no separate setting.
+
+### PowerSync Cloud
+
+Free plan instances are upgraded automatically during the Beta. No action is needed.
+
+On other plans, add `storage_version: 4` to the `config` block of your Sync Config and deploy it:
+
+```yaml
+config:
+  edition: 3
+  storage_version: 4
+
+streams:
+  todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+```
+
+### Self-Hosted
+
+Add `storage_version: 4` to each Sync Config as shown above. Alternatively, set the default for newly deployed Sync Configs in `service.yaml`:
+
+```yaml service.yaml
+storage:
+  type: mongodb
+  uri: !env PS_MONGO_STORAGE_URI
+  default_storage_version: 4
+```
+
+The default only applies to Sync Configs deployed after the change. Redeploy existing Sync Configs to move them to version 4.
+
+To move a Sync Config back to version 2, set `storage_version: 2` and deploy again. This is another full reprocess.
+
+## Incremental Reprocessing
+
+Incremental reprocessing requires a MongoDB source database, Sync Streams, and storage version 4. It is active whenever all three apply.
+
+Without it, every deployment reads all data selected by the Sync Config from your source database and prepares a complete new copy. Clients then download all their data again, even if only one stream changed.
+
+With incremental reprocessing, PowerSync compares the new Sync Config with the current one and reprocesses only the streams you added or changed. Unchanged streams keep their data on the PowerSync Service and on clients. Deployments finish faster, your source database does less work, and clients download only the data for affected streams they subscribe to.
+
+- Adding a stream reads only the data that stream selects.
+- Removing a stream deletes its data without reading from the source database.
+- Renaming a stream counts as removing it and adding a new one, so its data is rebuilt.
+- Changing a stream's queries reprocesses that stream. Other streams are unaffected.
+
+PowerSync favors correctness over reuse. When it cannot confirm that a change leaves a stream's data unchanged, it rebuilds that stream. A deployment that reprocesses more than you expect is not an error.
+
+Event definitions for [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints) follow the same rules. Unchanged events keep their data, and new or changed events are read again.
+
+### When PowerSync Reprocesses Everything
+
+Some changes start a full reprocess, after which clients download all their data again:
+
+- The first deployment on storage version 4.
+- Changes to the `config` block of the Sync Config, such as `edition`, compatibility fixes, or `storage_version`.
+- The **Defragment** action in the PowerSync Dashboard, which exists to rebuild all data. See [Defragmenting](/maintenance-ops/compacting-buckets#defragmenting).
+- Replication failures, for example when PowerSync loses its position in the MongoDB change stream and has to start over.
+
+### Checking What a Deployment Reprocessed
+
+After a deployment, the [instance logs](/maintenance-ops/monitoring-and-alerting#instance-logs) list what PowerSync reused and what it read again:
+
+```
+info: Incremental reprocessing sync config update:
+Reused definitions:
+  - type=bucket_data, id=1, name=user_lists|0
+New definitions:
+  - type=bucket_data, id=6, name=user_tasks|0, tables=tasks
+Definitions to drop after switching:
+  - type=bucket_data, id=5, name=user_tasks|0
+```
+
+Reused definitions keep their data. New definitions are read from the source database. One stream can appear as several entries. Check this output when a deployment takes longer or reprocesses more than you expect.
+
+{/* TODO: Once the Dashboard shows the Sync Config version separately from the replication stream, document the distinction here. With incremental reprocessing they change independently: an incremental deployment creates a new Sync Config version but keeps the replication stream, while a full reprocess (Defragment, config block change, replication failure) creates a new replication stream. */}
+
+## S3 Object Storage
+
+Your instance keeps the data it syncs to clients in its bucket storage database, alongside everything else it needs to run. With S3 object storage, larger blocks of that data move to Amazon S3 or an S3-compatible object store, and the PowerSync Service syncs them to clients directly from there. Smaller blocks, and the metadata that locates each block, stay in MongoDB.
+
+This reduces load on the storage database:
+
+- Initial sync is faster, most noticeably for clients that sync large amounts of data and when many clients connect at the same time.
+- The instance is more stable, because the storage database no longer does the heavy lifting.
+- An instance can serve far more concurrent clients without compromising on performance.
+
+Clients connect only to the PowerSync Service and never to the object store, so no client changes are needed. If the object store becomes unreachable, sync is interrupted until it recovers. Clients reconnect and resume automatically.
+
+S3 object storage requires MongoDB bucket storage and storage version 4. It works with Sync Streams and legacy Sync Rules.
+
+<Note>
+  S3 object storage holds PowerSync's internal sync data. To store files uploaded by your app, use [Attachments](/client-sdks/advanced/attachments).
+</Note>
+
+### PowerSync Cloud
+
+During the Beta, PowerSync enables S3 object storage per instance. [Contact us](/resources/contact-us) if you want it on your instance before we enable it for all instances.
+
+### Self-Hosted
+
+<Steps>
+  <Step title="Prepare the Bucket">
+    Create a dedicated bucket, or use a unique `prefix` per PowerSync instance, so that instances never read or delete each other's files. Disable object versioning: PowerSync deletes files it no longer needs, and versioning keeps charging for old versions. Give the PowerSync Service permission to list the bucket and to read, write, and delete objects under the prefix.
+  </Step>
+  <Step title="Configure the Service">
+    Add `object_storage` to the `storage` section of `service.yaml`:
+
+    ```yaml service.yaml
+    storage:
+      type: mongodb
+      uri: !env PS_MONGO_STORAGE_URI
+      default_storage_version: 4
+      object_storage:
+        type: s3
+        bucket: powersync-bucket-data
+        region: us-east-1
+        prefix: production
+    ```
+
+    Without `access_key_id` and `secret_access_key`, PowerSync uses the AWS credentials available to the process, such as an IAM role. For S3-compatible providers such as MinIO or Cloudflare R2, also set `endpoint`, and set `force_path_style: true` if the provider requires path-style requests.
+  </Step>
+  <Step title="Deploy on Storage Version 4">
+    Deploy your Sync Configs on storage version 4 as described in [Opt In](#opt-in). Sync Configs on version 2 keep all data in MongoDB, even when `object_storage` is configured.
+  </Step>
+</Steps>
+
+All `object_storage` options:
+
+| Option | Description |
+| --- | --- |
+| `type` | Must be `s3`. |
+| `bucket` | Bucket name. Required. |
+| `region` | Bucket region. Optional if the AWS environment provides one. |
+| `prefix` | Path prefix for this instance's files. No trailing `/`. |
+| `endpoint` | URL of an S3-compatible service. Omit for Amazon S3. |
+| `force_path_style` | Set `true` for providers that require path-style requests. |
+| `access_key_id`, `secret_access_key` | Static credentials. Set both or neither. |
+| `defaults_mode` | Timeout profile: `standard` (default), `in-region`, `cross-region`, or `mobile`. Falls back to the `AWS_DEFAULTS_MODE` environment variable. |
+| `concurrency_limit` | Maximum simultaneous object storage requests. Default `16`. |
+| `inline_threshold_bytes` | Blocks below this size stay in MongoDB. Default `16384` (16 KiB). |
+
+Keep the scheduled [compact](/maintenance-ops/compacting-buckets) job running. It removes files that are no longer needed. The `teardown` command deletes PowerSync's files under the prefix before it drops the storage database. The `powersync_object_storage_size_bytes` [metric](/maintenance-ops/self-hosting/monitoring) reports how much object storage PowerSync uses.

@@ -79,6 +79,8 @@ With incremental reprocessing, PowerSync compares the new Sync Config with the c
 - Renaming a stream counts as removing it and adding a new one, so its data is rebuilt.
 - Changing a stream's queries reprocesses that stream. Other streams are unaffected.
 
+The time saved depends on how your data is split across streams. If one stream selects most of your data, changing that stream still takes about as long as a full reprocess.
+
 PowerSync favors correctness over reuse. When it cannot confirm that a change leaves a stream's data unchanged, it rebuilds that stream. A deployment that reprocesses more than you expect is not an error.
 
 Event definitions for [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints) follow the same rules. Unchanged events keep their data, and new or changed events are read again.
@@ -91,6 +93,17 @@ Some changes start a full reprocess, after which clients download all their data
 - Changes to the `config` block of the Sync Config, such as `edition`, compatibility fixes, or `storage_version`.
 - The **Defragment** action in the PowerSync Dashboard, which exists to rebuild all data. See [Defragmenting](/maintenance-ops/compacting-buckets#defragmenting).
 - Replication failures, for example when PowerSync loses its position in the MongoDB change stream and has to start over.
+
+### Sync Config Versions and Replication Streams
+
+Every deployment creates a new Sync Config version. A replication stream is the copy of your data that PowerSync replicates from the source database and serves to clients. The PowerSync Dashboard shows both, for example as **Sync Streams 3 (246a)**: `3` is the Sync Config version and `246a` identifies the replication stream. In logs, the replication stream appears as a name ending in the same identifier, such as `powersync_<instance>_1_246a`.
+
+Before storage version 4, every deployment also created a new replication stream, so the two always changed together. With incremental reprocessing they change independently:
+
+- An incremental deployment creates a new Sync Config version and keeps the replication stream. Only the version changes.
+- A full reprocess creates a new replication stream. After **Defragment** or a replication failure only the identifier changes, because the Sync Config did not. After a change to the `config` block, both change.
+
+If the identifier changed, PowerSync reprocessed everything and clients download all their data again.
 
 ### Checking What a Deployment Reprocessed
 
@@ -107,8 +120,6 @@ Definitions to drop after switching:
 ```
 
 Reused definitions keep their data. New definitions are read from the source database. One stream can appear as several entries. Check this output when a deployment takes longer or reprocesses more than you expect.
-
-{/* TODO: Once the Dashboard shows the Sync Config version separately from the replication stream, document the distinction here. With incremental reprocessing they change independently: an incremental deployment creates a new Sync Config version but keeps the replication stream, while a full reprocess (Defragment, config block change, replication failure) creates a new replication stream. */}
 
 ## S3 Object Storage
 

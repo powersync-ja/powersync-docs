@@ -12,6 +12,6 @@ Note that editing a file here changes nothing on its own — it has to be pushed
 
 ## Prevent docs drift
 
-Scans recent PRs across the SDK, service, and tooling repos twice a day and files `[Drift]` issues here when the docs need to catch up. It only files issues — it never writes documentation or opens PRs. A human decides the scope, prepares the docs PR, and publishes it once the change has shipped in a release.
+Scans recent PRs across the SDK, service, and tooling repos twice a day and files `[Divergence]` issues here when the docs need to catch up. It only files issues — it never writes documentation or opens PRs. A human decides the scope, prepares the docs PR, and publishes it once the change has shipped in a release.
 
-Closing a `[Drift]` issue is also a human decision. The routine reads a closed issue as "no" for that source PR and won't re-file it for 30 days.
+Closing a `[Divergence]` issue is also a human decision. The routine reads a closed issue as "no" for that source PR and won't re-file it for 30 days.

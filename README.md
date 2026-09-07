@@ -60,6 +60,7 @@ FontAwesome icons are supported: https://fontawesome.com/search
 We use the following icons for supported backend databases and SDKs:
 - Postgres: `icon="elephant"`
 - MongoDB: `icon="leaf"`
+- Azure DocumentDB: `icon="microsoft"`
 - MySQL: `icon="dolphin"`
 - SQL Server: `icon="server"`
 - Flutter: `icon="flutter"`

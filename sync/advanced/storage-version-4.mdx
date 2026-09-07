@@ -13,7 +13,7 @@ Compared to version 2, it provides:
 
 ## Availability
 
-The PowerSync Cloud and self-hosted columns below apply during the Beta only. Once storage version 4 is generally available, it is the default for all instances and you no longer need to opt in. S3 object storage is then also enabled on all PowerSync Cloud instances. Self-hosted deployments configure it themselves.
+The PowerSync Cloud and self-hosted columns below apply during the Beta only. Once storage version 4 is generally available, it will become the default for all instances. S3 object storage is then also enabled on all PowerSync Cloud instances. Self-hosted deployments configure it themselves.
 
 | | Source database | Sync Config | PowerSync Cloud (Beta) | Self-hosted (Beta) |
 | --- | --- | --- | --- | --- |
@@ -77,7 +77,9 @@ With incremental reprocessing, PowerSync compares the new Sync Config with the c
 - Adding a stream reads only the data that stream selects.
 - Removing a stream deletes its data without reading from the source database.
 - Renaming a stream counts as removing it and adding a new one, so its data is rebuilt.
-- Changing a stream's queries reprocesses that stream. Other streams are unaffected.
+- Changing a stream's queries may reprocess affected definitions. Changes that only affect how request parameters select existing buckets do not require reprocessing.
+
+For example, changing `SELECT * FROM projects WHERE user_id = auth.user_id()` to `SELECT * FROM projects WHERE user_id = auth.jwt() ->> 'owner'` reuses the existing bucket data. The data is still grouped by `user_id`; only the JWT field used to select buckets changes.
 
 The time saved depends on how your data is split across streams. If one stream selects most of your data, changing that stream still takes about as long as a full reprocess.
 
@@ -129,7 +131,8 @@ This reduces load on the storage database:
 
 - Initial sync is faster, most noticeably for clients that sync large amounts of data and when many clients connect at the same time.
 - The instance is more stable, because the storage database no longer does the heavy lifting.
-- An instance can serve far more concurrent clients without compromising on performance.
+- An instance can serve far more concurrent clients.
+- For self-hosted instances, offloading bucket data to S3 can reduce storage and data transfer costs.
 
 Clients connect only to the PowerSync Service and never to the object store, so no client changes are needed. If the object store becomes unreachable, sync is interrupted until it recovers. Clients reconnect and resume automatically.
 

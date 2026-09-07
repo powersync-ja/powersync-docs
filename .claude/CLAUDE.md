@@ -34,7 +34,7 @@ You are an experienced, pragmatic technical writer with robust content strategy 
 
 ## Content Strategy
 
-- Document just enough so users are successful. Too much makes content hard to navigate; too little leaves users stuck
+- Document the smallest useful mental model that lets users understand the behavior, recognize problems, and choose the right action. Too much makes content hard to navigate; too little leaves users memorizing rules they cannot apply
 - Prioritize accuracy and usability over completeness
 - Make content evergreen when possible
 - Check existing patterns for consistency before introducing new ones
@@ -72,6 +72,28 @@ If the description adequately introduces the page, the body can open directly wi
 - Break complex instructions into clear numbered steps
 - Include prerequisites at the start of procedural content
 - Write out concepts and benefits in full sentences — avoid comma-separated shorthand
+
+### Explanatory Writing and Mental Models
+
+Concise writing preserves the context readers need to understand and predict system behavior. Remove repetition, not causal explanations.
+
+For non-obvious behavior, provide the smallest useful mental model. Include the parts readers need to make a correct decision:
+
+1. **Mechanism**: What does the system do?
+2. **Consequence**: Why does that behavior matter?
+3. **Signal**: What would the reader observe?
+4. **Action**: What should the reader change?
+5. **Trade-off**: What does that change cost?
+
+Not every explanation needs all five parts. Use judgment based on the complexity and consequences of the behavior.
+
+Use one concrete example when behavior is cumulative, multiplicative, or difficult to estimate. For example, explain that a row in ten buckets is stored and synced ten times, or that syncing the same 1 MB to 100 devices contributes 100 MB to data synced.
+
+Use contrasts to clarify behavior readers may confuse, such as a normal reconnect resuming from saved state versus a missing local database triggering an initial sync.
+
+When an explanation is too broad, qualify it instead of deleting the useful causal model. Preserve accurate explanations of why something happens, what it looks like, and why the recommendation helps.
+
+Avoid standalone recommendations that readers must memorize. Explain the relevant mechanism before or alongside the action.
 
 ### Headings
 
@@ -125,6 +147,7 @@ Use American English spelling throughout. Common differences to watch for:
 - Be specific, not vague — avoid attributions like "industry reports suggest" or "some experts argue"
 - **No promotional language**: never use "breathtaking," "captivates," "stands as a testament," "plays a vital role," or similar marketing phrases
 - **No editorializing**: avoid "it's important to note," "this article will," "in conclusion"
+- **No difficulty-minimizing language**: avoid "simply," "just," "easily," and "obviously"
 - **No filler words in titles/descriptions**: "Comprehensive," "Complete," "Significant," "Detailed," "Enhanced"
 - Limit conjunction overuse: reduce "moreover," "furthermore," "additionally," "on the other hand" — favor direct statements
 - Use broadly applicable examples rather than overly specific business cases
@@ -137,6 +160,10 @@ Use American English spelling throughout. Common differences to watch for:
 - Never include untested code examples
 - Use consistent terminology throughout — see Terminology section
 - Ensure all code examples, API references, and specifications are current and accurate
+
+### Legal and Compliance Content
+
+Contractual or commercial terms may intentionally differ from the standard terminology in this guide. For example, legal content may use "Synchronization Service" instead of "PowerSync Service." Do not change legal or compliance terminology without confirming the intended legal meaning.
 
 ### Formatting Discipline
 

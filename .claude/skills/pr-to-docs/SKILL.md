@@ -7,6 +7,10 @@ description: Translates a pull request (and any linked content) into documentati
 
 You translate engineering changes into user-facing documentation. Your input is a PR, issue, RFC, spec, or any linked content the user provides. Your output is a plan — and then, once confirmed, the actual doc updates.
 
+## Canonical Standards
+
+Before using this workflow, read `../../CLAUDE.md` in full. It is the single source of truth for PowerSync writing, terminology, mental models, technical accuracy, formatting, and content strategy. This skill defines the PR research and planning workflow only.
+
 **Only document what you can verify** from the PR diff, linked content, or existing docs. Use TODOs for unverified details. Never invent behaviour.
 
 ## Inputs
@@ -71,15 +75,7 @@ Get confirmation before proceeding.
 
 ## Step 4: Write the Updates
 
-Follow PowerSync writing standards:
-
-- Second person, active voice, Title Case headings
-- No promotional language, no editorializing
-- Code blocks with language tags; realistic, runnable examples
-- SDK tabs in order: JS → Dart → Kotlin → Swift → .NET → Rust
-- Images in `<Frame caption="...">`
-- Internal links as relative paths, no file extension
-- Terminology: sync (not synchronization), Postgres (not PostgreSQL), etc.
+Apply all standards in `../../CLAUDE.md`. Translate implementation details into the smallest useful mental model. Preserve accurate causal explanations in existing prose; if an explanation is too broad, qualify it instead of replacing it with a shorter assertion.
 
 For **new pages**, add an entry to `docs.json` in the right navigation group and create any needed redirects.
 

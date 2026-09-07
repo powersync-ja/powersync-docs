@@ -31,7 +31,7 @@ Version 4 is not the default in PowerSync Service v1.26.0. Moving a Sync Config 
 
 1. PowerSync reprocesses all data selected by your Sync Config in the background. The current version keeps serving clients, so there is no downtime.
 2. When the new copy is ready, PowerSync switches to it. On PowerSync Cloud, this appears as a new deploy event in the PowerSync Dashboard.
-3. Clients download their data again once, as after any deployment before version 4.
+3. Clients download their data again once, as after any deployment before version 4. On self-hosted deployments with many clients, scale out the API before the switch to absorb the re-sync.
 
 After this first deployment, later Sync Streams deployments use incremental reprocessing automatically when your instance meets its requirements. There is no separate setting.
 
@@ -147,7 +147,9 @@ During the Beta, PowerSync enables S3 object storage per instance. [Contact us](
 
 <Steps>
   <Step title="Prepare the Bucket">
-    Create a dedicated bucket, or use a unique `prefix` per PowerSync instance, so that instances never read or delete each other's files. Disable object versioning: PowerSync deletes files it no longer needs, and versioning keeps charging for old versions. Give the PowerSync Service permission to list the bucket and to read, write, and delete objects under the prefix.
+    Create a bucket in the same region as the PowerSync Service. Use a dedicated bucket, or a unique `prefix` per PowerSync instance, so that instances never read or delete each other's files. Give the PowerSync Service permission to list the bucket and to read, write, and delete objects under the prefix.
+
+    Leave object versioning off, or suspend it if the bucket already has it, and leave Object Lock off. PowerSync deletes files itself once they are no longer needed, so versioning keeps charging for old versions and locked objects cannot be cleaned up. Do not add an expiration lifecycle rule: an expired object may still be referenced by MongoDB, which breaks sync for that data.
   </Step>
   <Step title="Configure the Service">
     Add `object_storage` to the `storage` section of `service.yaml`:
@@ -162,12 +164,18 @@ During the Beta, PowerSync enables S3 object storage per instance. [Contact us](
         bucket: powersync-bucket-data
         region: us-east-1
         prefix: production
+
+    api:
+      parameters:
+        max_concurrent_connections: 1000
     ```
 
-    Without `access_key_id` and `secret_access_key`, PowerSync uses the AWS credentials available to the process, such as an IAM role. For S3-compatible providers such as MinIO or Cloudflare R2, also set `endpoint`, and set `force_path_style: true` if the provider requires path-style requests.
+    Without `access_key_id` and `secret_access_key`, PowerSync uses the AWS credentials available to the process, such as an IAM role. Raising `max_concurrent_connections` from its default of 200 is what lets each API process serve more clients. Without S3 object storage, the storage database limits how far you can raise it. For S3-compatible providers such as MinIO or Cloudflare R2, also set `endpoint`, and set `force_path_style: true` if the provider requires path-style requests.
   </Step>
   <Step title="Deploy on Storage Version 4">
     Deploy your Sync Configs on storage version 4 as described in [Opt In](#opt-in). Sync Configs on version 2 keep all data in MongoDB, even when `object_storage` is configured.
+
+    Once replication reaches a healthy checkpoint, confirm that objects appear under the prefix, run a test initial sync, and run `compact` once to surface permission errors early.
   </Step>
 </Steps>
 

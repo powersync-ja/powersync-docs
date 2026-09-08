@@ -1,0 +1,166 @@
+---
+title: "Log Reference"
+description: "Understand common PowerSync Service log messages and recognize replication progress, sync activity, and errors."
+keywords: ["logs", "replication", "Sync Config", "checkpoints"]
+---
+
+Use this page to look up a message you see in your [Instance Logs](/maintenance-ops/monitoring-and-alerting#instance-logs). It covers the two log types you use most. Sync & API logs describe client connections and data moving from the PowerSync Service to clients. Replicator logs describe data moving from your source database into the Service.
+
+Message wording and available fields vary by Service version, source database, and storage backend.
+
+## Reading Error Entries
+
+The Service logs its own errors as `[PSYNC_<code>] <description>`, sometimes followed by an indented details line. Look up the code in [Error Codes](/debugging/error-codes).
+
+`[PSYNC_S2001] Something went wrong` wraps an unexpected error. Read the details line under it, which holds the original error message.
+
+## Sync & API Logs
+
+### Finding a Session
+
+Search for a `user_id` to find a user's entries, then for the `rid` (request ID) to follow one session. All entries for one session share the same `rid`. `rid` values start with `h/` for HTTP requests and `s/` for WebSocket connections. `client_id` distinguishes clients belonging to the same user. See [Correlating Sync Sessions](/maintenance-ops/monitoring-and-alerting#correlating-sync-sessions) for search examples and the full list of session fields.
+
+### Session Lifecycle
+
+A checkpoint is a single point-in-time on the server with a consistent state. See [Consistency](/architecture/consistency). The messages below appear in this order during a session:
+
+| Message | Meaning | What to Check |
+| --- | --- | --- |
+| `Sync stream started` | An authenticated client connected and started a sync session. | At this point the client has not received any data yet. Data is sent with the checkpoint messages that follow. |
+| `New checkpoint: ...` / `Updated checkpoint: ...` | The Service sends a full checkpoint or the changes since the previous one. | `buckets` counts the buckets the user syncs at this checkpoint. `param_results` counts parameter query results. If a user reaches a limit, see [Reducing Bucket Count](/sync/advanced/reducing-bucket-count). |
+| `checkpoint_complete: ...` | The Service finished sending the data for this checkpoint. The session stays open for further changes. | `operations_synced` and `data_synced_bytes` count only what was sent since the previous `checkpoint_complete`, `partial_checkpoint_complete`, or `checkpoint_invalidated` message. This does not confirm that the client applied the data to its local database. |
+| `Sync stream error` / `Streaming sync request failed` | An error interrupted a WebSocket or HTTP sync session, respectively. | Read the error logged for the same `rid`. |
+| `Sync stream complete` | The sync session ended. | Check `close_reason`, `operations_synced`, and `data_synced_bytes`. `stream_ms` measures the session's duration, not the initial download time. |
+| `POST /sync/stream` / `STREAM /sync/stream` | The request line for an HTTP or WebSocket session, logged when the session ends. | `duration_ms` covers the whole session. The HTTP line reports status `200` even when the stream failed later. |
+
+### Close Reasons
+
+The `close_reason` on `Sync stream complete` records the first relevant event the Service observed:
+
+| Value | Meaning | What to Check |
+| --- | --- | --- |
+| `client closing stream` | The client side closed the connection. | This alone does not explain why the client closed. Check [client-side logs](/debugging/troubleshooting#client-side-logging). |
+| `service closing stream` | The Service ended the stream, for example because the client's token expired or the Service switched to a new Sync Config. | Check nearby messages for context. |
+| `stream error` | An error interrupted the stream. | Read the error logged for the same `rid`. |
+| `process shutdown` | The process handling the connection is shutting down. | Expected when the Service restarts, for example during a deploy. |
+| `unknown` | The Service did not identify a close reason. | Check nearby messages for context. |
+
+### Other Requests
+
+Every HTTP request logs a `<METHOD> <path>` line when it completes, with `status`, `duration_ms`, and the request's `rid`. A request that fails before it completes logs `Request failed` with the error, followed by the request line with the error status.
+
+| Message | Meaning |
+| --- | --- |
+| `Write checkpoint for <user_id>/<client_id>: <checkpoint> \| <replication head>` | A client requested a write checkpoint after uploading changes. The Service created it and logs the checkpoint number with the source replication position it is tied to. See [Write Checkpoints](/architecture/powersync-protocol#write-checkpoints). `Requested checkpoint for ...` is the same for [Checkpoint Requests](/client-sdks/advanced/checkpoint-requests). |
+| `Currently have <N> active WebSocket connection(s)` | Logged when a WebSocket connection is accepted. The count covers this process and includes the new connection. |
+| `<METHOD> <path>` with `status: 429` and `queue_overflow: true` | The process rejected the request because its request queue is full. For sync stream requests, this means the process reached `max_concurrent_connections`. For WebSocket connections over the same limit, the Service logs `Maximum active concurrent connections limit has been reached` (`PSYNC_S2304`) instead. |
+
+Self-hosted instances set the limit with `max_concurrent_connections` under `api.parameters`. See [Self-Hosted Instances](/configuration/powersync-service/self-hosted-instances). PowerSync Cloud plans also limit concurrent clients and return `429` when the limit is reached. See the [Usage and Billing FAQ](/resources/usage-and-billing/usage-and-billing-faq).
+
+### Common Sync & API Errors
+
+Errors appear on `Request failed`, `Sync stream error`, or `Streaming sync request failed` entries. A WebSocket connection that is rejected during authentication logs the error as its own entry.
+
+Authentication errors (status `401`) are the most common. Every rejected connection attempt logs one entry, so a client that keeps retrying repeats it. Entries for rejected tokens include a `tokenDetails` field that describes the token without exposing it. See [Auth errors](/debugging/error-codes#psync_s21xx-auth-errors-originating-on-the-client).
+
+| Entry | Meaning |
+| --- | --- |
+| `[PSYNC_S2101] ...` (status `401`) | The client's token could not be verified. |
+| `[PSYNC_S2103] JWT has expired` (status `401`) | The client's token has expired. |
+| `[PSYNC_S2106] Authentication required` (status `401`) | The client did not send a token. |
+| `[PSYNC_S2204] JWKS request failed` (status `401`) | The Service could not fetch signing keys from your JWKS endpoint, so it could not verify the token. See [Auth integration errors](/debugging/error-codes#psync_s22xx-auth-integration-errors). |
+| `[PSYNC_S2302] No sync config available` (status `500`) | No Sync Config is active yet, either because none was deployed or because the first deployment is still processing. Check the Replicator logs for its progress. |
+| `[PSYNC_S2305] Too many buckets: <n> (limit of <m>)` or `Too many parameter query results (limit of <m>)` | The user exceeded a per-user limit and the session ended. The same entry lists the Sync Streams that contribute most. See [Troubleshooting](/debugging/troubleshooting#psync_s2305-too-many-buckets-/-parameter-query-results). |
+| `[PSYNC_S2403] Query timed out while reading checksums` or `... while reading bucket data` | A query to MongoDB bucket storage exceeded its timeout, and the session ended with `close_reason` `stream error`. The cause is a large query or load on the storage database. See [MongoDB storage errors](/debugging/error-codes#psync_s24xx-sync-api-errors-mongodb-storage). |
+
+## Replicator Logs
+
+Replicator logs follow the replication lifecycle. The Service locks a replication stream, copies existing source data in a snapshot, then streams ongoing changes and writes them to bucket storage in batches.
+
+### Message Prefixes
+
+Replicator messages start with the replication stream name and, when available, a Sync Config version label:
+
+```text
+[powersync_<instance>_1_246a][3] Replicating "public"."large_table" 5040000/~10393720
+```
+
+The first bracket identifies the replication stream: the replication process and its stored state. The name is a configurable prefix, followed by the stream's numeric ID and a random four-character suffix. Self-hosted instances set the prefix with [`slot_name_prefix`](/configuration/powersync-service/self-hosted-instances), which defaults to `powersync_`. Search for the full stream name to follow related messages.
+
+The second bracket is the Sync Config version label, `3` in this example. A stream that holds more than one version lists all labels, such as `[3,4]`. If the version label changes while the stream name stays the same, the deployment reused the replication stream. A full reprocess changes the stream name. See [Incremental Reprocessing](/sync/advanced/storage-version-4#incremental-reprocessing) for when PowerSync reuses data.
+
+### Snapshot Progress
+
+A snapshot copies existing source data into PowerSync. With Postgres, MongoDB, and SQL Server sources, these messages show its progress. SQL Server logs `Snapshotting` where the others log `Replicating`.
+
+| Message | Meaning |
+| --- | --- |
+| `To replicate: <table> ...` | The Service lists a table or collection it will snapshot, with its progress so far. |
+| `Replicating <table> <count>/~<total> ...` | The number of rows or documents processed so far, followed by the estimated total. A `?` in place of the total means no estimate was available. Follow successive messages for the same table to track progress. |
+| `Skipping <table> - snapshot already done` | The table's snapshot is already complete, so the Service does not copy it again. |
+| `Skipping <table> - not part of powersync publication` | Postgres only. The table matches your Sync Config but is not in the `powersync` publication, so the Service does not replicate it. |
+| `Initial replication already done` | The Service found a completed snapshot for this replication stream and skips the initial copy. With Postgres, it still checks the replication slot before streaming resumes. |
+
+For example, `Replicating "public"."large_table" 5040000/~10393720` reports 5,040,000 rows processed out of an estimated 10,393,720. A suffix such as `- resuming from ...` means an interrupted snapshot is continuing from a saved position.
+
+### Flushed Batches
+
+`Flushed` reports a batch written to bucket storage. With MongoDB bucket storage, the message has this form:
+
+```text
+Flushed: <N> ops, <M> index entries, <K> records. <size>kb in <duration>ms. Last op_id: <id>. Replication lag: <seconds>s
+```
+
+Postgres bucket storage logs a shorter `Flushed` line in a different format, without replication lag.
+
+| Count | Meaning |
+| --- | --- |
+| `ops` | Operations written to [buckets](/architecture/powersync-service#bucket-system), the groups of data that clients sync. |
+| `index entries` | Entries written to parameter indexes, which the Service uses to determine which buckets a client receives. |
+| `records` | Writes to PowerSync's stored source records. |
+
+The counts need not match. For example, `0 ops, 0 index entries, 2000 records` means the batch writes source records without writing bucket operations or parameter index entries. A flush does not confirm that a client has received the data.
+
+`Replication lag` is the age of the oldest uncommitted source change in the batch. It is omitted when that timestamp is unavailable. If lag stays elevated or keeps rising, see [Replication Lag](/maintenance-ops/replication-lag). See [Replication Flush Entries](/maintenance-ops/monitoring-and-alerting#replication-flush-entries) for the structured fields.
+
+### Postgres Replication Slots and WAL Budget
+
+PowerSync replicates from Postgres through a logical replication slot with the same name as the replication stream. For managing slots, see [Postgres Maintenance](/configuration/source-db/postgres-maintenance).
+
+| Message | Meaning |
+| --- | --- |
+| `Created replication slot <slot>` | The Service created a new slot and starts the snapshot from scratch. This happens when no slot exists yet or the existing slot is unusable. |
+| `Cleaning up Postgres replication slot: <slot>...` | The Service drops the slot of a replication stream it no longer needs, for example after a newer Sync Config version took over. |
+| `WAL budget: <remaining> remaining of <limit> limit (<percent>% remaining). ...` | During a snapshot, the Service checks the slot about every two minutes and reports how much of `max_slot_wal_keep_size` remains. At 50% or less, the line is logged as a warning together with `Replication slot may be invalidated before snapshot completes.` If the source database does not limit WAL retention, the Service logs `WAL budget: no limit configured` instead. |
+| `[PSYNC_S1146] Replication slot <slot> was invalidated ...` | Postgres invalidated the slot, or the slot was dropped. If Postgres invalidated the slot while the snapshot was still running, the Service does not create a new slot on its own, except when the reason is `rows_removed`. Follow [Recovering from an Invalidated Slot](/configuration/source-db/postgres-maintenance#recovering-from-an-invalidated-slot). Otherwise the Service starts a new replication stream with a new slot. |
+
+For sizing `max_slot_wal_keep_size`, see [Managing and Monitoring Replication Lag](/maintenance-ops/production-readiness-guide#managing-and-monitoring-replication-lag).
+
+### Replication Errors and Warnings
+
+`Replication error` or `Replication failed.` means a replication attempt failed. Read the accompanying error and any `cause` entry logged with it. The Service retries failed replication jobs after a delay. If the error repeats and includes a `PSYNC_` code, look it up in [Error Codes](/debugging/error-codes). Retrying cannot resolve a persistent configuration or source database problem.
+
+`Fatal replication error` means the replication loop itself failed, for example because the Service could not load or validate the Sync Config at startup. It is usually preceded by the error that caused it, such as `Failed to update sync config`. The replication process exits shortly after.
+
+These entries describe conditions the Service handles on its own. Replication continues:
+
+| Message | Source database | Meaning |
+| --- | --- | --- |
+| `[PSYNC_S1003] Replication stream is locked by another process, standing by.` | All | Another process holds this stream's replication lock. This is normal for up to a minute after a restart or during a rolling deploy, because the lock expires after 60 seconds. The Service logs it once per stream at info level and keeps retrying. If it persists, more than one replication process may be running. See [Replication issues](/debugging/error-codes#psync_s1xxx-replication-issues). |
+| `Query error, retrying` | Postgres, MySQL, SQL Server | A query to the source database failed. The Service retries it once. If the retry also fails, the error is reported normally. |
+| `KeepAlive failed, ...` | Postgres, SQL Server | The Service periodically writes a heartbeat to the source database so that replication advances when there are no other changes. This write failed. The Service tries again at the next heartbeat. Self-hosted instances set the interval with `heartbeat_interval_seconds` on the source connection. See [Self-Hosted Instances](/configuration/powersync-service/self-hosted-instances). |
+| `[PSYNC_S1145] Row Level Security is enabled on table ...` | Postgres | The replication role does not bypass row-level security on this table, so the Service may not be able to read all of its rows. See [PSYNC_S1145](/debugging/error-codes#psync_s11xx-postgres-replication-issues) for the fix. |
+
+### Checking What a Deployment Reprocessed
+
+If an [incremental deployment](/sync/advanced/storage-version-4#incremental-reprocessing) takes longer or reprocesses more than you expect, search your Replicator logs around the deployment time for `Incremental reprocessing sync config update:`. This entry describes the deployment's processing plan in three lists:
+
+| List | Meaning |
+| --- | --- |
+| `Reused definitions` | PowerSync keeps the existing data for these definitions. |
+| `New definitions` | PowerSync needs to process these definitions. The `tables` field lists the source tables it reads for them. |
+| `Definitions to drop after switching` | These definitions are no longer needed by the new Sync Config and are scheduled for cleanup after the switch. |
+
+Definitions are internal units of processing. Bucket data definitions for a Sync Stream are named after the stream with a numeric suffix, such as `user_tasks|0`, and one stream can have several, so a stream name can appear more than once. A list containing `none` has no entries.
+
+To follow the source reads, look for [snapshot progress messages](#snapshot-progress) for the tables listed under `New definitions`.

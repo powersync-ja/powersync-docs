@@ -1,13 +1,9 @@
 ---
-allowed-tools: Bash(npx mintlify *), Bash(PATH=* npx mintlify *), Bash(vale *), Bash(git diff *)
-description: Run documentation linting checks — broken links, Vale prose style, and build validation. Use before publishing or merging documentation changes.
+allowed-tools: Read, Bash(npx mintlify *), Bash(PATH=* npx mintlify *), Bash(vale *), Bash(git diff *), Bash(git status *)
+description: Run Vale and Mintlify broken-link checks for documentation changes and report failures.
 ---
 
-Run all documentation linting checks and report any issues.
-
-1. Run `npx mintlify broken-links` to find broken internal links. Mintlify requires Node 20.17–24; if the default `node` is 25 or newer, run it with an LTS Node instead: `PATH="/opt/homebrew/opt/node@24/bin:$PATH" npx mintlify broken-links` (install with `brew install node@24` if missing).
-2. Run `git diff main --name-only -- '*.mdx'` to get the list of changed MDX files
-3. For each changed file, run `vale <file>` to check prose style
-4. Report all broken links and Vale violations, grouped by file
-5. For each violation, suggest a fix
-6. Summarize: number of errors, warnings, and suggestions across all files
+1. Read the canonical [Verification](../CLAUDE.md#verification) section for commands, supported Node versions, and vocabulary rules.
+2. Use the requested file scope. Otherwise, identify changed MDX pages with `git diff main --name-only --diff-filter=ACMR -- '*.mdx'` and `git status --short`, including untracked pages.
+3. Run `vale <file>` for each page and `npx mintlify broken-links` for the site. Use the canonical Node fallback if needed.
+4. Report findings by file, suggested fixes, and totals for errors, warnings, and suggestions. Report failed or unavailable checks separately from content findings.

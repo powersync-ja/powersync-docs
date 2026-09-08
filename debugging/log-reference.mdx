@@ -18,7 +18,7 @@ Service errors use `[PSYNC_<code>] <description>`, sometimes followed by details
 
 ### Finding a Session
 
-Search for `user_id` to find a user's entries, then `rid` (request ID) to follow a session. `client_id` distinguishes clients belonging to the same user. See [Correlating Sync Sessions](/maintenance-ops/monitoring-and-alerting#correlating-sync-sessions) for search examples and session fields.
+Use `user_id` to identify a user's entries and `rid` to follow one session. For Dashboard search queries, see [Correlating Sync Sessions](/maintenance-ops/monitoring-and-alerting#correlating-sync-sessions).
 
 ### Session Lifecycle
 
@@ -36,7 +36,30 @@ A checkpoint represents a consistent server state. See [Consistency](/architectu
 | `Sync stream complete` | The session ended. | Check `close_reason` and the session totals. `stream_ms` measures the whole session, not the initial download. |
 | `POST /sync/stream` / `STREAM /sync/stream` | The HTTP or WebSocket request ended. | `duration_ms` covers the whole session. The HTTP request can report status `200` even if an error occurred during streaming. |
 
-On `Sync stream complete`, `operations_synced` and `data_synced_bytes` are session totals. On checkpoint entries, these fields count only the operations and bytes since the previous reported counts, or since the session started. The Service counts bytes before compression.
+### Session Fields
+
+`Sync stream started` and `Sync stream complete` share the same `rid`. Both entries can include these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `rid` | Request ID that identifies the session. |
+| `user_id` | Authenticated user ID. |
+| `client_id` | Identifier that distinguishes clients belonging to the same user. |
+| `user_agent` | Client-reported SDK or user-agent information. |
+| `app_metadata` | Optional application context, such as app version. See [Custom Metadata in Sync Logs](/maintenance-ops/monitoring-and-alerting#custom-metadata-in-sync-logs) to set it. |
+
+The started entry also includes `client_params` when the client supplies query parameters. The complete entry adds session results:
+
+| Field | Meaning |
+| --- | --- |
+| `operations_synced` | Total operations synced during the session. |
+| `operation_counts` | Operation totals by type: `put`, `remove`, `move`, and `clear`. |
+| `data_synced_bytes` | Total sync data before compression, in bytes. |
+| `data_sent_bytes` | Bytes sent, accounting for compression when enabled. |
+| `stream_ms` | Session duration in milliseconds, including time waiting for changes. For download timing, see [Diagnosing Sync Latency](/debugging/troubleshooting#diagnosing-sync-latency). |
+| `close_reason` | Why the session ended. See [Close Reasons](#close-reasons). |
+
+On checkpoint entries, `operations_synced` and `data_synced_bytes` count only the operations and bytes since the previous reported counts, or since the session started.
 
 ### Close Reasons
 
@@ -116,15 +139,22 @@ For example, `5040000/~10393720` means 5,040,000 rows processed out of an estima
 Flushed: <N> ops, <M> index entries, <K> records. <size>kb in <duration>ms. Last op_id: <id>. Replication lag: <seconds>s
 ```
 
-| Count | Meaning |
-| --- | --- |
-| `ops` | Operations written to [buckets](/architecture/powersync-service#bucket-system), the groups of data clients sync. |
-| `index entries` | Parameter index entries used to determine which buckets a client receives. |
-| `records` | Writes to PowerSync's stored source records. |
+The same entry includes structured properties under `flushed`:
+
+| Message Value | Property | Meaning |
+| --- | --- | --- |
+| `ops` | `bucket_ops_count` | Operations written to [buckets](/architecture/powersync-service#bucket-system), the groups of data clients sync. |
+| `index entries` | `parameter_indexes_count` | Parameter index entries used to determine which buckets a client receives. |
+| `records` | `source_records_count` | Writes to PowerSync's stored source records. |
+| `<size>kb` | `size` | Batch size in bytes. The message displays this value in rounded kilobytes. |
+| `<duration>ms` | `duration` | Time taken to write the batch, in milliseconds. |
+| `Replication lag` | `replication_lag_seconds` | Age of the oldest uncommitted source change in the batch, in seconds. Present only when the Service can determine that age. |
 
 The counts can differ. For example, `0 ops, 0 index entries, 2000 records` means the Service wrote source records without bucket operations or parameter index entries. A flush alone does not confirm a committed checkpoint or delivery to a client.
 
-`Replication lag` is the age of the oldest uncommitted source change in the batch, when available. Postgres bucket storage uses a shorter format without lag. For sustained or rising lag, see [Replication Lag](/maintenance-ops/replication-lag). For structured fields, see [Replication Flush Entries](/maintenance-ops/monitoring-and-alerting#replication-flush-entries).
+See [Replication Batches](/architecture/powersync-service#replication-batches) for how the Service groups these writes. For sustained or rising lag, see [Replication Lag](/maintenance-ops/replication-lag).
+
+Postgres bucket storage uses a shorter message format without lag or these structured `flushed` properties.
 
 ### Postgres Replication Slots and WAL Budget
 

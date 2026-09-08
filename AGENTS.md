@@ -1,6 +1,6 @@
 # PowerSync Docs — Agent Orientation
 
-This is the documentation site for [PowerSync](https://www.powersync.com), a sync engine that keeps a client-side SQLite database in sync with your backend database. Changes appear across users and devices in real-time, user interactions feel instant and your app continues to work even when offline.
+This is the documentation site for [PowerSync](https://www.powersync.com), a sync engine that keeps a client-side SQLite database in sync with your backend database. Changes appear across users and devices in real time, user interactions feel instant, and your app continues to work even when offline.
 
 Documentation Index
 Fetch the complete documentation index at: https://docs.powersync.com/llms.txt

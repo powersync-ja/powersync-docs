@@ -1,226 +1,124 @@
-# PowerSync Documentation
+# PowerSync Documentation Standards
 
-You are an experienced, pragmatic technical writer with robust content strategy and content design experience. You create just enough documentation to solve users' needs and get them back to the product quickly.
+Write the minimum content readers need to understand PowerSync and complete their task.
 
-**Rule #1**: If you want an exception to any rule, stop and get explicit permission. Breaking the letter or spirit of the rules is failure.
+## Style Authority
 
-## Working Relationship
+This file is the canonical source for shared workflows and documentation standards for all agents in this repository.
 
-- You can push back on ideas — this leads to better documentation. Cite sources and explain your reasoning
-- Always ask for clarification rather than making assumptions
-- Never lie, guess, or make up information
-- Call out bad ideas, unreasonable expectations, and mistakes
-- Never be agreeable just to be nice. Give honest technical judgment
-- Never say "absolutely right" or similar. Be straightforward, not a sycophant
-- If you are making an inference, say so and ask for confirmation or note that you need more information
-- If you're having trouble, stop and ask for help, especially where human input is valuable
+- Explicit user instructions take precedence. Otherwise, this file overrides conflicting prose guidance in skills, reviewer prompts, generic tool references (including Mintlify), and existing pages.
+- Prioritize technical correctness, then reader understanding, then the minimum useful detail. Apply every writing and review rule under these priorities.
+- External style guides fill gaps. They do not replace project conventions such as Title Case headings or PowerSync terminology.
+- Maintain shared rules here. Skills contain task-specific workflows; commands and automation can specify output formats. Keep their references to this file when updating them, rather than copying its rules.
+- Ask before making an exception that the user has not already authorized. Applying an explicit exception or exercising judgment allowed by a rule does not require additional permission.
 
-## Project Context
+## Working Process
 
-- **Format**: MDX files with YAML frontmatter
-- **Config**: `docs.json` for navigation, theme, and settings
-- **Components**: Mintlify components (see `/mintlify` skill for reference)
-- **Linting**: Vale with `.vale.ini`; vocabulary at `.github/vale/config/vocabularies/PowerSync/accept.txt`
-- **Assets**: `/images/`, `/logo/`, `/snippets/`
-- **SDKs covered**: JavaScript/TypeScript, Dart, Kotlin, Swift, .NET, Rust
-
-## Workflows
-
-- Read only the files necessary for the task
-- Use TodoWrite for multi-step tasks to prevent goal drift
-- Prefer direct tool calls (Read, Glob, Grep) over sub-agents when file paths are known
-- For complex tasks: complete full implementation, present for review, then iterate
-- Search for existing content before adding new — avoid duplication unless strategic
-
-## Content Strategy
-
-- Document the smallest useful mental model that lets users understand the behavior, recognize problems, and choose the right action. Too much makes content hard to navigate; too little leaves users memorizing rules they cannot apply
-- Prioritize accuracy and usability over completeness
-- Make content evergreen when possible
-- Check existing patterns for consistency before introducing new ones
-- Start with the smallest reasonable changes
-- Suggest the best location for new content; prefer updating existing pages over creating new ones
-
-## Frontmatter
-
-Every MDX file must include:
-
-```yaml
----
-title: "Clear Title"
-description: Concise explanation of page purpose and value
----
-```
-
-Optional fields: `sidebarTitle` (shorter label for the sidebar), `icon` (Lucide, Font Awesome, or Tabler icon name — or a URL). Common icon values: `icon="elephant"` for Postgres-related pages, `icon="leaf"` for MongoDB-related pages.
-
-The `description` and the page's opening paragraph must not duplicate each other. Users see both when landing on a page.
-
-- `description`: concise summary for SEO and page previews
-- Opening paragraph: expands on the description with additional context
-
-If the description adequately introduces the page, the body can open directly with the first heading or a callout.
+1. Establish the topic, intended reader, outcome, and scope. Search existing pages and read `docs.json` before changing documentation. Prefer updates to existing pages; match useful local patterns without copying their mistakes.
+2. Research the relevant implementation and authoritative references. Read only what the task requires. Prefer direct file reads and searches when paths are known. Track multi-step work with the available planning tool.
+3. Verify technical claims, API behavior, platform scope, and examples. Do not invent facts. Identify inferences and ask when a required fact or decision remains unclear. Give candid, evidence-based feedback.
+4. Follow the task skill's planning and delivery workflow. An approved scope remains approved; do not request the same permission again. Ask when scope expands or a product, security, authentication, or legal decision is needed.
+5. For unresolved facts in a draft, add an MDX comment such as `{/* TODO: Verify whether X is supported before publishing */}` and report what must be resolved. A TODO does not make an unverified claim ready for publication.
+6. Before presenting the result, review it against the writing standards and run the relevant [verification checks](#verification). Report changes, check results, and unresolved limitations.
 
 ## Writing Standards
 
-### Voice and Structure
+### Content Strategy
 
-- Second person ("you") for all instructional content
-- Active voice, present tense
-- Lead with the most important information (inverted pyramid)
-- Define jargon on first use
-- Break complex instructions into clear numbered steps
-- Include prerequisites at the start of procedural content
-- Write out concepts and benefits in full sentences — avoid comma-separated shorthand
+- Lead with what readers need to know or do. Include prerequisites before procedural steps.
+- Include a detail only when it helps readers understand behavior, recognize a relevant problem, or choose an action. A verified fact is not automatically useful documentation.
+- For non-obvious behavior, explain the mechanism, consequence, observable signal, action, or trade-off that readers need. These are decision aids, not a mandatory five-part template. A reference entry often needs only its meaning and a useful next step.
+- Preserve necessary causal context when shortening an explanation. Correct broad claims with narrow, accurate wording rather than a list of exceptions. Remove repetition, internal mechanics, and rare cases that do not affect the reader's interpretation or action.
+- Explain why a recommendation helps when the reason is unclear. Use an example or contrast when it resolves a likely misunderstanding, such as a row in ten buckets being stored and synced ten times. Do not repeat explanations that are already clear.
+- Prefer evergreen content and broadly applicable examples. Link to existing troubleshooting or advanced guidance for further detail.
 
-### Explanatory Writing and Mental Models
+### Plain Technical English
 
-Concise writing preserves the context readers need to understand and predict system behavior. Remove repetition, not causal explanations.
+These required rules adopt principles from [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/about_STE.html) and Google's guidance on [global audiences](https://developers.google.com/style/translation), [active voice](https://developers.google.com/style/voice), and [pronouns](https://developers.google.com/style/pronouns).
 
-For non-obvious behavior, provide the smallest useful mental model. Include the parts readers need to make a correct decision:
+- Use second person for instructions and active voice with the correct actor. Distinguish the Service, source database, client SDK, and reader: "The Service checks the replication slot." Prefer present tense for general behavior.
+- Use familiar words in their usual meaning and one term for each concept. Prefer "new snapshot" to "fresh snapshot" and "becomes active" to "takes over." Keep established technical terms when they are more precise.
+- Give each sentence one main idea. Separate independent statements and instructions. Avoid long noun chains and mappings that depend on "respectively" when direct wording or separate rows are clearer. Do not fragment an explanation to meet a word count.
+- Make references explicit: "this entry" or "these definitions" instead of an ambiguous "this" or "these." Include helper words such as "that" when they clarify meaning.
+- Put a condition before its instruction: "If a deployment is still processing, check Replicator logs." Use numbered steps for a sequence.
+- Briefly define unfamiliar abbreviations and terms on first use. Do not explain every term the intended reader already knows.
+- Explain behavior and how readers recognize it. A bare disclaimer such as "This does not mean the data has downloaded" needs the relevant sequence or completion signal. Retain negative statements when they prevent a likely, consequential misunderstanding.
+- Preserve exact log messages, error codes, identifiers, API names, and quoted output. Simplify the surrounding explanation without changing facts, removing necessary qualifications, or inventing an actor.
 
-1. **Mechanism**: What does the system do?
-2. **Consequence**: Why does that behavior matter?
-3. **Signal**: What would the reader observe?
-4. **Action**: What should the reader change?
-5. **Trade-off**: What does that change cost?
-
-Not every explanation needs all five parts. Use judgment based on the complexity and consequences of the behavior.
-
-Use one concrete example when behavior is cumulative, multiplicative, or difficult to estimate. For example, explain that a row in ten buckets is stored and synced ten times, or that syncing the same 1 MB to 100 devices contributes 100 MB to data synced.
-
-Use contrasts to clarify behavior readers may confuse, such as a normal reconnect resuming from saved state versus a missing local database triggering an initial sync.
-
-When an explanation is too broad, qualify it instead of deleting the useful causal model. Preserve accurate explanations of why something happens, what it looks like, and why the recommendation helps.
-
-Avoid standalone recommendations that readers must memorize. Explain the relevant mechanism before or alongside the action.
-
-### Headings
-
-- **Title Case** for all headings: "Getting Started with Sync Streams"
-- Heading hierarchy starts at H2 — H1 is the page title from frontmatter
-- Never start a heading with an imperative verb unless it is a procedural step ("Configure Your Backend" as a step is fine). These are not violations: the sitewide conventions "Get Started" and "Need Help?", question headings, and gerund headings that name an activity ("Reading Data", "Writing Data")
-
-### Bold and Emphasis
-
-Use bold sparingly. It loses meaning when overused. Reserve it for:
-
-- A term being defined for the first time
-- A critical warning or distinction a skimming reader would otherwise miss
-
-Do not bold phrases simply because they seem important. If something warrants attention, explain it in the surrounding prose. Avoid patterns like:
-
-- **`with` block inside a stream** (stream-level, scoped to that stream) → write as a sentence instead
-- **requirement**: some detail → expand into a sentence or use a callout
-
-### Dashes
-
-Do not use a dash (" — " or " - ") to join two statements that could each stand as a sentence. Split them into two sentences, or use a colon if the second half explains the first.
-
-- **Bad**: "Local CTEs take precedence — if a stream defines a CTE with the same name, the stream-level definition is used."
-- **Good**: "Local CTEs take precedence. If a stream defines a CTE with the same name, the stream-level definition is used."
-
-Dashes are fine when they don't join full statements:
-
-- Trailing fragments or asides: "…operation history — generally as `PUT` or `REMOVE` operations."
-- Link-list annotations: "- [Project Name](url) - Short description" (use " - " consistently, with spaces on both sides)
-- Headings, code, and table cells
-
-Test: read what follows the dash. If it has its own subject and verb and could end with a period, split it.
-
-### American English
-
-Use American English spelling throughout. Common differences to watch for:
-
-| Use | Avoid |
-|-----|-------|
-| behavior | behaviour |
-| color | colour |
-| center | centre |
-| initialize | initialise |
-| analyze | analyse |
-| license | licence |
+This is an adaptation of STE principles, not a requirement for full controlled-vocabulary compliance. Do not claim STE compliance from prose review or Vale results. Google's [reference hierarchy](https://developers.google.com/style#reference-hierarchy) also gives project-specific style precedence.
 
 ### Language and Tone
 
-- Remove unnecessary words while maintaining clarity
-- Be specific, not vague — avoid attributions like "industry reports suggest" or "some experts argue"
-- **No promotional language**: never use "breathtaking," "captivates," "stands as a testament," "plays a vital role," or similar marketing phrases
-- **No editorializing**: avoid "it's important to note," "this article will," "in conclusion"
-- **No difficulty-minimizing language**: avoid "simply," "just," "easily," and "obviously"
-- **No filler words in titles/descriptions**: "Comprehensive," "Complete," "Significant," "Detailed," "Enhanced"
-- Limit conjunction overuse: reduce "moreover," "furthermore," "additionally," "on the other hand" — favor direct statements
-- Use broadly applicable examples rather than overly specific business cases
-- Lead with context when helpful — explain what something is before diving into implementation
-- **Avoid "local-first" and "offline-first" without context** — these are insider terms that don't communicate value. Instead, describe the practical outcome: apps respond instantly because they read and write to a local database; they stay fully functional in poor network conditions. Use words like "responsive" and "available in poor network conditions" rather than the jargon labels.
+- Use American English, such as "behavior," "color," "initialize," and "analyze."
+- Write concepts and benefits in full sentences. Use specific claims with evidence rather than vague attribution.
+- Omit promotional language, editorial filler, and statements that minimize difficulty. Avoid "breathtaking," "it's important to note," "simply," "just," "easily," and "obviously."
+- Avoid title and description filler such as "Comprehensive" or "Complete," and unnecessary transitions such as "moreover" or "furthermore."
+- Explain the practical meaning of "local-first" or "offline-first": apps read and write locally, respond instantly, and remain functional without a network connection.
 
-### Technical Accuracy
+### Headings and Formatting
 
-- Verify all links before publication
-- Never include untested code examples
-- Use consistent terminology throughout — see Terminology section
-- Ensure all code examples, API references, and specifications are current and accurate
+- Use Title Case headings. The page title comes from frontmatter; body headings start at H2.
+- Use imperative headings only for procedural steps. Established "Get Started" and "Need Help?" headings, questions, and activity names such as "Reading Data" are also allowed.
+- Use bold for a term being defined for the first time or a critical warning or distinction. Avoid decorative emphasis, emoji, and compressed labels in place of explanations.
+- Do not join independent statements with a dash. Use separate sentences or a colon. Dashes are allowed for fragments, link-list annotations, headings, code, and table cells.
+- Introduce components with their purpose: "Use [component] to…"
 
 ### Legal and Compliance Content
 
-Contractual or commercial terms may intentionally differ from the standard terminology in this guide. For example, legal content may use "Synchronization Service" instead of "PowerSync Service." Do not change legal or compliance terminology without confirming the intended legal meaning.
-
-### Formatting Discipline
-
-- Use bold, italics, and emphasis only when it serves the user's understanding, not for visual appeal
-- Avoid excessive formatting, emoji, or decorative elements that don't add functional value
-- Keep formatting clean and functional
+Contractual terms may intentionally differ from product terminology. For example, legal text may use "Synchronization Service." Confirm the intended legal meaning before changing such terms.
 
 ## Terminology
 
-Always use the left column. Never use the right.
+Use these conventions in authored prose, subject to the exceptions for exact technical literals and legal terms above.
 
 | Use | Avoid |
-|-----|-------|
+| --- | --- |
 | sync | synchronization |
 | Postgres | PostgreSQL |
 | partial sync | dynamic partial replication |
 | PowerSync Service | powersync service |
-| the Service (short for the PowerSync Service) | the service |
+| the Service | the service, when referring to PowerSync |
 | Sync Rules | sync rules |
 | Sync Streams | sync streams |
-| Sync Config | sync config (except in code, e.g. `sync_config`, `sync-config.yaml`) |
+| Sync Config | sync config, except in identifiers such as `sync_config` |
 
-When referring to the PowerSync Service in shortened form, write "the Service" (capitalized), never "the service". Generic services (a Docker Compose service, a third-party service) stay lowercase.
+Generic services, such as a Docker Compose service or a third-party service, stay lowercase.
 
-## Mintlify Components
+## MDX and Mintlify
 
-### When to Use What
+### Frontmatter
 
-| Component | Use For |
-|-----------|---------|
+Every page requires a title and description:
+
+```yaml
+---
+title: "Clear Title"
+description: "Concise explanation of the page's purpose and value."
+---
+```
+
+Optional fields include `sidebarTitle`, `icon`, and `keywords`. The description summarizes the page for previews. The opening paragraph must add context rather than repeat it; start with a heading or callout if no introduction is needed.
+
+### Components
+
+Use the Mintlify skill for syntax. These project conventions take precedence over its generic writing guidance:
+
+| Component | Use |
+| --- | --- |
 | `<Steps>` | Sequential procedures |
-| `<Tabs>` | Platform-specific content (JS/Dart/Kotlin/Swift/.NET/Rust) |
-| `<CodeGroup>` | Same concept in multiple languages |
-| `<Accordion>` | Progressive disclosure, optional details |
+| `<Tabs>` | Platform-specific content |
+| `<CodeGroup>` | The same concept in multiple languages |
+| `<Accordion>` | Optional details |
 | `<Expandable>` | Nested object properties |
-| `<Note>` | Additional helpful info |
-| `<Tip>` | Best practices, shortcuts |
-| `<Warning>` | Breaking changes, critical issues |
+| `<Note>` | Additional helpful information |
+| `<Tip>` | Best practices or shortcuts |
+| `<Warning>` | Breaking changes or critical issues |
 | `<Info>` | Neutral background context |
 | `<Check>` | Success confirmations |
 
-### SDK Order
+In platform lists, tabs, code groups, accordions, and cards, order SDKs as follows: JavaScript variants (React Native, Web, Node.js), Dart, Kotlin, Swift, .NET, Rust. Put platform-specific extras such as Capacitor and Tauri after the JavaScript variants they belong to.
 
-When listing SDKs or platforms in any ordered UI element (`<Tabs>`, `<CodeGroup>`, `<AccordionGroup>`, card lists), use this order:
-
-1. **JS** variants first (React Native, Web, Node.js)
-2. **Dart**
-3. **Kotlin**
-4. **Swift**
-5. **.NET**
-6. **Rust**
-
-Platform-specific extras (e.g. Capacitor, Tauri) go after the JS variants they belong to.
-
-### Images
-
-Always wrap images in a Frame with a caption:
+Wrap images in a `Frame` with a caption and descriptive alt text:
 
 ```mdx
 <Frame caption="Description of what the image shows">
@@ -228,55 +126,37 @@ Always wrap images in a Frame with a caption:
 </Frame>
 ```
 
-### Component Introductions
+### Code Examples
 
-Start with action-oriented language: "Use [component] to..." rather than "The [component] component..."
+- Provide complete, runnable, tested examples with realistic data and expected output where useful. Never include real credentials or secrets.
+- Give fenced code blocks a language tag. Use filenames only for self-hosted examples.
+- Do not use placeholder names such as `foo`, `bar`, or `example.com` in runnable examples.
+- In SQL, use table names directly unless an alias is necessary for a self-join or ambiguous column. Prefer `SELECT tasks.* FROM tasks JOIN projects ON ...` to aliases such as `t`.
 
-## Code Examples
+### Links and Navigation
 
-- Complete, runnable examples that users can copy
-- Realistic data — not `foo`, `bar`, `example.com`
-- Include expected outputs where applicable
-- Never include real API keys or secrets
-- Always specify a language tag
-- Only add a filename for self-hosted examples (Cloud/dashboard examples should not show filenames)
-- **SQL**: Do not alias tables unless necessary (self-joins, ambiguous column names). Prefer `SELECT tasks.* FROM tasks JOIN projects ON ...` over `SELECT t.* FROM tasks t`
+Use root-relative links without extensions for site pages, such as `/sync/streams/overview`. Do not use absolute site URLs or `../` links in published pages. Repository instruction files use relative file links.
 
-## Links and Navigation
-
-- Use relative links for internal pages: `/sync/streams/overview`
-- Update `docs.json` when adding, moving, or removing pages
-- Add redirects in `docs.json` for any moved content
-- Check for broken links: `npx mintlify broken-links`. Mintlify requires Node 20.17–24; if the default `node` is newer, prefix with `PATH="/opt/homebrew/opt/node@24/bin:$PATH"`
-- Never use absolute URLs for internal links
+Update `docs.json` when adding, moving, or removing pages. Add redirects for moved content and preserve existing navigation paths.
 
 ## Sync Streams and Sync Rules
 
-**Sync Streams are the default.** All new documentation should use Sync Streams. Do not add new content that teaches or promotes Sync Rules.
+Sync Streams are the default for new documentation. Keep legacy Sync Rules documentation accurate, but do not add new Sync Rules teaching, examples, or proactive references.
 
-Sync Rules documentation already exists in the repo and should be kept accurate, but do not proactively reference Sync Rules in new pages or examples. If a page currently shows both in tabs, do not add new parallel Sync Rules examples to it.
+When existing content shows both in tabs, preserve equivalent results and filters. Do not add new parallel Sync Rules examples.
 
-When existing content shows both side by side, the examples must return the same data. If one side uses `auth.user_id()` or other filters, the other must too.
+For existing prose that mentions both, use "[Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview))" once per page or major section. Later mentions should omit Sync Rules.
 
-When an existing page mentions Sync Rules alongside Sync Streams in prose, the approved phrasing is "[Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview))" — but use the full parenthetical only once per page (or major section). Later mentions should omit Sync Rules.
+## Verification
 
-## Vale Vocabulary
-
-Add new technical terms to: `.github/vale/config/vocabularies/PowerSync/accept.txt`
+- Verify technical claims and run code examples before publication. Select other checks appropriate to the change.
+- Run `vale <file>` for changed MDX pages. Add new technical terms to `.github/vale/config/vocabularies/PowerSync/accept.txt`; do not add ordinary misspellings.
+- After link or navigation changes, run `npx mintlify broken-links`. Mintlify requires Node 20.17–24; if needed, use `PATH="/opt/homebrew/opt/node@24/bin:$PATH" npx mintlify broken-links`.
+- For anchor and snippet checks, use `pnpm check:links`. Validate repository instruction links as file paths, since the site checker does not cover all of them.
+- Use [the lint command](commands/lint-docs.md) for the check workflow and [the reviewer](agents/document-reviewer.md) for editorial review. Passing linters does not establish technical accuracy or style compliance.
 
 ## Git Workflow
 
-- Never use `--no-verify` when committing
-- Ask how to handle uncommitted changes before starting work
-- Create a new branch when no clear branch exists for the changes
-- Commit frequently throughout development
-- Never skip or disable pre-commit hooks
-
-## Do Not
-
-- Skip frontmatter on any MDX file
-- Use absolute URLs for internal links
-- Include untested code examples
-- Make assumptions — always ask for clarification
-- Break the existing navigation structure without adding redirects
-- Use `--no-verify` or bypass hooks
+- Check for uncommitted changes. Ask how to handle them unless the session already authorizes work on those changes. Preserve unrelated edits.
+- Create a branch when no clear branch exists for the work, and commit at useful milestones.
+- Never use `--no-verify` or skip or disable pre-commit hooks.

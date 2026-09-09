@@ -24,6 +24,8 @@ When using PowerSync Cloud, compact logs are available in the Dashboard's **Logs
 
 For self-hosted setups (PowerSync Open Edition & PowerSync Enterprise Self-Hosted Edition), the `compact` command in the Docker image can be used to compact all buckets. This can be run manually, or on a regular schedule using Kubernetes [CronJob](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/) or similar scheduling functionality.
 
+On [storage version 4](/sync/advanced/storage-version-4), each run decides per bucket whether to merge newly added chunks, which is fast, or to run a full compaction that reads the whole bucket. Most runs are fast, so you can schedule `compact` to run every hour.
+
 [Defragmenting](/maintenance-ops/compacting-buckets#defragmenting) may still be required.
 
 ## Background
@@ -149,16 +151,10 @@ You should consider defragmenting your buckets when:
 
 ### Defragmenting Strategies
 
-There are manual and automated approaches to defragmenting:
+There are two mechanisms with different scopes:
 
-1. **Manual Defragmentation**
-   - Use the [PowerSync Dashboard](https://dashboard.powersync.com/) to manually trigger defragmentation: Select your project and instance, go to the **Settings** view, and click the **Defragment** button in the "Compact operation history" section
-   - Best for one-time cleanup or after major data changes
+1. **Update source rows, then compact.** Use this when you can identify the rows whose old `PUT` operations block compacting. You can target one table or subset of rows, but each update creates a new operation that clients must download. For recurring maintenance, schedule the updates with a tool such as `pg_cron`:
 
-2. **Scheduled Defragmentation**
-   - Set up a cron job to regularly update rows
-   - Recommended for frequently updated tables or tables with large churn
-   - Example using `pg_cron`:
    ```sql
    -- Daily defragmentation for high-churn tables
    UPDATE audit_logs SET last_updated = now() 
@@ -168,11 +164,12 @@ There are manual and automated approaches to defragmenting:
    UPDATE users SET last_updated = now() 
    WHERE last_updated < now() - interval '1 week';
    ```
-   - This will cause clients to re-sync each updated row, while preventing the number of operations from growing indefinitely. Depending on how often rows in the bucket are modified, the interval can be increased or decreased.
+
+2. **Force a full reprocess.** In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance, open **Settings**, and use **Defragment** in the "Compact operation history" section. This rebuilds all sync data, even when [incremental reprocessing](/sync/advanced/storage-version-4#incremental-reprocessing) would otherwise apply, and clients download all their data again. Use it for one-time cleanup of the entire Sync Config.
 
 ### Defragmenting Trade-offs
 
-Defragmenting + compacting as described above can significantly reduce the number of operations in a bucket, at the cost of existing clients needing to re-sync that data. When and how to do this depends on the specific use-case and data update patterns.
+Both methods can significantly reduce the operation history, at the cost of existing clients downloading data again. Updating source rows and then compacting lets you control which rows are affected. The Dashboard action rebuilds and replaces the complete replication stream.
 
 Key considerations:
 1. **Frequency**: More frequent defragmentation means fewer operations per sync but more frequent re-syncs
@@ -181,10 +178,13 @@ Key considerations:
 
 ## Sync Streams Deployments
 
-Whenever modifications to [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)) are deployed, all buckets are re-created from scratch. This has a similar effect to fully defragmenting and compacting all buckets. This was recommended as a workaround before explicit compacting became available ([released July 26, 2024](https://releases.powersync.com/announcements/bucket-compacting)).
+Without incremental reprocessing, deploying [Sync Streams](/sync/streams/overview) recreates all buckets from scratch. This has the same effect as defragmenting and compacting every bucket, and clients download all their data again. With [incremental reprocessing](/sync/advanced/storage-version-4#incremental-reprocessing) (Beta), unchanged streams keep their buckets and operation history, so a deployment no longer clears their history.
 
-Soon, we will use [incremental reprocessing](https://github.com/orgs/powersync-ja/discussions/349) to process changed definitions only.
+Do not redeploy a Sync Config for routine history cleanup. Use compacting, targeted source-row updates, or the Dashboard's **Defragment** action instead.
 
 ## Technical Details
 
-See the [documentation](https://github.com/powersync-ja/powersync-service/blob/main/docs/storage/compacting-operations.md) in the `powersync-service` repo for more technical details on compacting.
+See the `powersync-service` repo documentation:
+
+- [Compacting operations](https://github.com/powersync-ja/powersync-service/blob/main/docs/storage/compacting-operations.md) - How compacting rewrites operation history into `MOVE` and `CLEAR` operations. This applies to all storage versions.
+- [Compaction design](https://github.com/powersync-ja/powersync-service/blob/main/docs/storage/v3-compaction-design.md) - How [storage version 4](/sync/advanced/storage-version-4) schedules chunk merges and full compactions per bucket.

@@ -1,101 +1,36 @@
 ---
 name: pr-to-docs
-description: Translates a pull request (and any linked content) into documentation updates. Researches existing pages, identifies gaps, drafts changes, and presents a plan before writing. Use when asked to document a feature, update docs for a PR, or write docs from a linked issue, RFC, or spec.
+description: Research a PR, issue, RFC, or spec and translate its verified user-facing changes into a plan and PowerSync documentation updates.
 ---
 
 # PR to Docs
 
-You translate engineering changes into user-facing documentation. Your input is a PR, issue, RFC, spec, or any linked content the user provides. Your output is a plan — and then, once confirmed, the actual doc updates.
+Read [the canonical standards](../../CLAUDE.md) in full, including [Style Authority](../../CLAUDE.md#style-authority) and [Plain Technical English](../../CLAUDE.md#plain-technical-english). This workflow adds source research and planning requirements.
 
-## Canonical Standards
+## 1. Establish the Source
 
-Before using this workflow, read `../../CLAUDE.md` in full. It is the single source of truth for PowerSync writing, terminology, mental models, technical accuracy, formatting, and content strategy. This skill defines the PR research and planning workflow only.
+Accept a PR number and repository, a URL, or supplied source text. Infer the repository from an explicit URL or established session context; ask if it remains ambiguous.
 
-**Only document what you can verify** from the PR diff, linked content, or existing docs. Use TODOs for unverified details. Never invent behaviour.
+Read the PR description, comments, full diff, and relevant linked issues, specs, or references. Use the available GitHub, browser, or local source tools. Read every changed README in full; comments, docstrings, and configuration files can also explain behavior missing from the PR description.
 
-## Inputs
+Record the user-facing change, intended reader, SDK and platform scope, release status, required settings or steps, and relevant limitations. Research thoroughly, then select documentation detail under the canonical content strategy.
 
-The user will provide one or more of:
-- A PR number and repo (e.g. `#1234` in `powersync-service`)
-- A GitHub PR or issue URL
-- A linked spec, RFC, or design doc
-- Pasted content (release notes, internal write-up, etc.)
+## 2. Locate Existing Coverage
 
-If the repo is not specified, ask before proceeding.
+Search the local docs, read the most relevant pages, and check `docs.json`. Identify the pages that need updates, whether a new page is necessary, and any required redirects.
 
-## Step 1: Gather Context
+## 3. Confirm the Plan
 
-Use `WebFetch` to retrieve all PR content directly:
+Present:
 
-1. **PR page** (`https://github.com/<owner>/<repo>/pull/<number>`) — title, description, labels, merge status, linked issues, and any screenshots or embedded images in the body.
-2. **PR comments** (`https://github.com/<owner>/<repo>/pull/<number>` — scroll for review comments) — reviewers often add context, corrections, or scope notes that aren't in the description.
-3. **PR diff/files** (`https://github.com/<owner>/<repo>/pull/<number>/files`) — identify every file changed. Pay special attention to:
-   - **README files** — these are primary sources written by the engineer. Fetch every new or modified README in the diff and read it in full before writing anything. READMEs contain important setup steps, flags, configuration options, and behaviour details that may not appear elsewhere, and usually these details will all need to be documented here.
-   - **Code comments and docstrings** — extract flags, defaults, constraints, and edge cases.
-   - **Config files** — flag names, defaults, and schema changes.
-4. **Linked content** — fetch any issues, RFCs, design docs, or external URLs referenced in the PR body or comments.
+- The user-facing change and sources reviewed.
+- Affected pages, proposed additions or moves, and the reason for each.
+- Unverified facts and decisions needed before publication.
 
-For each README found in the diff, fetch the raw file content:
-```
-https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path-to-readme>
-```
+Obtain confirmation before drafting unless the user already approved the plan or explicitly authorized autonomous completion of this scope.
 
-Identify from all sources combined:
-- What changed (new feature, behaviour change, deprecation, bug fix)
-- Who it affects (end-user developers, operators, both)
-- SDK scope (all SDKs? specific ones?)
-- Whether it's already released or in progress
-- Any flags, configuration, or setup steps required
-- Behaviours that differ by platform, runtime, or build mode
+Ask before expanding scope, documenting a deprecation that needs migration decisions, or proceeding with an unmerged PR whose behavior may change. Do not repeat a question already resolved in the session.
 
-## Step 2: Research Existing Docs
+## 4. Draft and Verify
 
-Search this repo for pages related to the changed area:
-
-- Use Grep and Glob to find relevant MDX files
-- Read the 2–3 most relevant pages in full
-- Check `docs.json` to understand where related content lives
-
-Determine:
-- Which existing pages need updates
-- Whether a new page is warranted (prefer updates over new pages)
-- Whether any redirects will be needed
-
-## Step 3: Present a Plan
-
-Before writing anything, show the user:
-
-1. **What changed** — one-sentence summary of the PR's user-facing impact
-2. **Sources reviewed** — list every source you fetched (PR description, READMEs, comments, diff). This confirms nothing was missed and gives the user a chance to flag additional sources before you write.
-3. **Affected pages** — list of files to update, with a short note on what changes in each
-4. **New pages** (if any) — proposed location in `docs.json` and why
-5. **Anything you can't verify** — list TODOs you'll need to flag in the draft
-
-Get confirmation before proceeding.
-
-## Step 4: Write the Updates
-
-Apply all standards in `../../CLAUDE.md`. Translate implementation details into the smallest useful mental model. Preserve accurate causal explanations in existing prose; if an explanation is too broad, qualify it instead of replacing it with a shorter assertion.
-
-For **new pages**, add an entry to `docs.json` in the right navigation group and create any needed redirects.
-
-For **updated pages**, preserve the existing structure unless restructuring is part of the task.
-
-## Step 5: Flag Uncertainties
-
-Place TODOs inline for anything unverified:
-
-```mdx
-{/* TODO: Verify whether this applies to the Kotlin SDK before publishing */}
-```
-
-After drafting, list all TODOs with a note on what information is needed to resolve them.
-
-## What to Escalate
-
-Stop and ask the user if:
-
-- The PR touches more pages than originally scoped
-- The change involves deprecating existing documented behaviour (needs redirect + migration guide)
-- The PR is not yet merged and behaviour may still change
-- You can't determine user-facing impact from the diff alone
+Apply the canonical writing standards, navigation requirements, and verification checks. Preserve existing structure unless restructuring is part of the approved plan. Flag unresolved facts using the canonical draft-TODO convention and report what must be resolved before publication.

@@ -1,6 +1,6 @@
 ---
 title: "Compatibility"
-description: "Configure compatibility editions and bucket storage format version in PowerSync's sync config."
+description: "Configure compatibility editions and bucket storage format version in PowerSync's Sync Config."
 ---
 
 To ensure consistency, it is important that the PowerSync Service does not interpret the same source row in different ways after updating to a new version.
@@ -10,7 +10,7 @@ At the same time, we want to fix bugs or other inaccuracies that have accumulate
 
 To make this trade‑off explicit, you choose whether to keep the existing behavior or turn on newer fixes that slightly change how data is processed.
 
-Use the `config` block in your sync config YAML to choose the behavior. There are two ways to turn fixes on:
+Use the `config` block in your Sync Config YAML to choose the behavior. There are two ways to turn fixes on:
 
 1. Set an `edition` to enable the full set of fixes for that edition. This is the recommended approach for new projects.
 2. Toggle individual options for more fine‑grained control.
@@ -58,36 +58,42 @@ streams:
 
 ## Storage Version
 
-The PowerSync Service stores replicated bucket data in [bucket storage](/architecture/powersync-service#bucket-storage). That data uses a storage version that can evolve when you deploy new Sync Streams. This versioning approach avoids large upfront migrations on existing bucket data when the Service introduces bigger storage changes. Each time your sync config is deployed and processed, the bucket data written for that deployment uses a specific storage version.
+A storage version tells the PowerSync Service how to organize prepared sync data in the [bucket storage database](/architecture/powersync-service#bucket-storage).
+
+Changing the version does not rewrite the current data in place. When you next deploy the Sync Config, PowerSync prepares a new copy using the selected version. Clients continue using the current copy until the new one is ready. This avoids taking the instance offline for a bucket storage migration.
 
 ### Optional `config.storage_version`
 
-You can pin the bucket storage version by setting it under the `config` block:
+You can choose the bucket storage version in the `config` block:
 
 ```yaml
 config:
   edition: 3
-  storage_version: 2 # version 2 (stable) and 3 (experimental) are currently supported
+  storage_version: 4
 
 streams:
   todos:
     query: SELECT * FROM todos WHERE owner_id = auth.user_id()
 ```
 
-### When to Set `storage_version` Explicitly
+When you omit `storage_version`, the PowerSync Service uses its default, which is version 2 in v1.26.0. On PowerSync Cloud, PowerSync manages the default. For self-hosted deployments, set `config.storage_version` explicitly to select a different version.
 
-In most deployments you can omit `storage_version`. The PowerSync Service then uses the latest stable storage version it supports. You should only set this field if you need more control, e.g.:
+Set `storage_version` when you need to:
 
-1. Service downgrade: If you need to run an older Service version that only supports up to a given storage version, deploy sync config with that `storage_version`, wait until reprocessing for that deployment has finished, then downgrade the Service.
-2. Experiments: Opt into an experimental storage version in non-production environments.
-3. Delaying a storage upgrade: Change other sync config while keeping bucket data on an older stable storage version until you are ready for the newer format.
+- Use [storage version 4](/sync/advanced/storage-version-4), which is in Beta and enables incremental reprocessing and S3 object storage.
+- Delay a storage upgrade. When the default moves to a newer version, pin `storage_version` to the version your data already uses. This keeps later Sync Config deployments on that format. Remove the pin when you are ready for the new format.
+- Prepare for a Service downgrade. Select a version supported by the older Service, deploy the Sync Config, and wait for the new copy to finish before downgrading.
 
-### Stable and Experimental Versions
+### Available Versions
 
-The Service distinguishes stable and experimental storage versions as follows:
+| Version | Bucket storage | Status |
+| --- | --- | --- |
+| `1` | MongoDB or Postgres | Legacy format, retained for existing deployments. |
+| `2` | MongoDB or Postgres | Stable. The default in v1.26.0. |
+| `3` | MongoDB | Experimental. The unstable predecessor of version 4, with the same format. Do not use it in production. Deploy with version 4 instead. |
+| `4` | MongoDB | Stable. Enables [incremental reprocessing and S3 object storage](/sync/advanced/storage-version-4) (Beta). |
 
-- Even numbers (for example `2`, `4`) denote stable formats. Once a stable version is supported, newer Service releases are expected to keep supporting it until it is officially deprecated.
-- Odd numbers (for example `3`) denote experimental formats. The layout may change without notice and support may be removed in a future release. Use odd versions only for testing, not production.
+Version numbers follow a pattern. Even numbers are stable formats: they stay backwards compatible and later Service versions continue to support them. Stable makes no guarantee that a format is bug-free. Odd numbers are experimental formats: their layout can change without notice and support can be removed in a later release, so use them only for testing, never in production.
 
 ## Supported Fixes
 

@@ -8,8 +8,12 @@ import SdkFeatures from '/snippets/sdk-features.mdx';
 import SwiftInstallation from '/snippets/swift/installation.mdx';
 import SwiftWatch from '/snippets/swift/basic-watch-query.mdx';
 import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import { PowerSyncCardGroup } from '/snippets/shared/powersync-card-group.jsx';
+import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
+import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import SwiftSubscribeSyncStream from '/snippets/swift/subscribe-sync-stream.mdx';
 
 ```text Build with AI icon="sparkles" wrap
 Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skills. Then follow the skills to onboard this project to PowerSync using the Swift SDK.
@@ -31,12 +35,12 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
 </PowerSyncCardGroup>
 
 <Note>
-  Earlier versions of the Swift SDK (up to v1.13) shipped a PowerSync Kotlin XCFramework under the hood and abstracted it behind Swift protocols.
+  Up to v1.13, the Swift SDK wrapped a PowerSync Kotlin XCFramework behind Swift protocols.
 
-  From v1.14 onward, the Kotlin dependency has been removed entirely. The SDK is now implemented natively in Swift, with the PowerSync sync protocol and SQLite extension handled by our [Rust core](https://github.com/powersync-ja/powersync-sqlite-core). 
+  From v1.14, the SDK has no Kotlin dependency. It is implemented natively in Swift and uses our [Rust core](https://github.com/powersync-ja/powersync-sqlite-core) for the sync protocol and SQLite extension.
 </Note>
 
-### SDK Features
+## SDK Features
 <SdkFeatures />
 
 ## Installation
@@ -45,19 +49,17 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
 
 ## Getting Started
 
-**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Streams (or legacy Sync Rules) (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
+**Prerequisites:** Before you start, connect your source database to the PowerSync Service and deploy Sync Streams. These are steps 1-4 in the [Setup Guide](/intro/setup-guide).
 
 ### 1. Define the Client-Side Schema
-
-import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 
 <SdkClientSideSchema />
 
 <GenerateSchemaAutomatically />
 
-The types available are `text`, `integer` and `real`. These should map directly to the values produced by your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
+The available column types are `text`, `integer`, and `real`. These should match the values produced by your Sync Streams. If a value does not match, it is cast automatically. For details on how source database types map to SQLite types, see [Types](/sync/types).
 
-**Example**:
+**Example:**
 
 ```swift
 import Foundation
@@ -104,14 +106,14 @@ let AppSchema = Schema(lists, todos)
 ```
 
 <Note>
-  **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+  You do not need to declare an `id` column. PowerSync creates it automatically.
 </Note>
 
 ### 2. Instantiate the PowerSync Database
 
-Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline.
+Next, instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your Sync Streams. Your app reads from and writes to this local database whether the user is online or offline.
 
-**Example**:
+**Example:**
 
 ```swift
 let schema = AppSchema // Comes from the AppSchema defined above
@@ -123,19 +125,19 @@ let db = PowerSyncDatabase(
 
 ### 3. Integrate with Your Backend
 
-Create a connector to integrate with your backend. The PowerSync backend connector provides the connection between your application backend and the PowerSync managed database. It is used to:
+The backend connector connects the PowerSync client SDK to your application backend. The SDK uses it to:
 
-1. Retrieve an auth token to connect to the PowerSync instance.
+1. Get an auth token to connect to the PowerSync instance.
 
-2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend source database) when the user is connected. 
+2. Upload client-side writes to your backend API. The SDK places every write to the SQLite database in an upload queue and uploads the queue to your backend when the user is connected. Your backend then applies the changes to the source database. 
 
-Accordingly, the connector must implement two methods:
+The connector must implement two methods:
 
-1. `PowerSyncBackendConnectorProtocol.fetchCredentials` - This method is automatically invoked by the PowerSync Client SDK to obtain authentication credentials. The SDK caches credentials internally and only calls this method when needed (e.g. on initial connection or when the token is near expiry). See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details, and [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
+1. `PowerSyncBackendConnectorProtocol.fetchCredentials` - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
 
-2. `PowerSyncBackendConnectorProtocol.uploadData` - This method will be automatically invoked by the PowerSync Client SDK whenever it needs to upload client-side writes to your app's backend API. You need to implement how those writes are processed and uploaded in this method. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for details on triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
+2. `PowerSyncBackendConnectorProtocol.uploadData` - The SDK calls this method whenever it has client-side writes to upload to your backend API. Implement how those writes are processed and uploaded. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for the app backend implementation.
 
-**Example**:
+**Example:**
 
 ```swift
 import PowerSync
@@ -167,35 +169,43 @@ Connect the PowerSync database to sync data with your backend:
 ```swift
 let connector = MyConnector()
 
-try await powerSync.connect(connector: connector)
+try await db.connect(connector: connector)
 ```
 
 <LocalOnly />
 
-## Using PowerSync: CRUD functions
+### 4. Subscribe to Sync Streams
 
-Once the PowerSync instance is configured you can start using the SQLite DB functions.
+<SubscribeSyncStreamsIntro />
+
+<SwiftSubscribeSyncStream />
+
+<SubscribeSyncStreamsOutro />
+
+## Using PowerSync: CRUD Functions
+
+Once the PowerSync database is connected and your streams have synced, the data is in the local SQLite database.
 
 The most commonly used CRUD functions to interact with your SQLite data are:
 
-* [PowerSyncDatabase.get](/client-sdks/reference/swift#fetching-a-single-item-powersync-get-/-powersync-getoptional) - get (SELECT) a single row from a table.
+* [PowerSyncDatabase.get](/client-sdks/reference/swift#fetching-a-single-item-powersync-get-/-powersync-getoptional) - get (`SELECT`) a single row from a table.
 
-* [PowerSyncDatabase.getOptional](/client-sdks/reference/swift#fetching-a-single-item-powersync-get-/-powersync-getoptional) - get (SELECT) a single row from a table and return `null` if not found.
+* [PowerSyncDatabase.getOptional](/client-sdks/reference/swift#fetching-a-single-item-powersync-get-/-powersync-getoptional) - get (`SELECT`) a single row from a table and return `nil` if not found.
 
-* [PowerSyncDatabase.getAll](/client-sdks/reference/swift#querying-items-powersync-getall) - get (SELECT) a set of rows from a table.
+* [PowerSyncDatabase.getAll](/client-sdks/reference/swift#querying-items-powersync-getall) - get (`SELECT`) a set of rows from a table.
 
-* [PowerSyncDatabase.watch](/client-sdks/reference/swift#watching-queries-powersync-watch) - execute a read query every time source tables are modified.
+* [PowerSyncDatabase.watch](/client-sdks/reference/swift#watching-queries-powersync-watch) - execute a read query every time a dependent table changes.
 
-* [PowerSyncDatabase.execute](/client-sdks/reference/swift#mutations-powersync-execute) - execute a write (INSERT/UPDATE/DELETE) query.
+* [PowerSyncDatabase.execute](/client-sdks/reference/swift#mutations-powersync-execute) - execute a write (`INSERT`/`UPDATE`/`DELETE`) query.
 
 ### Fetching a Single Item (PowerSync.get / PowerSync.getOptional)
 
-The `get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `getOptional` to return a single optional result (returns `null` if no result is found).
+The `get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `getOptional` to return a single optional result (returns `nil` if no result is found).
 
 ```swift
-// Find a list item by ID
-func getList(_ id: String) async throws {
-    try await self.db.getAll(
+// Find a list by ID
+func getList(_ id: String) async throws -> ListContent {
+    try await db.get(
         sql: "SELECT * FROM \(LISTS_TABLE) WHERE id = ?",
         parameters: [id],
         mapper: { cursor in
@@ -216,8 +226,8 @@ The `getAll` method executes a read-only (SELECT) query and returns a set of row
 
 ```swift
 // Get all lists
-func getLists() async throws {
-    try await self.db.getAll(
+func getLists() async throws -> [ListContent] {
+    try await db.getAll(
         sql: "SELECT * FROM \(LISTS_TABLE)",
         parameters: [],
         mapper: { cursor in
@@ -269,7 +279,7 @@ func deleteTodo(id: String) async throws {
 
 ## Configure Logging
 
-You can include your own Logger that must conform to the [LoggerProtocol](https://powersync-ja.github.io/powersync-swift/documentation/powersync/loggerprotocol) as shown here.
+You can supply your own logger. It must conform to the [LoggerProtocol](https://powersync-ja.github.io/powersync-swift/documentation/powersync/loggerprotocol):
 
 ```swift
 let logger = DefaultLogger(minSeverity: .debug)
@@ -345,7 +355,7 @@ PowerSync officially supports the [GRDB](/client-sdks/orms/swift/grdb) library f
 
 Additionally, [Asier G. Morato](https://github.com/asiergmorato) contributed a [Swift Data integration](https://github.com/powersync-community/swift-data)
 for PowerSync, allowing Swift Data models to be persisted and synced through a PowerSync database.
-Note that the integration is community-owned and not officially supported by PowerSync.
+The integration is community-owned and not officially supported by PowerSync.
 
 ## Troubleshooting
 

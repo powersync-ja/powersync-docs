@@ -1,5 +1,5 @@
 ---
-title: "Node.js client SDK"
+title: "Node.js Client SDK"
 description: "Use PowerSync in Node.js apps."
 sidebarTitle: "SDK Reference"
 ---
@@ -9,7 +9,11 @@ import NodeInstallation from '/snippets/node/installation.mdx';
 import JavaScriptAsyncWatch from '/snippets/basic-watch-query-javascript-async.mdx';
 import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-callback.mdx';
 import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import MutationConfirmationWithReturning from '/snippets/javascript-mutation-confirmation-returning.mdx';
+import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
+import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import JavaScriptSubscribeSyncStream from '/snippets/javascript/subscribe-sync-stream.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import { PowerSyncCardGroup } from '/snippets/shared/powersync-card-group.jsx';
 
@@ -45,7 +49,7 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
   </Card>
 </PowerSyncCardGroup>
 
-### SDK Features
+## SDK Features
 
 <SdkFeatures />
 
@@ -53,11 +57,9 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
 <NodeInstallation />
 
 
-**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Streams (or legacy Sync Rules) (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
+**Prerequisites:** Before you start, connect your source database to the PowerSync Service and deploy Sync Streams. These are steps 1-4 in the [Setup Guide](/intro/setup-guide).
 
 ### 1. Define the Client-Side Schema
-
-import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 
 <SdkClientSideSchema />
 
@@ -65,15 +67,16 @@ You can use [this example](https://github.com/powersync-ja/powersync-js/blob/e5a
 
 <GenerateSchemaAutomatically />
 
-The types available are `text`, `integer` and `real`. These should map directly to the values produced by your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
+In the Dashboard, select JavaScript and replace the suggested import with `@powersync/node`.
 
-  Select JavaScript and replace the suggested import with `@powersync/node`.
+The available column types are `text`, `integer`, and `real`. These should match the values produced by your Sync Streams. If a value does not match, it is cast automatically. For details on how source database types map to SQLite types, see [Types](/sync/types).
+
 
 ### 2. Instantiate the PowerSync Database
 
-Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline.
+Next, instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your Sync Streams. Your app reads from and writes to this local database whether the user is online or offline.
 
-**Example**:
+**Example:**
 
 ```js
 import { PowerSyncDatabase } from '@powersync/node';
@@ -94,27 +97,22 @@ export const db = new PowerSyncDatabase({
 
 ### 3. Integrate with Your Backend
 
-The PowerSync backend connector provides the connection between your application backend and the PowerSync client-side managed SQLite database. It is used to:
+The backend connector connects the PowerSync client SDK to your application backend. The SDK uses it to:
 
-1. Retrieve an auth token to connect to the PowerSync instance.
-2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend source database) when the user is connected. 
+1. Get an auth token to connect to the PowerSync instance.
+2. Upload client-side writes to your backend API. The SDK places every write to the SQLite database in an upload queue and uploads the queue to your backend when the user is connected. Your backend then applies the changes to the source database. 
 
-Accordingly, the connector must implement two methods:
+The connector must implement two methods:
 
-1. [PowerSyncBackendConnector.fetchCredentials](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L16) - This method is automatically invoked by the PowerSync Client SDK to obtain authentication credentials. The SDK caches credentials internally and only calls this method when needed (e.g. on initial connection or when the token is near expiry). See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details, and [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
-2. [PowerSyncBackendConnector.uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) - This method will be automatically invoked by the PowerSync Client SDK whenever it needs to upload client-side writes to your app's backend API. You need to implement how those writes are processed and uploaded in this method. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for details on triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
+1. [PowerSyncBackendConnector.fetchCredentials](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L16) - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
+2. [PowerSyncBackendConnector.uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) - The SDK calls this method whenever it has client-side writes to upload to your backend API. Implement how those writes are processed and uploaded. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for the app backend implementation.
 
-**Example**:
+**Example:**
 
 ```js
 import { UpdateType } from '@powersync/node';
 
-export class Connector implements PowerSyncBackendConnector {
-    constructor() {
-        // set up a connection to your server for uploads
-        this.serverConnectionClient = TODO;
-    }
-
+export class Connector {
     async fetchCredentials() {
         // Implement fetchCredentials to obtain a JWT from your authentication service. 
         // See https://docs.powersync.com/configuration/auth/overview
@@ -143,10 +141,17 @@ await db.waitForFirstSync(); // Optional, to wait for a complete snapshot of dat
 
 <LocalOnly />
 
+### 4. Subscribe to Sync Streams
+
+<SubscribeSyncStreamsIntro />
+
+<JavaScriptSubscribeSyncStream />
+
+<SubscribeSyncStreamsOutro />
+
 ## Usage
 
-After connecting the client database, it is ready to be used. The API to run queries and updates is identical to our
-[JavaScript/Web SDK](/client-sdks/reference/javascript-web#using-powersync-crud-functions):
+Once the PowerSync database is connected and your streams have synced, the data is in the local SQLite database. The API to run queries and updates is identical to the [JavaScript Web SDK](/client-sdks/reference/javascript-web#using-powersync-crud-functions):
 
 ```js
 // Use db.get() to fetch a single row:
@@ -157,7 +162,7 @@ console.log(await db.getAll('SELECT * FROM lists;'));
 
 // And db.execute for inserts, updates and deletes:
 await db.execute(
-  "INSERT INTO lists (id, created_at, name, owner_id) VALUEs (uuid(), datetime('now'), ?, uuid());",
+  "INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime('now'), ?, uuid());",
   ['My new list']
 );
 ```
@@ -179,10 +184,10 @@ The `db.watch()` method executes a read query whenever a change to a dependent t
   </Tab>
 </Tabs>
 
-For advanced watch query features like incremental updates and differential results, see [Live Queries / Watch Queries](/client-sdks/watch-queries).
+For advanced watch query features such as incremental updates and differential results, see [Live Queries / Watch Queries](/client-sdks/watch-queries).
 
 
-PowerSync runs queries asynchronously on a background pool of workers and automatically configures WAL to allow a writer and multiple readers to operate in parallel.
+PowerSync runs queries asynchronously on a background pool of workers. It configures SQLite write-ahead logging (WAL) so that one writer and multiple readers can operate in parallel.
 
 ## Configure Logging
 
@@ -216,7 +221,7 @@ See [Supported Platforms -> Node.js SDK](/resources/supported-platforms#node-js)
 
 ## Upgrading the SDK
 
-Run the below command in your project folder:
+Run the following command in your project folder:
 
 <Tabs>
 <Tab title="npm">
@@ -308,8 +313,8 @@ toolchain.
 ### `node:sqlite`
 
 Recent versions of Node.js contain an [experimental SQLite API](https://nodejs.org/api/sqlite.html).
-Using the builtin SQLite API can reduce code size and external native dependencies. To enable it,
-remove your dependency on `better-sqlite3` and configure PowerSync to use the builtin APIs:
+Using the built-in SQLite API can reduce code size and external native dependencies. To enable it,
+remove your dependency on `better-sqlite3` and configure PowerSync to use the built-in API:
 
 ```JavaScript
 const database = new PowerSyncDatabase({
@@ -324,6 +329,5 @@ const database = new PowerSyncDatabase({
 ```
 
 <Danger>
-There are stability issues when using PowerSync with this API, and it's not recommended outside of
-testing purposes at the moment.
+PowerSync has stability issues with this API. Use it for testing only.
 </Danger>

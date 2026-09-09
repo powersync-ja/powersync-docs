@@ -8,8 +8,12 @@ import SdkFeatures from '/snippets/sdk-features.mdx';
 import KotlinInstallation from '/snippets/kotlin/installation.mdx';
 import KotlinWatch from '/snippets/kotlin/basic-watch-query.mdx';
 import GenerateSchemaAutomatically from '/snippets/generate-schema-automatically.mdx';
+import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import { PowerSyncCardGroup } from '/snippets/shared/powersync-card-group.jsx';
+import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
+import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import KotlinSubscribeSyncStream from '/snippets/kotlin/subscribe-sync-stream.mdx';
 
 ```text Build with AI icon="sparkles" wrap
 Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skills. Then follow the skills to onboard this project to PowerSync using the Kotlin Multiplatform SDK.
@@ -33,7 +37,7 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
   </Card>
 </PowerSyncCardGroup>
 
-### SDK Features
+## SDK Features
 
 <SdkFeatures />
 
@@ -44,23 +48,23 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
 <Note>
     **Supported platforms**
     * PowerSync supports Android, JVM and Apple (iOS, macOS, tvOS, watchOS) targets through Kotlin Multiplatform.
-    * On the JVM, the following platforms are supported: Linux AArch64, Linux X64, MacOS AArch64, MacOS X64, Windows X64.
+    * On the JVM, the following platforms are supported: Linux AArch64, Linux X64, macOS AArch64, macOS X64, Windows X64.
     * Web (JS and WebAssembly) targets have experimental support. See [Experimental Web Support](#experimental-web-support).
 </Note>
 
 ## Getting Started
 
-**Prerequisites**: To sync data between your client-side app and your backend source database, you must have completed the necessary setup for PowerSync, which includes connecting your source database to the PowerSync Service and deploying Sync Streams (or legacy Sync Rules) (steps 1-4 in the [Setup Guide](/intro/setup-guide)).
+**Prerequisites:** Before you start, connect your source database to the PowerSync Service and deploy Sync Streams. These are steps 1-4 in the [Setup Guide](/intro/setup-guide).
 
-### 1\. Define the Client-Side Schema
+### 1. Define the Client-Side Schema
 
-The first step is to define the client-side schema, which refers to the schema for the managed SQLite database exposed by the PowerSync Client SDKs, that your app can read from and write to. The client-side schema is typically mainly derived from your backend source database schema and your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)), but can also include other tables such as local-only tables. Note that schema migrations are not required on the SQLite database due to the schemaless nature of the [PowerSync protocol](/architecture/powersync-protocol): schemaless data is synced to the client-side SQLite database, and the client-side schema is then applied to that data using _SQLite views_ to allow for structured querying of the data. The schema is applied when the local PowerSync database is constructed (as we'll show in the next step).
+<SdkClientSideSchema />
 
 <GenerateSchemaAutomatically />
 
-The types available are `text`, `integer` and `real`. These should map directly to the values produced by your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). If a value doesn't match, it is cast automatically. For details on how backend source database types are mapped to the SQLite types, see [Types](/sync/types).
+The available column types are `text`, `integer`, and `real`. These should match the values produced by your Sync Streams. If a value does not match, it is cast automatically. For details on how source database types map to SQLite types, see [Types](/sync/types).
 
-**Example**:
+**Example:**
 
 ```kotlin
 // AppSchema.kt
@@ -75,13 +79,13 @@ val AppSchema: Schema = Schema(
         Table(
             name = "todos",
             columns = listOf(
-                Column.text('list_id'),
-                Column.text('created_at'),
-                Column.text('completed_at'),
-                Column.text('description'),
-                Column.integer('completed'),
-                Column.text('created_by'),
-                Column.text('completed_by')
+                Column.text("list_id"),
+                Column.text("created_at"),
+                Column.text("completed_at"),
+                Column.text("description"),
+                Column.integer("completed"),
+                Column.text("created_by"),
+                Column.text("completed_by")
             ),
             // Index to allow efficient lookup within a list
             indexes = listOf(
@@ -91,25 +95,25 @@ val AppSchema: Schema = Schema(
         Table(
             name = "lists",
             columns = listOf(
-                Column.text('created_at'),
-                Column.text('name'),
-                Column.text('owner_id')
+                Column.text("created_at"),
+                Column.text("name"),
+                Column.text("owner_id")
             )
         )
     )
 )
 ```
 <Note>
-    **Note**: No need to declare a primary key `id` column, as PowerSync will automatically create this.
+    You do not need to declare an `id` column. PowerSync creates it automatically.
 </Note>
 
-### 2\. Instantiate the PowerSync Database
+### 2. Instantiate the PowerSync Database
 
-Next, you need to instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). In your client-side app, you can read from and write to the local SQLite database, whether the user is online or offline.
+Next, instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your Sync Streams. Your app reads from and writes to this local database whether the user is online or offline.
 
-**Example**:
+**Example:**
 
-a. Create platform specific `DatabaseDriverFactory` to be used by the `PowerSyncBuilder` to create the SQLite database driver.
+a. Create a platform-specific `DatabaseDriverFactory` to be used by the `PowerSyncBuilder` to create the SQLite database driver.
 
 ```kotlin
 // commonMain
@@ -128,13 +132,13 @@ b. Build a `PowerSyncDatabase` instance using the `PowerSyncBuilder` and the `Da
 ```kotlin
 // commonMain
 
-val database = PowerSyncDatabase({
-  factory: driverFactory, // The factory you defined above
-  schema: AppSchema, // The schema you defined in the previous step
-  dbFilename: "powersync.db"
-  // logger: YourLogger // Optionally include your own Logger that must conform to Kermit Logger
-  // dbDirectory: "path/to/directory" // Optional. Directory path where the database file is located. This parameter is ignored for iOS.
-});
+val database = PowerSyncDatabase(
+  factory = driverFactory, // The factory you defined above
+  schema = AppSchema, // The schema you defined in the previous step
+  dbFilename = "powersync.db",
+  // logger = YourLogger, // Optional. Your own Kermit Logger.
+  // dbDirectory = "path/to/directory", // Optional. Directory for the database file. Ignored on iOS.
+)
 ```
 
 c. Connect the `PowerSyncDatabase` to sync data with your backend:
@@ -144,7 +148,7 @@ c. Connect the `PowerSyncDatabase` to sync data with your backend:
 ```kotlin
 // commonMain
 
-// Uses the backend connector that will be created in the next step
+// Uses the backend connector that you create in the next step
 database.connect(MyConnector())
 ```
 
@@ -160,19 +164,19 @@ remember {
 }
 ```
 
-### 3\. Integrate with Your Backend
+### 3. Integrate with Your Backend
 
-Create a connector to integrate with your backend. The PowerSync backend connector provides the connection between your application backend and the PowerSync managed database. It is used to:
+The backend connector connects the PowerSync client SDK to your application backend. The SDK uses it to:
 
-1. Retrieve an auth token to connect to the PowerSync instance.
-2. Upload client-side writes to your backend API. Any writes that are made to the SQLite database are placed into an upload queue by the PowerSync Client SDK and automatically uploaded to your app backend (where you apply those changes to the backend source database) when the user is connected. 
+1. Get an auth token to connect to the PowerSync instance.
+2. Upload client-side writes to your backend API. The SDK places every write to the SQLite database in an upload queue and uploads the queue to your backend when the user is connected. Your backend then applies the changes to the source database. 
 
-Accordingly, the connector must implement two methods:
+The connector must implement two methods:
 
-1. `PowerSyncBackendConnector.fetchCredentials` \- This method is automatically invoked by the PowerSync Client SDK to obtain authentication credentials. The SDK caches credentials internally and only calls this method when needed (e.g. on initial connection or when the token is near expiry). See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details, and [Authentication Setup](/configuration/auth/overview) for instructions on how the credentials should be generated.
-2. `PowerSyncBackendConnector.uploadData` \- This method will be automatically invoked by the PowerSync Client SDK whenever it needs to upload client-side writes to your app's backend API. You need to implement how those writes are processed and uploaded in this method. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for details on triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for considerations on the app backend implementation.
+1. `PowerSyncBackendConnector.fetchCredentials` - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
+2. `PowerSyncBackendConnector.uploadData` - The SDK calls this method whenever it has client-side writes to upload to your backend API. Implement how those writes are processed and uploaded. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for the app backend implementation.
 
-**Example**:
+**Example:**
 
 ```kotlin
 // PowerSync.kt
@@ -184,11 +188,11 @@ class MyConnector : PowerSyncBackendConnector() {
         // implement fetchCredentials to obtain the necessary credentials to connect to your backend
         // See an example implementation in https://github.com/powersync-ja/powersync-kotlin/blob/main/integrations/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt
 
-        return {
-            endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+        return PowerSyncCredentials(
+            endpoint = "[Your PowerSync instance URL or self-hosted endpoint]",
             // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly
-            token: 'An authentication token'
-        }
+            token = "An authentication token"
+        )
     }
 
     override suspend fun uploadData(database: PowerSyncDatabase) {
@@ -200,18 +204,26 @@ class MyConnector : PowerSyncBackendConnector() {
 }
 ```
 
-**Note**: If you are using Supabase, you can use [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/integrations/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) as a starting point.
+If you use Supabase, you can use [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/integrations/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) as a starting point.
 
-## Using PowerSync: CRUD functions
+### 4. Subscribe to Sync Streams
 
-Once the PowerSync instance is configured you can start using the SQLite DB functions.
+<SubscribeSyncStreamsIntro />
+
+<KotlinSubscribeSyncStream />
+
+<SubscribeSyncStreamsOutro />
+
+## Using PowerSync: CRUD Functions
+
+Once the PowerSync database is connected and your streams have synced, the data is in the local SQLite database.
 
 The most commonly used CRUD functions to interact with your SQLite data are:
 
-* [PowerSyncDatabase.get](/client-sdks/reference/kotlin#fetching-a-single-item) \- get (SELECT) a single row from a table.
-* [PowerSyncDatabase.getAll](/client-sdks/reference/kotlin#querying-items-powersync-getall) \- get (SELECT) a set of rows from a table.
-* [PowerSyncDatabase.watch](/client-sdks/reference/kotlin#watching-queries-powersync-watch) \- execute a read query every time source tables are modified.
-* [PowerSyncDatabase.execute](/client-sdks/reference/kotlin#mutations-powersync-execute) \- execute a write (INSERT/UPDATE/DELETE) query.
+* [PowerSyncDatabase.get](/client-sdks/reference/kotlin#fetching-a-single-item) - get (`SELECT`) a single row from a table.
+* [PowerSyncDatabase.getAll](/client-sdks/reference/kotlin#querying-items-powersync-getall) - get (`SELECT`) a set of rows from a table.
+* [PowerSyncDatabase.watch](/client-sdks/reference/kotlin#watching-queries-powersync-watch) - execute a read query every time a dependent table changes.
+* [PowerSyncDatabase.execute](/client-sdks/reference/kotlin#mutations-powersync-execute) - execute a write (`INSERT`/`UPDATE`/`DELETE`) query.
 
 ### Fetching a Single Item
 
@@ -292,7 +304,7 @@ suspend fun deleteCustomer(id: String? = null) {
 
 ## Configure Logging
 
-You can include your own Logger that must conform to the [Kermit Logger](https://kermit.touchlab.co/docs/) as shown here.
+You can supply your own logger. It must conform to the [Kermit Logger](https://kermit.touchlab.co/docs/):
 
 ```kotlin
 PowerSyncDatabase(
@@ -301,7 +313,7 @@ PowerSyncDatabase(
 )
 ```
 
-If you don't supply a Logger then a default Kermit Logger is created with settings to only show `Warnings` in release and `Verbose` in debug as follows:
+If you do not supply a logger, the SDK creates a default Kermit Logger. It shows `Warn` and above in release builds and `Verbose` in debug builds:
 
 ```kotlin
 val defaultLogger: Logger = Logger
@@ -316,7 +328,7 @@ if(BuildConfig.isDebug) {
 return defaultLogger
 ```
 
-You are able to use the Logger anywhere in your code as follows to debug:
+You can use the logger anywhere in your code:
 
 ```kotlin
 import co.touchlab.kermit.Logger
@@ -376,8 +388,7 @@ For more usage examples including accessing connection status, monitoring sync p
 
 ## ORM / SQL Library Support
 
-The PowerSync SDK for Kotlin can be used with the SQLDelight and Room libraries, making it easier to define and
-run SQL queries.
+You can use the Kotlin SDK with the SQLDelight and Room libraries to define and run SQL queries.
 For details, see the [SQL Library Support](/client-sdks/orms/kotlin/overview) page.
 
 ## Experimental Web Support
@@ -387,7 +398,7 @@ Version 1.14.1 of the SDK adds initial support for web targets (JS and WebAssemb
 <Warning>
 Web support is experimental and incomplete. We are sharing it for early testing and prototyping purposes, and it is not ready for production use. The main limitation is that multi-tab support is not functional in this version: tabs don't coordinate sync connections or share update notifications, so use the database from a single tab only.
 
-If you try web support, please test it thoroughly and report any issues you run into on [GitHub](https://github.com/powersync-ja/powersync-kotlin/issues). Follow the [tracking issue](https://github.com/powersync-ja/powersync-kotlin/issues/362) for progress on stabilizing web support.
+If you try web support, test it thoroughly and report any issues on [GitHub](https://github.com/powersync-ja/powersync-kotlin/issues). Follow the [tracking issue](https://github.com/powersync-ja/powersync-kotlin/issues/362) for progress on stabilizing web support.
 </Warning>
 
 For a working example, see the web target of the [Supabase To-Do List demo](https://github.com/powersync-ja/powersync-kotlin/tree/main/demos/supabase-todolist).

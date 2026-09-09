@@ -9,7 +9,7 @@ Compared to version 2, it provides:
 
 - Faster sync and faster reprocessing after a deployment.
 - [Incremental reprocessing](#incremental-reprocessing): a Sync Streams deployment reprocesses only the streams you added or changed. Clients no longer download all their data again after every deployment.
-- [S3 object storage](#s3-object-storage): larger blocks of synced data move from the storage database to S3. This removes the main bottleneck when many clients sync at once or sync large amounts of data.
+- [S3 object storage](#s3-object-storage): larger blocks of synced data move from the storage database to S3. This reduces load on the storage database when many clients sync at once or sync large amounts of data.
 
 ## Availability
 
@@ -105,12 +105,9 @@ If a deployment takes longer or reprocesses more than you expect, see [Checking 
 
 Your instance keeps the data it syncs to clients in its bucket storage database, alongside everything else it needs to run. With S3 object storage, larger blocks of that data move to Amazon S3 or an S3-compatible object store, and the PowerSync Service syncs them to clients directly from there. Smaller blocks, and the metadata that locates each block, stay in MongoDB.
 
-This reduces load on the storage database:
+Reading larger blocks from S3 reduces the data MongoDB must read and transfer during sync. When those reads limit performance, offloading them can speed up initial sync and let an instance serve more concurrent clients. The benefit is most noticeable when clients sync large amounts of data or many clients connect at once. The PowerSync Service still handles every client connection, so its CPU and memory capacity also limit concurrency.
 
-- Initial sync is faster, most noticeably for clients that sync large amounts of data and when many clients connect at the same time.
-- The instance is more stable, because the storage database no longer does the heavy lifting.
-- An instance can serve far more concurrent clients.
-- For self-hosted instances, offloading bucket data to S3 can reduce storage and data transfer costs.
+For self-hosted instances, offloading bucket data to S3 can reduce storage and data transfer costs. Compare the reduction in database costs with the object store's storage, request, and data transfer charges for your workload.
 
 Clients connect only to the PowerSync Service and never to the object store, so no client changes are needed. If the object store becomes unreachable, sync is interrupted until it recovers. Clients reconnect and resume automatically.
 
@@ -144,13 +141,11 @@ During the Beta, PowerSync enables S3 object storage per instance. [Contact us](
         bucket: powersync-bucket-data
         region: us-east-1
         prefix: production
-
-    api:
-      parameters:
-        max_concurrent_connections: 1000
     ```
 
-    Without `access_key_id` and `secret_access_key`, PowerSync uses the AWS credentials available to the process, such as an IAM role. Raising [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) from its default of 200 is what lets each API process serve more clients. Without S3 object storage, the storage database limits how far you can raise it. For S3-compatible providers such as MinIO or Cloudflare R2, also set `endpoint`, and set `force_path_style: true` if the provider requires path-style requests.
+    Without `access_key_id` and `secret_access_key`, PowerSync uses the AWS credentials available to the process, such as an IAM role. For S3-compatible providers such as MinIO or Cloudflare R2, also set `endpoint`, and set `force_path_style: true` if the provider requires path-style requests.
+
+    Restart or redeploy the PowerSync Service to load the updated `service.yaml`. If you run replication, API, and compacting in separate containers or jobs, apply the same object storage configuration to each.
   </Step>
   <Step title="Deploy on Storage Version 4">
     Deploy your Sync Configs on storage version 4 as described in [Opt In](#opt-in). Sync Configs on version 2 keep all data in MongoDB, even when `object_storage` is configured.
@@ -158,6 +153,8 @@ During the Beta, PowerSync enables S3 object storage per instance. [Contact us](
     Once replication reaches a healthy checkpoint, confirm that objects appear under the prefix, run a test initial sync, and run `compact` once to surface permission errors early.
   </Step>
 </Steps>
+
+After enabling S3 object storage, you can raise [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) from its default of 200 per API process. More concurrent connections increase CPU and memory usage. Before applying a higher limit in production, test it with the data volumes and concurrent initial syncs you expect, and check CPU usage, memory usage, and sync times.
 
 The [S3 object storage configuration reference](/configuration/powersync-service/self-hosted-instances#param-object-storage) lists all supported settings, including timeouts, request concurrency, and the size threshold below which blocks stay in MongoDB.
 

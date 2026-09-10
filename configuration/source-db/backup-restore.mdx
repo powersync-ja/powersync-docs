@@ -1,0 +1,97 @@
+---
+title: "Restoring Source Database"
+description: "How PowerSync handles source database restores"
+---
+
+## Overview
+
+Backing up your source database does not affect PowerSync operation. However, restoring from a backup typically requires PowerSync to perform a **full reprocess** of the data.
+
+This page explains what happens when you restore your [source database](/configuration/source-db/setup) and how to plan for it.
+
+## What Happens after a Database Restore
+
+When you restore your source database from a backup:
+
+- PowerSync's replication state may become invalid
+- The PowerSync Service will need to reprocess data from the restored database
+- The reprocessing might not happen automatically, and you may need to trigger it manually (by redeploying the sync rules or restarting the service).
+- Clients can continue syncing existing data during reprocessing, but new changes won't sync until it's complete. They may experience temporary delays.
+
+<Warning>
+A full reprocess can take significant time for large datasets. Plan maintenance windows accordingly when restoring source database backups.
+</Warning>
+
+## Planning for Database Restores
+
+When planning source database backup and recovery:
+
+1. **Test restore procedures** in a staging environment to understand reprocessing duration
+2. **Plan maintenance windows** during low-traffic periods for database restores
+3. **Consider data volume** when estimating recovery time - larger datasets take longer to reprocess
+
+### Factors Affecting Reprocessing Time
+
+- **Data volume**: Total size of data in synced tables
+- **Sync rules complexity**: Number of tables, joins, and transformations
+- **Database performance**: CPU, memory, and I/O capacity
+
+For more details on performance considerations, see [Performance and Limits](/resources/performance-and-limits).
+
+## Multi-tenant Considerations
+
+For multi-tenant architectures using a shared database with tenant isolation through [sync rules](/sync/rules/overview), you can perform tenant-specific recovery without triggering a full reprocess.
+
+### Tenant-specific Recovery
+
+Instead of restoring the entire database, restore only the affected tenant's data:
+
+1. **Backup and restore tenant-specific data** using your source database's native tools with filtering (e.g., `WHERE tenant_id = X`)
+2. **PowerSync detects restored data as incremental changes** and [replicates them](/architecture/powersync-service#replication) automatically
+3. **Other tenants continue operating** without interruption (assuming replication keeps pace)
+
+<Tip>
+Implement soft deletes for accidental deletions to avoid database-level recovery in many scenarios. See [Handling Update Conflicts](/handling-writes/handling-update-conflicts) for related patterns.
+</Tip>
+
+### Performance Considerations
+
+Large tenant restores increase replication volume. Monitor:
+
+- **Replication lag** during restore operations using [Monitoring and Alerting](/maintenance-ops/monitoring-and-alerting)
+- **Data volume impact** - high volumes can affect all tenants if replication falls behind
+
+## Self-Hosted Backup Considerations
+
+PowerSync self-hosted deployments have minimal backup requirements. This section covers what you need to consider.
+
+### Configuration Files
+
+We recommend using Git to version control and backup your PowerSync configuration files:
+
+- `powersync.yaml` - Service configuration
+- [`sync-rules.yaml`](/sync/rules/overview)
+
+PowerSync containers use no persistent storage - configuration is mounted from the host and all data is stored in external databases, so no container-level backups are required.
+
+### Bucket Storage Database
+
+The [sync bucket storage](/sync/rules/organize-data-into-buckets) database (MongoDB or Postgres) can be backed up using standard database backup procedures, but we generally do not recommend it. Bucket data is derived from your source database and can be fully recovered by re-replicating, so backing it up adds little value.
+
+## Database-specific Notes
+
+Different [source databases](/configuration/source-db/setup) use different replication mechanisms:
+
+- **Postgres:** Logical replication slots (see [Postgres Maintenance](/configuration/source-db/postgres-maintenance) for slot management)
+- **MongoDB:** Change stream resume tokens
+- **MySQL:** Binary log positions (GTID)
+- **MSSQL:** Change Data Capture (CDC)
+
+The specific behavior after a restore may vary by database type. PowerSync uses checkpoints to maintain [consistency](/architecture/consistency) during the recovery process.
+
+## Related Resources
+
+- [Architecture Overview](/architecture/architecture-overview)
+- [PowerSync Service](/architecture/powersync-service)
+- [Sync Rules](/sync/rules/overview)
+- [Troubleshooting](/debugging/troubleshooting)

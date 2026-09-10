@@ -1,41 +1,27 @@
 ---
-title: "Migrating from Sync Rules"
-description: "Migrate existing projects from legacy Sync Rules to Sync Streams."
+title: "Migrate to Sync Streams"
+description: "Migrate an existing project from legacy Sync Rules to Sync Streams."
 ---
 
 import StreamDefinitionReference from '/snippets/stream-definition-reference.mdx';
 
+Sync Streams do everything Sync Rules do, and more. A stream with `auto_subscribe: true` syncs when the client connects, the same way a bucket definition does, so apps that sync all relevant data upfront for offline use keep working the same way after migrating. The [migration tool](#migration-tool) sets `auto_subscribe: true` on every generated stream, so no client-side changes are required when you first deploy.
+
 ## Why Migrate?
 
-PowerSync's original Sync Rules system was optimized for offline-first use cases where you want to "sync everything upfront" when the client connects, so data is available locally if the user goes offline.
+Beyond matching Sync Rules, Sync Streams add:
 
-However, many developers are building apps where users are mostly online, and you don't want to make users wait to sync a lot of data upfront. This is especially true for **web apps**: users are mostly online, you often want to sync only the data needed for the current page, and users frequently have multiple browser tabs open — each needing different subsets of data.
+1. **More expressive queries**: Stream queries support JOINs, [CTEs](/sync/streams/ctes), subqueries, and [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream), with syntax closer to plain SQL. [Parameter queries become inline subqueries](#data-with-subqueries-replaces-parameter-queries), so you write one query instead of separate `parameters:` and `data:` blocks.
 
-### The Problem with Client Parameters
+2. **On-demand syncing**: Define a stream once, then subscribe from your app one or more times with different parameters. Each subscription has its own lifecycle, so two screens or browser tabs can subscribe to the same stream independently. With Sync Rules, [Client Parameters](/sync/rules/client-parameters) approximate this, but you have to aggregate the parameter values yourself across screens and tabs, and remove them when they are no longer needed.
 
-[Client Parameters](/sync/rules/client-parameters) in Sync Rules partially support on-demand syncing — for example, using a `project_ids` array to sync only specific projects. However, manually managing these arrays across different browser tabs becomes painful:
+3. **Built-in caching**: Each subscription has a configurable `ttl` that keeps data on the device after unsubscribing. When users return to a screen, the data is often already available.
 
-- You need to aggregate IDs across all open tabs
-- You need additional logic for different data types (tables)
-- If you want to keep data around after a tab closes (caching), you need even more management
+4. **Framework integration**: [React hooks, Vue composables, TanStack Query, and Kotlin Compose extensions](/sync/streams/client-usage#framework-integrations) let UI components manage subscriptions based on what is rendered.
 
-### How Sync Streams Solve This
+5. **Access to new features**: Newer PowerSync Service features such as [wildcard schemas](/sync/advanced/schemas-and-connections) and [incremental reprocessing](/sync/advanced/storage-version-4) require Sync Streams.
 
-Sync Streams address these limitations:
-
-1. **On-demand syncing**: Define streams once, then subscribe from your app one or more times with different parameters. No need to manage arrays of IDs — each subscription is independent.
-
-2. **Multi-tab support**: Each subscription manages its own lifecycle. Open the same list in two tabs? Each tab subscribes independently. Close one? The other keeps working.
-
-3. **Built-in caching**: Each subscription has a configurable `ttl` that keeps data cached after unsubscribing. When users return to a screen, data may already be available — no loading state needed.
-
-4. **Simpler, more powerful syntax**: Stream queries support JOINs, CTEs, subqueries, and multiple queries per stream, and the syntax is closer to plain SQL. For example, [parameter queries become inline subqueries](#data-with-subqueries-replaces-parameter-queries), so you write a single query instead of separate `parameters:` and `data:` blocks.
-
-5. **Framework integration**: [React hooks, Vue composables, TanStack Query, and Kotlin Compose extensions](/sync/streams/client-usage#framework-integrations) let your UI components automatically manage subscriptions based on what's rendered.
-
-### Still Need Offline-First?
-
-If you want "sync everything upfront" behavior (like Sync Rules), set [`auto_subscribe: true`](/sync/streams/overview#using-auto-subscribe) on your Sync Streams and clients will subscribe automatically when they connect.
+You can migrate incrementally. Deploy the generated streams with `auto_subscribe: true` first, then convert individual streams to on-demand subscriptions where that benefits your app.
 
 ## Requirements
 
@@ -117,7 +103,7 @@ The output uses `auto_subscribe: true` by default, preserving your existing sync
 
 ### Global Data (No Parameters)
 
-In Sync Rules, a ["global" bucket](/sync/rules/global-buckets) syncs the same data to all users. In Sync Streams, you achieve this with queries that have no parameters. Add [`auto_subscribe: true`](/sync/streams/overview#using-auto-subscribe) to maintain the Sync Rules behavior where data syncs automatically on connect.
+In Sync Rules, a ["global" bucket](/sync/rules/global-buckets) syncs the same data to all users. In Sync Streams, you achieve this with queries that have no parameters. Add [`auto_subscribe: true`](/sync/streams/quickstart#using-auto-subscribe) to maintain the Sync Rules behavior where data syncs automatically on connect.
 
 **Sync Rules:**
 ```yaml
@@ -236,7 +222,7 @@ const page2 = await db.syncStream('posts', { page_number: 2 }).subscribe();
 
 ## Client-Side Changes
 
-After updating your Sync Config, update your client code to use subscriptions:
+Streams generated by the migration tool with `auto_subscribe: true` need no client changes. When you convert a stream to on-demand syncing, replace connect-time parameters with a subscription:
 
 ```js
 // Before (Sync Rules with Client Parameters)
@@ -248,5 +234,7 @@ await db.connect(connector, {
 await db.connect(connector);
 const sub = await db.syncStream('project_data', { project_id: projectId }).subscribe();
 ```
+
+If you want to keep passing values at connect time instead, use [connection parameters](/sync/streams/parameters#connection-parameters).
 
 See [Client-Side Usage](/sync/streams/client-usage) for detailed examples.

@@ -9,7 +9,7 @@ PowerSync syncs continuously in the background and [SyncStatus](/client-sdks/usa
 Checkpoint requests let you catch up on demand: you request a marker of the current server state, then wait until the local database has caught up to it. Waiting covers uploads as well as downloads: a request created after local writes confirms that those writes have been uploaded and their results have synced back (see [Relationship to Local Writes](#relationship-to-local-writes)).
 
 <Warning>
-Checkpoint requests are an alpha API and may change. Support requires PowerSync Service version 1.24.0 or later. Checkpoint requests are not currently available for the .NET and Rust SDKs.
+Checkpoint requests are an alpha API and may change. Support requires PowerSync Service version 1.24.0 or later. Checkpoint requests are not currently available for the Rust SDK.
 </Warning>
 
 Example use cases include:
@@ -42,10 +42,13 @@ Before creating a checkpoint request:
 
 <CodeGroup>
 ```typescript JavaScript/TypeScript
+// Requires @powersync/web 2.3.0, @powersync/react-native 2.2.0,
+// @powersync/node 1.0.0, or @powersync/capacitor 0.9.0 or later
 await db.connect(connector, { checkpointMode: 'requests' });
 ```
 
 ```dart Dart
+// Requires powersync 2.4.0 or later
 await db.connect(
   connector: connector,
   options: SyncOptions(checkpointMode: .requests()),
@@ -53,6 +56,7 @@ await db.connect(
 ```
 
 ```kotlin Kotlin
+// Requires PowerSync Kotlin SDK 1.15.0 or later
 database.connect(
     connector,
     options = SyncOptions(
@@ -62,10 +66,19 @@ database.connect(
 ```
 
 ```swift Swift
+// Requires PowerSync Swift SDK 1.16.0 or later
 try await database.connect(
     connector: connector,
     options: ConnectOptions(checkpointMode: .requests())
 )
+```
+
+```cs .NET
+// Requires PowerSync.Common 0.1.5 or later
+await database.Connect(
+    connector: connector,
+    options: new PowerSyncConnectionOptions(checkpointMode: new CheckpointMode.Requests())
+);
 ```
 </CodeGroup>
 
@@ -108,6 +121,14 @@ func refreshLocalData() async throws {
     let checkpoint = try await database.requestCheckpoint()
     try await checkpoint.waitForSync(timeout: 30)
     // Local queries now reflect server state from when the request was made.
+}
+```
+
+```cs .NET
+async Task RefreshLocalData(CancellationToken cancellationToken = default)
+{
+    var checkpoint = await database.RequestCheckpoint(cancellationToken);
+    await checkpoint.WaitForSync(cancellationToken);
 }
 ```
 </CodeGroup>
@@ -178,6 +199,31 @@ do {
     showRefreshMessage(error.localizedDescription)
 }
 ```
+
+```cs .NET
+try
+{
+    var checkpoint = await database.RequestCheckpoint();
+    await checkpoint.WaitForSync().WaitAsync(TimeSpan.FromSeconds(30));
+}
+catch (TimeoutException)
+{
+    ShowRefreshMessage("The refresh timed out. Try again.");
+}
+catch (CheckpointRequestException e) when (e.Message == CheckpointRequestException.Disconnected)
+{
+    ShowRefreshMessage("Reconnect before refreshing again.");
+}
+catch (CheckpointRequestException e)
+{
+    // Handle other checkpoint errors
+    ShowRefreshMessage($"Failed to request checkpoint: {e.Message}");
+}
+catch (Exception)
+{
+    // Handle other errors
+}
+```
 </CodeGroup>
 
 A request remains valid across a disconnect. After reconnecting with `.requests()`, you can call `waitForSync()` again on the same request. Discard existing request values after clearing the local PowerSync database because clearing it resets the persisted request state.
@@ -227,6 +273,15 @@ let checkpoint = try await database.requestCheckpoint()
 try await checkpoint.waitForSync(timeout: 30)
 // The pending write has uploaded and its source state has synced locally.
 ```
+
+```cs .NET
+await database.Execute(
+    "INSERT INTO tasks (id, description) VALUES (uuid(), ?)",
+    ["Review the project plan"]
+);
+var checkpoint = await database.RequestCheckpoint();
+await checkpoint.WaitForSync();
+```
 </CodeGroup>
 
 This behavior relies on `uploadData()` returning only after your backend has committed the uploaded changes to the source database. See [Writing Client Changes](/handling-writes/writing-client-changes#why-must-my-write-endpoint-be-synchronous) for the reason your write endpoint must be synchronous.
@@ -235,9 +290,13 @@ The upload response remains the authority on whether your backend accepted, chan
 
 ## Asynchronous Upload Backends
 
-The managed flow assumes that `uploadData()` returns only after your backend commits the uploaded changes to the source database. If your backend queues uploads for later processing, use custom checkpoint requests. This feature is available for customers on [Team and Enterprise](https://www.powersync.com/pricing) plans.
+<Note>
+  This feature is available for customers on [Team and Enterprise](https://www.powersync.com/pricing) plans.
+</Note>
 
-Follow the [Custom Write Checkpoints source-side setup](/handling-writes/custom-write-checkpoints#sync-rules-requirements), including its `checkpoint_requests` event definition. The `checkpoint` column stores the checkpoint request ID generated by the client.
+The managed flow assumes that `uploadData()` returns only after your backend commits the uploaded changes to the source database. If your backend queues uploads for later processing, use custom checkpoint requests. 
+
+Follow [Setting Up Custom Checkpoint Requests](/handling-writes/custom-write-checkpoints#setting-up-custom-checkpoint-requests) for the source database, Sync Config, and backend changes. If older app versions still use legacy Custom Write Checkpoints, see [Migrating to Custom Checkpoint Requests](/handling-writes/custom-write-checkpoints#migrating-to-custom-checkpoint-requests).
 
 The difference on the client is that the PowerSync Client SDK generates the checkpoint request ID and sends it to your backend through `CustomCheckpointRequestConnector`.
 
@@ -264,6 +323,7 @@ declare support for checkpoint requests on your backend connector:
 - For Dart, mix in the `CustomCheckpointRequestConnector` class.
 - For Kotlin, implement `CustomCheckpointRequestConnector`.
 - For Swift, make your connector conform to `CustomCheckpointRequestConnector`.
+- For .NET, implement `ICustomCheckpointRequestConnector`.
 
 Forward the request to your application backend:
 
@@ -328,6 +388,19 @@ extension BackendConnector: CustomCheckpointRequestConnector {
     }
 }
 ```
+
+```cs .NET
+class BackendConnector : ICustomCheckpointRequestConnector
+{
+    public async Task<string> PostCheckpointRequest(string clientId, string requestId, CancellationToken ct)
+    {
+        var response = await BackendAPI.CreateCheckpointRequest(clientId, requestId, cancellationToken: ct);
+        return response.RequestId;
+    }
+
+    // ...also implement other IPowerSyncBackendConnector methods (FetchCredentials, UploadData)
+}
+```
 </CodeGroup>
 
 The connector must use your application's own authentication for this call because `postCheckpointRequest()` does not receive the PowerSync sync token.
@@ -335,4 +408,7 @@ The connector must use your application's own authentication for this call becau
 <Tip>
 Checkpoint IDs are positive integers between 1 and 2<sup>63</sup> - 1 (inclusive). For compatibility with JavaScript numbers,
 the JavaScript and Dart client SDKs represent requests as strings.
+
+The .NET SDK also represents requests as strings for compatibility with older SDK APIs; this will change in a future release
+of the .NET SDK.
 </Tip>

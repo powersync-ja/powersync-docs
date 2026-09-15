@@ -74,3 +74,49 @@ select current_setting('max_replication_slots')
 
 If this number is exceeded, you'll see an error such as "all replication slots are in use".
 
+## Oversized Replication Messages
+
+{/* TODO: Revisit this note and its troubleshooting entry when oversized-message handling changes. */}
+
+Postgres replication currently has a **50 MiB receive buffer limit**. A message that cannot fit can stall replication, with `postgres sent too big message` in the Replicator logs.
+
+The limit applies to every table in the publication, even those not referenced by Sync Streams. Publish only required tables and keep source rows within the separate [15MiB row/document limit](/resources/performance-and-limits#limits).
+
+<Note>With `REPLICA IDENTITY FULL`, a message can include both previous and new row values, which doubles the size of a single row.</Note>
+
+### Recovery
+
+This involves removal of oversized rows from replication and a potential reprocessing:
+
+<Steps>
+  <Step title="Identify Source">
+    Review writes across all published tables for oversized rows. The time of the error's first occurrence can help identify the source table. 
+  </Step>
+  <Step title="Correct the Source">
+    If the affected table is part of the PowerSync publication but not used by any Sync Streams, then remove the table from the publication and redeploy the service, and skip to step 4.
+
+    Otherwise, reduce the size of the oversized row or delete it from the source database and move on to step 3.
+  </Step>
+  <Step title="Start a New Snapshot">
+    Start [full reprocessing](/maintenance-ops/compacting-buckets#defragmenting-strategies) for each affected instance. This creates a new replication slot and snapshots the current source data. Deleting a row alone does not erase its earlier WAL entries.
+
+    <Tabs>
+      <Tab title="PowerSync Cloud">
+        In the PowerSync Dashboard, select **Settings → Compact operation history → Defragment**.
+      </Tab>
+      <Tab title="Self-Hosted">
+        Set `POWERSYNC_URL` to your Service URL. Set `PS_API_TOKEN` to an admin token configured under [`api.tokens`](/configuration/powersync-service/self-hosted-instances#api).
+
+        ```bash
+        curl "${POWERSYNC_URL}/api/admin/v1/reprocess" \
+          -H "Authorization: Bearer ${PS_API_TOKEN}" \
+          --json '{}'
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  <Step title="Verify Recovery">
+    If you reprocessed, confirm in your logs that the new replication stream is active. Check that replication lag decreases and clients receive new source updates.
+  </Step>
+</Steps>
+

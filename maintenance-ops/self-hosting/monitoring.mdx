@@ -32,3 +32,50 @@ ports:
 Once enabled, restart the service and the metrics endpoint will return Prometheus-formatted metrics, as described in the [What is Collected](/maintenance-ops/self-hosting/usage-reporting#what-is-collected) section of the [Usage Reporting](/maintenance-ops/self-hosting/usage-reporting) docs.
 
 <Note>If you're running multiple containers (e.g. splitting up replication containers and API containers) you need to scrape the metrics separately for each container.</Note>
+
+## Sync Connection Outcomes
+
+`powersync_sync_connections_total` counts sync streams as they close, plus connection attempts the Service rejects before a stream opens. Use it to see whether clients are disconnecting cleanly, failing mid-stream, or being turned away, and why. `powersync_concurrent_connections` remains the gauge for streams that are currently open.
+
+The counter has four labels: `outcome`, `close_reason`, `error_code` and `transport` (`http_stream` or `rsocket`).
+
+| `outcome` | `close_reason` | `error_code` |
+| --- | --- | --- |
+| `success` | `client_closed`, `service_closed`, `process_shutdown`, `unknown` | `none` |
+| `error` | `stream_error` | PowerSync error code, or `other` |
+| `rejected` | `service_unavailable` | `PSYNC_S2003` |
+| `rejected` | `no_sync_config` | `PSYNC_S2302` |
+| `rejected` | `storage_error` | PowerSync error code, or `other` |
+| `rejected` | `sync_config_error` | PowerSync error code, or `other` |
+| `rejected` | `concurrency_limit` | `PSYNC_S2304` over RSocket, `other` over HTTP |
+
+- `success` means the stream ended without an error. Token expiry, a sync config switch and process shutdown all count as success. It says nothing about whether the client finished syncing.
+- `storage_error` and `sync_config_error` are failures to load or parse the active sync config while setting up the stream.
+- Over HTTP, `concurrency_limit` returns a bare 429 with no PowerSync error code, so `error_code` is `other`.
+- Requests that fail authentication or validation are not counted.
+
+See [Error Codes](/debugging/error-codes) for the meaning of each `PSYNC_` code.
+
+### PromQL Examples
+
+Rate of closes and rejections by outcome:
+
+```promql
+sum by (outcome, transport) (rate(powersync_sync_connections_total[5m]))
+```
+
+Stream errors in the last hour, by code:
+
+```promql
+sum by (error_code, transport) (
+  increase(powersync_sync_connections_total{outcome="error"}[1h])
+) > 0
+```
+
+Rejected attempts in the last hour, by reason. Anything above zero here is worth alerting on:
+
+```promql
+sum by (close_reason, transport) (
+  increase(powersync_sync_connections_total{outcome="rejected"}[1h])
+) > 0
+```

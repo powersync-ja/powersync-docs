@@ -1,11 +1,13 @@
 ---
 title: "Supported SQL"
-description: "Reference for SQL syntax, operators, built-in functions, and type casting supported in Sync Streams/Sync Rules queries."
+description: "Reference for SQL syntax, operators, built-in functions, and type casting supported in Sync Streams queries."
 ---
 
-This guide explains the SQL supported in [Sync Streams](/sync/streams/overview) and [Sync Rules (legacy)](/sync/rules/overview): what you can write, with examples and restrictions. 
+{/* Split page: the Sync Rules (Legacy) version of this page is sync/rules/supported-sql.mdx. That page is deprecated and frozen, but when you fix an error here, check whether it needs the same fix. Do not mention Sync Rules on this page. */}
 
-For the exact syntax the compiler accepts — railroad diagrams and grammar-rule references — see the [Sync Streams](/sync/grammar/sync-streams/index) or [Sync Rules](/sync/grammar/sync-rules/index) grammar reference.
+This guide explains the SQL supported in [Sync Streams](/sync/streams/overview): what you can write, with examples and restrictions.
+
+For the exact syntax the compiler accepts, with railroad diagrams and grammar-rule references, see the [Sync Streams grammar reference](/sync/grammar/sync-streams/index).
 
 <Warning>
   Some fundamental restrictions on the usage of SQL expressions are:
@@ -19,36 +21,22 @@ For the exact syntax the compiler accepts — railroad diagrams and grammar-rule
 
 ## Query Syntax
 
-The supported SQL is based on a subset of the standard SQL syntax. Sync Streams support more SQL features than the legacy Sync Rules.
+The supported SQL is based on a subset of the standard SQL syntax:
 
-<Tabs>
-  <Tab title="Sync Streams">
-  - `SELECT` with column selection and [`WHERE` filtering](#filtering-where-clause)
-  - [Subqueries](/sync/streams/queries#using-subqueries) with `IN (SELECT ...)` and nested subqueries
-  - [`INNER JOIN`](#join-syntax) (selected columns must come from a single table)
-  - [Common Table Expressions (CTEs)](#cte-and-with-syntax) via the `with:` block
-  - Multiple queries per stream via `queries:`
-  - Table-valued functions such as `json_each()` for [expanding arrays](/sync/streams/parameters#expanding-json-arrays)
-  - `BETWEEN` and `CASE` expressions
-  - A limited set of [operators](#operators) and [functions](#functions)
+- `SELECT` with column selection and [`WHERE` filtering](#filtering-where-clause)
+- [Subqueries](/sync/streams/queries#using-subqueries) with `IN (SELECT ...)` and nested subqueries
+- [`INNER JOIN`](#join-syntax) (selected columns must come from a single table)
+- [Common Table Expressions (CTEs)](#cte-and-with-syntax) via the `with:` block
+- Multiple queries per stream via `queries:`
+- Table-valued functions such as `json_each()` for [expanding arrays](/sync/streams/parameters#expanding-json-arrays)
+- `BETWEEN` and `CASE` expressions
+- A limited set of [operators](#operators) and [functions](#functions)
 
-  **Not supported**: aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.). See [Writing Queries](/sync/streams/queries) for details.
-  </Tab>
-  <Tab title="Sync Rules (Legacy)">
-  - Simple `SELECT` with column selection
-  - `WHERE` filtering on parameters (see [Filtering: WHERE Clause](#filtering-where-clause))
-  - A limited set of [operators](#operators) and [functions](#functions)
-
-  **Not supported**: subqueries, JOINs, CTEs, aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.).
-  </Tab>
-</Tabs>
+**Not supported**: aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.). See [Writing Queries](/sync/streams/queries) for details.
 
 ## Filtering: WHERE Clause
 
-Sync queries support a subset of SQL `WHERE` syntax. Allowed operators and combinations differ between Sync Streams and Sync Rules, and are more restrictive than standard SQL.
-
-<Tabs>
-  <Tab title="Sync Streams">
+Sync Streams queries support a subset of SQL `WHERE` syntax. Allowed operators and combinations are more restrictive than standard SQL.
 
 **`=` and `IS NULL`** — Compare a row column to a static value, a parameter, or another column:
 
@@ -109,59 +97,6 @@ WHERE category NOT IN ROW('draft', 'hidden')
 -- WHERE id NOT IN subscription.parameter('excluded_ids')
 ```
 
-  </Tab>
-  <Tab title="Sync Rules (Legacy)">
-
-**`=` and `IS NULL`** — Compare a row column to a static value or a bucket parameter:
-
-```sql
--- Static value
-WHERE status = 'active'
-WHERE deleted_at IS NULL
-
--- Bucket parameter
-WHERE owner_id = bucket.user_id
-```
-
-**`AND`** — Supported in both Parameter Queries and Data Queries. In Parameter Queries, each condition may match a different parameter. However, you cannot combine two `IN` expressions on parameters in the same `AND`; split them into separate Parameter Queries instead.
-
-```sql
--- Supported: parameter condition + row-value condition
-WHERE users.id = request.user_id()
-  AND users.is_admin = true
-
--- Not supported: two IN expressions on parameters in the same AND
--- WHERE bucket.list_id IN lists.allowed_ids
---   AND bucket.org_id IN lists.allowed_org_ids
-```
-
-**`OR`** — Supported when both sides of the `OR` reference the exact same set of parameters. If the two sides use different parameters, use separate parameter queries instead.
-
-```sql
--- Supported: both sides reference the same parameter
-WHERE lists.owner_id = request.user_id()
-   OR lists.shared_with = request.user_id()
-
--- Not supported: sides reference different parameters
--- WHERE lists.owner_id = request.user_id()
---    OR lists.org_id = bucket.org_id
-```
-
-**`NOT`** — Supported for simple row-value conditions. Not supported on parameter-matching expressions.
-
-```sql
--- Supported
-WHERE status != 'archived'
-WHERE deleted_at IS NOT NULL
-WHERE NOT users.is_admin = true
-
--- Not supported in parameter queries
--- WHERE NOT users.id = request.user_id()
-```
-
-  </Tab>
-</Tabs>
-
 ## Operators
 
 Operators can be used in `WHERE` clauses and in `SELECT` expressions. When filtering on parameters (e.g. `auth.user_id()`, `subscription.parameter('id')`), some combinations are restricted — see [Filtering: WHERE Clause](#filtering-where-clause). 
@@ -183,15 +118,12 @@ Operators can be used in `WHERE` clauses and in `SELECT` expressions. When filte
   - `json ->> 'path'` — Returns the extracted value.
   </Accordion>
   <Accordion title="IN (Arrays)">
-  - **Sync Streams:** `left IN right` — `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` a parameter and `right` a row JSON array column. Also supports subqueries: `id IN (SELECT ...)`.
-  - **Sync Rules:** Returns true if `left` is in the `right` JSON array. In Data Queries, `left` must be a row column and `right` cannot be a bucket parameter. In Parameter Queries, either side may be a parameter.
+  - `left IN right` — `left` can be a row column and `right` a parameter array (e.g. `id IN subscription.parameter('ids')`), or `left` a parameter and `right` a row JSON array column. Also supports subqueries: `id IN (SELECT ...)`.
   </Accordion>
   <Accordion title="BETWEEN">
   - `x BETWEEN a AND b`, `x NOT BETWEEN a AND b` — True if `x` is in the inclusive range `[a, b]`. Usable in `WHERE` or as a `SELECT` expression. If any operand is `null`, the result is `null`.
 
   Example: `WHERE price BETWEEN 10 AND 100`
-
-  <Info>Supported in Sync Streams only. Not available in Sync Rules.</Info>
   </Accordion>
   <Accordion title="&& (Array overlap)">
   - `<left> && <right>` — True if the JSON array in `left` and the set `right` share at least one value. Use when the row stores an array (e.g. a `tagged_users` column). `left` must be a row column (JSON array); `right` must be a subquery or parameter array.
@@ -199,8 +131,6 @@ Operators can be used in `WHERE` clauses and in `SELECT` expressions. When filte
   Example: `WHERE tagged_users && (SELECT id FROM org_members WHERE org_id = auth.parameter('org_id'))`
 
   Use `IN` when the row has a single value to check against a set; use `&&` when the row has an array and you want to match any element.
-
-  <Info>Supported in Sync Streams only. Not available in Sync Rules.</Info>
   </Accordion>
 </AccordionGroup>
 
@@ -225,13 +155,11 @@ Most functions are from [SQLite built-in functions](https://www.sqlite.org/lang_
   - **[typeof(data)](https://www.sqlite.org/lang_corefunc.html#typeof)** — Returns `text`, `integer`, `real`, `blob`, or `null`.
   </Accordion>
   <Accordion title="JSON">
-  - **[json_each(data)](https://www.sqlite.org/json1.html#jeach)** — Expands a JSON array into rows.
-    - **Sync Streams:** Works with auth and connection parameters (e.g. `JOIN json_each(auth.parameter('ids')) AS t` or `WHERE id IN (SELECT value FROM json_each(auth.parameter('ids')))`). Can also be used with columns from joined tables in some cases (e.g. `SELECT * FROM lists WHERE id IN (SELECT lists.value FROM access_control a, json_each(a.allowed_lists) as lists WHERE a.user = auth.user_id())`). See [Expanding JSON arrays](/sync/streams/parameters#expanding-json-arrays).
-    - **Sync Rules:** Expands a JSON array or object from a request or token parameter into a set of parameter rows. Example: `SELECT value AS project_id FROM json_each(request.jwt() -> 'project_ids')`.
+  - **[json_each(data)](https://www.sqlite.org/json1.html#jeach)** — Expands a JSON array into rows. Works with auth and connection parameters (e.g. `JOIN json_each(auth.parameter('ids')) AS t` or `WHERE id IN (SELECT value FROM json_each(auth.parameter('ids')))`). Can also be used with columns from joined tables in some cases (e.g. `SELECT * FROM lists WHERE id IN (SELECT lists.value FROM access_control a, json_each(a.allowed_lists) as lists WHERE a.user = auth.user_id())`). See [Expanding JSON arrays](/sync/streams/parameters#expanding-json-arrays).
   - **[json_extract(data, path)](https://www.sqlite.org/json1.html#jex)** — Same as `->>` operator, but the path must start with `$.`
   - **[json_array_length(data)](https://www.sqlite.org/json1.html#jarraylen)** — Given a JSON array (as text), returns the length of the array. If data is null, returns null. If the value is not a JSON array, returns 0.
   - **[json_valid(data)](https://www.sqlite.org/json1.html#jvalid)** — Returns 1 if the data can be parsed as JSON, 0 otherwise.
-  - **json_keys(data)** — Returns the set of keys of a JSON object as a JSON array. Example: `SELECT * FROM items WHERE bucket.user_id IN json_keys(permissions_json)`.
+  - **json_keys(data)** — Returns the set of keys of a JSON object as a JSON array. Example: `SELECT id, json_keys(permissions_json) AS permission_keys FROM items`.
   </Accordion>
   <Accordion title="Null handling">
   - **[ifnull(x, y)](https://www.sqlite.org/lang_corefunc.html#ifnull)** — Returns x if non-null, otherwise returns y.
@@ -251,7 +179,7 @@ Most functions are from [SQLite built-in functions](https://www.sqlite.org/lang_
   - **table_name()** — Returns the name of the table the row was replicated from. This is the source table's name, not the alias or the output table name.
   - **table_suffix()** — Returns the part of the table name matched by the trailing `%` of a [wildcard table name](/sync/advanced/partitioned-tables). For example, with `FROM "todos_%" AS todos`, `todos.table_suffix()` returns `2024` for rows from the `todos_2024` table. On tables without a wildcard name, the result is always empty and the compiler reports a warning.
 
-  <Info>Supported in Sync Streams only, with PowerSync Service v1.24.0 or later.</Info>
+  <Info>Requires PowerSync Service v1.24.0 or later.</Info>
   </Accordion>
   <Accordion title="GIS (PostGIS)">
   - **[ST_AsGeoJSON(geometry)](/client-sdks/advanced/gis-data-postgis)** — Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to GeoJSON. Combine with JSON operators to extract specific fields.
@@ -264,8 +192,6 @@ Most functions are from [SQLite built-in functions](https://www.sqlite.org/lang_
 If you need an operator or function not listed, [contact us](/resources/contact-us) so we can consider adding it.
 
 ## JOIN Syntax
-
-<Info>Supported in Sync Streams only. Not available in Sync Rules.</Info>
 
 Sync Streams support a subset of join syntax. The following rules define what is valid:
 
@@ -294,8 +220,6 @@ SELECT * FROM a JOIN b ON a.x > b.y
 For how to use JOINs in your stream queries (when to use them, patterns, and examples), see [Using Joins](/sync/streams/queries#using-joins).
 
 ## CTE and WITH Syntax
-
-<Info>Supported in Sync Streams only. Not available in Sync Rules.</Info>
 
 Common Table Expressions (CTEs) can be defined in a `with:` block **inside a stream** (stream-level, scoped to that stream) or at the **top level** of the Sync Config (global, shared across all streams). Each CTE is a name and a single `SELECT` query. The following rules apply:
 
@@ -340,8 +264,6 @@ streams:
 For how to use CTEs, see [Common Table Expressions (CTEs)](/sync/streams/ctes).
 
 ## CASE Expressions
-
-<Info>Supported in Sync Streams only. Not available in Sync Rules.</Info>
 
 `CASE` is allowed anywhere an expression is allowed — in `SELECT` columns or `WHERE` clauses.
 

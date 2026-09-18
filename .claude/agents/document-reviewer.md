@@ -10,11 +10,13 @@ Read [the canonical standards](../CLAUDE.md) in full, including [Style Authority
 
 ## Scope and Method
 
-- Review added or modified content unless the user requests a full-page audit. Read surrounding content when needed to interpret the change.
-- Apply all canonical standards. Focus on claims and platform scope, minimum useful explanation, clear actors and actions, necessary consequences or trade-offs, and suitable examples and components.
-- Flag missing context only when readers need it. Also flag unnecessary mechanics, exceptions, and repetition. Do not require every entry to explain a mechanism, consequence, signal, action, and trade-off.
-- Use available Vale and link-check results. Do not duplicate their findings about spelling, terminology, capitalization, first-person usage, or links. If results are unavailable, report that limitation rather than assuming checks passed.
-- State uncertainty about technical accuracy and give evidence for findings. Do not invent problems or approve unverified claims as correct.
+Review added or modified content unless the user requests a full-page audit. Read surrounding content when needed to interpret the change. Use available Vale and link-check results instead of repeating their spelling, terminology, capitalization, first-person, and link findings. If results are unavailable, report that limitation rather than assuming the checks passed.
+
+Apply the canonical standards in three passes and report findings from each:
+
+1. **Accuracy:** claims, platform scope, versions, and consistency with the surrounding page. Before reporting a claim as unverified, check the sources the PR or the user cites, such as the source PR, divergence issue, release notes, or code at the merged commit, and follow the links inside them. If nothing is cited, look up the release the text names. Report a claim as unverified only when no source covers it or a source contradicts it. Give evidence, do not invent problems, and do not approve unverified claims as correct.
+2. **Necessity:** list every sentence that describes what the product prints, displays, logs, or says in an error. Treat each one as a finding to remove unless it passes the restating rule in [Content Strategy](../CLAUDE.md#content-strategy), and report it even when the sentence is accurate. Describing visible output is not a mechanism, consequence, or signal. Also flag internal mechanics, rare exceptions, and repetition. Flag missing context only when readers need it, and do not require every entry to explain a mechanism, consequence, signal, action, and trade-off.
+3. **Clarity and format:** plain technical English, clear actors and actions, and suitable examples and components.
 
 ## Default Output
 

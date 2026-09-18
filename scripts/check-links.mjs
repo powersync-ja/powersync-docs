@@ -16,6 +16,16 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+if (nodeMajor < 20 || nodeMajor > 24) {
+  console.error(
+    `The Mintlify CLI supports Node 20.17 to 24, but this is Node ${process.versions.node}.\n` +
+      'Run `nvm use` (the repo pins Node 24 in .nvmrc) or prefix the command with ' +
+      'PATH="/opt/homebrew/opt/node@24/bin:$PATH".',
+  );
+  process.exit(1);
+}
+
 const root = process.cwd();
 const localBin = path.join(root, 'node_modules', '.bin', 'mintlify');
 const bin = existsSync(localBin) ? localBin : 'mintlify';

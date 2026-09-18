@@ -153,8 +153,7 @@ Sync Rules are deprecated. New documentation and updates cover Sync Streams only
 
 - Verify technical claims and run code examples before publication. Select other checks appropriate to the change.
 - Run `vale <file>` for changed MDX pages. Add new technical terms to `.github/vale/config/vocabularies/PowerSync/accept.txt`; do not add ordinary misspellings.
-- After link or navigation changes, run `npx mintlify broken-links`. Mintlify requires Node 20.17–24; if needed, use `PATH="/opt/homebrew/opt/node@24/bin:$PATH" npx mintlify broken-links`.
-- For anchor and snippet checks, use `pnpm check:links`. It wraps the Mintlify anchor check in `scripts/check-links.mjs` so that anchors defined in imported snippets resolve. Validate repository instruction links as file paths, since the site checker does not cover all of them.
+- After link or navigation changes, run `pnpm check:links`. It runs the Mintlify path, anchor, and snippet checks through `scripts/check-links.mjs`, resolves anchors defined in imported snippets, and is the same check CI runs. It tells you if your Node version is unsupported. Validate repository instruction links as file paths, since the site checker does not cover them.
 - Use [the lint command](commands/lint-docs.md) for the check workflow and [the reviewer](agents/document-reviewer.md) for editorial review. Passing linters does not establish technical accuracy or style compliance.
 
 ## Git Workflow

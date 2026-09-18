@@ -1,0 +1,157 @@
+---
+title: "Supported SQL in Sync Rules"
+sidebarTitle: "Supported SQL"
+description: "Reference for SQL syntax, operators, built-in functions, and type casting supported in legacy Sync Rules queries."
+---
+
+{/* Split page: the Sync Streams version of this page is sync/supported-sql.mdx. Sync Rules are deprecated: keep this page accurate, but do not prioritize additions. When you fix an error here, check whether the Sync Streams page needs the same fix. */}
+
+<Info>
+Sync Rules are deprecated. For the Sync Streams version of this page, see [Supported SQL](/sync/supported-sql).
+</Info>
+
+This guide explains the SQL supported in [Sync Rules](/sync/rules/overview) parameter queries and data queries: what you can write, with examples and restrictions.
+
+For the exact syntax the compiler accepts, with railroad diagrams and grammar-rule references, see the [Sync Rules grammar reference](/sync/grammar/sync-rules/index).
+
+<Warning>
+  Some fundamental restrictions on the usage of SQL expressions are:
+
+  1. They must be deterministic: no random or time-based functions.
+  2. No external state can be used.
+  3. They must operate on data available within a single row/document. For example, no aggregation functions are allowed.
+
+  For parameter-specific WHERE restrictions, see [Filtering: WHERE Clause](#filtering-where-clause).
+</Warning>
+
+## Query Syntax
+
+The supported SQL is based on a small subset of the standard SQL syntax:
+
+- Simple `SELECT` with column selection
+- `WHERE` filtering on parameters (see [Filtering: WHERE Clause](#filtering-where-clause))
+- A limited set of [operators](#operators) and [functions](#functions)
+
+**Not supported:** subqueries, JOINs, CTEs, aggregation, sorting, or set operations (`GROUP BY`, `ORDER BY`, `LIMIT`, `UNION`, etc.).
+
+## Filtering: WHERE Clause
+
+Sync Rules queries support a subset of SQL `WHERE` syntax. Allowed operators and combinations are more restrictive than standard SQL.
+
+**`=` and `IS NULL`:** Compare a row column to a static value or a bucket parameter:
+
+```sql
+-- Static value
+WHERE status = 'active'
+WHERE deleted_at IS NULL
+
+-- Bucket parameter
+WHERE owner_id = bucket.user_id
+```
+
+**`AND`:** Supported in both Parameter Queries and Data Queries. In Parameter Queries, each condition may match a different parameter. However, you cannot combine two `IN` expressions on parameters in the same `AND`; split them into separate Parameter Queries instead.
+
+```sql
+-- Supported: parameter condition + row-value condition
+WHERE users.id = request.user_id()
+  AND users.is_admin = true
+
+-- Not supported: two IN expressions on parameters in the same AND
+-- WHERE bucket.list_id IN lists.allowed_ids
+--   AND bucket.org_id IN lists.allowed_org_ids
+```
+
+**`OR`:** Supported when both sides of the `OR` reference the exact same set of parameters. If the two sides use different parameters, use separate parameter queries instead.
+
+```sql
+-- Supported: both sides reference the same parameter
+WHERE lists.owner_id = request.user_id()
+   OR lists.shared_with = request.user_id()
+
+-- Not supported: sides reference different parameters
+-- WHERE lists.owner_id = request.user_id()
+--    OR lists.org_id = bucket.org_id
+```
+
+**`NOT`:** Supported for simple row-value conditions. Not supported on parameter-matching expressions.
+
+```sql
+-- Supported
+WHERE status != 'archived'
+WHERE deleted_at IS NOT NULL
+WHERE NOT users.is_admin = true
+
+-- Not supported in parameter queries
+-- WHERE NOT users.id = request.user_id()
+```
+
+## Operators
+
+Operators can be used in `WHERE` clauses and in `SELECT` expressions. When filtering on parameters (e.g. `request.user_id()`, `bucket.user_id`), some combinations are restricted. See [Filtering: WHERE Clause](#filtering-where-clause).
+
+<AccordionGroup>
+  <Accordion title="Comparison and null" defaultOpen={true}>
+  - **Comparison:** `=`, `!=`, `<`, `>`, `<=`, `>=` — If either side is `null`, the result is `null`.
+  - **Null:** `IS NULL`, `IS NOT NULL`
+  </Accordion>
+  <Accordion title="Logical and mathematical">
+  - **Logical:** `AND`, `OR`, `NOT` — See [Filtering: WHERE Clause](#filtering-where-clause) for restrictions when filtering on parameters.
+  - **Mathematical:** `+`, `-`, `*`, `/`
+  </Accordion>
+  <Accordion title="Text concatenation">
+  - `||` — Joins two text values together.
+  </Accordion>
+  <Accordion title="JSON">
+  - `json -> 'path'` — Returns the value as a JSON string.
+  - `json ->> 'path'` — Returns the extracted value.
+  </Accordion>
+  <Accordion title="IN (Arrays)">
+  - `left IN right` — Returns true if `left` is in the `right` JSON array. In Data Queries, `left` must be a row column and `right` cannot be a bucket parameter. In Parameter Queries, either side may be a parameter.
+  </Accordion>
+</AccordionGroup>
+
+## Functions
+
+Functions can be used to transform columns/fields before being synced to a client. They operate on row data or parameters. Type names below (`text`, `integer`, `real`, `blob`, `null`) refer to [SQLite storage classes](https://www.sqlite.org/datatype3.html).
+
+Most functions are from [SQLite built-in functions](https://www.sqlite.org/lang_corefunc.html) and [SQLite JSON functions](https://www.sqlite.org/json1.html).
+
+<AccordionGroup>
+  <Accordion title="String and binary">
+  - **[upper(text)](https://www.sqlite.org/lang_corefunc.html#upper)** — Convert text to upper case.
+  - **[lower(text)](https://www.sqlite.org/lang_corefunc.html#lower)** — Convert text to lower case.
+  - **[substring(text, start, length)](https://www.sqlite.org/lang_corefunc.html#substr)** — Extracts a portion of a string based on specified start index and length. Start index is 1-based. Example: `substring(created_at, 1, 10)` returns the date portion of the timestamp.
+  - **[instr(string, substring)](https://www.sqlite.org/lang_corefunc.html#instr)** — Finds the first occurrence of the substring within the string and returns the number of prior characters plus 1, or 0 if the substring is not found. Useful for locating a delimiter in compound strings. For example, `substring(value, 1, instr(value, '|') - 1)` extracts the portion before a `|` character.
+  - **[hex(data)](https://www.sqlite.org/lang_corefunc.html#hex)** — Convert blob or text data to hexadecimal text.
+  - **base64(data)** — Convert blob or text data to base64 text.
+  - **[length(data)](https://www.sqlite.org/lang_corefunc.html#length)** — For text, return the number of characters. For blob, return the number of bytes. For null, return null. For integer and real, convert to text and return the number of characters.
+  </Accordion>
+  <Accordion title="Cast and types">
+  - `CAST(x AS type)` or `x :: type` — Cast to `text`, `numeric`, `integer`, `real`, or `blob`. See [Type mapping](/sync/types) and [SQLite types](https://www.sqlite.org/datatype3.html).
+  - **[typeof(data)](https://www.sqlite.org/lang_corefunc.html#typeof)** — Returns `text`, `integer`, `real`, `blob`, or `null`.
+  </Accordion>
+  <Accordion title="JSON">
+  - **[json_each(data)](https://www.sqlite.org/json1.html#jeach)** — Expands a JSON array or object from a request or token parameter into a set of parameter rows. Example: `SELECT value AS project_id FROM json_each(request.jwt() -> 'project_ids')`. See [Expanding JSON Array Into Multiple Parameters](/sync/rules/parameter-queries#expanding-json-array-into-multiple-parameters).
+  - **[json_extract(data, path)](https://www.sqlite.org/json1.html#jex)** — Same as `->>` operator, but the path must start with `$.`
+  - **[json_array_length(data)](https://www.sqlite.org/json1.html#jarraylen)** — Given a JSON array (as text), returns the length of the array. If data is null, returns null. If the value is not a JSON array, returns 0.
+  - **[json_valid(data)](https://www.sqlite.org/json1.html#jvalid)** — Returns 1 if the data can be parsed as JSON, 0 otherwise.
+  - **json_keys(data)** — Returns the set of keys of a JSON object as a JSON array. Example: `SELECT * FROM items WHERE bucket.user_id IN json_keys(permissions_json)`.
+  </Accordion>
+  <Accordion title="Null handling">
+  - **[ifnull(x, y)](https://www.sqlite.org/lang_corefunc.html#ifnull)** — Returns x if non-null, otherwise returns y.
+  </Accordion>
+  <Accordion title="Conditional">
+  - **[iif(x, y, z)](https://www.sqlite.org/lang_corefunc.html#iif)** — Returns y if x is true, otherwise returns z.
+  </Accordion>
+  <Accordion title="Date/time and UUID">
+  - **[unixepoch(time-value, [modifier])](https://www.sqlite.org/lang_datefunc.html)** — Returns a time-value as Unix timestamp. If modifier is "subsec", the result is a floating point number, with milliseconds included in the fraction. The time-value argument is required. This function cannot be used to get the current time.
+  - **[datetime(time-value, [modifier])](https://www.sqlite.org/lang_datefunc.html)** — Returns a time-value as a date and time string, in the format YYYY-MM-DD HH:MM:SS. If the specifier is "subsec", milliseconds are also included. If the modifier is "unixepoch", the argument is interpreted as a Unix timestamp. Both modifiers can be included: `datetime(timestamp, 'unixepoch', 'subsec')`. The time-value argument is required. This function cannot be used to get the current time.
+  - **[uuid_blob(id)](https://sqlite.org/src/file/ext/misc/uuid.c)** — Convert a UUID string to bytes.
+  </Accordion>
+  <Accordion title="GIS (PostGIS)">
+  - **[ST_AsGeoJSON(geometry)](/client-sdks/advanced/gis-data-postgis)** — Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to GeoJSON. Combine with JSON operators to extract specific fields.
+  - **[ST_AsText(geometry)](/client-sdks/advanced/gis-data-postgis)** — Convert [PostGIS](/client-sdks/advanced/gis-data-postgis) (in Postgres) geometry from WKB to Well-Known Text (WKT).
+  - **[ST_X(point)](/client-sdks/advanced/gis-data-postgis)** — Get the X coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres).
+  - **[ST_Y(point)](/client-sdks/advanced/gis-data-postgis)** — Get the Y coordinate of a [PostGIS](/client-sdks/advanced/gis-data-postgis) point (in Postgres).
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,39 @@
+---
+title: "Multiple Client Versions with Sync Rules"
+sidebarTitle: "Multiple Client Versions"
+description: "Handle multiple client app versions that require different output schemas from legacy Sync Rules."
+---
+
+{/* Split page: the Sync Streams version of this page is sync/advanced/multiple-client-versions.mdx. Sync Rules are deprecated: keep this page accurate, but do not prioritize additions. When you fix an error here, check whether the Sync Streams page needs the same fix. */}
+
+<Info>
+Sync Rules are deprecated. For the Sync Streams version of this page, see [Multiple Client Versions](/sync/advanced/multiple-client-versions).
+</Info>
+
+When schema changes are additive, old clients ignore the new tables and columns, and no special handling is required. More drastic changes, such as renaming tables or changing a table's structure, can break older app versions that are still in use. In these cases, define separate versions of the affected bucket definitions so that each client version receives the tables and columns it expects.
+
+## Versioning with Client Parameters
+
+Clients pass their version to the PowerSync Service as a [client parameter](/sync/rules/client-parameters), and parameter queries filter on it so that each client only receives the buckets for its version.
+
+For example, suppose a new app version changes the structure of the `assets` table in its [client-side schema](/intro/setup-guide#define-your-client-side-schema), defining it as `assets_v2`, while older app versions still define `assets`. Define a second bucket definition alongside the existing one, using an alias to map the source `assets` table to the new client-side name, and filter each on a `schema_version` client parameter:
+
+```yaml
+# Client passes in: "params": {"schema_version": <version>}
+bucket_definitions:
+  user_assets:
+    parameters: SELECT request.user_id() AS user_id
+      WHERE request.parameters() ->> 'schema_version' = '1'
+    data:
+      - SELECT * FROM assets WHERE user_id = bucket.user_id
+
+  user_assets_v2:
+    parameters: SELECT request.user_id() AS user_id
+      WHERE request.parameters() ->> 'schema_version' = '2'
+    data:
+      - SELECT * FROM assets AS assets_v2 WHERE user_id = bucket.user_id
+```
+
+<Warning>
+  Handle queries based on parameters set by the client with care. The client can send any value for these parameters, so it's not a good place to do authorization. If the parameter must be authenticated, use parameters from the JWT instead.
+</Warning>

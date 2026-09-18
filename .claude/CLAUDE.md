@@ -142,18 +142,18 @@ Update `docs.json` when adding, moving, or removing pages. Add redirects for mov
 
 ## Sync Streams and Sync Rules
 
-Sync Streams are the default for new documentation. Keep legacy Sync Rules documentation accurate, but do not add new Sync Rules teaching, examples, or proactive references.
+Sync Rules are deprecated, but many customers still run them. New documentation covers Sync Streams. Keep the Sync Rules docs accurate, and add to them when that makes them more accurate or helpful, without prioritizing that work. The goal is to avoid noisy Sync Rules references outside their own section, not to stop maintaining it.
 
-When existing content shows both in tabs, preserve equivalent results and filters. Do not add new parallel Sync Rules examples.
-
-For existing prose that mentions both, use "[Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview))" once per page or major section. Later mentions should omit Sync Rules.
+- **Sync Rules section.** `sync/rules/` and `sync/grammar/sync-rules/` hold all Sync Rules content. Each page opens with an `<Info>` callout that starts "Sync Rules are deprecated." and links to its Sync Streams version. The sidebar group stays "Sync Rules (Legacy)".
+- **Keep the engines apart.** Never place Sync Streams and Sync Rules content side by side: no engine tabs, no "(or legacy Sync Rules)" asides, no pointers to a Sync Rules equivalent. Outside `sync/rules/`, mention Sync Rules only to state a behavior difference that affects Sync Rules users, and remove other mentions when you edit a page.
+- **Shared pages.** A page that applies to both engines keeps one body in `snippets/sync-shared/<slug>.mdx`, imported by a Sync Streams wrapper at the original path and a Sync Rules wrapper at `sync/rules/<slug>.mdx` that adds the callout and `noindex: true`. Edit the snippet, not the wrappers, and keep it valid for both engines.
+- **Counterpart comments.** Every split twin, wrapper, and shared snippet starts with an MDX comment naming its counterpart. Read it before editing, apply a fix to both sides where content is shared, and keep the comment when restructuring.
 
 ## Verification
 
 - Verify technical claims and run code examples before publication. Select other checks appropriate to the change.
 - Run `vale <file>` for changed MDX pages. Add new technical terms to `.github/vale/config/vocabularies/PowerSync/accept.txt`; do not add ordinary misspellings.
-- After link or navigation changes, run `npx mintlify broken-links`. Mintlify requires Node 20.17–24; if needed, use `PATH="/opt/homebrew/opt/node@24/bin:$PATH" npx mintlify broken-links`.
-- For anchor and snippet checks, use `pnpm check:links`. Validate repository instruction links as file paths, since the site checker does not cover all of them.
+- After link or navigation changes, run `pnpm check:links`. It runs the Mintlify path, anchor, and snippet checks through `scripts/check-links.mjs`, resolves anchors defined in imported snippets, and is the same check CI runs. It tells you if your Node version is unsupported. Validate repository instruction links as file paths, since the site checker does not cover them.
 - Use [the lint command](commands/lint-docs.md) for the check workflow and [the reviewer](agents/document-reviewer.md) for editorial review. Passing linters does not establish technical accuracy or style compliance.
 
 ## Git Workflow

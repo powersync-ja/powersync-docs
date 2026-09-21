@@ -3,8 +3,218 @@ title: "Compatibility"
 description: "Configure compatibility editions and bucket storage format version in PowerSync's Sync Config."
 ---
 
-{/* Wrapper page: the content is snippets/sync-shared/compatibility.mdx, which also renders at sync/rules/compatibility.mdx in the Sync Rules (Legacy) section. Edit the snippet, not this file. */}
+To ensure consistency, it is important that the PowerSync Service does not interpret the same source row in different ways after updating to a new version.
+At the same time, we want to fix bugs or other inaccuracies that have accumulated during the development of the Service.
 
-import Compatibility from '/snippets/sync-shared/compatibility.mdx';
+## Overview
 
-<Compatibility />
+To make this trade‑off explicit, you choose whether to keep the existing behavior or turn on newer fixes that slightly change how data is processed.
+
+Use the `config` block in your Sync Config YAML to choose the behavior. There are two ways to turn fixes on:
+
+1. Set an `edition` to enable the full set of fixes for that edition. This is the recommended approach for new projects.
+2. Toggle individual options for more fine‑grained control.
+
+For older projects, the previous behavior remains the default. New projects should enable all current fixes.
+
+### Configuration
+
+For new projects, it is recommended to enable all current fixes by setting `edition: <edition>`:
+
+```yaml
+config:
+  edition: 3 # Recommended to set to the latest available edition (see 'Supported fixes' table below)
+
+streams:
+  # ...
+```
+
+Or, specify options individually:
+
+```yaml
+config:
+  timestamps_iso8601: true
+  versioned_bucket_ids: true
+  fixed_json_extract: true
+  custom_postgres_types: true
+```
+
+## Sync Streams Requirement
+
+**New Sync Streams configurations should use `edition: 3`**, which enables the new compiler with an expanded SQL feature set (including `JOIN`, CTEs, multiple queries per stream, `BETWEEN`, `CASE`, and more):
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  my_stream:
+    query: SELECT * FROM my_table WHERE user_id = auth.user_id()
+```
+
+<Note>
+**Upgrading from alpha**: If you have existing Sync Streams using `edition: 2`, upgrade to `edition: 3` to enable the new compiler with an expanded SQL feature set (including `JOIN`, CTEs, multiple queries per stream, `BETWEEN`, `CASE`, and more). See [Supported SQL](/sync/supported-sql) for the full list of supported features.
+</Note>
+
+## Storage Version
+
+A storage version tells the PowerSync Service how to organize prepared sync data in the [bucket storage database](/architecture/powersync-service#bucket-storage).
+
+Changing the version does not rewrite the current data in place. When you next deploy the Sync Config, PowerSync prepares a new copy using the selected version. Clients continue using the current copy until the new one is ready. This avoids taking the instance offline for a bucket storage migration.
+
+### Optional `config.storage_version`
+
+You can choose the bucket storage version in the `config` block:
+
+```yaml
+config:
+  edition: 3
+  storage_version: 4
+
+streams:
+  todos:
+    query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+```
+
+When you omit `storage_version`, the PowerSync Service uses its default, which is version 2 in v1.26.0. On PowerSync Cloud, PowerSync manages the default. For self-hosted deployments, set `config.storage_version` explicitly to select a different version.
+
+Set `storage_version` when you need to:
+
+- Use [storage version 4](/sync/advanced/storage-version-4), which is in Beta and enables incremental reprocessing and S3 object storage.
+- Delay a storage upgrade. When the default moves to a newer version, pin `storage_version` to the version your data already uses. This keeps later Sync Config deployments on that format. Remove the pin when you are ready for the new format.
+- Prepare for a Service downgrade. Select a version supported by the older Service, deploy the Sync Config, and wait for the new copy to finish before downgrading.
+
+### Available Versions
+
+All PowerSync Cloud instances use MongoDB bucket storage, so they are compatible with all available storage versions. Self-hosted instances with Postgres bucket storage can use versions 1 and 2 only.
+
+| Version | Bucket storage | Status |
+| --- | --- | --- |
+| `1` | MongoDB or Postgres | Legacy format, retained for existing deployments. |
+| `2` | MongoDB or Postgres | Stable. The default in v1.26.0. |
+| `3` | MongoDB | Experimental. The unstable predecessor of version 4, with the same format. Do not use it in production. Deploy with version 4 instead. |
+| `4` | MongoDB | Stable. Enables [incremental reprocessing and S3 object storage](/sync/advanced/storage-version-4) (Beta). |
+
+Version numbers follow a pattern. Even numbers are stable formats: they stay backwards compatible and later Service versions continue to support them. Stable makes no guarantee that a format is bug-free. Odd numbers are experimental formats: their layout can change without notice and support can be removed in a later release, so use them only for testing, never in production.
+
+## Supported Fixes
+
+This table lists all fixes currently supported:
+
+| Name                       | Explanation                        | Added in Service version     | Fixed in edition |
+|----------------------------|------------------------------------|--------------|------------------|
+| `timestamps_iso8601`       | [Link](#timestamps_iso8601)        | 1.15.0       | 2                |
+| `versioned_bucket_ids`     | [Link](#versioned_bucket_ids)      | 1.15.0       | 2                |
+| `fixed_json_extract`       | [Link](#fixed_json_extract)        | 1.15.0       | 2                |
+| `custom_postgres_types`    | [Link](#custom_postgres_types)    | 1.15.3       | 2                |
+| `unstable_sqlite_expression_engine`    | [Link](#unstable_sqlite_expression_engine).    | 1.22.0       | None (unstable)           |
+
+### `timestamps_iso8601`
+
+PowerSync is supposed to encode timestamps according to the ISO-8601 standard.
+Without this fix, the service encoded timestamps from MongoDB and Postgres source databases incorrectly.
+To ensure time values from Postgres compare lexicographically, they're also padded to six digits of accuracy when encoded.
+Since MongoDB only stores values with an accuracy of milliseconds, only three digits of accuracy are used.
+
+For instance, the value `2025-09-22T14:29:30` would be encoded as follows:
+
+- For Postgres: `2025-09-22 14:29:30` without the fix, `2025-09-22T14:29:30.000000` with the fix applied.
+- For MongoDB: `2025-09-22 14:29:30.000` without the fix, `2025-09-22T14:29:30.000` with the fix applied.
+
+Note that MySQL has never been affected by this issue, and thus behaves the same regardless of the option used.
+
+#### Configurable Sub-Second Datetime Precision
+
+When the `timestamps_iso8601` option is enabled, PowerSync will sync date and time values with a higher
+precision depending on the source database.
+You can use the `timestamp_max_precision` option to configure the actual precision to use.
+For instance, a Postgres timestamp value would sync as `2025-09-22T14:29:30.000000` by default.
+If you don't want that level of precision, you can use the following options to make it sync as `2025-09-22T14:29:30.000`:
+
+```yaml sync-config.yaml
+config:
+  edition: 3
+  timestamp_max_precision: milliseconds
+```
+
+Valid options for `timestamp_max_precision` are `seconds`, `milliseconds`, `microseconds` and `nanoseconds`. When an explicit
+value is given, all synced time values will use that precision.
+If a source value has a higher precision, it will be truncated (it is not rounded).
+If a source value has a lower precision, it will be padded (so setting the option to `microseconds` with a MongoDB source database
+will sync values as `2025-09-22T14:29:30.123000`, with the last three sub-second digits always being set to zero).
+
+If no option is given, the default precision depends on the source database:
+
+| Source database | Default precision | Max precision | Notes                                                                                                   |
+|-----------------|-------------------|---------------|---------------------------------------------------------------------------------------------------------|
+| MongoDB         | Milliseconds      | Milliseconds  |                                                                                                         |
+| Postgres      | Microseconds      | Microseconds  |                                                                                                         |
+| MySQL           | Milliseconds      | Microseconds  | Defaults to milliseconds, but can be expanded with the option.                                          |
+| SQL Server      | Nanoseconds       | Nanoseconds   | SQL Server supports 7 digits of accuracy, the sync service pads values to always use 9 for nanoseconds.  |
+
+### `versioned_bucket_ids`
+
+Streams are compiled into buckets, and rows to sync are assigned to those buckets. When you run a full defragmentation or
+redeploy your Sync Config, the same bucket identifiers are re-used when processing data again.
+
+Because the second iteration uses different checksums for the same bucket ids, clients may sync data
+twice before realizing that something is off and starting from scratch.
+
+Applying this fix improves client-side progress estimation and is more efficient, since data would not get
+downloaded twice.
+
+For how bucket identifiers are represented in bucket storage at the persistence layer (including automatic use of versioned bucket names with newer storage formats), see [Storage version](#storage-version).
+
+### `fixed_json_extract`
+
+This fixes the `json_extract` functions as well as the `->` and `->>` operators in stream queries to behave similar
+to recent SQLite versions: We only split on `.` if the path starts with `$.`.
+
+For instance, `'json_extract({"foo.bar": "baz"}', 'foo.bar')` would evaluate to:
+
+1. `baz` with the option enabled.
+2. `null` with the option disabled.
+
+### `custom_postgres_types`
+
+If you have custom Postgres types in your backend source database schema, older versions of the PowerSync Service
+would not recognize these values and sync them with the textual wire representation used by Postgres.
+This is especially noticeable when defining `DOMAIN` types with e.g. a `REAL` inner type: The wrapped
+`DOMAIN` type should get synced as a real value as well, but it would actually get synced as a string.
+
+With this fix applied:
+
+- `DOMAIN TYPE`s are synced as their inner type.
+- Array types of custom types get parsed correctly, and sync as a JSON array.
+- Custom types get parsed and synced as a JSON object containing their members.
+- Ranges sync as a JSON object corresponding to the following TypeScript definition:
+  ```TypeScript
+  export type Range<T> =
+    | {
+        lower: T | null;
+        upper: T | null;
+        lower_exclusive: boolean;
+        upper_exclusive: boolean;
+        }
+    | 'empty';
+  ```
+- Multi-ranges sync as an array of ranges.
+
+### `unstable_sqlite_expression_engine`
+
+<Danger>
+This option is experimental: When enabled, updates to the PowerSync Service might change how rows are processed
+and this option may be removed in a future version of the Service.
+</Danger>
+
+Sync Streams support scalar SQL operators (like `+`, `-` and `||`) and [functions](/sync/supported-sql#functions).
+SQL in Sync Streams should behave exactly as it would in SQLite, but the Service uses a custom implementation which differs
+from SQLite for some edge cases.
+
+To perfectly align the behavior of the Service and SQLite, enabling this option makes the Service use an actual
+SQLite database to evaluate Sync Streams.
+Some known issues with the JavaScript evaluator that are fixed by this option are:
+
+- Exact null handling: `NOT NULL` evaluates to `TRUE` without this option, enabling it yields `NULL`.
+- Without this option, `substr()` and `length()` operate on UTF-16 code units. Enabling it makes them operate on
+  Unicode code points.

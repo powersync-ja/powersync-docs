@@ -1,0 +1,286 @@
+---
+title: "Migrate to Sync Streams"
+description: "Convert legacy Sync Rules to Sync Streams without changing what your app syncs, then adopt on-demand syncing over time."
+---
+
+import StreamDefinitionReference from '/snippets/stream-definition-reference.mdx';
+
+
+Sync Streams support everything Sync Rules do (and more), and migrating does not change what your app syncs. The [migration tool](#migrate-with-the-migration-tool) converts your bucket definitions into streams with the same behavior:
+
+- Every generated stream has `auto_subscribe: true`, so clients keep syncing all their data when they connect, exactly as they do with Sync Rules.
+- [Client Parameters](/sync/rules/client-parameters) become [connection parameters](/sync/streams/parameters#connection-parameters). Your app passes them the same way when it connects.
+- Once your SDKs meet the [minimum versions](#requirements), no client-side code changes are needed.
+
+In most cases you migrate to stay compatible first, then [adopt Sync Streams features](#adopt-sync-streams-features) such as on-demand syncing one stream at a time.
+
+If your Sync Config has a `bucket_definitions:` section, you use Sync Rules and this guide applies to you. If it only has `streams:`, you already use Sync Streams and no action is needed.
+
+## Why Migrate?
+
+Beyond matching Sync Rules, Sync Streams add:
+
+- **More expressive queries:** Stream queries support JOINs, [CTEs](/sync/streams/ctes), subqueries, and [multiple queries per stream](/sync/streams/queries#multiple-queries-per-stream), with syntax closer to plain SQL. You write one query instead of separate `parameters:` and `data:` blocks.
+- **On-demand syncing:** Define a stream once, then subscribe from your app one or more times with different parameters. Each subscription has its own lifecycle, so two screens or browser tabs can subscribe to the same stream independently. With Sync Rules, Client Parameters approximate this. You have to aggregate the parameter values yourself across screens and tabs, and remove them when they are no longer needed.
+- **Built-in caching:** Each subscription has a configurable `ttl` that keeps data on the device after unsubscribing. When users return to a screen, the data is often already available.
+- **Framework integration:** [React hooks, Vue composables, TanStack Query, and Kotlin Compose extensions](/sync/streams/client-usage#framework-integrations) let UI components manage subscriptions based on what is rendered.
+- **Access to new features:** Newer PowerSync Service features such as [incremental reprocessing](/sync/advanced/storage-version-4) require Sync Streams.
+
+## Requirements
+
+- PowerSync Service v1.20.0+ (Cloud instances already meet this)
+- An SDK version that supports Sync Streams (see table). Streams run on the [Rust-based sync client](https://releases.powersync.com/announcements/improved-sync-performance-in-our-client-sdks), which is the default in current SDKs. If your version is between the two columns, enable it manually.
+- `config: edition: 3` in your Sync Config (the migration tool sets this)
+
+<Tabs>
+<Tab title="Minimum SDK Versions">
+| SDK | Minimum Version | Rust Client Default |
+|-----|-----------------|---------------------|
+| JS Web | v1.27.0 | v1.32.0 |
+| React Native | v1.25.0 | v1.29.0 |
+| React hooks | v1.8.0 | — |
+| Node.js | v0.11.0 | v0.16.0 |
+| Capacitor | v0.0.1 | v0.3.0 |
+| Tauri | v0.0.1 | Always (Rust client only) |
+| Dart/Flutter | v1.16.0 | v1.17.0 |
+| Kotlin | v1.7.0 | v1.9.0 |
+| Swift | v1.11.0 | v1.8.0 |
+| .NET | v0.0.8-alpha.1 | v0.0.5-alpha.1 |
+</Tab>
+
+<Tab title="Enable Rust Client (older SDKs)">
+If you're on an SDK version below the "Rust Client Default" version, enable the Rust client manually:
+
+**JavaScript:**
+```js
+await db.connect(new MyConnector(), {
+  clientImplementation: SyncClientImplementation.RUST
+});
+```
+
+**Dart:**
+```dart
+database.connect(
+  connector: YourConnector(),
+  options: const SyncOptions(
+    syncImplementation: SyncClientImplementation.rust,
+  ),
+);
+```
+
+**Kotlin:**
+```kotlin
+database.connect(MyConnector(), options = SyncOptions(
+  newClientImplementation = true,
+))
+```
+
+**Swift:**
+```swift
+import PowerSync
+
+try await db.connect(connector: connector, options: ConnectOptions(
+  newClientImplementation: true,
+))
+```
+</Tab>
+</Tabs>
+
+## Migrate With the Migration Tool
+
+<Steps>
+<Step title="Generate the Sync Streams draft">
+  Use one of the following:
+
+  - **PowerSync Dashboard:** Click **Migrate to Sync Streams**. The Dashboard converts the instance's deployed Sync Rules and opens the result as a draft for you to review.
+  - **CLI:** Run `powersync migrate sync-rules`. By default the command reads `sync-config.yaml` in your `powersync` config directory and overwrites it with the result. Use `--input-file` and `--output-file` to read from and write to other paths. See the [command reference](https://github.com/powersync-ja/powersync-cli/blob/main/cli/README.md#powersync-migrate-sync-rules) for all flags.
+</Step>
+<Step title="Review the draft">
+  Compare the draft with your Sync Rules. See [What the Tool Generates](#what-the-tool-generates) for how the output maps to your bucket definitions, and [What to Check Before You Deploy](#what-to-check-before-you-deploy) for the items that need your attention.
+</Step>
+<Step title="Deploy">
+  Deploy the draft from the Dashboard or with `powersync deploy sync-config`. This works like any other Sync Config deploy: the Service reprocesses your data in the background while the current version keeps serving clients, then switches over without downtime. After the switch, each client does a one-time full re-sync.
+</Step>
+</Steps>
+
+### What the Tool Generates
+
+The following Sync Rules define global data, user-scoped data, a parameter query that reads from a table, and a Client Parameter:
+
+```yaml
+bucket_definitions:
+  global:
+    data:
+      - SELECT * FROM categories
+  user_lists:
+    parameters: SELECT request.user_id() as user_id
+    data:
+      - SELECT * FROM lists WHERE owner_id = bucket.user_id
+  list_todos:
+    parameters: SELECT id as list_id FROM lists WHERE owner_id = request.user_id()
+    data:
+      - SELECT * FROM todos WHERE list_id = bucket.list_id
+  page_posts:
+    parameters: SELECT request.parameters() ->> 'page_number' as page_number
+    data:
+      - SELECT * FROM posts WHERE page_number = bucket.page_number
+```
+
+The migration tool converts them to:
+
+```yaml
+config:
+  edition: 3
+streams:
+  migrated_to_streams:
+    auto_subscribe: true
+    with:
+      list_todos_param: SELECT id AS list_id FROM lists WHERE owner_id = auth.user_id()
+    queries:
+      # Translated from "global" bucket definition.
+      - SELECT * FROM categories
+      # Translated from "user_lists" bucket definition.
+      - SELECT * FROM lists WHERE owner_id = auth.user_id()
+      # Translated from "list_todos" bucket definition.
+      - "SELECT todos.* FROM todos,list_todos_param AS bucket WHERE todos.list_id = bucket.list_id"
+      # Translated from "page_posts" bucket definition.
+      - SELECT * FROM posts WHERE page_number = connection.parameter('page_number')
+```
+
+The tool applies these rules:
+
+- **Compatibility edition:** It sets `config: edition: 3`, which Sync Streams require, and keeps any other options in your `config` block.
+- **One stream per priority:** Bucket definitions with the same [priority](/sync/streams/prioritized-sync) are merged into one stream named `migrated_to_streams`. Comments mark which bucket definition each group of queries came from. If your bucket definitions use different priorities, the tool creates one stream per priority, named `migrated_to_streams_prio_<priority>`.
+- **Same sync behavior:** Every stream has `auto_subscribe: true`. Queries are always written as a `queries:` list so that you can add more.
+- **Parameters:** `request.*` functions become `auth.*` and `connection.*` functions. See [Parameter Syntax Changes](#parameter-syntax-changes) for the full mapping. Parameter queries that only select request values, such as `SELECT request.user_id() as user_id`, are replaced by those values in the data queries: `bucket.user_id` becomes `auth.user_id()`. Parameter queries that read from a table become CTEs in a `with:` block, named `<bucket_definition>_param`, and the data queries join them under the alias `bucket`.
+- **Cleanup:** The `bucket_definitions:` section is removed.
+
+### What to Check Before You Deploy
+
+- **Compatibility edition:** If your Sync Rules had no `edition` set, `edition: 3` also turns on the edition 2 fixes, such as ISO 8601 timestamp formatting and custom Postgres type handling. These change how some values look in the client database. See [Compatibility](/sync/advanced/compatibility) for the full list. To keep the old behavior for a fix, set its option to `false` next to the edition:
+
+  ```yaml
+  config:
+    edition: 3
+    timestamps_iso8601: false
+  ```
+
+- **Queries the tool cannot convert:** This is rare. When it happens, the tool stops and reports the query it could not parse. The Dashboard shows the error and its line in the validation panel, and the CLI prints it. Convert that bucket definition by hand using [Parameter Syntax Changes](#parameter-syntax-changes), or ask on [Discord](https://discord.gg/powersync).
+
+## Adopt Sync Streams Features
+
+After the deploy, the generated streams behave like your bucket definitions did. You can then make the following changes one stream at a time. Changes that keep `auto_subscribe: true` need no client changes. Changes that remove it or change the parameter type need an app update, because clients only receive that data once they subscribe.
+
+| Change | Client changes |
+|--------|----------------|
+| [Split the merged stream](#split-the-merged-stream) into named streams | None |
+| [Replace parameter CTEs with subqueries](#replace-parameter-ctes-with-subqueries) or JOINs | None |
+| [Sync data on demand](#sync-data-on-demand) instead of on connect | Subscribe to the stream from the app |
+| [Convert connection parameters to subscription parameters](#convert-connection-parameters-to-subscription-parameters) | Replace connect-time `params` with subscriptions |
+
+When old and new app versions coexist, keep the old stream and add the changed one under a new name. Newer app versions [opt out of auto-subscribed streams](/sync/streams/client-usage#opting-out-of-auto-subscribed-streams) and subscribe explicitly. Remove the old stream when the older app versions are retired.
+
+### Split the Merged Stream
+
+The tool merges your bucket definitions into one stream. Splitting them into named streams makes each stream's purpose visible and lets you change each one independently later. Global data, which syncs the same rows to every user, and user-scoped data both keep `auto_subscribe: true`. Set [`priority`](/sync/streams/prioritized-sync) per stream where needed:
+
+```yaml
+streams:
+  categories:
+    auto_subscribe: true
+    query: SELECT * FROM categories
+  user_lists:
+    auto_subscribe: true
+    priority: 1
+    query: SELECT * FROM lists WHERE owner_id = auth.user_id()
+```
+
+Both streams still sync on connect, so no client changes are needed.
+
+### Replace Parameter CTEs With Subqueries
+
+A parameter query that read from a table becomes a CTE that the data query joins. A subquery expresses the same filter in one statement. The generated `list_todos` queries above become:
+
+```yaml
+streams:
+  list_todos:
+    auto_subscribe: true
+    query: SELECT * FROM todos WHERE list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
+```
+
+The same rows sync, so no client changes are needed. See [Writing Queries](/sync/streams/queries) for JOINs, nested subqueries, and multiple queries per stream.
+
+### Sync Data On Demand
+
+A stream without `auto_subscribe: true` syncs only while the app is subscribed to it. Use this for data that a user needs on one screen, such as the todos of the list they opened. Add a [subscription parameter](/sync/streams/parameters#subscription-parameters) for the value the screen provides, and keep an `auth.*` filter so that clients can only subscribe to data they may access:
+
+```yaml
+streams:
+  list_todos:
+    query: |
+      SELECT * FROM todos
+      WHERE list_id = subscription.parameter('list_id')
+        AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
+```
+
+The app subscribes when the screen opens and unsubscribes when it closes. The subscription's [TTL](/sync/streams/client-usage#ttl-time-to-live) keeps the data on the device afterwards, so returning to the screen is instant:
+
+```js
+const sub = await db.syncStream('list_todos', { list_id: listId }).subscribe();
+await sub.waitForFirstSync();
+
+// When the screen closes
+sub.unsubscribe();
+```
+
+See [Client-Side Usage](/sync/streams/client-usage) for each SDK and for [framework integrations](/sync/streams/client-usage#framework-integrations) that manage subscriptions from UI components.
+
+### Convert Connection Parameters to Subscription Parameters
+
+The tool converts Client Parameters to connection parameters because they behave the same way: the app passes them in `connect()`, they apply to the whole connection, and the app has to reconnect to change them. This keeps your existing behavior, but it is not the best fit for on-demand syncing. Subscription parameters let the app subscribe to the same stream several times with different values, without reconnecting, and each subscription has its own lifecycle. If you prefer to keep passing values at connect time, keep the connection parameters. They need no client changes.
+
+Before, the migrated `page_posts` query syncs one page per connection:
+
+```yaml
+streams:
+  page_posts:
+    auto_subscribe: true
+    query: SELECT * FROM posts WHERE page_number = connection.parameter('page_number')
+```
+
+```js
+await db.connect(connector, {
+  params: { page_number: 1 }
+});
+```
+
+After, the app subscribes to the pages it needs:
+
+```yaml
+streams:
+  page_posts:
+    query: SELECT * FROM posts WHERE page_number = subscription.parameter('page_number')
+```
+
+```js
+await db.connect(connector);
+
+// Subscribe to multiple pages simultaneously
+const page1 = await db.syncStream('page_posts', { page_number: 1 }).subscribe();
+const page2 = await db.syncStream('page_posts', { page_number: 2 }).subscribe();
+```
+
+## Parameter Syntax Changes
+
+| Sync Rules | Sync Streams |
+|------------|--------------|
+| `request.user_id()` | `auth.user_id()` |
+| `request.jwt() ->> 'claim'` | `auth.parameter('claim')` |
+| `request.jwt()` | `auth.parameters()` |
+| `request.parameters() ->> 'key'` | `connection.parameter('key')` ([connection parameter](/sync/streams/parameters#connection-parameters)). Use `subscription.parameter('key')` ([subscription parameter](/sync/streams/parameters#subscription-parameters)) when you convert the stream to on-demand syncing. |
+| `request.parameters()` | `connection.parameters()` |
+| `bucket.param_name` | Use the parameter directly in the query, for example `auth.user_id()`, or a subquery. See [Using Subqueries](/sync/streams/queries#using-subqueries). |
+
+## Stream Definition Reference
+
+<StreamDefinitionReference />

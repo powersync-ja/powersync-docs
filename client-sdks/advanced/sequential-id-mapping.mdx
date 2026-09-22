@@ -29,7 +29,7 @@ Before we get started, let's outline the changes we will have to make:
     </Step>
 
     <Step title={"Update Sync Streams"}>
-        Update your Sync Streams (or legacy Sync Rules) to use the UUID column instead of the integer ID.
+        Update your Sync Streams to use the UUID column instead of the integer ID.
     </Step>
 
     <Step title={"Update client to use UUIDs."}>
@@ -183,40 +183,24 @@ We will create the following two triggers that cover either scenario of updating
 </AccordionGroup>
 
 We now have triggers in place that will handle the mapping for our updated schema and
-can move on to updating your Sync Streams/Sync Rules to use the UUID column instead of the integer ID.
+can move on to updating your Sync Streams to use the UUID column instead of the integer ID.
 
 ## Update Sync Streams
 
 As sequential IDs can only be created on the backend source database, we need to use UUIDs in the client. The Sync Config is updated to use the `uuid` column as the `id` column for the `lists` and `todos` tables, explicitly defining which columns to select so that `list_id` (the integer ID) is no longer exposed to the client.
 
-<Tabs>
-  <Tab title="Sync Streams">
-    ```yaml
-    config:
-      edition: 3
-    streams:
-      user_lists:
-        auto_subscribe: true
-        with:
-          user_lists_param: SELECT id FROM lists WHERE owner_id = auth.user_id()
-        queries:
-          - "SELECT lists.uuid AS id, lists.created_at, lists.name, lists.owner_id FROM lists WHERE lists.id IN user_lists_param"
-          - "SELECT todos.uuid AS id, todos.created_at, todos.completed_at, todos.description, todos.completed, todos.created_by, todos.list_uuid FROM todos WHERE todos.list_id = user_lists_param"
-    ```
-  </Tab>
-  <Tab title="Sync Rules (Legacy)">
-    ```yaml sync-config.yaml {4, 7-8}
-    bucket_definitions:
-      user_lists:
-        # Separate bucket per todo list
-        parameters: select id from lists where owner_id = request.user_id()
-        data:
-        # Explicitly define all the columns
-          - select uuid as id, created_at, name, owner_id from lists where id = bucket.id
-          - select uuid as id, created_at, completed_at, description, completed, created_by, list_uuid from todos where list_id = bucket.id
-    ```
-  </Tab>
-</Tabs>
+```yaml
+config:
+  edition: 3
+streams:
+  user_lists:
+    auto_subscribe: true
+    with:
+      user_lists_param: SELECT id FROM lists WHERE owner_id = auth.user_id()
+    queries:
+      - "SELECT lists.uuid AS id, lists.created_at, lists.name, lists.owner_id FROM lists WHERE lists.id IN user_lists_param"
+      - "SELECT todos.uuid AS id, todos.created_at, todos.completed_at, todos.description, todos.completed, todos.created_by, todos.list_uuid FROM todos WHERE todos.list_id = user_lists_param"
+```
 
 We can now move on to updating the client to use UUIDs.
 

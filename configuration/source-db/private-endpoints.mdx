@@ -70,11 +70,11 @@ Create an Endpoint Service:
 To expose a Postgres database via PrivateLink, you need a Network Load Balancer that forwards traffic to the database. This works for Postgres running on EC2 or RDS.
 
 <Warning>
-For AWS RDS, the steps below do not handle dynamic IPs if the RDS instance's IP changes. This is specifically relevant when using an RDS cluster with failover support. See this [AWS blog post](https://aws.amazon.com/blogs/database/access-amazon-rds-across-vpcs-using-aws-privatelink-and-network-load-balancer/) for handling IP changes automatically.
+The target group holds a fixed IP address. It does not follow the database when the IP changes, which happens on an Aurora failover, an instance replacement, or a migration to a new cluster. PowerSync then cannot connect, or reaches a different instance and rejects its certificate because the names in the certificate do not include the configured host. Update the target group when the writer changes, or automate it as described in this [AWS blog post](https://aws.amazon.com/blogs/database/access-amazon-rds-across-vpcs-using-aws-privatelink-and-network-load-balancer/).
 </Warning>
 
 1. **Create a Target Group**:
-   1. Obtain the RDS instance's private IP address. Make sure this points to a writable instance.
+   1. Obtain the private IP address of the instance that PowerSync must replicate from. For Aurora, resolve the cluster endpoint to get the current writer's IP. For RDS, use the instance's private IP.
    2. Create a **Target Group** with IP addresses as the target type, using the IP from above. Use TCP protocol and the database port (typically `5432` for Postgres).
 2. **Create a Network Load Balancer (NLB)**:
    1. Select the same VPC as your RDS instance.
@@ -161,12 +161,16 @@ Once the status changes to `Available`, the endpoint can be selected when config
 2. Select the **Postgres** or **MongoDB** tab.
 3. In the **Private Endpoint** dropdown, select your endpoint. Only endpoints in the same region as the instance with status `Available` are selectable.
 4. Fill in the rest of the connection details:
-   * **For Postgres**: enter your database connection details as usual. PowerSync routes traffic through the Private Endpoint to your load balancer.
+   * **For Postgres**: enter your database connection details as usual, with the database's own hostname as the "**Host**": the cluster endpoint for Aurora, or the instance endpoint for RDS. PowerSync uses this hostname to verify the server certificate and sends the traffic through the Private Endpoint to your load balancer. Do not enter the load balancer or Endpoint Service DNS name as the host, because it is not in the database's certificate.
    * **For MongoDB**: on the Atlas cluster, click **Connect**, choose **Private Endpoint** as the connection type, select the provisioned endpoint, choose **Drivers** as the connection method, and copy the resulting connection string. It should look something like `mongodb+srv://<db_username>:<db_password>@your-cluster-pl-0.abcde.mongodb.net/`. Paste it into the **URI** field in the Dashboard.
 5. Click **Test Connection** and resolve any errors.
 6. Click **Save Connection**.
 
 PowerSync deploys and configures an isolated cloud environment for you, which can take a few minutes. Monitor the logs to confirm the instance connects.
+
+<Note>
+For a connection that uses a Private Endpoint, **Test Connection** checks that the configuration is complete but does not connect to the database. It reports success without verifying reachability, TLS, credentials, `wal_level`, or the `powersync` publication. Complete the [Source Database Setup](/configuration/source-db/setup) steps first, then confirm the connection in the instance's **Health** view and logs after deploying.
+</Note>
 
 </Step>
 </Steps>

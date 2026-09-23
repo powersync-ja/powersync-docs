@@ -7,6 +7,7 @@ Jump to: [Postgres](#postgres) | [MongoDB](#mongodb) | [Azure DocumentDB](#azure
 
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
+import PostgresRdsPowerSyncUser from '/snippets/postgres-rds-powersync-user.mdx';
 import NeonDatabaseSetup from '/snippets/neon-database-setup.mdx';
 
 ## <Icon icon="elephant" iconType="solid" size={32} /> Postgres
@@ -60,24 +61,39 @@ We have documented steps for some specific hosting providers:
 
     ### 2. Create a PowerSync database user
 
-    Create a PowerSync user on Postgres:
+    <PostgresRdsPowerSyncUser />
+
+    ### 3. Create `powersync` publication
+
+    <PostgresPowerSyncPublication />
+
+  </Accordion>
+  <Accordion title="AWS Aurora">
+    PowerSync replicates from the writer, the primary instance of an Aurora Postgres cluster. This applies to provisioned clusters and to Aurora Serverless v2. All currently available Aurora Postgres versions support logical replication.
+
+    ### Prerequisites
+
+    PowerSync must be able to reach the writer. Either make the cluster publicly accessible over IPv4 and restrict access to PowerSync's IPs (see [IP Filtering](/configuration/source-db/security-and-ip-filtering)), or connect through a [Private Endpoint](/configuration/source-db/private-endpoints) using AWS PrivateLink.
+
+    ### 1. Ensure logical replication is enabled
+
+    In Aurora, `rds.logical_replication` is a setting of the **DB cluster parameter group**, not of a DB instance parameter group.
+
+    1. In the [Amazon RDS console](https://console.aws.amazon.com/rds/), open your cluster's **Configuration** tab and follow the **Parameter group** link of type **DB cluster parameter group**. If the cluster still uses a default parameter group, [create a custom DB cluster parameter group](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/USER_WorkingWithDBClusterParamGroups.html) and assign it to the cluster first. Default parameter groups cannot be edited.
+    2. Set `rds.logical_replication` to `1` and save.
+    3. Reboot the writer. The change only takes effect after the reboot.
+    4. Connect to the writer through the cluster endpoint and confirm the settings:
 
     ```sql
-    -- SQL to create powersync user
-    CREATE ROLE powersync_role WITH BYPASSRLS LOGIN PASSWORD 'myhighlyrandompassword';
-
-    -- Allow the role to perform replication tasks
-    GRANT rds_replication TO powersync_role;
-
-    -- Set up permissions for the newly created role
-    -- Read-only (SELECT) access is required
-    GRANT SELECT ON ALL TABLES IN SCHEMA public TO powersync_role;
-
-    -- Optionally, grant SELECT on all future tables (to cater for schema additions)
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO powersync_role;
+    SHOW rds.logical_replication; -- on
+    SHOW wal_level;               -- logical
     ```
 
-    To restrict read access to specific tables, explicitly list allowed tables for both the `SELECT` privilege, and for the publication (as well as for any other publications that may exist).
+    For the related parameters `max_replication_slots`, `max_wal_senders` and `max_worker_processes`, see [Setting up logical replication for your Aurora PostgreSQL DB cluster](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/AuroraPostgreSQL.Replication.Logical.Configure.html). PowerSync uses one replication slot per instance, plus a second slot while it processes a new Sync Config version. See [Postgres Maintenance](/configuration/source-db/postgres-maintenance).
+
+    ### 2. Create a PowerSync database user
+
+    <PostgresRdsPowerSyncUser />
 
     ### 3. Create `powersync` publication
 

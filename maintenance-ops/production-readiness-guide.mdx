@@ -72,7 +72,7 @@ The JavaScript SDKs accept a `logger` option that implements the `PowerSyncLogge
 
 ```typescript System.ts
 import * as Sentry from '@sentry/react';
-import { createConsoleLogger, LogLevels, PowerSyncDatabase, type PowerSyncLogger } from '@powersync/web';
+import { createConsoleLogger, LogLevels, PowerSyncDatabase } from '@powersync/web';
 import { AppSchema } from './AppSchema';
 
 // Initialize Sentry. Sentry SDK 10.71.0 and later enable structured logs by default.
@@ -89,27 +89,26 @@ function toSentryLevel(level: number): Sentry.SeverityLevel {
   return 'debug';
 }
 
-// Keep console output for every record. createConsoleLogger() prints info and above by default.
-const consoleLogger = createConsoleLogger();
+// Extend the console logger so records still print. minLevel applies to the console only
+const logger = createConsoleLogger({ minLevel: LogLevels.info });
+const logToConsole = logger.log.bind(logger);
 
 // The SDK calls log() for every record it emits
-const logger: PowerSyncLogger = {
-  log(record) {
-    consoleLogger.log(record);
+logger.log = (record) => {
+  logToConsole(record);
 
-    const { level, message, error } = record;
-    const severity = toSentryLevel(level);
-    const attributes = error ? { error: String(error) } : {};
+  const { level, message, error } = record;
+  const severity = toSentryLevel(level);
+  const attributes = error ? { error: String(error) } : {};
 
-    // Breadcrumbs show the PowerSync operations that led up to an error report
-    Sentry.addBreadcrumb({ category: 'powersync', message, level: severity, data: attributes });
+  // Breadcrumbs show the PowerSync operations that led up to an error report
+  Sentry.addBreadcrumb({ category: 'powersync', message, level: severity, data: attributes });
 
-    // Only send warnings and errors to Sentry
-    if (severity === 'error') {
-      Sentry.logger.error(message, attributes);
-    } else if (severity === 'warning') {
-      Sentry.logger.warn(message, attributes);
-    }
+  // Only send warnings and errors to Sentry
+  if (severity === 'error') {
+    Sentry.logger.error(message, attributes);
+  } else if (severity === 'warning') {
+    Sentry.logger.warn(message, attributes);
   }
 };
 

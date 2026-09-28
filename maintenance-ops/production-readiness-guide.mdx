@@ -122,25 +122,26 @@ export const powerSync = new PowerSyncDatabase({
 });
 
 // Report sync errors with extra context from the sync status.
-// The status keeps an error until it clears, so report each error once.
-let lastDownloadError: string | undefined;
-let lastUploadError: string | undefined;
+// The status keeps an error until it clears and notifies on every other change,
+// so report each distinct error once.
+let lastDownloadError = '';
+let lastUploadError = '';
 
 powerSync.registerListener({
   statusChanged: (status) => {
     const context = {
       lastSyncedAt: status.lastSyncedAt?.toISOString(), // When the last sync completed
       connected: status.connected, // Whether the client is connected to the PowerSync Service
-      sdkVersion: powerSync.sdkVersion || 'unknown' // Version of the PowerSync core extension, from powersync_rs_version()
+      sdkVersion: powerSync.sdkVersion || 'unknown' // Core extension version; the SDK reads it from powersync_rs_version()
     };
 
-    const downloadError = status.downloadError ? String(status.downloadError) : undefined;
+    const downloadError = status.downloadError ? String(status.downloadError) : '';
     if (downloadError && downloadError !== lastDownloadError) {
       Sentry.logger.error('PowerSync sync download failed', { ...context, error: downloadError });
     }
     lastDownloadError = downloadError;
 
-    const uploadError = status.uploadError ? String(status.uploadError) : undefined;
+    const uploadError = status.uploadError ? String(status.uploadError) : '';
     if (uploadError && uploadError !== lastUploadError) {
       Sentry.logger.error('PowerSync sync upload failed', { ...context, error: uploadError });
     }

@@ -130,8 +130,8 @@ struct, which wraps:
 1. An HTTP client (implement the `powersync::http::HttpClient` trait). When enabling the `reqwest` feature on
    the `powersync` crate, that trait is implemented for `reqwest::Client`.
 2. An asynchronous pool giving out leases to SQLite connections.
-3. A timer implementation allowing the sync client to implement delayed retries on connection errors.
-   This is typically provided by async runtimes like Tokio.
+3. An asynchronous runtime to spawn tasks driving the sync process when connecting the database.
+   PowerSync supports both `tokio` and `smol-rs` with optional features.
 
 To configure PowerSync, begin by configuring a connection pool:
 
@@ -185,11 +185,10 @@ async fn main() {
     let env = PowerSyncEnvironment::custom(
         reqwest::Client::new(),
         pool,
-        PowerSyncEnvironment::tokio_timer(),
+        PowerSyncEnvironment::tokio(),
     );
 
     let db = PowerSyncDatabase::new(env, schema::app_schema());
-    db.async_tasks().spawn_with_tokio();
 }
 ```
 </Tab>
@@ -198,46 +197,25 @@ async fn main() {
 Ensure you depend on `powersync` with the `smol` feature enabled.
 
 ```Rust
-async fn start_app() {
+async fn start_app(executor: Arc<Executor<'static>>) {
     let pool = open_pool().expect("open pool");
     let env = PowerSyncEnvironment::custom(
         reqwest::Client::new(),
         pool,
         // Use the async_io crate to implement timers in PowerSync
-        PowerSyncEnvironment::async_io_timer(),
+        PowerSyncEnvironment::smol(executor),
     );
 
     let db = PowerSyncDatabase::new(env, schema::app_schema());
-    // TODO: Use a custom multi-threaded executor instead of the default
-    let tasks = db.async_tasks().spawn_with(smol::spawn);
-    for task in tasks {
-        // The task will automatically stop once the database is dropped, but we
-        // want to keep it running until then.
-        task.detach();
-    }
 }
 
 fn main() {
     PowerSyncEnvironment::powersync_auto_extension()
         .expect("could not load PowerSync core extension");
-    smol::block_on(start_app());
+    let ex = Arc::new(Executor::new());
+    smol::block_on(start_app(ex));
 }
 ```
-</Tab>
-
-<Tab title="Other">
-PowerSync is executor-agnostic and supports all async Rust runtimes. You need to provide:
-
-1. A future that delays execution by scheduling its waker through a timer.
-2. A way to spawn futures as a task that is polled independently.
-
-PowerSync uses the [`Timer`](https://docs.rs/powersync/latest/powersync/env/trait.Timer.html)
-trait for timers. Install your timer by creating a `PowerSyncEnvironment` with `PowerSyncEnvironment::custom`
-and passing your implementation.
-
-Spawning tasks is only necessary once after opening the database. All tasks necessary for the sync
-client are exposed through `PowerSyncDatabase::async_tasks`. You can spawn these by providing
-a function turning these futures into independent tasks via `AsyncDatabaseTasks::spawn_with`.
 </Tab>
 </Tabs>
 

@@ -9,7 +9,7 @@ PowerSync syncs continuously in the background and [SyncStatus](/client-sdks/usa
 Checkpoint requests let you catch up on demand: you request a marker of the current server state, then wait until the local database has caught up to it. Waiting covers uploads as well as downloads: a request created after local writes confirms that those writes have been uploaded and their results have synced back (see [Relationship to Local Writes](#relationship-to-local-writes)).
 
 <Warning>
-Checkpoint requests are an alpha API and may change. Support requires PowerSync Service version 1.24.0 or later. Checkpoint requests are not currently available for the Rust SDK.
+Checkpoint requests are an alpha API and may change. Support requires PowerSync Service version 1.24.0 or later.
 </Warning>
 
 Example use cases include:
@@ -80,6 +80,14 @@ await database.Connect(
     options: new PowerSyncConnectionOptions(checkpointMode: new CheckpointMode.Requests())
 );
 ```
+
+```rust Rust
+// Requires powersync 0.1.0 or later
+let mut options = SyncOptions::new(my_backend_connector);
+
+options.with_checkpoint_mode(CheckpointMode::Requests(Default::default()));
+database.connect(options).await;
+```
 </CodeGroup>
 
 <Note>
@@ -129,6 +137,13 @@ async Task RefreshLocalData(CancellationToken cancellationToken = default)
 {
     var checkpoint = await database.RequestCheckpoint(cancellationToken);
     await checkpoint.WaitForSync(cancellationToken);
+}
+```
+
+```rust Rust
+async fn refresh_local_data(db: &PowerSyncDatabase) -> Result<(), CheckpointError> {
+    let checkpoint = db.request_checkpoint().await?;
+    checkpoint.wait_for_sync().await
 }
 ```
 </CodeGroup>
@@ -224,6 +239,25 @@ catch (Exception)
     // Handle other errors
 }
 ```
+
+```rust Rust
+if let Err(e) = refresh_local_data(db).await {
+    match e {
+        CheckpointError::Disabled => panic!("Checkpoint requests not enabled"),
+        CheckpointError::Disconnected => {
+            show_refresh_message("Reconnect before refreshing again");
+        }
+        CheckpointError::InstanceNotSupported
+        | CheckpointError::CouldNotRequest { cause: _ } => {
+            show_refresh_message("Could not request checkpoint");
+        }
+        CheckpointError::StatusError { cause } => {
+            show_refresh_message("Error while waiting for checkpoint to sync");
+        }
+    }
+}
+```
+
 </CodeGroup>
 
 A request remains valid across a disconnect. After reconnecting with `.requests()`, you can call `waitForSync()` again on the same request. Discard existing request values after clearing the local PowerSync database because clearing it resets the persisted request state.
@@ -282,6 +316,19 @@ await database.Execute(
 var checkpoint = await database.RequestCheckpoint();
 await checkpoint.WaitForSync();
 ```
+
+```rust Rust
+{
+    let mut writer = db.writer().await?;
+    writer.execute(
+        "INSERT INTO tasks (id, description) VALUES (uuid(), ?)",
+        params!["Review the project plan"],
+    )?;
+}
+
+let checkpoint = db.request_checkpoint().await?;
+checkpoint.wait_for_sync().await?;
+```
 </CodeGroup>
 
 This behavior relies on `uploadData()` returning only after your backend has committed the uploaded changes to the source database. See [Writing Client Changes](/handling-writes/writing-client-changes#why-must-my-write-endpoint-be-synchronous) for the reason your write endpoint must be synchronous.
@@ -324,6 +371,7 @@ declare support for checkpoint requests on your backend connector:
 - For Kotlin, implement `CustomCheckpointRequestConnector`.
 - For Swift, make your connector conform to `CustomCheckpointRequestConnector`.
 - For .NET, implement `ICustomCheckpointRequestConnector`.
+- For Rust, implement `BackendConnector::post_checkpoint_request`.
 
 Forward the request to your application backend:
 
@@ -399,6 +447,30 @@ class BackendConnector : ICustomCheckpointRequestConnector
     }
 
     // ...also implement other IPowerSyncBackendConnector methods (FetchCredentials, UploadData)
+}
+```
+
+```rust Rust
+#[async_trait]
+impl BackendConnector for TodoDatabase {
+    // ... also implement fetch_credentials and upload_data   
+
+    fn post_checkpoint_request<'a>(
+        &'a self,
+        client_id: &'a str,
+        request_id: i64,
+    ) -> Option<Pin<Box<dyn Future<Output = Result<i64, PowerSyncError>> + Send + 'a>>> {
+        Some(
+            async move {
+                let response = self
+                    .backend
+                    .create_checkpoint_request(client_id, request_id)
+                    .await?;
+                return Ok(response.request_id);
+            }
+            .boxed(),
+        )
+    }
 }
 ```
 </CodeGroup>

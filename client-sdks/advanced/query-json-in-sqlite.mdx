@@ -10,6 +10,7 @@ When syncing data from your backend source database to PowerSync, JSON columns (
 ### Understanding JSON Storage in PowerSync
 
 Your backend source database might store structured data as JSON in various ways:
+
 - **MongoDB**: Nested documents and arrays
 - **Postgres**: JSONB, JSON, array, or custom types
 - **MySQL**: JSON columns
@@ -20,6 +21,7 @@ Regardless of the source, PowerSync syncs these JSON structures to SQLite as `TE
 ### Example Data Structure
 
 Let's use a task management system where tasks have nested metadata:
+
 ```json
 {
   "id": "task_123",
@@ -52,6 +54,7 @@ In SQLite, the `assignees`, `tags`, and `metadata` columns are stored as JSON st
 #### Standard [`json_extract()`](https://sqlite.org/json1.html#jex) Function
 
 Extract values from JSON using path expressions:
+
 ```sql
 SELECT 
   id,
@@ -62,6 +65,7 @@ FROM tasks;
 ```
 
 **Path syntax:**
+
 - `$` - root element
 - `.` - object member access
 - `[index]` - array element access
@@ -80,8 +84,10 @@ FROM tasks;
 ```
 
 **The difference between [-> and ->>](https://sqlite.org/json1.html#jptr):**
+
 - `->` returns JSON (preserves type information, quotes strings)
 - `->>` extracts the value unquoted (strings as TEXT, numbers/booleans as their native types)
+
 ```sql
 -- Using -> (returns JSON)
 SELECT metadata -> '$.priority' FROM tasks;
@@ -100,15 +106,17 @@ SELECT metadata ->> '$.sprint' FROM tasks;
 ```
 
 <Tip>
-**When to use which:**
-- Use `->>` when extracting **final values** for display or comparison
-- Use `->` when extracting **intermediate JSON** for further processing
-- `->>` preserves data types (numbers stay numbers, not strings)
+  **When to use which:**
+
+  - Use `->>` when extracting **final values** for display or comparison
+  - Use `->` when extracting **intermediate JSON** for further processing
+  - `->>` preserves data types (numbers stay numbers, not strings)
 </Tip>
 
 #### Nested Path Access
 
 Access deeply nested values:
+
 ```sql
 -- All three are equivalent:
 json_extract(metadata, '$.dependencies[0]')
@@ -121,6 +129,7 @@ metadata -> '$.dependencies' -> '$[0]'
 #### Flattening Simple Arrays
 
 For the `tags` array, use `json_each()` to create one row per element:
+
 ```sql
 SELECT 
   t.id,
@@ -132,6 +141,7 @@ WHERE tag.value = 'urgent';
 ```
 
 **What's happening:**
+
 - `json_each(t.tags)` creates a virtual table with one row per tag
 - `tag.value` contains each individual tag string
 - You can filter, join, or aggregate these expanded rows
@@ -139,6 +149,7 @@ WHERE tag.value = 'urgent';
 #### Querying Nested Objects in Arrays
 
 For complex objects like `assignees`:
+
 ```sql
 SELECT 
   t.id,
@@ -152,6 +163,7 @@ WHERE (assignee.value ->> '$.role') = 'developer';
 ```
 
 **Key points:**
+
 - Each `assignee.value` is a JSON object representing one assignee
 - Use `->>` to extract text values for comparison
 - Use `->` when you need numeric values for calculations
@@ -161,6 +173,7 @@ WHERE (assignee.value ->> '$.role') = 'developer';
 #### Example 1: Finding Tasks by Assignee
 
 **Use case:** Show all tasks assigned to a specific user.
+
 ```sql
 SELECT DISTINCT
   t.id,
@@ -175,6 +188,7 @@ ORDER BY t.metadata ->> '$.priority';
 #### Example 2: Calculating Total Hours by Role
 
 **Use case:** Aggregate hours across all tasks grouped by role.
+
 ```sql
 SELECT 
   assignee.value ->> '$.role' AS role,
@@ -189,6 +203,7 @@ ORDER BY total_hours DESC;
 #### Example 3: Tasks with Specific Tags
 
 **Use case:** Find tasks tagged with multiple specific tags.
+
 ```sql
 -- Tasks with BOTH 'urgent' AND 'frontend' tags
 SELECT DISTINCT t.*
@@ -204,6 +219,7 @@ AND EXISTS (
 ```
 
 Or using a simpler approach for single tags:
+
 ```sql
 -- Tasks with 'urgent' tag
 SELECT *
@@ -215,6 +231,7 @@ WHERE tag.value = 'urgent';
 #### Example 4: Filtering by Array Contents
 
 **Use case:** Find tasks that depend on a specific task ID.
+
 ```sql
 SELECT *
 FROM tasks t,
@@ -225,6 +242,7 @@ WHERE dep.value = 'task_100';
 #### Example 5: Checking for Array Membership
 
 **Use case:** Check if a task has any dependencies.
+
 ```sql
 SELECT 
   id,
@@ -237,6 +255,7 @@ WHERE json_array_length(metadata -> '$.dependencies') > 0;
 ### Working with Comma or Delimiter-Separated Values
 
 Sometimes JSON strings contain delimiter-separated values (like `"NYC;LAX;MIA"`). Here's how to query them efficiently:
+
 ```sql
 -- Assume tasks have a field: "approved_by": "user_001;user_002;user_003"
 
@@ -250,11 +269,13 @@ WHERE instr(
 ```
 
 **Why this pattern works:**
+
 - Wraps the value: `";user_001;user_002;user_003;"`
 - Searches for `;user_001;` ensuring exact delimiter-bounded match
 - Prevents false matches (won't match "user_0011" when searching for "user_001")
 
 **Avoid `LIKE` for delimited strings:**
+
 ```sql
 -- ❌ WRONG - can match partial values
 WHERE (metadata ->> '$.approved_by') LIKE '%user_001%'
@@ -269,6 +290,7 @@ WHERE instr(';' || (metadata ->> '$.approved_by') || ';', ';user_001;') > 0
 #### Using CTEs for Cleaner Queries
 
 Common Table Expressions make complex JSON queries more readable:
+
 ```sql
 WITH task_assignees AS (
   SELECT 
@@ -293,6 +315,7 @@ GROUP BY user_id, role;
 #### Combining Multiple JSON Arrays
 
 Query across multiple nested arrays:
+
 ```sql
 SELECT DISTINCT
   t.id,
@@ -307,12 +330,13 @@ WHERE tag.value IN ('urgent', 'high-priority')
 ```
 
 <Warning>
-**Cartesian product warning:** When using multiple `json_each()` calls, you create a Cartesian product. A task with 3 assignees and 4 tags creates 12 rows. Use `DISTINCT` when needed and filter early to minimize row expansion.
+  **Cartesian product warning:** When using multiple `json_each()` calls, you create a Cartesian product. A task with 3 assignees and 4 tags creates 12 rows. Use `DISTINCT` when needed and filter early to minimize row expansion.
 </Warning>
 
 #### Checking for Key Existence
 
 Verify if a JSON key exists:
+
 ```sql
 -- Check if 'sprint' key exists
 SELECT *
@@ -330,6 +354,7 @@ WHERE metadata -> '$.sprint' IS NOT NULL;
 **Important Performance Considerations**
 
 1. **Index JSON columns for better performance**: If you frequently query JSON fields, add indexes to the JSON string columns in your `AppSchema`:
+
 ```typescript
 const tasks = new Table(
   {
@@ -347,8 +372,8 @@ const tasks = new Table(
 ```
 
 2. **Minimize `json_each()` usage**: Each `json_each()` call expands rows. For a table with 10,000 tasks averaging 5 assignees each, you're processing 50,000 rows.
-
 3. **Use EXISTS for membership checks**: More efficient than joining:
+
 ```sql
 -- ✅ BETTER for large datasets
 SELECT * FROM tasks t
@@ -360,6 +385,7 @@ WHERE EXISTS (
 ```
 
 4. **Cache extracted values in CTEs**: Extract once, use multiple times:
+
 ```sql
 WITH task_metrics AS (
   SELECT 
@@ -382,6 +408,7 @@ ORDER BY total_hours DESC;
 ### Useful JSON Functions
 
 Beyond extraction, SQLite offers many JSON utilities:
+
 ```sql
 -- Get array length
 SELECT json_array_length(tags) FROM tasks;
@@ -411,11 +438,13 @@ WHERE t.id = 'task_123';
 **Watch out for these common issues:**
 
 1. **NULL vs missing keys**: `json_extract()` returns `NULL` for non-existent paths. Always check for NULL:
+
 ```sql
 WHERE COALESCE(metadata ->> '$.priority', 999) = 1
 ```
 
 2. **Type mismatches**:
+
 ```sql
 -- ❌ String comparison (wrong!)
 WHERE metadata -> '$.priority' > 5
@@ -425,11 +454,13 @@ WHERE metadata ->> '$.priority' > 5
 ```
 
 3. **Array index bounds**: Out-of-bounds array access returns NULL, not an error:
+
 ```sql
 SELECT metadata -> '$.dependencies[99]' -- Returns NULL if not enough elements
 ```
 
 4. **Quotes in JSON strings**: Use `->>` to get unquoted text, not `->`:
+
 ```sql
 -- ❌ Returns: "2024-Q1" (with quotes)
 WHERE metadata -> '$.sprint' = '2024-Q1' 
@@ -443,6 +474,7 @@ WHERE metadata ->> '$.sprint' = '2024-Q1'
 ### Summary
 
 Querying JSON data in SQLite effectively requires:
+
 - Understanding that JSON is stored as strings but queryable with built-in functions
 - Using `json_extract()` or the shorthand `->` and `->>` operators
 - Leveraging `json_each()` to flatten arrays for filtering and aggregation

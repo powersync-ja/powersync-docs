@@ -47,7 +47,7 @@ If you're interested in learning more about the internal PowerSync SQLite schema
 
 #### Using `Sentry logging` for Log Aggregation
 
-<Note>This is just an example of how to implement Sentry logging. The actual implementation is up to you as the developer. You don't have to use `Sentry logging`, but we recommend using some sort of log aggregation service in production.</Note>
+<Note>This example forwards PowerSync logs to Sentry. You do not have to use Sentry, but we recommend a log aggregation service in production.</Note>
 
 ```typescript App Entry Point
 createRoot(document.getElementById("root")!,
@@ -68,47 +68,49 @@ createRoot(document.getElementById("root")!,
 );
 ```
 
+The JavaScript SDKs accept a `logger` option that implements the `PowerSyncLogger` interface. The SDK passes each log record to its `log` method with a numeric `level`, a `message`, and an optional `error`. Compare the level with the `LogLevels` constants to decide which records to forward.
+
 ```typescript System.ts
 import * as Sentry from '@sentry/react';
-import { createConsoleLogger, LogLevels } from '@powersync/react-native';
+import { createConsoleLogger, LogLevels, PowerSyncDatabase } from '@powersync/web';
+import { AppSchema } from './AppSchema';
 
-// Initialize Sentry
+// Initialize Sentry. Sentry SDK 10.71.0 and later enable structured logs by default.
 Sentry.init({
   dsn: 'YOUR_SENTRY_DSN_HERE',
-  transport: Sentry.makeBrowserOfflineTransport(Sentry.makeFetchTransport), // Handle offline scenarios
-  enableLogs: true // Enable Sentry logging
+  transport: Sentry.makeBrowserOfflineTransport(Sentry.makeFetchTransport) // Queue events while offline
 });
 
-const logger = createConsoleLogger({ minLevel: LogLevels.warn });
+// Map PowerSync's numeric log levels to Sentry severity levels
+function toSentryLevel(level: number): Sentry.SeverityLevel {
+  if (level >= LogLevels.error) return 'error';
+  if (level >= LogLevels.warn) return 'warning';
+  if (level >= LogLevels.info) return 'info';
+  return 'debug';
+}
 
-logger.setHandler((messages, context) => {
-  if (!context?.level) return;
+// Extend the console logger so records still print. minLevel applies to the console only
+const logger = createConsoleLogger({ minLevel: LogLevels.info });
+const logToConsole = logger.log.bind(logger);
 
-  // Get the main message and combine any additional data
-  const messageArray = Array.from(messages);
-  const mainMessage = String(messageArray[0] || 'Empty log message');
-  const extraData = messageArray.slice(1).reduce((acc, curr) => ({ ...acc, ...curr }), {});
+// The SDK calls log() for every record it emits
+logger.log = (record) => {
+  logToConsole(record);
 
-  const level = context.level.name.toLowerCase();
+  const { level, message, error } = record;
+  const severity = toSentryLevel(level);
+  const attributes = error ? { error: String(error) } : {};
 
-  // Add breadcrumb: creates a trail of events leading up to errors
-  // This helps debug by showing PowerSync state/operations before crashes
-  // Breadcrumbs appear in Sentry error reports for context
-  // We capture all levels (including info/debug) since we might want to know
-  // what operations happened before an error occurred
-  Sentry.addBreadcrumb({
-    message: mainMessage,
-    level: level as Sentry.SeverityLevel,
-    data: extraData,
-    timestamp: Date.now()
-  });
+  // Breadcrumbs show the PowerSync operations that led up to an error report
+  Sentry.addBreadcrumb({ category: 'powersync', message, level: severity, data: attributes });
 
   // Only send warnings and errors to Sentry
-  if (level == 'warn' || level == 'error') {
-    console[level](`PowerSync ${level.toUpperCase()}:`, mainMessage, extraData);
-    Sentry.logger[level](mainMessage, extraData);
+  if (severity === 'error') {
+    Sentry.logger.error(message, attributes);
+  } else if (severity === 'warning') {
+    Sentry.logger.warn(message, attributes);
   }
-});
+};
 
 // Create PowerSync instance
 export const powerSync = new PowerSyncDatabase({
@@ -116,42 +118,35 @@ export const powerSync = new PowerSyncDatabase({
   database: {
     dbFilename: 'example.db'
   },
-  logger: logger // Pass the logger to PowerSync
+  logger // Pass the logger to PowerSync
 });
 
-// Register a listener to monitor PowerSync status changes and log upload/download errors that are not handled directly by the SDK
+// Report sync errors with extra context from the sync status.
+// The status keeps an error until it clears and notifies on every other change,
+// so report each distinct error once.
+let lastDownloadError = '';
+let lastUploadError = '';
+
 powerSync.registerListener({
   statusChanged: (status) => {
-    // Check for download errors and log them with context
-    if(status.downloadError) {
-      logger.error("PowerSync sync download failed", {
-        userSession: connector.currentSession,    // Current user session for tracking
-        lastSyncAt: status?.lastSyncedAt,        // When the last successful sync occurred
-        connected: status?.connected,            // Network connection status
-        sdkVersion: powerSync.sdkVersion || 'unknown', // PowerSync SDK version for debugging
-        downloadError: status.downloadError // The actual download error details
-      });
-    }
+    const context = {
+      lastSyncedAt: status.lastSyncedAt?.toISOString(), // When the last sync completed
+      connected: status.connected, // Whether the client is connected to the PowerSync Service
+      sdkVersion: powerSync.sdkVersion || 'unknown' // Core extension version; the SDK reads it from powersync_rs_version()
+    };
 
-    // Check for upload errors and log them with context
-    if(status.uploadError) {
-      logger.error("PowerSync sync upload failed", {
-        userSession: connector.currentSession,    // Current user session for tracking
-        lastSyncAt: status?.lastSyncedAt,        // When the last successful sync occurred
-        connected: status?.connected,            // Network connection status
-        sdkVersion: powerSync.sdkVersion || 'unknown', // PowerSync SDK version for debugging
-        uploadError: status.uploadError   // The actual upload error details
-      });
+    const downloadError = status.downloadError ? String(status.downloadError) : '';
+    if (downloadError && downloadError !== lastDownloadError) {
+      Sentry.logger.error('PowerSync sync download failed', { ...context, error: downloadError });
     }
+    lastDownloadError = downloadError;
+
+    const uploadError = status.uploadError ? String(status.uploadError) : '';
+    if (uploadError && uploadError !== lastUploadError) {
+      Sentry.logger.error('PowerSync sync upload failed', { ...context, error: uploadError });
+    }
+    lastUploadError = uploadError;
   }
-});
-
-// Usage with additional context
-logger.error('PowerSync sync failed', {
-  userId: userID,
-  lastSyncAt: status?.lastSyncedAt,
-  connected: status?.connected,
-  sdkVersion: powerSync.sdkVersion || 'unknown',
 });
 ```
 

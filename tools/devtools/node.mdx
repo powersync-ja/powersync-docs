@@ -1,0 +1,75 @@
+---
+title: "PowerSync DevTools for Node.js"
+description: Serve PowerSync DevTools from your Node.js app process and open it in a browser.
+sidebarTitle: Node.js
+---
+
+A Node.js app has no dev server, so your app process serves DevTools and you open it in a browser.
+
+## Requirements
+
+- `@powersync/node` (version to be confirmed). {/* TODO: Add the minimum version after the release. It needs the `diagnostics` sync option and the `connector` accessor from `@powersync/common`. */}
+- Node.js 20.16 or later.
+
+## Set Up DevTools
+
+<Steps>
+  <Step title="Install the package">
+    ```bash
+    npm install -D @powersync/diagnostics
+    ```
+  </Step>
+  <Step title="Enable DevTools in your app">
+    After you create the database, call `enablePowerSyncDiagnostics()` in development only.
+
+    ```typescript
+    import { PowerSyncDatabase } from '@powersync/node';
+
+    const db = new PowerSyncDatabase({ schema: AppSchema, database: { dbFilename: 'app.db' } });
+    await db.connect(connector, { diagnostics: true });
+
+    if (process.env.NODE_ENV !== 'production') {
+      const { enablePowerSyncDiagnostics } = await import('@powersync/diagnostics/node');
+      const devtools = await enablePowerSyncDiagnostics(db);
+      console.log(`PowerSync DevTools: ${devtools.signInUrl}`);
+    }
+    ```
+
+    Import `@powersync/diagnostics` inside the check. A production install without dev dependencies (`npm ci --omit=dev`) does not include the package. A static import at the top of the file then stops your app at startup.
+
+    `diagnostics: true` is optional. Without it, the **Buckets** tab does not show the total number of operations for each bucket.
+  </Step>
+  <Step title="Open the sign-in link">
+    Start your app and open the link that it prints. The link contains a one-time code that is valid for five minutes and for one browser. If the code expires, open `devtools.url` to print a new link in the terminal.
+  </Step>
+</Steps>
+
+To see what each tab is for, read [Using DevTools](/tools/devtools/using-devtools). To connect a coding agent to the MCP endpoint at `<url>/__mcp`, read [MCP Tools](/tools/devtools/mcp).
+
+## Options
+
+Pass options as the second argument: `enablePowerSyncDiagnostics(db, { port: 4000 })`.
+
+| Option | Default | Description |
+|---|---|---|
+| `port` | A random free port | The port that DevTools listens on. A random port makes DevTools harder for other websites to find. |
+| `host` | `localhost` | The host that the server binds to. |
+| `auth` | `true` | If `true`, the browser must sign in with a one-time code. If `false`, any browser on your machine can open DevTools. |
+| `open` | `false` | If `true`, DevTools opens in your browser when the server starts. |
+| `sdk` | `@powersync/node` | The SDK label that the UI shows. |
+| `id` | `node-1` | The database ID that the UI and the MCP tools show. |
+| `mcp` | `'auto'` | The MCP endpoint setting. See [MCP Tools](/tools/devtools/mcp#origin-and-authorization). |
+
+<Warning>
+If you set `host` to an address other than `localhost`, other devices on your network can reach DevTools, which can read and change your local data. In that case, keep `auth` set to `true`.
+</Warning>
+
+## Return Value
+
+`enablePowerSyncDiagnostics()` returns an object with these properties:
+
+| Property | Description |
+|---|---|
+| `url` | The address of DevTools, such as `http://localhost:51234`. |
+| `signInUrl` | The link to open. It contains the one-time code. If `auth` is `false`, it is the same as `url`. |
+| `close()` | Stops the server and detaches the database. |

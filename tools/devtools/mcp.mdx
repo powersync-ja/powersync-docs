@@ -1,0 +1,130 @@
+---
+title: "PowerSync DevTools MCP Tools"
+description: Give a coding agent access to your app's live PowerSync client through the PowerSync DevTools MCP endpoint.
+sidebarTitle: MCP Tools
+---
+
+PowerSync DevTools exposes MCP (Model Context Protocol) tools that let a coding agent, such as Claude Code or Codex, query your app's local database, read its sync status, and run sync actions.
+
+<Note>
+These tools work with your running app. To let an agent search the PowerSync documentation, use the [docs MCP server](/tools/ai-tools#mcp-server) instead.
+</Note>
+
+## Endpoints
+
+| Host | Endpoint |
+|---|---|
+| Vite | `http://localhost:5173/__devtools/__mcp` (use your dev server port) |
+| Nuxt DevTools 4 | `http://localhost:3000/__devtools/__mcp` (use your dev server port) |
+| Node.js | `<url>/__mcp`, where `url` is the value that `enablePowerSyncDiagnostics()` returns |
+
+Nuxt DevTools 3 does not have an MCP endpoint.
+
+On the web, the tools get the database from an open app tab. Keep your app open in a browser that Vite DevTools trusts, or the tools return an error.
+
+For a Node.js app, set a fixed `port` in `enablePowerSyncDiagnostics()` so that the endpoint stays the same when your app restarts.
+
+## Connect a Coding Agent
+
+The endpoint accepts only requests that have a loopback `Origin` header, such as `http://localhost:5173`. Some MCP clients do not send this header, so add it to the client configuration.
+
+For example, to add the Vite endpoint to Claude Code:
+
+```bash
+claude mcp add --transport http powersync-devtools http://localhost:5173/__devtools/__mcp --header "Origin: http://localhost:5173"
+```
+
+If your MCP client cannot send the header, set `allowedOrigins: false`. Read [Origin and Authorization](#origin-and-authorization).
+
+<Tip>
+Coding agents such as Claude Code can add the server themselves. Start your dev server, open your app, and give the agent a prompt like this one:
+
+```text
+Connect to the PowerSync DevTools MCP server of my running app.
+The endpoint is http://localhost:5173/__devtools/__mcp. It uses the Streamable HTTP transport.
+Every request must send the header "Origin: http://localhost:5173".
+Add the server, then call powersync_sources and powersync_status and tell me the sync state.
+```
+
+Change the URL and the port to match your host. Some agents must restart before they can use a new MCP server.
+</Tip>
+
+## Tools
+
+The tools take positional arguments named `arg0` and `arg1`. The last argument of most tools is the database ID. Pass `null` to use the first attached database, or call `powersync_sources` to list the IDs.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `powersync_sources` | None | The attached databases, with their ID and SDK. |
+| `powersync_query` | `arg0`: `{ sql, params? }`<br/>`arg1`: database ID or `null` | `{ columns, rows }`. Each row is an array in column order. |
+| `powersync_schema` | `arg0`: database ID or `null` | The schema, as the PowerSync SQLite core receives it. |
+| `powersync_info` | `arg0`: database ID or `null` | The endpoint, the token, the client ID, the connection method, and the core version. |
+| `powersync_status` | `arg0`: database ID or `null` | The last sync status that the client reported. |
+| `powersync_upload-queue` | `arg0`: database ID or `null` | The number and size of the local changes that wait to upload. |
+| `powersync_action` | `arg0`: `{ action, args? }`<br/>`arg1`: database ID or `null` | Runs one of these actions: `reconnect`, `disconnect`, `clearData`, `requestCheckpoint`, `subscribeStream`, `unsubscribeStream`. |
+
+For `subscribeStream` and `unsubscribeStream`, `args` is `{ name, params?, ttl?, priority? }`.
+
+<Warning>
+`powersync_query` can change data. `powersync_action` with `clearData` deletes the local data, including the local changes in the upload queue, and downloads the data again. `powersync_info` returns the current JWT. Give these tools only to agents that you trust.
+</Warning>
+
+## Origin and Authorization
+
+To change how the endpoint checks requests, use the `mcp` setting:
+
+| Value | Result |
+|---|---|
+| `'auto'` | The default. The endpoint accepts requests with a loopback `Origin` header. |
+| `{ allowedOrigins: false }` | The endpoint also accepts requests without an `Origin` header. Use this only when the server listens on `localhost`. |
+| `{ authorization: '<token>' }` | Requests must also send `Authorization: Bearer <token>`. Read the token from an environment variable. |
+| `false` | Turns off the endpoint. |
+
+Set it in your host:
+
+<Tabs>
+  <Tab title="Vite 8">
+    ```typescript
+    export default defineConfig({
+      devtools: { apply: 'serve', mcp: { allowedOrigins: false } },
+      plugins: [powersyncDevtools()]
+    });
+    ```
+  </Tab>
+  <Tab title="Vite 7">
+    ```typescript
+    export default defineConfig({
+      plugins: [...(await DevTools({ mcp: { allowedOrigins: false } })), powersyncDevtools()]
+    });
+    ```
+    {/* TODO: `DevTools()` passes `mcp` through at runtime, but its option type in @vitejs/devtools 0.7.5 does not list it. Verify before publishing. */}
+  </Tab>
+  <Tab title="Nuxt DevTools 4">
+    ```typescript
+    export default defineNuxtConfig({
+      vite: {
+        devtools: { mcp: { allowedOrigins: false } }
+      }
+    });
+    ```
+  </Tab>
+  <Tab title="Node.js">
+    ```typescript
+    const devtools = await enablePowerSyncDiagnostics(db, { mcp: { allowedOrigins: false } });
+    ```
+  </Tab>
+</Tabs>
+
+## Test the Endpoint
+
+Use `curl` to check that the endpoint works. This example counts the operations in the local oplog:
+
+```bash
+curl -X POST http://localhost:5173/__devtools/__mcp \
+  -H 'Origin: http://localhost:5173' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"powersync_query","arguments":{"arg0":{"sql":"SELECT count(*) AS operations FROM ps_oplog"},"arg1":null}}}'
+```
+
+If the response is `403 Forbidden`, the request has no loopback `Origin` header.

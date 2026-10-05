@@ -1,0 +1,194 @@
+---
+title: "MongoDB Replication Pre-filtering"
+sidebarTitle: "MongoDB Pre-filtering"
+description: "Exclude MongoDB documents before the PowerSync Service stores and evaluates them for sync."
+---
+
+<Note>
+  **Availability**: MongoDB replication pre-filtering is available for customers on our [Team and Enterprise](https://www.powersync.com/pricing) plans. Self-hosted deployments require the [Enterprise Self-Hosted Edition](/intro/self-hosting#enterprise-self-hosted-edition).
+</Note>
+
+{/* TODO: Confirm release status and minimum PowerSync Service version before publishing. */}
+
+Replication pre-filtering limits which MongoDB documents enter PowerSync bucket storage. Use it when your instance needs only a subset of a collection, such as active records or records for a fixed set of stores. With suitable source indexes, pre-filtering reduces initial snapshot work and storage for excluded documents.
+
+Define filters in your Sync Config under `config.source_table_options`. The Service applies them during the initial snapshot and ongoing change-stream replication, before evaluating Sync Streams queries. A filter applies to the whole instance, independently of which client connects.
+
+<Warning>
+  Pre-filters do not define client authorization. Keep the [Sync Streams query filters](/sync/streams/queries) that control which documents each client can access. A document excluded by a pre-filter is unavailable to every client, even if a Sync Streams query would select it.
+</Warning>
+
+## Prerequisites
+
+- MongoDB 6.0 or later. Azure DocumentDB is not supported for pre-filtering.
+- [Post Images](/configuration/source-db/setup#post-images) set to **Auto-Configure** (`post_images: auto_configure`) or **Read-only** (`post_images: read_only`). Pre-filtering does not support `post_images: off`.
+- With **Auto-Configure**, grant the Service permission to enable `changeStreamPreAndPostImages`. With **Read-only**, enable it yourself on every replicated collection. See [MongoDB Permissions](/configuration/source-db/setup#mongodb-permissions).
+- Source indexes that support your filters. Create them before deploying the Sync Config, because the initial snapshot starts after deployment.
+
+## Configure Pre-filtering
+
+This example replicates only todos with an explicit `archived: false` field. Each client receives only its own todos.
+
+<Steps>
+  <Step title="Create a Source Index">
+    Run the following in `mongosh` against your source database:
+
+    ```javascript
+    db.todos.createIndex(
+      { archived: 1, _id: 1 },
+      { collation: { locale: 'simple' } }
+    );
+    ```
+
+    The filtered field narrows the snapshot query. The final `_id` key lets MongoDB return each snapshot page in `_id` order without sorting all matching documents again. See [Snapshot Indexes](#snapshot-indexes) for filters on multiple fields.
+  </Step>
+  <Step title="Add the Filter to Your Sync Config">
+    ```yaml
+    config:
+      edition: 3
+      source_table_options:
+        todos:
+          mongodb_filter_expression:
+            $eq: ['$$doc.archived', false]
+
+    streams:
+      todos:
+        auto_subscribe: true
+        query: SELECT *, _id AS id FROM todos WHERE owner_id = auth.user_id()
+    ```
+
+    `$$doc` refers to the source document. The pre-filter handles `archived`, so the SQL query does not need to repeat that condition. The `owner_id` condition still controls access for each client.
+
+    This filter excludes documents where `archived` is missing. Set `archived: false` explicitly on every document you want to replicate.
+  </Step>
+  <Step title="Deploy Your Sync Config">
+    Deploy the Sync Config using your usual [Cloud](/configuration/powersync-service/cloud-instances) or [self-hosted](/maintenance-ops/self-hosting/update-sync-rules) workflow. Deploy later filter changes as part of the Sync Config too.
+
+    If validation reports an inefficient snapshot index, create the recommended index before deployment. Index warnings are advisory and do not block deployment.
+  </Step>
+</Steps>
+
+## Supported Expressions
+
+Filters use a restricted subset of MongoDB aggregation expressions. The supported operators compare source fields against fixed values or combine other filters:
+
+| Operator | Example | Meaning |
+| --- | --- | --- |
+| `$eq` | `$eq: ['$$doc.archived', false]` | The field equals the constant. |
+| `$in` | `$in: ['$$doc.store_id', ['store-a', 'store-b']]` | The field equals one of the constants. |
+| `$and` | `$and: [<filter>, <filter>]` | Every filter matches. |
+| `$or` | `$or: [<filter>, <filter>]` | At least one filter matches. |
+
+For `$eq` and `$in`, put the source field first, using `$$doc.<path>`. Nested fields such as `$$doc.customer.tier` are supported. Numeric path segments, such as `$$doc.items.0`, are not supported. `$in` lists and `$and` or `$or` operands must be nonempty.
+
+Constants can be strings, numbers, booleans, or BSON values expressed as Extended JSON (EJSON). For example, match an ObjectId with:
+
+```yaml
+mongodb_filter_expression:
+  $eq: ['$$doc.owner_id', { $oid: '507f1f77bcf86cd799439011' }]
+```
+
+Supported EJSON wrappers are `$oid`, `$date`, `$numberInt`, `$numberLong`, `$numberDouble`, `$numberDecimal`, `$timestamp`, `$binary`, and `$uuid`. Plain integer constants must fit a signed 32-bit integer; use an explicit numeric wrapper for larger integers. For a literal string that starts with `$`, use `$literal`, such as `{ $literal: '$internal' }`.
+
+Filters do not support comparisons between fields, computed values, `null`, array constants, or embedded-document constants. Operators such as `$ne`, `$not`, `$gt`, and `$lt` are not supported. Use explicit values, such as `archived: false`, instead of conditions such as “not true” or “field is missing.”
+
+### Comparison Semantics
+
+Pre-filters use MongoDB aggregation expressions. Their comparison behavior differs from the query predicates you might use in `find()`.
+
+#### Arrays and Nested Paths
+
+`$eq` compares the field's whole value against a constant. `$in` compares that whole value against each constant in the supplied list. Neither operator searches for matching elements inside an array-valued source field:
+
+| Source Document | `$eq: ['$$doc.store_id', 'store-a']` | `$in: ['$$doc.store_id', ['store-a', 'store-b']]` |
+| --- | --- | --- |
+| `{ "store_id": "store-a" }` | Matches | Matches |
+| `{ "store_id": "store-b" }` | Does not match | Matches |
+| `{ "store_id": ["store-a", "store-b"] }` | Does not match | Does not match |
+
+A native query such as `find({ store_id: 'store-a' })` can match the array in the last row. The pre-filter excludes that document because its `store_id` value is an array, not one of the scalar constants. See MongoDB's [aggregation `$in` reference](https://www.mongodb.com/docs/manual/reference/operator/aggregation/in/) for how it compares values.
+
+Nested paths also preserve arrays. If a document contains `items: [{ sku: 'sku-a' }, { sku: 'sku-b' }]`, the path `$$doc.items.sku` produces an array of SKU values. It does not match `$eq: ['$$doc.items.sku', 'sku-a']`. The supported pre-filter operators cannot express “any array element matches”; use a scalar source field for that condition.
+
+#### Numbers and Other Types
+
+MongoDB compares numbers by value across BSON numeric types. For example, `$eq: ['$$doc.quantity', 5]` matches a quantity stored as Int32, Int64, Double, or Decimal128 when its value is `5`. Using `{ $numberLong: '5' }` as the filter constant does not restrict matching to Int64 fields.
+
+Other types are not converted to numbers during comparison:
+
+| Source Field Value | `$eq: ['$$doc.quantity', 5]` |
+| --- | --- |
+| `5` (any BSON numeric type) | Matches |
+| `"5"` (string) | Does not match |
+| `true` (boolean) | Does not match |
+| `[5]` (array) | Does not match |
+
+Keep the source field's type consistent with the filter constant. For example, compare an ObjectId field against an EJSON `$oid` constant, not its hexadecimal string. See MongoDB's [BSON comparison rules](https://www.mongodb.com/docs/manual/reference/bson-type-comparison-order/).
+
+## Collection Names and Wildcards
+
+Each `source_table_options` key identifies a collection. Use `collection`, `database.collection`, or `connection.database.collection`. Unqualified names use the connection's default database. The default connection tag is `default`.
+
+A final `%` matches a collection-name prefix. Database wildcards are not supported. For example:
+
+```yaml
+config:
+  edition: 3
+  source_table_options:
+    orders%:
+      mongodb_filter_expression:
+        $in: ['$$doc.store_id', ['store-a', 'store-b']]
+    orders_priority:
+      mongodb_filter_expression:
+        $eq: ['$$doc.store_id', 'store-a']
+    orders_archive:
+      mongodb_filter_expression: disabled
+```
+
+Exact collection names override wildcards, regardless of declaration order. Among wildcards, the first matching entry wins. Put narrower wildcards before broader ones; validation rejects a wildcard made unreachable by an earlier entry.
+
+Use `mongodb_filter_expression: disabled` to exclude a collection from a wildcard filter. An empty options object (`{}`) inherits the matching wildcard filter.
+
+These entries configure collections already selected by your Sync Streams queries. They do not cause additional collections to replicate.
+
+## Snapshot Indexes
+
+The Service does not create indexes. Without a suitable index, MongoDB can still scan many or all source documents during the snapshot, even though excluded documents do not enter bucket storage.
+
+Create indexes on the filtered fields with `_id` as the final key. Use `collation: { locale: 'simple' }`, because filtered snapshots use this collation. For example, a filter on `store_id` can use:
+
+```javascript
+db.orders.createIndex(
+  { store_id: 1, _id: 1 },
+  { collation: { locale: 'simple' } }
+);
+```
+
+For filters on multiple fields:
+
+- `$or` needs a suitable index for every branch. An unindexed branch can cause a collection scan for the whole filter.
+- `$and` can use an index on one term. Prefer the most selective term. For an `$and` of equality conditions, a compound index on those fields followed by `_id` can narrow the scan further.
+
+An index on only the filtered field can require MongoDB to read and sort all matching documents for every snapshot page. Including `_id` avoids that repeated work. MongoDB may still choose an `_id` index scan when a filter matches a large fraction of the collection.
+
+For index options, see MongoDB's [`createIndex()` reference](https://www.mongodb.com/docs/manual/reference/method/db.collection.createIndex/).
+
+## Changes to Filtered Documents
+
+During replication, the Service keeps stored data consistent with the pre-filter:
+
+| Source Change | Result |
+| --- | --- |
+| Insert a matching document | Replicate the document and evaluate it against Sync Streams. |
+| Insert an excluded document | Skip storing the document. |
+| Update an excluded document so it matches | Replicate the document. |
+| Update a matching document so it no longer matches | Remove the document from bucket storage and sync the removal to clients that received it. |
+| Delete a matching document | Remove the document and sync the removal. |
+
+Pre-filtering reduces stored data, but excluded changes still have some network and processing cost. MongoDB sends compact progress events for excluded changes so that the Service can advance its recovery position through a backlog of excluded writes.
+
+## Example Implementation
+
+{/* TODO: Verify that the demo is published at this URL before publishing this page. */}
+
+The [self-hosted MongoDB pre-filtering demo](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb-prefiltering) filters archived lists and todos. It includes source indexes, seed data, and a stream writer so you can compare source counts with the client's synced data.

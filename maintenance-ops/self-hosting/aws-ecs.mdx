@@ -7,7 +7,7 @@ description: "Deploy the self-hosted PowerSync Service on AWS ECS with Fargate."
 [AWS ECS](https://aws.amazon.com/ecs/) with Fargate provides a serverless container orchestration platform for running PowerSync without managing servers.
 
 <Note>
-A [Terraform example](https://github.com/powersync-community/terraform-self-host-aws) is available to provision a comparable ECS Fargate deployment as infrastructure-as-code. Its default architecture uses Amazon RDS for Postgres for both the source and bucket storage databases, rather than the MongoDB bucket storage used in this guide.
+  A [Terraform example](https://github.com/powersync-community/terraform-self-host-aws) is available to provision a comparable ECS Fargate deployment as infrastructure-as-code. Its default architecture uses Amazon RDS for Postgres for both the source and bucket storage databases, rather than the MongoDB bucket storage used in this guide.
 </Note>
 
 ## Prerequisites
@@ -20,7 +20,7 @@ Before deploying PowerSync on AWS ECS, ensure you have:
 
 ## 1. PowerSync Configuration
 
-Create your `service.yaml` configuration file following the [Self-Hosted Configuration Guide](/configuration/powersync-service/self-hosted-instances). 
+Create your `service.yaml` configuration file following the [Self-Hosted Configuration Guide](/configuration/powersync-service/self-hosted-instances).
 
 Your configuration must include:
 
@@ -34,34 +34,31 @@ Your configuration must include:
   ```
 - [Bucket Storage](/configuration/powersync-service/self-hosted-instances#storage): Connection details for your bucket storage database. PowerSync supports MongoDB or Postgres as bucket storage databases. In this guide, we focus on MongoDB.
   <Tabs>
-  <Tab title="MongoDB Atlas">
-  For bucket storage, we recommend configuring an **AWS PrivateLink** to establish a secure, private connection between your ECS tasks and MongoDB Atlas that doesn't traverse the public internet.
+    <Tab title="MongoDB Atlas">
+      For bucket storage, we recommend configuring an **AWS PrivateLink** to establish a secure, private connection between your ECS tasks and MongoDB Atlas that doesn't traverse the public internet.
 
-  Follow the [AWS PrivateLink guide for MongoDB Atlas](https://aws.amazon.com/blogs/apn/connecting-applications-securely-to-a-mongodb-atlas-data-plane-with-aws-privatelink/) to configure the VPC endpoint and update your MongoDB connection string to use the private endpoint. As seen in the [Secrets Manager](#5-secrets-manager) setup, use the updated connection string in your `PS_MONGO_URI` secret.
-  </Tab>
-  <Tab title="Self-Hosted MongoDB on EC2">
-
-  For self-hosting MongoDB bucket storage on an EC2 instance, refer to AWS's guides (which refer to Amazon DocumentDB, but the installation steps are applicable):
-  1. [Launch an EC2 Instance](https://docs.aws.amazon.com/dms/latest/sbs/chap-mongodb2documentdb.01.html)
-  2. [Install and Configure MongoDB](https://docs.aws.amazon.com/dms/latest/sbs/chap-mongodb2documentdb.02.html)
-  3. **Network Configuration**
-     - Place MongoDB EC2 instance in the same VPC as your ECS tasks
-     - Configure security groups to allow ECS tasks to connect to MongoDB on port 27017:
-
-     ```bash
-     # Create MongoDB security group
-     MONGO_SG=$(aws ec2 create-security-group \
-       --group-name mongodb-sg \
-       --description "MongoDB for PowerSync" \
-       --vpc-id $VPC_ID \
-       --query 'GroupId' --output text)
-
-     # Allow ECS tasks to connect to MongoDB ($ECS_SG is the ECS tasks security group created later in the Security Groups section)
-     aws ec2 authorize-security-group-ingress \
-       --group-id $MONGO_SG \
-       --protocol tcp --port 27017 --source-group $ECS_SG
-     ```
-  </Tab>
+      Follow the [AWS PrivateLink guide for MongoDB Atlas](https://aws.amazon.com/blogs/apn/connecting-applications-securely-to-a-mongodb-atlas-data-plane-with-aws-privatelink/) to configure the VPC endpoint and update your MongoDB connection string to use the private endpoint. As seen in the [Secrets Manager](#5-secrets-manager) setup, use the updated connection string in your `PS_MONGO_URI` secret.
+    </Tab>
+    <Tab title="Self-Hosted MongoDB on EC2">
+      For self-hosting MongoDB bucket storage on an EC2 instance, refer to AWS's guides (which refer to Amazon DocumentDB, but the installation steps are applicable):
+      1. [Launch an EC2 Instance](https://docs.aws.amazon.com/dms/latest/sbs/chap-mongodb2documentdb.01.html)
+      2. [Install and Configure MongoDB](https://docs.aws.amazon.com/dms/latest/sbs/chap-mongodb2documentdb.02.html)
+      3. **Network Configuration**
+         - Place MongoDB EC2 instance in the same VPC as your ECS tasks
+         - Configure security groups to allow ECS tasks to connect to MongoDB on port 27017:
+         ```bash
+         # Create MongoDB security group
+         MONGO_SG=$(aws ec2 create-security-group \
+           --group-name mongodb-sg \
+           --description "MongoDB for PowerSync" \
+           --vpc-id $VPC_ID \
+           --query 'GroupId' --output text)
+         # Allow ECS tasks to connect to MongoDB ($ECS_SG is the ECS tasks security group created later in the Security Groups section)
+         aws ec2 authorize-security-group-ingress \
+           --group-id $MONGO_SG \
+           --protocol tcp --port 27017 --source-group $ECS_SG
+         ```
+    </Tab>
   </Tabs>
 
 ## 2. VPC and Networking Setup
@@ -86,12 +83,13 @@ PowerSync on ECS requires a VPC with both **public** and **private** subnets:
 - **Private subnets**: Host ECS tasks for security, with outbound-only internet access via NAT Gateway
 
 **Network Flow:**
-```
+
+```text
 Internet → Internet Gateway → Public Subnets (ALB, NAT) → Private Subnets (ECS Tasks)
 ```
 
 <Warning>
-**Default VPC users**: The AWS default VPC only contains public subnets. You must create private subnets following the steps below.
+  **Default VPC users**: The AWS default VPC only contains public subnets. You must create private subnets following the steps below.
 </Warning>
 
 ### Check Existing Subnets
@@ -160,7 +158,7 @@ echo "Private Subnet 2: $PRIVATE_SUBNET_2"
 ```
 
 <Warning>
-**CIDR Block Configuration**: The example uses `172.31.96.0/20` and `172.31.112.0/20`, which work for the default VPC (`172.31.0.0/16`). If you get a CIDR conflict error, adjust these blocks to match unused address space in your VPC. Each /20 block provides 4,096 IP addresses.
+  **CIDR Block Configuration**: The example uses `172.31.96.0/20` and `172.31.112.0/20`, which work for the default VPC (`172.31.0.0/16`). If you get a CIDR conflict error, adjust these blocks to match unused address space in your VPC. Each /20 block provides 4,096 IP addresses.
 </Warning>
 
 **Create Route Table for Private Subnets:**
@@ -190,6 +188,7 @@ echo "Private subnets created and associated with route table"
 ### NAT Gateway Setup
 
 ECS tasks in private subnets need outbound internet access for:
+
 - Pulling container images from Amazon ECR
 - Fetching JWKS for authentication (if applicable in your client authentication setup)
 - Connecting to external services
@@ -301,7 +300,6 @@ export HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
 echo "Hosted Zone ID: $HOSTED_ZONE_ID"
 ```
 
-
 ### Request SSL Certificate
 
 For secure HTTPS connections, request an SSL certificate using AWS Certificate Manager (ACM):
@@ -340,37 +338,32 @@ echo "Validation Value: $VALIDATION_VALUE"
 **Add DNS Validation Record:**
 
 <Tabs>
-<Tab title="External DNS Provider">
+  <Tab title="External DNS Provider">
+    Add the `CNAME` record using your DNS provider's management console:
 
-Add the `CNAME` record using your DNS provider's management console:
+    | Type | Name | Value | TTL |
+    | --- | --- | --- | --- |
+    | `CNAME` | `[VALIDATION_NAME]` | `[VALIDATION_VALUE]` | `300` |
+  </Tab>
+  <Tab title="Route 53 DNS">
+    Add the `CNAME` record using AWS CLI:
 
-| Type | Name | Value | TTL |
-|------|------|-------|-----|
-| `CNAME` | `[VALIDATION_NAME]` | `[VALIDATION_VALUE]` | `300` |
-
-
-</Tab>
-
-
-<Tab title="Route 53 DNS">
-Add the `CNAME` record using AWS CLI:
-
-```bash
-aws route53 change-resource-record-sets \
-  --hosted-zone-id $HOSTED_ZONE_ID \
-  --change-batch '{
-    "Changes": [{
-      "Action": "CREATE",
-      "ResourceRecordSet": {
-        "Name": "'$VALIDATION_NAME'",
-        "Type": "CNAME",
-        "TTL": 300,
-        "ResourceRecords": [{"Value": "'$VALIDATION_VALUE'"}]
-      }
-    }]
-  }'
-```
-</Tab>
+    ```bash
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id $HOSTED_ZONE_ID \
+      --change-batch '{
+        "Changes": [{
+          "Action": "CREATE",
+          "ResourceRecordSet": {
+            "Name": "'$VALIDATION_NAME'",
+            "Type": "CNAME",
+            "TTL": 300,
+            "ResourceRecords": [{"Value": "'$VALIDATION_VALUE'"}]
+          }
+        }]
+      }'
+    ```
+  </Tab>
 </Tabs>
 
 **Wait for Certificate Validation:**
@@ -446,41 +439,38 @@ ALB_ZONE=$(aws elbv2 describe-load-balancers \
 
 echo "ALB DNS: $ALB_DNS"
 echo "ALB Zone: $ALB_ZONE"
-
 ```
 
 <Tabs>
-<Tab title="External DNS Provider">
-Create a `CNAME` record pointing to the ALB DNS name.
+  <Tab title="External DNS Provider">
+    Create a `CNAME` record pointing to the ALB DNS name.
 
-| Type  | Name                      | Value      | TTL |
-|-------|---------------------------|------------|-----|
-| `CNAME` | `powersync.yourdomain.com`  | `[ALB_DNS]`  | `300` |
+    | Type | Name | Value | TTL |
+    | --- | --- | --- | --- |
+    | `CNAME` | `powersync.yourdomain.com` | `[ALB_DNS]` | `300` |
+  </Tab>
+  <Tab title="Using Route 53">
+    Create an alias `A` record pointing to the ALB:
 
-</Tab>
-
-<Tab title="Using Route 53">
-Create an alias `A` record pointing to the ALB:
-
-```bash
-aws route53 change-resource-record-sets \
-  --hosted-zone-id $HOSTED_ZONE_ID \
-  --change-batch '{
-    "Changes": [{
-      "Action": "CREATE",
-      "ResourceRecordSet": {
-        "Name": "'$POWERSYNC_DOMAIN'",
-        "Type": "A",
-        "AliasTarget": {
-          "HostedZoneId": "'$ALB_ZONE'",
-          "DNSName": "'$ALB_DNS'",
-          "EvaluateTargetHealth": true
-        }
-      }
-    }]
-  }'
-```
-</Tab>
+    ```bash
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id $HOSTED_ZONE_ID \
+      --change-batch '{
+        "Changes": [{
+          "Action": "CREATE",
+          "ResourceRecordSet": {
+            "Name": "'$POWERSYNC_DOMAIN'",
+            "Type": "A",
+            "AliasTarget": {
+              "HostedZoneId": "'$ALB_ZONE'",
+              "DNSName": "'$ALB_DNS'",
+              "EvaluateTargetHealth": true
+            }
+          }
+        }]
+      }'
+    ```
+  </Tab>
 </Tabs>
 
 ## 5. Secrets Manager
@@ -511,14 +501,14 @@ aws secretsmanager create-secret \
 ```
 
 <Info>
-AWS Secrets Manager automatically appends a 6-character suffix to secret ARNs (e.g., `powersync/config-AbCdEf`).
+  AWS Secrets Manager automatically appends a 6-character suffix to secret ARNs (e.g., `powersync/config-AbCdEf`).
 
-ECS task definitions support **prefix matching**, allowing you to reference secrets using just the base name:
+  ECS task definitions support **prefix matching**, allowing you to reference secrets using just the base name:
 
-- Created as: `powersync/config-AbCdEf` (with suffix)
-- Referenced as: `arn:aws:secretsmanager:region:account:secret:powersync/config` (without suffix)
+  - Created as: `powersync/config-AbCdEf` (with suffix)
+  - Referenced as: `arn:aws:secretsmanager:region:account:secret:powersync/config` (without suffix)
 
-This means you don't need to update task definitions when secrets are rotated.
+  This means you don't need to update task definitions when secrets are rotated.
 </Info>
 
 ## 6. ECS Task Definition
@@ -615,261 +605,255 @@ aws ecs create-cluster \
 The task definitions below allocate **2 vCPU and 4GB memory** per container. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended baseline: 1 vCPU, 2GB memory). Note that [AWS Fargate enforces specific CPU/memory combinations](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#task_size) — for example, 2 vCPU (2048 CPU units) requires at least 4GB (4096 MiB) memory.
 
 <Tabs>
-
   <Tab title="High Availability Setup">
+    For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
 
-  For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
+    **Create Replication Task Definition**
 
-  **Create Replication Task Definition**
-
-  ```bash
-  cat > replication-task-definition.json <<EOF
-  {
-    "family": "powersync-replication",
-    "networkMode": "awsvpc",
-    "requiresCompatibilities": ["FARGATE"],
-    "cpu": "2048",
-    "memory": "4096",
-    "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
-    "containerDefinitions": [
-      {
-        "name": "powersync-replication",
-        "image": "journeyapps/powersync-service:$PS_VERSION",
-        "command": ["start", "-r", "sync"],
-        "essential": true,
-        "environment": [
-          {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
-        ],
-        "secrets": [
-          {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
-          {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
-          {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
-          {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
-        ],
-        "logConfiguration": {
-          "logDriver": "awslogs",
-          "options": {
-            "awslogs-group": "/ecs/powersync-replication",
-            "awslogs-region": "$AWS_REGION",
-            "awslogs-stream-prefix": "ecs",
-            "awslogs-create-group": "true"
+    ```bash
+    cat > replication-task-definition.json <<EOF
+    {
+      "family": "powersync-replication",
+      "networkMode": "awsvpc",
+      "requiresCompatibilities": ["FARGATE"],
+      "cpu": "2048",
+      "memory": "4096",
+      "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+      "containerDefinitions": [
+        {
+          "name": "powersync-replication",
+          "image": "journeyapps/powersync-service:$PS_VERSION",
+          "command": ["start", "-r", "sync"],
+          "essential": true,
+          "environment": [
+            {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+          ],
+          "secrets": [
+            {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+            {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
+            {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+            {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+          ],
+          "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+              "awslogs-group": "/ecs/powersync-replication",
+              "awslogs-region": "$AWS_REGION",
+              "awslogs-stream-prefix": "ecs",
+              "awslogs-create-group": "true"
+            }
           }
         }
-      }
-    ]
-  }
-  EOF
+      ]
+    }
+    EOF
+    
+    aws ecs register-task-definition --cli-input-json file://replication-task-definition.json
+    ```
 
-  aws ecs register-task-definition --cli-input-json file://replication-task-definition.json
-  ```
+    **Create API Task Definition**
 
-  **Create API Task Definition**
+    The API task definition includes a **CloudWatch Agent sidecar** that scrapes Prometheus metrics from the PowerSync container and publishes them to CloudWatch. This enables [connection-based auto-scaling](#auto-scaling-high-availability-setup).
 
-  The API task definition includes a **CloudWatch Agent sidecar** that scrapes Prometheus metrics from the PowerSync container and publishes them to CloudWatch. This enables [connection-based auto-scaling](#auto-scaling-high-availability-setup).
+    <Info>
+      The CloudWatch Agent sidecar adds ~256MB memory overhead. The task definition below allocates 4096MB total (shared between both containers). If you need more headroom, increase the task memory to 5120MB or 6144MB.
+    </Info>
 
-  <Info>
-  The CloudWatch Agent sidecar adds ~256MB memory overhead. The task definition below allocates 4096MB total (shared between both containers). If you need more headroom, increase the task memory to 5120MB or 6144MB.
-  </Info>
+    First, create the CloudWatch Agent configuration. This tells the agent to scrape the PowerSync Prometheus endpoint on `localhost:9090` and publish the `powersync_concurrent_connections` metric to CloudWatch:
 
-  First, create the CloudWatch Agent configuration. This tells the agent to scrape the PowerSync Prometheus endpoint on `localhost:9090` and publish the `powersync_concurrent_connections` metric to CloudWatch:
-
-  ```bash
-  cat > cw-agent-config.json <<'CWEOF'
-  {
-    "logs": {
-      "metrics_collected": {
-        "prometheus": {
-          "log_group_name": "/ecs/powersync-api/prometheus",
-          "prometheus_config_path": "env:PROMETHEUS_CONFIG_CONTENT",
-          "emf_processor": {
-            "metric_namespace": "PowerSync",
-            "metric_declaration": [
-              {
-                "source_labels": ["job"],
-                "label_matcher": "powersync",
-                "dimensions": [["ClusterName"]],
-                "metric_selectors": [
-                  "^powersync_concurrent_connections$"
-                ]
-              }
-            ]
+    ```bash
+    cat > cw-agent-config.json <<'CWEOF'
+    {
+      "logs": {
+        "metrics_collected": {
+          "prometheus": {
+            "log_group_name": "/ecs/powersync-api/prometheus",
+            "prometheus_config_path": "env:PROMETHEUS_CONFIG_CONTENT",
+            "emf_processor": {
+              "metric_namespace": "PowerSync",
+              "metric_declaration": [
+                {
+                  "source_labels": ["job"],
+                  "label_matcher": "powersync",
+                  "dimensions": [["ClusterName"]],
+                  "metric_selectors": [
+                    "^powersync_concurrent_connections$"
+                  ]
+                }
+              ]
+            }
           }
         }
       }
     }
-  }
-  CWEOF
-  ```
+    CWEOF
+    ```
 
-  Store the CloudWatch Agent config in SSM Parameter Store:
+    Store the CloudWatch Agent config in SSM Parameter Store:
 
-  ```bash
-  aws ssm put-parameter \
-    --name "/ecs/powersync/cwagent-config" \
-    --type "String" \
-    --value file://cw-agent-config.json \
-    --overwrite
+    ```bash
+    aws ssm put-parameter \
+      --name "/ecs/powersync/cwagent-config" \
+      --type "String" \
+      --value file://cw-agent-config.json \
+      --overwrite
+    
+    # Grant the execution role access to read the SSM parameter
+    aws iam put-role-policy \
+      --role-name PowerSyncTaskExecutionRole \
+      --policy-name SSMParameterAccess \
+      --policy-document '{
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Action": ["ssm:GetParameters"],
+          "Resource": "arn:aws:ssm:'$AWS_REGION':'$AWS_ACCOUNT_ID':parameter/ecs/powersync/*"
+        }]
+      }'
+    ```
 
-  # Grant the execution role access to read the SSM parameter
-  aws iam put-role-policy \
-    --role-name PowerSyncTaskExecutionRole \
-    --policy-name SSMParameterAccess \
-    --policy-document '{
-      "Version": "2012-10-17",
-      "Statement": [{
-        "Effect": "Allow",
-        "Action": ["ssm:GetParameters"],
-        "Resource": "arn:aws:ssm:'$AWS_REGION':'$AWS_ACCOUNT_ID':parameter/ecs/powersync/*"
-      }]
-    }'
-  ```
+    Now create the API task definition with both the PowerSync container and the CloudWatch Agent sidecar:
 
-  Now create the API task definition with both the PowerSync container and the CloudWatch Agent sidecar:
-
-  ```bash
-  cat > api-task-definition.json <<EOF
-  {
-    "family": "powersync-api",
-    "networkMode": "awsvpc",
-    "requiresCompatibilities": ["FARGATE"],
-    "cpu": "2048",
-    "memory": "4096",
-    "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
-    "taskRoleArn": "$TASK_ROLE_ARN",
-    "containerDefinitions": [
-      {
-        "name": "powersync-api",
-        "image": "journeyapps/powersync-service:$PS_VERSION",
-        "command": ["start", "-r", "api"],
-        "essential": true,
-        "portMappings": [
-          {"containerPort": 8080, "protocol": "tcp"}
-        ],
-        "environment": [
-          {"name": "PS_PORT", "value": "8080"},
-          {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
-        ],
-        "secrets": [
-          {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
-          {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
-          {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
-        ],
-        "logConfiguration": {
-          "logDriver": "awslogs",
-          "options": {
-            "awslogs-group": "/ecs/powersync-api",
-            "awslogs-region": "$AWS_REGION",
-            "awslogs-stream-prefix": "ecs",
-            "awslogs-create-group": "true"
-          }
+    ```bash
+    cat > api-task-definition.json <<EOF
+    {
+      "family": "powersync-api",
+      "networkMode": "awsvpc",
+      "requiresCompatibilities": ["FARGATE"],
+      "cpu": "2048",
+      "memory": "4096",
+      "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+      "taskRoleArn": "$TASK_ROLE_ARN",
+      "containerDefinitions": [
+        {
+          "name": "powersync-api",
+          "image": "journeyapps/powersync-service:$PS_VERSION",
+          "command": ["start", "-r", "api"],
+          "essential": true,
+          "portMappings": [
+            {"containerPort": 8080, "protocol": "tcp"}
+          ],
+          "environment": [
+            {"name": "PS_PORT", "value": "8080"},
+            {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+          ],
+          "secrets": [
+            {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+            {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+            {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+          ],
+          "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+              "awslogs-group": "/ecs/powersync-api",
+              "awslogs-region": "$AWS_REGION",
+              "awslogs-stream-prefix": "ecs",
+              "awslogs-create-group": "true"
+            }
+          },
+          "healthCheck": {
+            "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
+            "interval": 30,
+            "timeout": 5,
+            "retries": 3,
+            "startPeriod": 60
+          },
+          "stopTimeout": 120
         },
-        "healthCheck": {
-          "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
-          "interval": 30,
-          "timeout": 5,
-          "retries": 3,
-          "startPeriod": 60
-        },
-        "stopTimeout": 120
-      },
-      {
-        "name": "cloudwatch-agent",
-        "image": "public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest",
-        "essential": false,
-        "environment": [
-          {
-            "name": "PROMETHEUS_CONFIG_CONTENT",
-            "value": "global:\n  scrape_interval: 30s\n  scrape_timeout: 10s\nscrape_configs:\n  - job_name: powersync\n    static_configs:\n      - targets:\n          - localhost:9090\n"
-          }
-        ],
-        "secrets": [
-          {
-            "name": "CW_CONFIG_CONTENT",
-            "valueFrom": "arn:aws:ssm:$AWS_REGION:$AWS_ACCOUNT_ID:parameter/ecs/powersync/cwagent-config"
-          }
-        ],
-        "logConfiguration": {
-          "logDriver": "awslogs",
-          "options": {
-            "awslogs-group": "/ecs/powersync-api/cwagent",
-            "awslogs-region": "$AWS_REGION",
-            "awslogs-stream-prefix": "ecs",
-            "awslogs-create-group": "true"
-          }
-        },
-        "memory": 256
-      }
-    ]
-  }
-  EOF
-  
-  aws ecs register-task-definition --cli-input-json file://api-task-definition.json
-  ```
-
-  <Note>
-  The Prometheus port (9090) is **not** exposed through the ALB — it is only accessible within the task via `localhost` (ECS `awsvpc` networking). The CloudWatch Agent sidecar scrapes metrics locally every 30 seconds and publishes them to CloudWatch.
-  </Note>
-
-  </Tab>
-
-  <Tab title="Basic Setup (Single Instance)">
-
-  This basic setup runs both replication and API processes in the same container. This is not recommended for production.
-
-  Generate the task definition using your environment variables:
-
-  ```bash
-  cat > task-definition.json <<EOF
-  {
-    "family": "powersync-service",
-    "networkMode": "awsvpc",
-    "requiresCompatibilities": ["FARGATE"],
-    "cpu": "1024",
-    "memory": "2048",
-    "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
-    "containerDefinitions": [
-      {
-        "name": "powersync",
-        "image": "journeyapps/powersync-service:$PS_VERSION",
-        "essential": true,
-        "portMappings": [
-          {"containerPort": 8080, "protocol": "tcp"}
-        ],
-        "environment": [
-          {"name": "PS_PORT", "value": "8080"},
-          {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
-        ],
-        "secrets": [
-          {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
-          {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
-          {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
-          {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
-        ],
-        "logConfiguration": {
-          "logDriver": "awslogs",
-          "options": {
-            "awslogs-group": "/ecs/powersync",
-            "awslogs-region": "$AWS_REGION",
-            "awslogs-stream-prefix": "ecs",
-            "awslogs-create-group": "true"
-          }
-        },
-        "healthCheck": {
-          "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
-          "interval": 30,
-          "timeout": 5,
-          "retries": 3,
-          "startPeriod": 60
+        {
+          "name": "cloudwatch-agent",
+          "image": "public.ecr.aws/cloudwatch-agent/cloudwatch-agent:latest",
+          "essential": false,
+          "environment": [
+            {
+              "name": "PROMETHEUS_CONFIG_CONTENT",
+              "value": "global:\n  scrape_interval: 30s\n  scrape_timeout: 10s\nscrape_configs:\n  - job_name: powersync\n    static_configs:\n      - targets:\n          - localhost:9090\n"
+            }
+          ],
+          "secrets": [
+            {
+              "name": "CW_CONFIG_CONTENT",
+              "valueFrom": "arn:aws:ssm:$AWS_REGION:$AWS_ACCOUNT_ID:parameter/ecs/powersync/cwagent-config"
+            }
+          ],
+          "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+              "awslogs-group": "/ecs/powersync-api/cwagent",
+              "awslogs-region": "$AWS_REGION",
+              "awslogs-stream-prefix": "ecs",
+              "awslogs-create-group": "true"
+            }
+          },
+          "memory": 256
         }
-      }
-    ]
-  }
-  EOF
+      ]
+    }
+    EOF
+    
+    aws ecs register-task-definition --cli-input-json file://api-task-definition.json
+    ```
 
-  # Register the task definition
-  aws ecs register-task-definition --cli-input-json file://task-definition.json
-  ```
+    <Note>
+      The Prometheus port (9090) is **not** exposed through the ALB — it is only accessible within the task via `localhost` (ECS `awsvpc` networking). The CloudWatch Agent sidecar scrapes metrics locally every 30 seconds and publishes them to CloudWatch.
+    </Note>
+  </Tab>
+  <Tab title="Basic Setup (Single Instance)">
+    This basic setup runs both replication and API processes in the same container. This is not recommended for production.
 
+    Generate the task definition using your environment variables:
+
+    ```bash
+    cat > task-definition.json <<EOF
+    {
+      "family": "powersync-service",
+      "networkMode": "awsvpc",
+      "requiresCompatibilities": ["FARGATE"],
+      "cpu": "1024",
+      "memory": "2048",
+      "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+      "containerDefinitions": [
+        {
+          "name": "powersync",
+          "image": "journeyapps/powersync-service:$PS_VERSION",
+          "essential": true,
+          "portMappings": [
+            {"containerPort": 8080, "protocol": "tcp"}
+          ],
+          "environment": [
+            {"name": "PS_PORT", "value": "8080"},
+            {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+          ],
+          "secrets": [
+            {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+            {"name": "PS_DATA_SOURCE_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/data-source-uri"},
+            {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"},
+            {"name": "PS_JWKS_URL", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/jwks-url"}
+          ],
+          "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+              "awslogs-group": "/ecs/powersync",
+              "awslogs-region": "$AWS_REGION",
+              "awslogs-stream-prefix": "ecs",
+              "awslogs-create-group": "true"
+            }
+          },
+          "healthCheck": {
+            "command": ["CMD-SHELL", "curl -f http://localhost:8080/probes/liveness || exit 1"],
+            "interval": 30,
+            "timeout": 5,
+            "retries": 3,
+            "startPeriod": 60
+          }
+        }
+      ]
+    }
+    EOF
+    
+    # Register the task definition
+    aws ecs register-task-definition --cli-input-json file://task-definition.json
+    ```
   </Tab>
 </Tabs>
 
@@ -878,122 +862,116 @@ The task definitions below allocate **2 vCPU and 4GB memory** per container. You
 Create the ECS service to run PowerSync tasks
 
 <Tabs>
-
   <Tab title="High Availability Setup">
+    For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
 
-  For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
+    **Deploy Replication Service (1 Instance)**
 
-  **Deploy Replication Service (1 Instance)**
+    ```bash
+    aws ecs create-service \
+      --cluster powersync-cluster \
+      --service-name powersync-replication \
+      --task-definition powersync-replication \
+      --desired-count 1 \
+      --launch-type FARGATE \
+      --network-configuration "awsvpcConfiguration={
+        subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+        securityGroups=[$ECS_SG],
+        assignPublicIp=DISABLED
+      }" \
+      --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
+    ```
 
-  ```bash
-  aws ecs create-service \
-    --cluster powersync-cluster \
-    --service-name powersync-replication \
-    --task-definition powersync-replication \
-    --desired-count 1 \
-    --launch-type FARGATE \
-    --network-configuration "awsvpcConfiguration={
-      subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
-      securityGroups=[$ECS_SG],
-      assignPublicIp=DISABLED
-    }" \
-    --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
-  ```
+    **Deploy API Service (2+ Instances)**
 
-  **Deploy API Service (2+ Instances)**
+    ```bash
+    aws ecs create-service \
+      --cluster powersync-cluster \
+      --service-name powersync-api \
+      --task-definition powersync-api \
+      --desired-count 2 \
+      --launch-type FARGATE \
+      --network-configuration "awsvpcConfiguration={
+        subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+        securityGroups=[$ECS_SG],
+        assignPublicIp=DISABLED
+      }" \
+      --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync-api,containerPort=8080" \
+      --health-check-grace-period-seconds 120 \
+      --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+    ```
 
-  ```bash
-  aws ecs create-service \
-    --cluster powersync-cluster \
-    --service-name powersync-api \
-    --task-definition powersync-api \
-    --desired-count 2 \
-    --launch-type FARGATE \
-    --network-configuration "awsvpcConfiguration={
-      subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
-      securityGroups=[$ECS_SG],
-      assignPublicIp=DISABLED
-    }" \
-    --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync-api,containerPort=8080" \
-    --health-check-grace-period-seconds 120 \
-    --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
-  ```
+    **Verify HA Deployment:**
 
-  **Verify HA Deployment:**
-
-  ```bash
-  # Check replication service status
-  aws ecs describe-services \
-    --cluster powersync-cluster \
-    --services powersync-replication \
-    --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
-    --output table
-
-  # Check API service status
-  aws ecs describe-services \
-    --cluster powersync-cluster \
-    --services powersync-api \
-    --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
-    --output table
-
-  # Wait for tasks to be running (takes 2-3 minutes)
-  echo "Waiting for tasks to start..."
-  sleep 60
-
-  # Test endpoint (replace with your domain)
-  curl https://$POWERSYNC_DOMAIN/probes/liveness
-
-  # View API logs
-  aws logs tail /ecs/powersync-api --follow
-
-  # View replication logs
-  aws logs tail /ecs/powersync-replication --follow
-  ```
-
+    ```bash
+    # Check replication service status
+    aws ecs describe-services \
+      --cluster powersync-cluster \
+      --services powersync-replication \
+      --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+      --output table
+    
+    # Check API service status
+    aws ecs describe-services \
+      --cluster powersync-cluster \
+      --services powersync-api \
+      --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+      --output table
+    
+    # Wait for tasks to be running (takes 2-3 minutes)
+    echo "Waiting for tasks to start..."
+    sleep 60
+    
+    # Test endpoint (replace with your domain)
+    curl https://$POWERSYNC_DOMAIN/probes/liveness
+    
+    # View API logs
+    aws logs tail /ecs/powersync-api --follow
+    
+    # View replication logs
+    aws logs tail /ecs/powersync-replication --follow
+    ```
   </Tab>
-
   <Tab title="Basic Setup (Single Instance)">
+    This basic setup runs both replication and API processes in the same container. Running multiple instances (`desired-count > 1`) will cause **Sync Rule lock errors during rolling updates** when deploying new task definitions. A single-instance setup is not recommended for production.
 
-  This basic setup runs both replication and API processes in the same container. Running multiple instances (`desired-count > 1`) will cause **Sync Rule lock errors during rolling updates** when deploying new task definitions. A single-instance setup is not recommended for production.
+    ```bash
+    aws ecs create-service \
+      --cluster powersync-cluster \
+      --service-name powersync-service \
+      --task-definition powersync-service \
+      --desired-count 1 \
+      --launch-type FARGATE \
+      --network-configuration "awsvpcConfiguration={
+        subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
+        securityGroups=[$ECS_SG],
+        assignPublicIp=DISABLED
+      }" \
+      --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync,containerPort=8080" \
+      --health-check-grace-period-seconds 120 \
+      --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
+    ```
 
-  ```bash
-  aws ecs create-service \
-    --cluster powersync-cluster \
-    --service-name powersync-service \
-    --task-definition powersync-service \
-    --desired-count 1 \
-    --launch-type FARGATE \
-    --network-configuration "awsvpcConfiguration={
-      subnets=[$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2],
-      securityGroups=[$ECS_SG],
-      assignPublicIp=DISABLED
-    }" \
-    --load-balancers "targetGroupArn=$TG_ARN,containerName=powersync,containerPort=8080" \
-    --health-check-grace-period-seconds 120 \
-    --deployment-configuration "minimumHealthyPercent=0,maximumPercent=100"
-  ```
+    **Verify Basic Deployment:**
 
-  **Verify Basic Deployment:**
-
-  ```bash
-  # Check service status
-  aws ecs describe-services \
-    --cluster powersync-cluster \
-    --services powersync-service \
-    --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
-    --output table
-
-  # Wait for task to be running (takes 2-3 minutes)
-  echo "Waiting for tasks to start..."
-  sleep 60
-
-  # Test endpoint (replace with your domain)
-  curl https://$POWERSYNC_DOMAIN/probes/liveness
-
-  # View logs
-  aws logs tail /ecs/powersync --follow
-  ```
-
+    ```bash
+    # Check service status
+    aws ecs describe-services \
+      --cluster powersync-cluster \
+      --services powersync-service \
+      --query 'services[0].[serviceName,status,runningCount,desiredCount]' \
+      --output table
+    
+    # Wait for task to be running (takes 2-3 minutes)
+    echo "Waiting for tasks to start..."
+    sleep 60
+    
+    # Test endpoint (replace with your domain)
+    curl https://$POWERSYNC_DOMAIN/probes/liveness
+    
+    # View logs
+    aws logs tail /ecs/powersync --follow
+    ```
   </Tab>
 </Tabs>
 
@@ -1006,109 +984,107 @@ For production deployments, consider adding the following enhancements:
 PowerSync requires [daily compaction](/maintenance-ops/compacting-buckets) to optimize bucket storage. Schedule it as an ECS task with EventBridge:
 
 <Accordion title="Compact Job Configuration">
+  Generate the compact task definition:
 
-Generate the compact task definition:
-
-```bash
-cat > compact-task-definition.json <<EOF
-{
-  "family": "powersync-compact",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "1024",
-  "memory": "2048",
-  "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
-  "containerDefinitions": [
-    {
-      "name": "powersync-compact",
-      "image": "journeyapps/powersync-service:$PS_VERSION",
-      "command": ["compact"],
-      "essential": true,
-      "environment": [
-        {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
-      ],
-      "secrets": [
-        {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
-        {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"}
-      ],
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "/ecs/powersync-compact",
-          "awslogs-region": "$AWS_REGION",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
+  ```bash
+  cat > compact-task-definition.json <<EOF
+  {
+    "family": "powersync-compact",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "1024",
+    "memory": "2048",
+    "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
+    "containerDefinitions": [
+      {
+        "name": "powersync-compact",
+        "image": "journeyapps/powersync-service:$PS_VERSION",
+        "command": ["compact"],
+        "essential": true,
+        "environment": [
+          {"name": "NODE_OPTIONS", "value": "--max-old-space-size-percentage=80"}
+        ],
+        "secrets": [
+          {"name": "POWERSYNC_CONFIG_B64", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/config"},
+          {"name": "PS_MONGO_URI", "valueFrom": "arn:aws:secretsmanager:$AWS_REGION:$AWS_ACCOUNT_ID:secret:powersync/storage-uri"}
+        ],
+        "logConfiguration": {
+          "logDriver": "awslogs",
+          "options": {
+            "awslogs-group": "/ecs/powersync-compact",
+            "awslogs-region": "$AWS_REGION",
+            "awslogs-stream-prefix": "ecs",
+            "awslogs-create-group": "true"
+          }
         }
       }
-    }
-  ]
-}
-EOF
-```
+    ]
+  }
+  EOF
+  ```
 
-Create IAM role for EventBridge and schedule with EventBridge (daily at 2 AM UTC):
+  Create IAM role for EventBridge and schedule with EventBridge (daily at 2 AM UTC):
 
-```bash
-# Register compact task
-aws ecs register-task-definition --cli-input-json file://compact-task-definition.json
-
-# Create EventBridge role
-aws iam create-role \
-  --role-name ecsEventsRole \
-  --assume-role-policy-document '{
-    "Version": "2012-10-17",
-    "Statement": [{
-      "Effect": "Allow",
-      "Principal": {"Service": "events.amazonaws.com"},
-      "Action": "sts:AssumeRole"
-    }]
-  }'
-
-aws iam put-role-policy \
-  --role-name ecsEventsRole \
-  --policy-name ECS-Events-Policy \
-  --policy-document '{
-    "Version": "2012-10-17",
-    "Statement": [{
-      "Effect": "Allow",
-      "Action": ["ecs:RunTask"],
-      "Resource": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':task-definition/powersync-compact:*"
-    }, {
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "'$TASK_EXECUTION_ROLE_ARN'"
-    }]
-  }'
-
-export EVENTS_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsEventsRole"
-
-# Create schedule rule
-aws events put-rule \
-  --name powersync-compact-daily \
-  --schedule-expression "cron(0 2 * * ? *)"
-
-# Add target
-aws events put-targets \
-  --rule powersync-compact-daily \
-  --targets '[{
-    "Id": "powersync-compact",
-    "Arn": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':cluster/powersync-cluster",
-    "RoleArn": "'$EVENTS_ROLE_ARN'",
-    "EcsParameters": {
-      "TaskDefinitionArn": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':task-definition/powersync-compact",
-      "TaskCount": 1,
-      "LaunchType": "FARGATE",
-      "NetworkConfiguration": {
-        "awsvpcConfiguration": {
-          "Subnets": ["'$PRIVATE_SUBNET_1'", "'$PRIVATE_SUBNET_2'"],
-          "SecurityGroups": ["'$ECS_SG'"],
-          "AssignPublicIp": "DISABLED"
+  ```bash
+  # Register compact task
+  aws ecs register-task-definition --cli-input-json file://compact-task-definition.json
+  
+  # Create EventBridge role
+  aws iam create-role \
+    --role-name ecsEventsRole \
+    --assume-role-policy-document '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Principal": {"Service": "events.amazonaws.com"},
+        "Action": "sts:AssumeRole"
+      }]
+    }'
+  
+  aws iam put-role-policy \
+    --role-name ecsEventsRole \
+    --policy-name ECS-Events-Policy \
+    --policy-document '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Action": ["ecs:RunTask"],
+        "Resource": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':task-definition/powersync-compact:*"
+      }, {
+        "Effect": "Allow",
+        "Action": "iam:PassRole",
+        "Resource": "'$TASK_EXECUTION_ROLE_ARN'"
+      }]
+    }'
+  
+  export EVENTS_ROLE_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsEventsRole"
+  
+  # Create schedule rule
+  aws events put-rule \
+    --name powersync-compact-daily \
+    --schedule-expression "cron(0 2 * * ? *)"
+  
+  # Add target
+  aws events put-targets \
+    --rule powersync-compact-daily \
+    --targets '[{
+      "Id": "powersync-compact",
+      "Arn": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':cluster/powersync-cluster",
+      "RoleArn": "'$EVENTS_ROLE_ARN'",
+      "EcsParameters": {
+        "TaskDefinitionArn": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':task-definition/powersync-compact",
+        "TaskCount": 1,
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "awsvpcConfiguration": {
+            "Subnets": ["'$PRIVATE_SUBNET_1'", "'$PRIVATE_SUBNET_2'"],
+            "SecurityGroups": ["'$ECS_SG'"],
+            "AssignPublicIp": "DISABLED"
+          }
         }
       }
-    }
-  }]'
-```
-
+    }]'
+  ```
 </Accordion>
 
 ### Auto Scaling (High-Availability Setup)
@@ -1116,7 +1092,7 @@ aws events put-targets \
 PowerSync API containers are limited to 200 concurrent connections each, with a recommended target of **100 connections or less per container** (see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture)). Because PowerSync sync connections are long-lived (hours or days), CPU utilization alone may not reflect the actual connection load — a container can be near its connection limit while CPU remains relatively low. For this reason, we recommend scaling on **both CPU utilization and concurrent connections**.
 
 <Warning>
-**ALB metrics are not suitable for PowerSync scaling.** Metrics like `ALBRequestCountPerTarget` track request rate (requests per second), but PowerSync sync connections are long-lived HTTP streams or WebSockets — a single request stays open for hours or days. Similarly, `ActiveConnectionCount` tracks total connections across the entire ALB, not per target. Use the `powersync_concurrent_connections` Prometheus metric instead.
+  **ALB metrics are not suitable for PowerSync scaling.** Metrics like `ALBRequestCountPerTarget` track request rate (requests per second), but PowerSync sync connections are long-lived HTTP streams or WebSockets — a single request stays open for hours or days. Similarly, `ActiveConnectionCount` tracks total connections across the entire ALB, not per target. Use the `powersync_concurrent_connections` Prometheus metric instead.
 </Warning>
 
 #### Prerequisites
@@ -1148,7 +1124,7 @@ aws application-autoscaling register-scalable-target \
 ```
 
 <Info>
-**Choosing your minimum capacity:** A minimum of 2 works well for most workloads, letting auto-scaling adjust capacity as needed. However, if your traffic is very spiky (e.g., many users connecting simultaneously at a predictable time), you may want a higher `min-capacity` to avoid waiting for new tasks to start. New Fargate tasks take 1-3 minutes to launch and pass health checks, so a larger baseline reduces the risk of connection overload during sudden spikes. As a guideline, each API task handles up to 200 concurrent connections (target ~100 for headroom).
+  **Choosing your minimum capacity:** A minimum of 2 works well for most workloads, letting auto-scaling adjust capacity as needed. However, if your traffic is very spiky (e.g., many users connecting simultaneously at a predictable time), you may want a higher `min-capacity` to avoid waiting for new tasks to start. New Fargate tasks take 1-3 minutes to launch and pass health checks, so a larger baseline reduces the risk of connection overload during sudden spikes. As a guideline, each API task handles up to 200 concurrent connections (target ~100 for headroom).
 </Info>
 
 #### Scaling Policy 1: CPU Utilization
@@ -1194,13 +1170,13 @@ aws application-autoscaling put-scaling-policy \
 ```
 
 <Info>
-**How dual policies work:** Both policies operate independently — ECS scales to whichever policy demands the *higher* number of tasks. For example, if CPU-based scaling wants 3 tasks but connection-based scaling wants 5, ECS runs 5 tasks.
+  **How dual policies work:** Both policies operate independently — ECS scales to whichever policy demands the _higher_ number of tasks. For example, if CPU-based scaling wants 3 tasks but connection-based scaling wants 5, ECS runs 5 tasks.
 </Info>
 
 **Key configuration values:**
 
 | Parameter | Value | Rationale |
-|-----------|-------|-----------|
+| --- | --- | --- |
 | `TargetValue` (connections) | 80 | 40% of the 200 max connection limit per container. This matches PowerSync Cloud's scaling strategy and provides headroom before the hard limit. |
 | `TargetValue` (CPU) | 70.0 | Scale before CPU saturation impacts sync stream performance. |
 | `ScaleOutCooldown` | 120s | New Fargate tasks take 1–3 minutes to start, pass health checks, and begin accepting connections. A shorter cooldown risks triggering multiple scale-out events before the first new task is ready. |
@@ -1252,52 +1228,49 @@ aws application-autoscaling describe-scaling-activities \
 ```
 
 <Accordion title="Alternative: CPU-Only Scaling (No Custom Metrics)">
+  If you prefer not to set up the CloudWatch Agent sidecar and custom Prometheus metrics, you can scale based on CPU utilization alone:
 
-If you prefer not to set up the CloudWatch Agent sidecar and custom Prometheus metrics, you can scale based on CPU utilization alone:
+  ```bash
+  aws application-autoscaling register-scalable-target \
+    --service-namespace ecs \
+    --resource-id service/powersync-cluster/powersync-api \
+    --scalable-dimension ecs:service:DesiredCount \
+    --min-capacity 2 \
+    --max-capacity 10
+  
+  # Use CPU-only scaling policy
+  aws application-autoscaling put-scaling-policy \
+    --service-namespace ecs \
+    --resource-id service/powersync-cluster/powersync-api \
+    --scalable-dimension ecs:service:DesiredCount \
+    --policy-name cpu-scaling \
+    --policy-type TargetTrackingScaling \
+    --target-tracking-scaling-policy-configuration '{
+      "TargetValue": 70.0,
+      "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"},
+      "ScaleInCooldown": 300,
+      "ScaleOutCooldown": 120
+    }'
+  ```
 
-```bash
-aws application-autoscaling register-scalable-target \
-  --service-namespace ecs \
-  --resource-id service/powersync-cluster/powersync-api \
-  --scalable-dimension ecs:service:DesiredCount \
-  --min-capacity 2 \
-  --max-capacity 10
-
-# Use CPU-only scaling policy
-aws application-autoscaling put-scaling-policy \
-  --service-namespace ecs \
-  --resource-id service/powersync-cluster/powersync-api \
-  --scalable-dimension ecs:service:DesiredCount \
-  --policy-name cpu-scaling \
-  --policy-type TargetTrackingScaling \
-  --target-tracking-scaling-policy-configuration '{
-    "TargetValue": 70.0,
-    "PredefinedMetricSpecification": {"PredefinedMetricType": "ECSServiceAverageCPUUtilization"},
-    "ScaleInCooldown": 300,
-    "ScaleOutCooldown": 120
-  }'
-```
-
-This approach is simpler but less responsive to connection spikes — CPU may not increase proportionally with new sync connections. Without connection-aware scaling, consider increasing `min-capacity` if your traffic is spiky, to provide a larger baseline while auto-scaling reacts.
-
+  This approach is simpler but less responsive to connection spikes — CPU may not increase proportionally with new sync connections. Without connection-aware scaling, consider increasing `min-capacity` if your traffic is spiky, to provide a larger baseline while auto-scaling reacts.
 </Accordion>
 
 ## Troubleshooting
 
 | Symptom | Solution |
-|---------|----------|
-| Tasks fail health checks | Check logs: `aws logs tail /ecs/powersync --follow`<br/>Increase `startPeriod` in health check to 120 |
-| 502 Bad Gateway | Verify security groups allow ALB→ECS on port 8080<br/>Check tasks are running: `aws ecs list-tasks --cluster powersync-cluster` |
+| --- | --- |
+| Tasks fail health checks | Check logs: `aws logs tail /ecs/powersync --follow`<br />Increase `startPeriod` in health check to 120 |
+| 502 Bad Gateway | Verify security groups allow ALB→ECS on port 8080<br />Check tasks are running: `aws ecs list-tasks --cluster powersync-cluster` |
 | WebSocket disconnects | Verify ALB idle timeout is 3600s (set in [Step 3](#3-application-load-balancer)) |
-| Can't pull image | Verify NAT Gateway exists and route table configured correctly<br/>Check NAT Gateway has internet access |
-| Secrets not loaded | Check IAM role has `secretsmanager:GetSecretValue` permission<br/>Verify secrets exist: `aws secretsmanager list-secrets` |
-| Sync Rule lock errors during deploy | Using multiple instances without HA setup<br/>Use [High Availability Setup](#high-availability-setup) for production |
+| Can't pull image | Verify NAT Gateway exists and route table configured correctly<br />Check NAT Gateway has internet access |
+| Secrets not loaded | Check IAM role has `secretsmanager:GetSecretValue` permission<br />Verify secrets exist: `aws secretsmanager list-secrets` |
+| Sync Rule lock errors during deploy | Using multiple instances without HA setup<br />Use [High Availability Setup](#high-availability-setup) for production |
 | CIDR block conflicts | Adjust CIDR blocks in [Step 2](#2-vpc-and-networking-setup) to match available VPC address space |
-| Certificate validation fails | Verify DNS nameservers are updated and propagated<br/>Check validation CNAME record exists in Route 53 |
-| CloudWatch metric not appearing | Verify `telemetry.prometheus_port: 9090` is set in service.yaml<br/>Check CW Agent logs: `aws logs tail /ecs/powersync-api/cwagent --follow`<br/>Confirm the SSM parameter exists: `aws ssm get-parameter --name /ecs/powersync/cwagent-config` |
-| Connection-based scaling not triggering | Verify metric in CloudWatch: `aws cloudwatch list-metrics --namespace PowerSync`<br/>Check the scaling policy: `aws application-autoscaling describe-scaling-policies --service-namespace ecs`<br/>Metric may take 2-3 minutes to appear after task startup |
-| Clients disconnecting during scale-in | This is expected behavior — sync connections on terminated tasks are closed and clients reconnect automatically.<br/>Increase `deregistration_delay.timeout_seconds` on the target group for a longer drain period |
-
+| Certificate validation fails | Verify DNS nameservers are updated and propagated<br />Check validation CNAME record exists in Route 53 |
+| CloudWatch metric not appearing | Verify `telemetry.prometheus_port: 9090` is set in service.yaml<br />Check CW Agent logs: `aws logs tail /ecs/powersync-api/cwagent --follow`<br />Confirm the SSM parameter exists: `aws ssm get-parameter --name /ecs/powersync/cwagent-config` |
+| Connection-based scaling not triggering | Verify metric in CloudWatch: `aws cloudwatch list-metrics --namespace PowerSync`<br />Check the scaling policy: `aws application-autoscaling describe-scaling-policies --service-namespace ecs`<br />Metric may take 2-3 minutes to appear after task startup |
+| Clients disconnecting during scale-in | This is expected behavior — sync connections on terminated tasks are closed and clients reconnect automatically.<br />Increase `deregistration_delay.timeout_seconds` on the target group for a longer drain period |
 
 ### Additional Resources
 

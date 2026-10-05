@@ -3,7 +3,7 @@ title: "Pre-Seeding SQLite Databases"
 description: "Speed up initial sync by pre-seeding SQLite databases with baseline data so users can start working immediately after app installation."
 ---
 
-## Overview 
+## Overview
 
 When syncing large amounts of data to connected clients, it can be useful to pre-seed the SQLite database with an initial snapshot of the data. This can help to reduce the initial sync time and improve the user experience.
 
@@ -14,12 +14,13 @@ To achieve this, you can run server-side processes using the [PowerSync Node.js 
 If you're interested in seeing an end-to-end example, we've prepared a demo repo that can be used as a template for your own implementation. This repo covers all of the key concepts and code examples shown in this page.
 
 <Card title="GitHub - nodejs-react-native-sqlite-seeder" icon="github" href="https://github.com/powersync-community/nodejs-react-native-sqlite-seeder">
-    Self-hosted PowerSync instance connected to a Postgres database, using the PowerSync Node.js SDK, React Native SDK and AWS S3 for storing the pre-seeded SQLite files.
+  Self-hosted PowerSync instance connected to a Postgres database, using the PowerSync Node.js SDK, React Native SDK and AWS S3 for storing the pre-seeded SQLite files.
 </Card>
 
 ## Main Concepts
 
 ### Generate a Scoped JWT Token
+
 In most cases you'd want to pre-seed the SQLite database with user specific data and not all data from the source database, as you normally would when using PowerSync. For this you would need to generate JWT tokens that include the necessary properties to satisfy the conditions of the queries in your Sync Streams.
 
 Let's say we have the following Sync Config:
@@ -35,13 +36,15 @@ sync_config:
 ```
 
 In the example above the `store_id` is part of the JWT payload and is used to filter products by store for a user. Given this we would want to do the following:
-1. Query the source database, directly from the Node.js application, for all the store ids you'd want a pre-seeded SQLite database for. 
+
+1. Query the source database, directly from the Node.js application, for all the store ids you'd want a pre-seeded SQLite database for.
 2. Generate a JWT token for each store and include the `store_id` in the payload.
 3. In the Node.js application which implements the PowerSync SDK, return the JWT token in the `fetchCredentials()` function.
 
 This will ensure that only the data for a specific store is pre-seeded into the SQLite database.
 
 Here's an example of a function that generates a JWT token based on the `store_id` using the [`jose`](https://github.com/panva/jose) library:
+
 ```typescript
 import * as jose from 'jose';
 
@@ -77,18 +80,20 @@ async function prepareDatabase (storeId: string) {
   await powersync.disconnect();
 }
 ```
-<Note>
-    Some critical points to note:
-    - You will need to wait for the first sync to complete before deleting the `client_id` key and vacuuming the database. This makes sure all of the data is synced to the database before we proceed.
-    - The `client_id` key is used to identify the client device and is typically set when the client connects to the PowerSync instance. So when pre-seeding the database, we need to delete the `client_id` key to avoid conflicts when the client connects to the PowerSync instance.
-    - It's important to note that you will need to use the [`VACUUM INTO`](https://sqlite.org/lang_vacuum.html) command to create a clean, portable SQLite database file. This will help to reduce the size of the database file and provide an optimized version for the client to download.
-    - In this example the upload function is using AWS S3, but you can use any blob storage provider that you prefer.
-</Note>
 
+<Note>
+  Some critical points to note:
+
+  - You will need to wait for the first sync to complete before deleting the `client_id` key and vacuuming the database. This makes sure all of the data is synced to the database before we proceed.
+  - The `client_id` key is used to identify the client device and is typically set when the client connects to the PowerSync instance. So when pre-seeding the database, we need to delete the `client_id` key to avoid conflicts when the client connects to the PowerSync instance.
+  - It's important to note that you will need to use the [`VACUUM INTO`](https://sqlite.org/lang_vacuum.html) command to create a clean, portable SQLite database file. This will help to reduce the size of the database file and provide an optimized version for the client to download.
+  - In this example the upload function is using AWS S3, but you can use any blob storage provider that you prefer.
+</Note>
 
 #### Scheduling and Cleaning Up
 
 To enhance the process you can consider doing the following:
+
 - To keep the pre-seeded SQLite databases fresh, schedule a CRON jobs for periodic regeneration, ensuring that new clients always download the latest snapshot of the initial sync data.
 - After each run, perform some environment cleanup to avoid disk bloat. This can be done by deleting the pre-seeded SQLite database files after they have been uploaded to the blob storage provider.
 
@@ -97,6 +102,7 @@ To enhance the process you can consider doing the following:
 When the client application boots, before connecting to the PowerSync instance, check if a SQLite database exists in the application's permanent storage. If it does, use it, else download a pre-seeded SQLite database from the blob storage provider.
 
 Here's an example of a function that checks if a file exists in the application's permanent storage:
+
 ```typescript
 import { File, Paths } from 'expo-file-system/next';
 
@@ -109,6 +115,7 @@ export const fileExists = (storeId: string) => {
 ```
 
 Here's an example of a function that downloads the pre-seeded SQLite database from the blob storage provider:
+
 ```typescript
 export const downloadFile = async (storeId: string) => {
   // Retrieve a pre-signed URL from the server that allows the client to download the file. 
@@ -121,8 +128,7 @@ export const downloadFile = async (storeId: string) => {
 ```
 
 <Warning>
-  It's important to note that when the client downloads the pre-seeded SQLite database that it's stored in a permanent location on the device. This means that the database will not be deleted when the app is restarted.
-  Depending on which PowerSync SDK you are using, you may need to use framework specific methods to store the file in a permanent location on the device. For example, with React Native + Expo you can use the [`expo-file-system`](https://docs.expo.dev/versions/latest/sdk/filesystem/) module to store the file in a permanent location on the device.
+  It's important to note that when the client downloads the pre-seeded SQLite database that it's stored in a permanent location on the device. This means that the database will not be deleted when the app is restarted. Depending on which PowerSync SDK you are using, you may need to use framework specific methods to store the file in a permanent location on the device. For example, with React Native + Expo you can use the [`expo-file-system`](https://docs.expo.dev/versions/latest/sdk/filesystem/) module to store the file in a permanent location on the device.
 </Warning>
 
 Once the database is downloaded, initialize the `PowerSyncDatabase` class with the file path and connect to the PowerSync instance.
@@ -151,7 +157,7 @@ export const configureDatabase = async (storeId: string) => {
 ```
 
 <Tip>
-    It's important that you insert a new `client_id` key into the `ps_kv` table to avoid conflicts when the client connects to the PowerSync instance.
+  It's important that you insert a new `client_id` key into the `ps_kv` table to avoid conflicts when the client connects to the PowerSync instance.
 </Tip>
 
 At this point the client would connect to the PowerSync instance and sync the data from where the pre-seeded snapshot was created, bypassing the initial sync process.

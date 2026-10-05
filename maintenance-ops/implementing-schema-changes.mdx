@@ -14,7 +14,6 @@ The [client-side schema](/intro/setup-guide#define-your-client-side-schema) is j
 The developer is responsible for keeping client-side schema changes backwards-compatible with older versions of client apps. PowerSync has some functionality to assist with this:
 
 1. [Versioned streams](/sync/advanced/multiple-client-versions) can serve different data to different client versions, either by defining a separate stream per version or by filtering on [connection parameters](/sync/streams/parameters#connection-parameters) such as client version. (In Sync Rules, this uses [client parameters](/sync/rules/client-parameters).)
-
 2. Stream queries can apply simple data transformations to keep data in a format compatible with older clients, for example by aliasing or casting columns. (In Sync Rules, this is done via [data query expressions](/sync/rules/data-queries).)
 
 ## Client-Side Impact of Schema and Sync Config Changes
@@ -24,21 +23,13 @@ As mentioned above, the PowerSync system itself is schemaless — the client syn
 The schema as supplied on the client is only a view on top of the schemaless data.
 
 1. If tables/collections not described by the client-side schema are synced, it is stored internally, but not accessible.
-
 2. Same applies for columns/fields not described by the client-side schema.
-
 3. When there is a type mismatch, SQLite's `CAST` functionality is used to cast to the type described by the schema.
-
    1. Data is internally stored as JSON.
-
    2. SQLite's `CAST` is used to cast values to `TEXT`, `INTEGER` or `REAL`.
-
    3. Casting between types should never error, but it may not fully represent the original data. For example, casting an arbitrary string to `INTEGER` will likely result in a "0" value.
-
    4. Full rules for casting between types are described [in the SQLite documentation here](https://www.sqlite.org/lang_expr.html#castexpr).
-
 4. Removing a table/collection is handled on the client as if the table exists with no data.
-
 5. Removing a column/field is handled on the client as if the values are `undefined`.
 
 Nothing in PowerSync will fail hard if there are incompatible schema changes. But depending on how the app uses the data, app logic may break. For example, removing a table/collection that the app actively uses may break workflows in the app.
@@ -52,11 +43,8 @@ PowerSync keeps the [buckets](/architecture/powersync-service#bucket-system) up 
 However, this does not include DDL (Data Definition Language), which includes:
 
 1. Creating, dropping or renaming tables.
-
 2. Changing replica identity of a table.
-
 3. Adding, dropping or renaming columns.
-
 4. Changing the type of a column.
 
 ### Postgres Schema Changes Affecting Sync Streams
@@ -71,7 +59,7 @@ The new table is detected as soon as data is inserted.
 
 #### DROP and re-CREATE table
 
-This is a special case of combining `DROP` and `CREATE`. If a dropped table is created again, *and* data is inserted into the new table, the schema change is detected by PowerSync. PowerSync will delete the old data in this case, as if `TRUNCATE` was called before dropping.
+This is a special case of combining `DROP` and `CREATE`. If a dropped table is created again, _and_ data is inserted into the new table, the schema change is detected by PowerSync. PowerSync will delete the old data in this case, as if `TRUNCATE` was called before dropping.
 
 #### RENAME table
 
@@ -86,17 +74,13 @@ This may be a slow operation if the table is large, and all other replication wi
 The replica identity of a table is considered changed if either:
 
 1. The type of replica identity changes (`DEFAULT`, `INDEX`, `FULL`, `NOTHING`).
-
 2. The name or type of columns part of the replica identity changes.
 
 The latter can happen if:
 
 1. Using `REPLICA IDENTITY FULL`, and any column is added, removed, renamed, or the type changed.
-
 2. Using `REPLICA IDENTITY DEFAULT`, and the type of any column in the primary key is changed.
-
 3. Using `REPLICA IDENTITY INDEX`, and the type of any column in the replica index is changed.
-
 4. The primary key or replica index is removed or changed.
 
 When the replica identity changes, the entire table is re-replicated again. This may be a slow operation if the table is large, and all other replication will be blocked until the table is replicated again.
@@ -124,7 +108,6 @@ If a table is added to the publication, it is treated the same as a new table, a
 There are additional changes that can be made to a table in a publication:
 
 1. Which operations are replicated (insert, update, delete and truncate).
-
 2. Which rows are replicated (row filters).
 
 Those changes are not automatically picked up by PowerSync during replication, and can cause PowerSync to miss changes if the changes are filtered out. PowerSync will not automatically recover the data when for example removing a row filter. Use these with caution.
@@ -152,8 +135,7 @@ Circular renames (e.g., renaming `todos` → `todos_old` → `todos`) are not di
 ## <Icon icon="database" iconType="solid" size={32} /> Convex Specifics
 
 <Warning>
-  The Convex replicator is currently released as an [experimental feature](/resources/feature-status). APIs and
-  behavior may change, and we can't yet guarantee continued support or long-term stability.
+  The Convex replicator is currently released as an [experimental feature](/resources/feature-status). APIs and behavior may change, and we can't yet guarantee continued support or long-term stability.
 </Warning>
 
 For Convex, most schema changes are document-shape changes rather than DDL events. PowerSync reads the JSON documents returned by Convex snapshots and document deltas, not Convex schema metadata, so added fields and type changes are replicated through normal Convex writes.
@@ -176,22 +158,18 @@ To decommission a table while preserving replication correctness, clear the tabl
 
 ## <Icon icon="dolphin" iconType="solid" size={32} /> MySQL Specifics
 
-<Note>MySQL support is currently in a [Beta release](/resources/feature-status).</Note>
+<Note>
+  MySQL support is currently in a [Beta release](/resources/feature-status).
+</Note>
 
-PowerSync keeps the [buckets](/architecture/powersync-service#bucket-system) up to date with any incremental data changes as recorded in the MySQL [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html).
-The binary log also provides DDL (Data Definition Language) query updates, which include:
+PowerSync keeps the [buckets](/architecture/powersync-service#bucket-system) up to date with any incremental data changes as recorded in the MySQL [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html). The binary log also provides DDL (Data Definition Language) query updates, which include:
 
 1. Creating, dropping or renaming tables.
-
 2. Truncating tables. (Not technically a schema change, but they appear in the query updates regardless.)
-
 3. Changing replica identity of a table. (Creation, deletion or modification of primary keys, unique indexes, etc.)
-
 4. Adding, dropping, renaming or changing the types of columns.
 
-For MySQL, PowerSync detects schema changes by parsing the DDL queries in the binary log. It may not always be possible to parse the DDL queries correctly, especially if they are complex or use non-standard syntax.
-In such cases, PowerSync will ignore the schema change, but will log a warning with the schema change query. If required, the schema change would then need to be manually
-handled by redeploying your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). This triggers a re-replication.
+For MySQL, PowerSync detects schema changes by parsing the DDL queries in the binary log. It may not always be possible to parse the DDL queries correctly, especially if they are complex or use non-standard syntax. In such cases, PowerSync will ignore the schema change, but will log a warning with the schema change query. If required, the schema change would then need to be manually handled by redeploying your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)). This triggers a re-replication.
 
 ### MySQL Schema Changes Affecting Sync Streams
 
@@ -209,25 +187,20 @@ PowerSync will detect truncate statements in the binary log, and consequently re
 
 #### RENAME table
 
-A renamed table is handled similarly to dropping the old table, and then creating a new table with existing data under the new name.
-This may be a slow operation if the table is large, since the "new" table has to be re-replicated. Replication will be blocked until the new table is replicated.
+A renamed table is handled similarly to dropping the old table, and then creating a new table with existing data under the new name. This may be a slow operation if the table is large, since the "new" table has to be re-replicated. Replication will be blocked until the new table is replicated.
 
 #### Change REPLICA IDENTITY
 
 The replica identity of a table is considered to be changed if either:
 
 1. The type of replica identity changes (`DEFAULT`, `INDEX`, `FULL`, `NOTHING`).
-
 2. The name or type of columns which form part of the replica identity changes.
 
 The latter can happen if:
 
 1. Using `REPLICA IDENTITY FULL`, and any column is added, removed, renamed, or the type changed.
-
 2. Using `REPLICA IDENTITY DEFAULT`, and the type of any column in the primary key is changed.
-
 3. Using `REPLICA IDENTITY INDEX`, and the type of any column in the replica index is changed.
-
 4. The primary key or replica index is removed or changed.
 
 When the replication identity changes, the entire table is replicated again. This may be a slow operation if the table is large, and all other replication will be blocked until the table is replicated again.
@@ -244,13 +217,12 @@ Adding a column with a different default value, whether it's a static or compute
 
 Removing a column will not have the values automatically removed for existing rows on PowerSync. To propagate the change, make an update to every existing row.
 
-Changing a column type, and/or changing the default value of a column using an `ALTER TABLE` statement, will not be automatically replicated to PowerSync.
-In some cases, the change will have no effect on PowerSync (for example, changing between `VARCHAR` and `TEXT` types). When the values are expected to change, make an update to every existing row to propagate the changes.
+Changing a column type, and/or changing the default value of a column using an `ALTER TABLE` statement, will not be automatically replicated to PowerSync. In some cases, the change will have no effect on PowerSync (for example, changing between `VARCHAR` and `TEXT` types). When the values are expected to change, make an update to every existing row to propagate the changes.
 
 ## <Icon icon="database" iconType="solid" size={32} /> SQL Server Specifics
 
 <Note>
-SQL Server support is currently in a [Beta release](/resources/feature-status). The workflows below apply to PowerSync Service v1.25.0 or later. Earlier versions handled schema changes differently.
+  SQL Server support is currently in a [Beta release](/resources/feature-status). The workflows below apply to PowerSync Service v1.25.0 or later. Earlier versions handled schema changes differently.
 </Note>
 
 SQL Server Change Data Capture (CDC) does not include schema changes in the change stream. PowerSync can only discover them by polling database metadata, which gives no exact position in the change stream at which the schema changed.
@@ -264,8 +236,7 @@ This model has two implications:
 
 ### Capture Instances
 
-SQL Server CDC is designed to protect downstream consumers from schema changes. Some schema changes, like changing the data type of a primary key column, are blocked at the database level while CDC is enabled on a table.
-Other schema changes are allowed, but are not propagated to the capture instance for the table: the capture instance keeps the column set it was created with. To capture new or changed columns, create a new capture instance, or drop and recreate the existing one. Note that SQL Server allows a maximum of 2 capture instances per table.
+SQL Server CDC is designed to protect downstream consumers from schema changes. Some schema changes, like changing the data type of a primary key column, are blocked at the database level while CDC is enabled on a table. Other schema changes are allowed, but are not propagated to the capture instance for the table: the capture instance keeps the column set it was created with. To capture new or changed columns, create a new capture instance, or drop and recreate the existing one. Note that SQL Server allows a maximum of 2 capture instances per table.
 
 #### Dropping and Recreating a Capture Instance
 
@@ -349,6 +320,5 @@ Changes that do not affect the captured columns or the replica identity of a tab
 
 ## See Also
 
-* [JSON, Arrays and Custom Types](/client-sdks/advanced/custom-types-arrays-and-json)
-
-* [Deploying Schema Changes](/maintenance-ops/deploying-schema-changes)
+- [JSON, Arrays and Custom Types](/client-sdks/advanced/custom-types-arrays-and-json)
+- [Deploying Schema Changes](/maintenance-ops/deploying-schema-changes)

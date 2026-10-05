@@ -18,6 +18,6 @@ Use the canonical Working Process for scope changes and unresolved decisions.
 1. Identify the reader, desired outcome, and affected feature or concept.
 2. Research the implementation and existing coverage. Read the most relevant related pages and `docs.json`; avoid unnecessary duplication.
 3. If a plan is needed, state the proposed pages, structure, and unresolved questions before drafting.
-4. Write the update under the canonical standards. Keep the existing structure unless the task requires a change.
+4. Write the update under the canonical standards. Write new content for Sync Streams and keep Sync Rules content inside its own section. Keep the existing structure unless the task requires a change.
 5. Self-review for accuracy, reader understanding, minimum useful detail, and navigation fit. Run the canonical verification checks relevant to the change.
 6. Present the result and any unresolved draft TODOs, or complete the delivery workflow already authorized by the user.

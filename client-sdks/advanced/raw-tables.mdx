@@ -507,7 +507,7 @@ Raw tables support advanced table constraints including foreign keys. When enabl
 
 1. While PowerSync will always apply synced data in a transaction, there is no way to control the order in which rows get applied.
    For this reason, foreign keys need to be configured with `DEFERRABLE INITIALLY DEFERRED`.
-2. When using [stream priorities](/sync/advanced/prioritized-sync), you need to ensure you don't have foreign keys from high-priority
+2. When using [stream priorities](/sync/streams/prioritized-sync), you need to ensure you don't have foreign keys from high-priority
    rows to lower-priority data. PowerSync applies data in one transaction per priority, so these foreign keys would not work.
 3. As usual when using foreign keys, note that they need to be explicitly enabled with `pragma foreign_keys = on`.
 
@@ -761,7 +761,7 @@ In PowerSync's [JSON-based view system](/architecture/client-architecture#client
 
 ### Adding Raw Tables as a New Table
 
-When you're adding new tables to your Sync Streams (or legacy Sync Rules), clients will start to sync data on those tables - even if the tables aren't mentioned in the client's schema yet. So at the time you're introducing a new raw table to your app, it's possible that PowerSync has already synced some data for that table, which would be stored in `ps_untyped`. When adding regular tables, PowerSync will automatically extract rows from `ps_untyped`. With raw tables, that step is your responsibility. To copy data, run these statements in a transaction after creating the table:
+When you're adding new tables to your Sync Streams, clients will start to sync data on those tables - even if the tables aren't mentioned in the client's schema yet. So at the time you're introducing a new raw table to your app, it's possible that PowerSync has already synced some data for that table, which would be stored in `ps_untyped`. When adding regular tables, PowerSync will automatically extract rows from `ps_untyped`. With raw tables, that step is your responsibility. To copy data, run these statements in a transaction after creating the table:
 
 ```
 INSERT INTO my_table (id, my_column, ...)
@@ -800,13 +800,16 @@ tables.
 
 #### Deleting Data on Migrations
 
-One option that makes migrations safe (with obvious downsides) is to simply reset the database before
-migrating: `await db.disconnectAndClear(soft: true)` deletes materialized sync rows while keeping
-downloaded data active. Afterwards, migrations can migrate the schema in any way before you reconnect.
+One migration approach is to clear synced data before changing the schema. First, configure a `clear`
+statement for each raw table to delete its rows, since `disconnectAndClear()` does not clear raw tables
+automatically. Then call `await db.disconnectAndClear()`, migrate the schema, and reconnect.
 
-In a soft clear, data doesn't have to be downloaded again in most cases. This might reduce the downtime
-in which no data is available, but a network connection is necessary for data to become
-available again.
+By default, clearing the database also removes PowerSync's internal copy of the synced data. The next
+sync must download that data again, leaving synced data unavailable until the sync completes.
+
+To reduce this downtime, `disconnectAndClear()` supports a `soft` parameter which runs the same raw-table `clear` statements
+but keeps PowerSync's internal copy of the synced data. When you reconnect as the same user, the next
+sync reuses that copy, so data doesn't have to be downloaded again in most cases.
 
 #### Triggering Resync on Migrations
 

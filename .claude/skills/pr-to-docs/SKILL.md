@@ -33,4 +33,4 @@ Ask before expanding scope, documenting a deprecation that needs migration decis
 
 ## 4. Draft and Verify
 
-Apply the canonical writing standards, navigation requirements, and verification checks. Preserve existing structure unless restructuring is part of the approved plan. Flag unresolved facts using the canonical draft-TODO convention and report what must be resolved before publication.
+Apply the canonical writing standards, navigation requirements, and verification checks. Document new behavior for Sync Streams. Update Sync Rules pages when the change affects them too, and do not add Sync Rules mentions elsewhere. Preserve existing structure unless restructuring is part of the approved plan. Flag unresolved facts using the canonical draft-TODO convention and report what must be resolved before publication.

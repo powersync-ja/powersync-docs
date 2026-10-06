@@ -72,14 +72,22 @@ We have documented steps for some specific hosting providers:
     ### 3. Create `powersync` publication
 
     <PostgresPowerSyncPublication />
-
   </Accordion>
+
   <Accordion title="AWS Aurora">
-    PowerSync replicates from the writer, the primary instance of an Aurora Postgres cluster. This applies to provisioned clusters and to Aurora Serverless v2. All currently available Aurora Postgres versions support logical replication.
+    ### Supported Scaling Options
+
+    PowerSync replicates only from the writer. Clusters can also include reader instances.
+
+    | Scaling Option | Scaling Model | PowerSync Support |
+    | --- | --- | --- |
+    | Provisioned | Configured instance capacity | Supported |
+    | Aurora Serverless v2 | Automatically adjusts instance capacity | Supported |
+    | Aurora Postgres Limitless | Horizontally scales writes and reads across multiple nodes | [Not supported](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/limitless-reqs-limits.html#limitless-limitations) |
 
     ### Prerequisites
 
-    PowerSync must be able to reach the writer. Either make the cluster publicly accessible over IPv4 and restrict access to PowerSync's IPs (see [IP Filtering](/configuration/source-db/security-and-ip-filtering)), or connect through a [Private Endpoint](/configuration/source-db/private-endpoints) using AWS PrivateLink.
+    PowerSync must be able to reach the writer. Either make the writer publicly accessible over IPv4 and restrict access to PowerSync's IPs (see [IP Filtering](/configuration/source-db/security-and-ip-filtering)), or connect through a [Private Endpoint](/configuration/source-db/private-endpoints) using AWS PrivateLink. If you use public access, apply the same network settings to reader instances that can become the writer.
 
     ### 1. Ensure logical replication is enabled
 
@@ -244,7 +252,7 @@ For other providers and self-hosted databases:
 
   ### 1. Ensure logical replication is enabled
 
-  PowerSync reads the Postgres WAL using logical replication in order to create [buckets](/architecture/powersync-service#bucket-system) in accordance with your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)).
+  PowerSync reads the Postgres WAL using logical replication in order to create [buckets](/architecture/powersync-service#bucket-system) in accordance with your [Sync Streams](/sync/streams/overview).
 
   If you are managing Postgres yourself, set `wal_level = logical` in your config file:
 
@@ -348,8 +356,8 @@ To replicate data from MongoDB to PowerSync in a consistent manner, PowerSync us
 PowerSync supports three configuration options for post-images:
 
 1. **Off**: (`post_images: off`): Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling post-images instead.
-2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)), you need to manually disable `changeStreamPreAndPostImages` on that collection.
-3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in your Sync Streams/Sync Rules. Replication will error if this is not configured. This option is ideal when permissions are restricted.
+2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
+3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in your Sync Streams. Replication will error if this is not configured. This option is ideal when permissions are restricted.
 
 To manually configure collections for `read_only` mode, run this command on each collection:
 
@@ -432,6 +440,70 @@ For implementation and design details, including how PowerSync handles checkpoin
 
 PowerSync reads from the MySQL [binary log](https://dev.mysql.com/doc/refman/8.4/en/binary-log.html) (binlog) to replicate changes. We use a modified version of the [Zongji MySQL](https://github.com/powersync-ja/powersync-mysql-zongji) binlog listener to achieve this.
 
+For Aurora MySQL, follow the provider-specific steps below instead of the generic [Binlog Configuration](#binlog-configuration).
+
+<Accordion title="AWS Aurora MySQL">
+  PowerSync supports provisioned Aurora MySQL clusters and Aurora Serverless v2 clusters with a single writer. The cluster can include reader instances, but PowerSync replicates only from the writer.
+
+  ### Prerequisites
+
+  For PowerSync Cloud, make the writer publicly accessible over IPv4 and allow inbound traffic from [PowerSync's IP addresses](/configuration/source-db/security-and-ip-filtering) on the database port (`3306` by default). Apply the same network settings to reader instances that can become the writer. [Private Endpoints](/configuration/source-db/private-endpoints#current-limitations) are not currently supported for MySQL.
+
+  <Steps>
+    <Step title="Configure a DB Cluster Parameter Group">
+      In the [Amazon RDS console](https://console.aws.amazon.com/rds/), open the **DB cluster parameter group** linked from your cluster's **Configuration** tab. If the cluster uses a default group, [create a custom DB cluster parameter group](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/USER_WorkingWithDBClusterParamGroups.html) with the family that matches your Aurora MySQL version. Default parameter groups cannot be edited.
+
+      <Frame caption="Aurora MySQL DB cluster parameter group creation">
+        ![Amazon RDS creation form with Aurora MySQL, the aurora-mysql8.0 family, and DB Cluster Parameter Group selected](/images/installation/aurora-create-parameter-group.png)
+      </Frame>
+
+      Set these parameters to enable binary logging and global transaction identifiers (GTIDs):
+
+      | Parameter in the AWS Console | Required Value |
+      | --- | --- |
+      | `binlog_format` | `ROW` |
+      | `binlog_row_image` | `FULL` |
+      | `enforce_gtid_consistency` | `ON` |
+      | `gtid-mode` | `ON` |
+
+      <Frame caption="GTID settings in the cluster parameter group">
+        ![Amazon RDS parameter editor with enforce_gtid_consistency and gtid-mode set to ON](/images/installation/aurora-set-gtid-flags.png)
+      </Frame>
+
+      Aurora [enables binary logging](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/USER_LogAccess.MySQL.BinaryFormat.html) through `binlog_format`. You do not need to configure `log_bin` or `server_id` separately. The AWS console calls the GTID parameter `gtid-mode`; its SQL variable is `gtid_mode`.
+    </Step>
+    <Step title="Apply the Parameter Group">
+      If you created a new parameter group, assign it to the cluster through **Modify** in the RDS console. Save your changes and reboot the writer for the settings to take effect. If reader instances do not restart with the writer, reboot them manually to apply the same settings.
+    </Step>
+    <Step title="Verify the Settings">
+      Connect to the writer through the cluster endpoint and run this query:
+
+      ```sql
+      SELECT
+        @@GLOBAL.log_bin AS log_bin,                                   -- 1
+        @@GLOBAL.gtid_mode AS gtid_mode,                               -- ON
+        @@GLOBAL.enforce_gtid_consistency AS enforce_gtid_consistency, -- ON
+        @@GLOBAL.binlog_format AS binlog_format,                       -- ROW
+        @@GLOBAL.binlog_row_image AS binlog_row_image;                 -- FULL
+      ```
+    </Step>
+    <Step title="Set Binlog Retention">
+      Set [binlog retention](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/mysql-stored-proc-configuring.html#mysql_rds_set_configuration-usage-notes.binlog-retention-hours) long enough to cover the initial snapshot and expected downtime or replication lag. If required binlogs are purged before PowerSync reads them, PowerSync must take a new snapshot.
+
+      Replace `24` with the number of hours your workload requires:
+
+      ```sql
+      CALL mysql.rds_set_configuration('binlog retention hours', 24);
+      ```
+
+      Monitor storage usage after increasing retention.
+    </Step>
+    <Step title="Create a PowerSync Database User">
+      Follow [Database User Configuration](#database-user-configuration) to create a user with replication privileges and read access to the tables you want to sync.
+    </Step>
+  </Steps>
+</Accordion>
+
 ### Binlog Configuration
 
 To ensure that PowerSync can read the binary log, you need to configure your MySQL server to enable binary logging and configure it with the following server command options:
@@ -472,7 +544,7 @@ GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
 FLUSH PRIVILEGES;
 ```
 
-It is possible to constrain the MySQL user further and limit access to specific tables. Care should be taken to ensure that all the tables in your Sync Streams/Sync Rules are included in the grants.
+It is possible to constrain the MySQL user further and limit access to specific tables. Care should be taken to ensure that all the tables in your Sync Streams are included in the grants.
 
 ```sql
 -- Grant select to the users and the invoices tables in the source database

@@ -1,11 +1,11 @@
 ---
 title: "Storage Version 4"
-description: "Opt in to storage version 4 for faster sync, incremental reprocessing of Sync Streams changes, and S3 object storage."
+description: "Storage version 4 provides faster sync, incremental reprocessing of Sync Streams changes, and S3 object storage."
 ---
 
-{/* Split page: the Sync Rules (Legacy) version of this page is sync/rules/storage-version-4.mdx. It is a short summary that links here for details, so keep the anchors opt-in, incremental-reprocessing, s3-object-storage, and self-hosted-s3-setup stable. Mention Sync Rules here only to state that incremental reprocessing requires Sync Streams. */}
+{/* Split page: the Sync Rules (Legacy) version of this page is sync/rules/storage-version-4.mdx. It is a short summary that links here for details, so keep the anchors switching-storage-versions, incremental-reprocessing, s3-object-storage, and self-hosted-s3-setup stable. Mention Sync Rules here only to state that incremental reprocessing requires Sync Streams. */}
 
-Storage version 4 is a new version of the format the PowerSync Service uses to store the data it syncs to clients. It is in [Beta](/resources/feature-status) as of PowerSync Service v1.26.0.
+Storage version 4 is the current format the PowerSync Service uses to store the data it syncs to clients. It is the default for MongoDB bucket storage since PowerSync Service v1.27.0.
 
 Compared to version 2, it provides:
 
@@ -15,55 +15,39 @@ Compared to version 2, it provides:
 
 ## Availability
 
-Storage version 4 is compatible with all PowerSync Cloud instances, which already use MongoDB [bucket storage](/architecture/powersync-service#bucket-storage). Self-hosted instances must also use MongoDB bucket storage. Postgres bucket storage is not currently supported.
+Storage version 4 is compatible with all PowerSync Cloud instances, which already use MongoDB [bucket storage](/architecture/powersync-service#bucket-storage). Self-hosted instances must also use MongoDB bucket storage. Postgres bucket storage is not currently supported, so instances that use it stay on version 2.
 
-The PowerSync Cloud and self-hosted columns below apply during the Beta only. Once storage version 4 is generally available, it will become the default for all supported instances. S3 object storage is then also enabled on all PowerSync Cloud instances. For self-hosted deployments, follow the [S3 setup instructions](#self-hosted-s3-setup).
-
-|  | Source database | PowerSync Cloud (Beta) | Self-hosted (Beta) |
+|  | Source database | PowerSync Cloud | Self-hosted |
 | --- | --- | --- | --- |
-| Storage version 4 | Any | Free plan: automatic. Other plans: [opt in](#opt-in). | [Opt in](#opt-in) |
+| Storage version 4 | Any | [Default](#switching-storage-versions) | [Default](#switching-storage-versions) with MongoDB bucket storage |
 | Incremental reprocessing | MongoDB | Included with version 4 | Included with version 4 |
 | S3 object storage | Any | Enabled per instance by PowerSync on request | [Set up S3 object storage](#self-hosted-s3-setup) |
 
 Incremental reprocessing for Postgres and other source databases is planned. See the [proposal](https://github.com/orgs/powersync-ja/discussions/349) for background. It is not supported for legacy [Sync Rules](/sync/rules/overview). If you still use Sync Rules, [migrate to Sync Streams](/sync/rules/migrate-to-sync-streams).
 
-## Opt In
+## Switching Storage Versions
 
-Version 4 is not the default in PowerSync Service v1.26.0. Moving a Sync Config to version 4 runs like any other deployment:
+Since PowerSync Service v1.27.0, Sync Configs use version 4 unless they set `storage_version` explicitly. Existing Sync Configs switch to version 4 the next time you deploy them, not when you upgrade the Service.
+
+A switch runs like any other deployment:
 
 1. PowerSync reprocesses all data selected by your Sync Config in the background. The current version keeps serving clients, so there is no downtime.
 2. When the new copy is ready, PowerSync switches to it. On PowerSync Cloud, this appears as a new deploy event in the PowerSync Dashboard.
-3. Clients download their data again once, as after any deployment before version 4. On self-hosted deployments with many clients, scale out the API before the switch to absorb the re-sync.
+3. Clients download their data again once. On self-hosted deployments with many clients, scale out the API before the switch to absorb the re-sync.
 
-After this first deployment, later Sync Streams deployments use incremental reprocessing automatically when your instance meets its requirements. There is no separate setting.
+After the switch to version 4, later Sync Streams deployments use incremental reprocessing automatically if your instance meets its requirements.
 
-### PowerSync Cloud
-
-Free plan instances are upgraded automatically during the Beta. No action is needed.
-
-On other plans, add `storage_version: 4` to the `config` block of your Sync Config and deploy it:
+To use a different version, set `storage_version` in the `config` block of your Sync Config and deploy it. For example, to stay on version 2:
 
 ```yaml
 config:
   edition: 3
-  storage_version: 4
+  storage_version: 2
 
 streams:
   todos:
     query: SELECT * FROM todos WHERE owner_id = auth.user_id()
 ```
-
-### Self-Hosted
-
-<Note>
-  Postgres bucket storage is not supported with version 4.
-</Note>
-
-Add `storage_version: 4` to the `config` block of each Sync Config as shown above, then deploy or redeploy it to use version 4.
-
-To move a Sync Config back to version 2, set `storage_version: 2` and deploy again. This is another full reprocess.
-
-To also enable S3 object storage, follow the [self-hosted S3 setup instructions](#self-hosted-s3-setup) to prepare a bucket and configure the Service.
 
 ## Incremental Reprocessing
 
@@ -129,7 +113,7 @@ S3 object storage requires storage version 4. It is compatible with all PowerSyn
 
 ### PowerSync Cloud
 
-During the Beta, PowerSync enables S3 object storage per instance. [Contact us](/resources/contact-us) if you want it on your instance before we enable it for all instances.
+PowerSync enables S3 object storage per instance on request. We plan to enable it on all PowerSync Cloud instances automatically in the future. [Contact us](/resources/contact-us) if you want it on your instance sooner.
 
 ### Self-Hosted S3 Setup
 
@@ -162,7 +146,7 @@ During the Beta, PowerSync enables S3 object storage per instance. [Contact us](
     Restart or redeploy the PowerSync Service to load the updated `service.yaml`. If you run replication, API, and compacting in separate containers or jobs, apply the same object storage configuration to each.
   </Step>
   <Step title="Deploy on Storage Version 4">
-    Deploy your Sync Configs on storage version 4 as described in [Opt In](#opt-in). Sync Configs on version 2 keep all data in MongoDB, even when `object_storage` is configured.
+    Make sure your Sync Configs use storage version 4, as described in [Switching Storage Versions](#switching-storage-versions). Sync Configs on version 2 keep all data in MongoDB, even when `object_storage` is configured.
 
     Once replication reaches a healthy checkpoint, confirm that objects appear under the prefix, run a test initial sync, and run `compact` once to surface permission errors early.
   </Step>

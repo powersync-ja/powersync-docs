@@ -56,6 +56,29 @@ Select your Postgres hosting provider for steps to connect your newly-created Po
     If you get an error such as "IPs in this range are not supported", the instance is likely not configured to be publicly accessible. A DNS lookup on the host should give a public IP, and not for example `10.x.x.x` or `172.31.x.x`.
   </Accordion>
 
+  <Accordion title="AWS Aurora">
+    1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Database Connection** view.
+    2. Select the **Postgres** tab.
+    3. Use the cluster endpoint as the "**Host**". AWS also calls it the writer endpoint: it always points at the cluster's primary instance, the writer. You can find it on the cluster's details page in the RDS console, or in the `Endpoint` field of `aws rds describe-db-clusters`. Do not use the reader endpoint, whose hostname contains `.cluster-ro-`, or an instance endpoint, whose hostname has no `.cluster-` segment. Aurora only supports logical replication from the writer, and the cluster endpoint follows the writer through a failover while an instance endpoint does not.
+    4. Complete the remaining fields:
+       - "**Name**" can be any name for the connection.
+       - "**Port**" is 5432 for Postgres databases.
+       - "**Database name**" is the database in your cluster to replicate.
+       - "**Username**" and "**Password**" maps to the `powersync_role` created in [Source Database Setup](/configuration/source-db/setup#postgres).
+       - PowerSync has the AWS RDS CA certificates pre-configured, so the default `verify-full` SSL mode works without additional configuration.
+    5. If the cluster is not publicly accessible, select your endpoint in the **Private Endpoint** dropdown. Keep the cluster endpoint as the "**Host**". PowerSync verifies the server certificate against it and sends the traffic through the Private Endpoint. With a Private Endpoint, **Test Connection** does not connect to the database, so confirm the connection after deploying as described in [Private Endpoints](/configuration/source-db/private-endpoints).
+    6. Click **Test Connection** and fix any errors.
+    7. Click **Save Connection**.
+
+    PowerSync deploys and configures an isolated cloud environment for you, which can take a few minutes to complete.
+
+    ### Troubleshooting
+
+    If you get an error such as "IPs in this range are not supported", the host resolves to a private IP. Make the cluster publicly accessible, or connect through a [Private Endpoint](/configuration/source-db/private-endpoints).
+
+    If Sync Config validation fails with `postgres query failed`, or the instance logs show `Hostname/IP does not match certificate's altnames`, the server that answered is not the one named in "**Host**". The log line lists the DNS names in the certificate. This happens when "**Host**" is an instance endpoint after a failover, or when a Private Endpoint still forwards to a previous writer or cluster. Switch to the cluster endpoint, or update the target group behind the Private Endpoint.
+  </Accordion>
+
   <Accordion title="Azure Postgres">
     1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Database Connection** view.
     2. Select the **Postgres** tab.
@@ -212,37 +235,26 @@ To connect to **Azure DocumentDB** (formerly Azure Cosmos DB for MongoDB vCore),
 Select your MySQL hosting provider for steps to connect your newly-created PowerSync instance to your MySQL database:
 
 <Accordion title="AWS Aurora">
-  To enable binary logging and GTID replication in AWS Aurora, you need to create a [DB Parameter Group](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/AuroraMySQL.Reference.ParameterGroups.html) and configure it with the necessary parameters. Follow these steps:
+  Before connecting, complete [Aurora MySQL Setup](/configuration/source-db/setup#aws-aurora-mysql).
 
-  1. Navigate to [Amazon RDS console](https://console.aws.amazon.com/rds/) In the navigation pane, select **Parameter groups** and click **Create Parameter Group**:
-     <Frame>
-       <img
-         src="/images/installation/aurora-create-parameter-group.png"
-       />
-     </Frame>
-  2. Add all the required [binlog configuration](/configuration/source-db/setup#binlog-configuration) parameters. For example:
-     <Frame>
-       <img
-         src="/images/installation/aurora-set-gtid-flags.png"
-       />
-     </Frame>
-  3. Associate your newly created parameter group with your Aurora cluster:
-     1. In the navigation pane, select **Databases**.
-     2. Select your Aurora cluster.
-     3. Select **Modify**.
-     4. In the **DB Parameter Group** section, select the parameter group you created.
-     5. Click **Continue** and then **Apply** immediately.
-  4. Whitelist PowerSync's IPs in your Aurora cluster's security group to allow access. See [Security and IP Filtering](/configuration/source-db/security-and-ip-filtering) for more details.
-  5. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Database Connection** view.
-  6. Select the **MySQL** tab.
-  7. Fill in your MySQL connection details from AWS Aurora:
-     1. "**Name**", "**Host**", "**Port**", "**Database name**", "**Username**", "**Password**" are required.
-     2. "**Name**" can be any name for the connection.
-     3. "**Host**" is the endpoint for your Aurora cluster.
-     4. "**Database name**" is the default database to replicate.
-     5. "**Username**" and "**Password**" maps to your database user.
-  8. Click **Test Connection** and fix any errors.
-  9. Click **Save Connection**.
+  <Steps>
+    <Step title="Open the Connection Settings">
+      In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to **Database Connection**. Select the **MySQL** tab.
+    </Step>
+    <Step title="Enter the Connection Details">
+      Use the cluster (writer) endpoint as **Host**. Do not use the reader endpoint: Aurora MySQL binary logs are available only on the writer. The cluster endpoint follows the writer through a failover, while an instance endpoint does not. If the new writer has a different server UUID, PowerSync takes a new snapshot before resuming replication.
+
+      Complete the remaining required fields:
+
+      - **Name** can be any name for the connection.
+      - **Port** is your cluster's database port (`3306` by default).
+      - **Database name** is the default database to replicate.
+      - **Username** and **Password** are the credentials for the replication user created in [Database User Configuration](/configuration/source-db/setup#database-user-configuration).
+    </Step>
+    <Step title="Test and Save the Connection">
+      Click **Test Connection** and fix any errors. Click **Save Connection**.
+    </Step>
+  </Steps>
 
   PowerSync deploys and configures an isolated cloud environment for you, which can take a few minutes to complete.
 </Accordion>
@@ -256,12 +268,12 @@ For other providers and self-hosted databases:
      1. "**Name**", "**Host**", "**Port**", "**Database name**", "**Username**", "**Password**" are required.
      2. "**Name**" can be any name for the connection.
      3. "**Host**" the endpoint for your database.
-     4. "**Database name**" is the default database to replicate. Additional databases are derived by qualifying the tables in your Sync Streams/Sync Rules.
+     4. "**Database name**" is the default database to replicate. Additional databases are derived by qualifying the tables in your Sync Streams.
      5. "**Username**" and "**Password**" maps to your database user.
   4. Click **Test Connection** and fix any errors.
   5. Click **Save Connection**.
 
-     PowerSync deploys and configures an isolated cloud environment for you, which can take a few minutes to complete.
+  PowerSync deploys and configures an isolated cloud environment for you, which can take a few minutes to complete.
 </Accordion>
 
 <Info>

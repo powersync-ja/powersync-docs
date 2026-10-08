@@ -22,7 +22,9 @@ Separate API and replication workloads so you can scale them independently.
 
 The sizing below uses ARM64 compute, PowerSync Service v1.26.0 or later, and [storage version 4 with S3](/sync/advanced/storage-version-4#self-hosted-s3-setup). Use a three-node MongoDB replica set for bucket storage.
 
-Apply the same S3 configuration and permissions to replication, API, and compact jobs.
+S3 stores larger blocks of sync data; MongoDB retains smaller blocks and metadata. The MongoDB requirement applies to bucket storage, not the source database.
+
+Apply the same S3 configuration and permissions to replication, API, and compact jobs. Clients connect to the API, which reads from both stores.
 
 ### Compute Sizing
 
@@ -42,15 +44,17 @@ This profile supports up to 1,000 concurrent connections per API process. Larger
 
 After load testing, raise [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) from its default of `200` up to `1000`. The setting limits HTTP streams and WebSockets separately; monitor their combined count.
 
-Scale on both CPU utilization and connections per process. Keep autoscaling targets below the connection limit to allow for bursts while new containers start.
+Scale on both CPU utilization and connections per process. Idle connections can keep CPU low, while initial syncs can saturate CPU with fewer connections. Keep autoscaling targets below the connection limit to allow for bursts while new containers start.
 
-Add API containers before large initial-sync waves or deployments that make clients download their data again. Wait for the new containers to become healthy before starting the workload.
+Add API containers before large initial-sync waves or deployments that make clients download their data again. Wait for the new containers to become healthy before starting the workload. Adding containers does not immediately redistribute existing long-lived connections. Reduce capacity gradually after the download load subsides.
 
 ### Replication Container
 
 Run `start -r sync` to replicate source changes into bucket storage. Additional replication containers provide failover, not more throughput.
 
-Size replication for source write volume, document size, and buckets per row. Use [replication lag](/maintenance-ops/replication-lag) and compute and database metrics to assess capacity.
+Size replication for source write volume, document size, and buckets per row. A row in ten buckets creates more replication work than a row in one bucket. Initial replication and catch-up after a large batch update can need more capacity than steady-state replication.
+
+Use [replication lag](/maintenance-ops/replication-lag), replication throughput, CPU, memory, and database metrics to assess capacity.
 
 ### API Containers
 
@@ -58,20 +62,28 @@ Run `start -r api` for client connections. Collect [metrics](/maintenance-ops/se
 
 ### Compact Job
 
-Run `compact` hourly for storage version 4. Monitor completion, duration, and peak memory; avoid overlapping runs. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
+Run `compact` hourly for storage version 4. Each run decides which buckets need chunk merging or full compaction, rather than fully compacting every bucket each hour.
+
+Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, and peak memory to establish a baseline for your dataset. If jobs fail or overlap, check compute and bucket storage performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
 
 ### Memory Configuration
 
-On Service `1.26.1`, start with `NODE_OPTIONS=--max-old-space-size-percentage=80` for all three roles. Adjust this heap limit using total container memory usage, which also includes non-heap allocations.
+On Service `1.26.1`, start with `NODE_OPTIONS=--max-old-space-size-percentage=80` for API, replication, and compact containers. This caps the V8 old-generation heap, not total process memory. Monitor total container memory under load and lower the percentage if needed to leave room for non-heap allocations.
 
 ### Load Balancer
 
 Use a redundant load balancer to terminate TLS and distribute connections across API containers. Host the API on a dedicated subdomain.
 
-For [nginx](https://nginx.org/en/), disable response buffering in the proxy `location` block for HTTP streaming:
+For HTTP streaming with [nginx](https://nginx.org/en/), add this proxy block to your TLS server configuration. Replace `powersync:8080` with your API upstream. Disabling response buffering lets sync data reach clients as it arrives.
 
 ```nginx
-proxy_buffering off;
+location / {
+    proxy_pass http://powersync:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_buffering off;
+}
 ```
 
 For nginx Kubernetes ingress, use this annotation:
@@ -86,7 +98,7 @@ Configure load-balancer health checks to poll `/probes/liveness`. See [Health Ch
 
 ### Migrations
 
-API and replication containers run storage migrations on startup. To move this work to a separate deployment job, disable automatic migrations:
+API and replication containers run storage migrations on startup. Large migrations can delay startup during an update. To run migrations as a separate job before replacing the containers, disable automatic migrations:
 
 ```yaml service.yaml
 migrations:
@@ -97,11 +109,11 @@ Then run `migrate up` as a separate job before each deployment, including the fi
 
 ## Backups
 
-Keep non-secret configuration in version control and credentials in a secrets manager.
+Keep non-secret configuration in version control and credentials in a secrets manager. PowerSync containers do not persist sync data locally.
 
-With S3 enabled, plan recovery for both MongoDB and S3. Follow [S3 retention requirements](/sync/advanced/storage-version-4#self-hosted-s3-setup) rather than expiring objects yourself.
+With S3 enabled, a MongoDB backup alone does not include the objects it references. Plan recovery for both stores and follow [S3 retention requirements](/sync/advanced/storage-version-4#self-hosted-s3-setup) rather than expiring objects yourself.
 
-PowerSync can also rebuild sync data from the source database, but this requires full replication and client re-downloads.
+PowerSync can also rebuild sync data from the source database. Allow for the time and capacity needed for full replication and for clients to download their data again.
 
 ## Self-Hosted Architecture Diagram
 

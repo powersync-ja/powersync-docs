@@ -10,9 +10,11 @@ For a runnable development setup, use the [self-hosting examples](https://github
 
 For development and testing, use:
 
-1. One PowerSync container running API and replication: 1 vCPU, 512 MB memory.
-2. A MongoDB or Postgres [bucket storage](#storage-requirements) database. For MongoDB, use one node in replica set mode: 1 vCPU, 2 GB memory (M10+ on Atlas).
+1. One PowerSync container running API and replication: 1 vCPU, 512 MiB memory.
+2. A MongoDB or Postgres [bucket storage](#storage-requirements) database. For MongoDB, use one node in replica set mode: 1 vCPU, 2 GiB memory (M10+ on Atlas).
 3. A load balancer for TLS.
+
+This setup has no redundancy. If bucket storage data is lost, [re-replicate from the source database](#backups). All clients must then download their data again.
 
 ## Production
 
@@ -50,6 +52,8 @@ Add API containers before many clients run an initial sync at once or before dep
 
 Run `start -r sync` to replicate source changes into bucket storage. Additional replication containers provide failover, not more throughput.
 
+During rolling deploys or failover, [`PSYNC_S1003`](/debugging/error-codes#psync_s1xxx-replication-issues) is expected briefly while another process holds the replication lock.
+
 Size replication for source write volume, row size, and buckets per row. A row in ten buckets creates more replication work than a row in one bucket. Initial replication and catch-up after a large batch update can need more capacity than steady-state replication.
 
 Use [replication lag](/maintenance-ops/replication-lag), replication throughput, CPU, memory, and database metrics to assess capacity.
@@ -68,7 +72,7 @@ Compaction resources depend on bucket size, accumulated changes, and concurrency
 
 ### Memory Configuration
 
-On Service `1.26.1`, start with `NODE_OPTIONS=--max-old-space-size-percentage=80` for API, replication, and compact containers. This caps the V8 old-generation heap, not total process memory. Monitor total container memory under load and lower the percentage if needed to leave room for non-heap allocations.
+On PowerSync Service v1.26.1, start with `NODE_OPTIONS=--max-old-space-size-percentage=80` for API, replication, and compact containers. This caps the V8 old-generation heap, not total process memory. Monitor total container memory under load and lower the percentage if needed to leave room for non-heap allocations.
 
 ### Load Balancer
 

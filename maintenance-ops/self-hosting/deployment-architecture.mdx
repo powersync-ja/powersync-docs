@@ -9,7 +9,7 @@ sidebarTitle: "Deployment Architecture"
 For development and testing, use:
 
 1. One PowerSync container running API and replication: 1 vCPU, 512 MB memory.
-2. One MongoDB node in replica set mode: 1 vCPU, 2 GB memory (M10+ on Atlas).
+2. A MongoDB or Postgres [bucket storage](#storage-requirements) database. For MongoDB, use one node in replica set mode: 1 vCPU, 2 GB memory (M10+ on Atlas).
 3. A load balancer for TLS.
 
 This setup has no redundancy.
@@ -20,15 +20,16 @@ Separate API and replication workloads so you can scale them independently.
 
 ### Storage Requirements
 
-The sizing below uses ARM64 compute, PowerSync Service v1.26.0 or later, and [storage version 4 with S3](/sync/advanced/storage-version-4#self-hosted-s3-setup). Use a three-node MongoDB replica set for bucket storage.
+You can use MongoDB or Postgres for bucket storage, independently of your source database:
 
-S3 stores larger blocks of sync data; MongoDB retains smaller blocks and metadata. The MongoDB requirement applies to bucket storage, not the source database.
+- [MongoDB](/configuration/powersync-service/self-hosted-instances#mongodb-storage) supports storage version 4 and optional S3 object storage. Use a three-node replica set for production.
+- [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses storage version 2 and does not support storage version 4 or S3 object storage.
 
-Apply the same S3 configuration and permissions to replication, API, and compact jobs. Clients connect to the API, which reads from both stores.
+With [S3 object storage](/sync/advanced/storage-version-4#self-hosted-s3-setup), S3 stores larger blocks of sync data; MongoDB retains smaller blocks and metadata. Apply the same S3 configuration and permissions to replication, API, and compact jobs. Clients connect to the API, which reads from both stores.
 
 ### Compute Sizing
 
-Use these tested allocations as a starting point:
+The tested profile uses ARM64 compute, MongoDB bucket storage, and storage version 4 with S3, available since PowerSync Service v1.26.0. Use these allocations as a starting point:
 
 | Role | vCPU | Memory | Deployment |
 | --- | --- | --- | --- |
@@ -110,9 +111,7 @@ Then run `migrate up` as a separate job before each deployment, including the fi
 
 Keep non-secret configuration in version control and credentials in a secrets manager. PowerSync containers do not persist sync data locally.
 
-With S3 enabled, a MongoDB backup alone does not include the objects it references. Plan recovery for both stores and follow [S3 retention requirements](/sync/advanced/storage-version-4#self-hosted-s3-setup) rather than expiring objects yourself.
-
-PowerSync can also rebuild sync data from the source database. Allow for the time and capacity needed for full replication and for clients to download their data again.
+Recover PowerSync's sync data by re-replicating from the source database. Allow for the time and capacity needed for full replication and for clients to download their data again.
 
 ## Self-Hosted Architecture Diagram
 

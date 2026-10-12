@@ -1,10 +1,12 @@
 ---
 title: "Deployment Architecture"
-description: "Infrastructure and sizing recommendations for self-hosted PowerSync in staging and production."
+description: "Infrastructure and sizing recommendations for self-hosted PowerSync."
 sidebarTitle: "Deployment Architecture"
 ---
 
 ## Minimal Setup
+
+For a runnable development setup, use the [self-hosting examples](https://github.com/powersync-ja/self-host-demo), which include Docker Compose files and configuration.
 
 For development and testing, use:
 
@@ -12,11 +14,9 @@ For development and testing, use:
 2. A MongoDB or Postgres [bucket storage](#storage-requirements) database. For MongoDB, use one node in replica set mode: 1 vCPU, 2 GB memory (M10+ on Atlas).
 3. A load balancer for TLS.
 
-This setup has no redundancy.
-
 ## Production
 
-Separate API and replication workloads so you can scale them independently.
+Run API and replication in separate containers so you can scale them independently.
 
 ### Storage Requirements
 
@@ -25,38 +25,38 @@ You can use MongoDB or Postgres for bucket storage, independently of your source
 - [MongoDB](/configuration/powersync-service/self-hosted-instances#mongodb-storage) supports storage version 4 and optional S3 object storage. Use a three-node replica set for production.
 - [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses storage version 2 and does not support storage version 4 or S3 object storage.
 
-With [S3 object storage](/sync/advanced/storage-version-4#self-hosted-s3-setup), S3 stores larger blocks of sync data; MongoDB retains smaller blocks and metadata. Apply the same S3 configuration and permissions to replication, API, and compact jobs. Clients connect to the API, which reads from both stores.
+With [S3 object storage](/sync/advanced/storage-version-4#self-hosted-s3-setup), S3 stores larger blocks of sync data while MongoDB retains smaller blocks and metadata.
 
 ### Compute Sizing
 
-The tested profile uses ARM64 compute, MongoDB bucket storage, and storage version 4 with S3, available since PowerSync Service v1.26.0. Use these allocations as a starting point:
+The tested configuration uses ARM64 compute, MongoDB bucket storage, and storage version 4 with S3, available since PowerSync Service v1.26.0. Use these CPU and memory settings as a starting point:
 
-| Role | vCPU | Memory | Deployment |
-| --- | --- | --- | --- |
-| API | 1 | 2 GiB | At least two containers; scale horizontally |
-| Replication | 2 | 4 GiB | One active replication process |
-
-Allocate additional CPU and memory for any sidecars.
+| Role | vCPU | Memory |
+| --- | --- | --- |
+| API | 1 | 2 GiB |
+| Replication | 2 | 4 GiB |
 
 ### Connection Capacity and Scaling
 
-This profile supports up to 1,000 concurrent connections per API process. Larger datasets, more buckets per client, and simultaneous initial syncs can require fewer connections per process.
+This configuration supports up to **1,000 concurrent connections per API process**. Larger datasets, more buckets per client, and simultaneous initial syncs can require fewer connections per process.
 
 After load testing, raise [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) from its default of `200` up to `1000`. The setting limits HTTP streams and WebSockets separately; monitor their combined count.
 
 Scale on both CPU utilization and connections per process. Idle connections can keep CPU low, while initial syncs can saturate CPU with fewer connections. Keep autoscaling targets below the connection limit to allow for bursts while new containers start.
 
-Add API containers before large initial-sync waves or deployments that make clients download their data again. Wait for the new containers to become healthy before starting the workload. Adding containers does not immediately redistribute existing long-lived connections. Reduce capacity gradually after the download load subsides.
+Add API containers before many clients run an initial sync at once or before deployments that make clients download their data again. Wait for the new containers to become healthy before those initial syncs or deployments begin. Adding containers does not immediately redistribute existing long-lived connections. Reduce capacity gradually after the download load subsides.
 
 ### Replication Container
 
 Run `start -r sync` to replicate source changes into bucket storage. Additional replication containers provide failover, not more throughput.
 
-Size replication for source write volume, document size, and buckets per row. A row in ten buckets creates more replication work than a row in one bucket. Initial replication and catch-up after a large batch update can need more capacity than steady-state replication.
+Size replication for source write volume, row size, and buckets per row. A row in ten buckets creates more replication work than a row in one bucket. Initial replication and catch-up after a large batch update can need more capacity than steady-state replication.
 
 Use [replication lag](/maintenance-ops/replication-lag), replication throughput, CPU, memory, and database metrics to assess capacity.
 
 ### API Containers
+
+Run at least two API containers in production for availability. Scale horizontally by adding containers as client demand grows.
 
 Run `start -r api` for client connections. Collect [metrics](/maintenance-ops/self-hosting/monitoring) separately from API and replication containers.
 
@@ -64,7 +64,7 @@ Run `start -r api` for client connections. Collect [metrics](/maintenance-ops/se
 
 Run `compact` as a separate scheduled job, hourly for storage version 4. Each run decides which buckets need chunk merging or full compaction, rather than fully compacting every bucket each hour.
 
-Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, CPU, and peak memory to size the job for your dataset. If jobs fail or overlap, check compute and bucket storage performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
+Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, CPU, and peak memory to size the job for your dataset. If jobs fail or overlap, check the compact job's CPU and memory usage and bucket storage performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
 
 ### Memory Configuration
 
@@ -74,7 +74,7 @@ On Service `1.26.1`, start with `NODE_OPTIONS=--max-old-space-size-percentage=80
 
 Use a redundant load balancer to terminate TLS and distribute connections across API containers. Host the API on a dedicated subdomain.
 
-For HTTP streaming with [nginx](https://nginx.org/en/), add this proxy block to your TLS server configuration. Replace `powersync:8080` with your API upstream. Disabling response buffering lets sync data reach clients as it arrives.
+For HTTP streaming with [nginx](https://nginx.org/en/), add this proxy block to your TLS server configuration. Replace `powersync:8080` with your PowerSync API hostname and port. Disabling response buffering lets sync data reach clients as it arrives.
 
 ```nginx
 location / {

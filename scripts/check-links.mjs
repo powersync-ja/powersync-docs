@@ -2,7 +2,7 @@
 /**
  * Snippet-aware link check.
  *
- * Runs `mintlify broken-links --check-anchors --check-snippets`, then re-validates
+ * Runs `mint broken-links --check-anchors --check-snippets`, then re-validates
  * every reported `#anchor` against the headings of the target page *including*
  * headings that come from snippets the page imports. The Mintlify checker only
  * reads page files, so a page whose body lives in a snippet (for example the pages
@@ -27,8 +27,8 @@ if (nodeMajor < 20 || nodeMajor > 24) {
 }
 
 const root = process.cwd();
-const localBin = path.join(root, 'node_modules', '.bin', 'mintlify');
-const bin = existsSync(localBin) ? localBin : 'mintlify';
+const localBin = path.join(root, 'node_modules', '.bin', 'mint');
+const bin = existsSync(localBin) ? localBin : 'mint';
 
 const run = spawnSync(bin, ['broken-links', '--check-anchors', '--check-snippets'], {
   cwd: root,

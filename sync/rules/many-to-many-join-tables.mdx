@@ -5,7 +5,7 @@ description: "Handle many-to-many relationships in Sync Rules using join table s
 ---
 
 <Info>
-Sync Rules are deprecated. Sync Streams support [JOINs](/sync/streams/queries#using-joins) and [nested subqueries](/sync/streams/queries#using-subqueries), which handle most many-to-many relationships directly without the workarounds on this page. See [Many-to-Many with Sync Streams](/sync/streams/examples#many-to-many-relationships).
+  Sync Rules are deprecated. Sync Streams support [JOINs](/sync/streams/queries#using-joins) and [nested subqueries](/sync/streams/queries#using-subqueries), which handle most many-to-many relationships directly without the workarounds on this page. See [Many-to-Many with Sync Streams](/sync/streams/examples#many-to-many-relationships).
 </Info>
 
 Join tables are often used to implement many-to-many relationships between tables. Join queries are not directly supported in PowerSync Sync Rules, and require some workarounds depending on the use case. This guide contains some recommended strategies.
@@ -19,73 +19,75 @@ Join tables are often used to implement many-to-many relationships between table
 As an example, consider a social media application. The app has message boards. Each user can subscribe to boards, make posts, and comment on posts. Posts may also have one or more topics.
 
 <Frame>
-  <img src="/images/usage-11.avif"/>
+  <img
+    src="/images/usage-11.avif"
+  />
 </Frame>
 
 <Accordion title="Full schema (for Postgres)">
-```sql
-create table users (
-    id uuid not null default gen_random_uuid (),
-    name text not null,
-    last_activity timestamp with time zone,
-    constraint users_pkey primary key (id)
-);
-
-create table boards (
-    id uuid not null default gen_random_uuid (),
-    name text not null,
-    constraint boards_pkey primary key (id)
+  ```sql
+  create table users (
+      id uuid not null default gen_random_uuid (),
+      name text not null,
+      last_activity timestamp with time zone,
+      constraint users_pkey primary key (id)
   );
-
-create table posts (
-    id uuid not null default gen_random_uuid (),
-    board_id uuid not null,
-    created_at timestamp with time zone not null default now(),
-    author_id uuid not null,
-    title text not null,
-    body text not null,
-    constraint posts_pkey primary key (id),
-    constraint posts_author_id_fkey foreign key (author_id) references users (id),
-    constraint posts_board_id_fkey foreign key (board_id) references boards (id)
-  );
-
-create table comments (
-    id uuid not null default gen_random_uuid (),
-    post_id uuid not null,
-    created_at timestamp with time zone not null default now(),
-    author_id uuid not null,
-    body text not null,
-    constraint comments_pkey primary key (id),
-    constraint comments_author_id_fkey foreign key (author_id) references users (id),
-    constraint comments_post_id_fkey foreign key (post_id) references posts (id)
-  );
-
-create table board_subscriptions (
-    id uuid not null default gen_random_uuid (),
-    user_id uuid not null,
-    board_id uuid not null,
-    constraint board_subscriptions_pkey primary key (id),
-    constraint board_subscriptions_board_id_fkey foreign key (board_id) references boards (id),
-    constraint board_subscriptions_user_id_fkey foreign key (user_id) references users (id)
-  );
-
-create table topics (
-    id uuid not null default gen_random_uuid (),
-    label text not null,
-    constraint topics_pkey primary key (id)
-  );
-
-create table post_topics (
-    id uuid not null default gen_random_uuid (),
-    board_id uuid not null,
-    post_id uuid not null,
-    topic_id uuid not null,
-    constraint post_topics_pkey primary key (id),
-    constraint post_topics_board_id_fkey foreign key (board_id) references boards (id),
-    constraint post_topics_post_id_fkey foreign key (post_id) references posts (id),
-    constraint post_topics_topic_id_fkey foreign key (topic_id) references topics (id)
-  );
-```
+  
+  create table boards (
+      id uuid not null default gen_random_uuid (),
+      name text not null,
+      constraint boards_pkey primary key (id)
+    );
+  
+  create table posts (
+      id uuid not null default gen_random_uuid (),
+      board_id uuid not null,
+      created_at timestamp with time zone not null default now(),
+      author_id uuid not null,
+      title text not null,
+      body text not null,
+      constraint posts_pkey primary key (id),
+      constraint posts_author_id_fkey foreign key (author_id) references users (id),
+      constraint posts_board_id_fkey foreign key (board_id) references boards (id)
+    );
+  
+  create table comments (
+      id uuid not null default gen_random_uuid (),
+      post_id uuid not null,
+      created_at timestamp with time zone not null default now(),
+      author_id uuid not null,
+      body text not null,
+      constraint comments_pkey primary key (id),
+      constraint comments_author_id_fkey foreign key (author_id) references users (id),
+      constraint comments_post_id_fkey foreign key (post_id) references posts (id)
+    );
+  
+  create table board_subscriptions (
+      id uuid not null default gen_random_uuid (),
+      user_id uuid not null,
+      board_id uuid not null,
+      constraint board_subscriptions_pkey primary key (id),
+      constraint board_subscriptions_board_id_fkey foreign key (board_id) references boards (id),
+      constraint board_subscriptions_user_id_fkey foreign key (user_id) references users (id)
+    );
+  
+  create table topics (
+      id uuid not null default gen_random_uuid (),
+      label text not null,
+      constraint topics_pkey primary key (id)
+    );
+  
+  create table post_topics (
+      id uuid not null default gen_random_uuid (),
+      board_id uuid not null,
+      post_id uuid not null,
+      topic_id uuid not null,
+      constraint post_topics_pkey primary key (id),
+      constraint post_topics_board_id_fkey foreign key (board_id) references boards (id),
+      constraint post_topics_post_id_fkey foreign key (post_id) references posts (id),
+      constraint post_topics_topic_id_fkey foreign key (topic_id) references topics (id)
+    );
+  ```
 </Accordion>
 
 ### Many-to-many: Bucket parameters
@@ -220,28 +222,28 @@ bucket_definitions:
 This approach does require some extra effort to keep the array up to date. One option is to use a trigger in the case of Postgres:
 
 <Accordion title="Postgres trigger to update subscribed_board_ids">
-```sql
-CREATE OR REPLACE FUNCTION recalculate_subscribed_boards()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Recalculate subscribed_board_ids for the affected user
-    UPDATE users
-    SET subscribed_board_ids = (
-        SELECT array_agg(board_id)
-        FROM board_subscriptions
-        WHERE user_id = COALESCE(NEW.user_id, OLD.user_id)
-    )
-    WHERE id = COALESCE(NEW.user_id, OLD.user_id);
-
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_board_subscriptions_change
-AFTER INSERT OR UPDATE OR DELETE ON board_subscriptions
-FOR EACH ROW
-EXECUTE FUNCTION recalculate_subscribed_boards();
-```
+  ```sql
+  CREATE OR REPLACE FUNCTION recalculate_subscribed_boards()
+  RETURNS TRIGGER AS $$
+  BEGIN
+      -- Recalculate subscribed_board_ids for the affected user
+      UPDATE users
+      SET subscribed_board_ids = (
+          SELECT array_agg(board_id)
+          FROM board_subscriptions
+          WHERE user_id = COALESCE(NEW.user_id, OLD.user_id)
+      )
+      WHERE id = COALESCE(NEW.user_id, OLD.user_id);
+  
+      RETURN NULL;
+  END;
+  $$ LANGUAGE plpgsql;
+  
+  CREATE TRIGGER trg_board_subscriptions_change
+  AFTER INSERT OR UPDATE OR DELETE ON board_subscriptions
+  FOR EACH ROW
+  EXECUTE FUNCTION recalculate_subscribed_boards();
+  ```
 </Accordion>
 
 Note that this approach does have scaling limitations. When the number of board subscriptions per user becomes large (say over 100 rows per user), then:

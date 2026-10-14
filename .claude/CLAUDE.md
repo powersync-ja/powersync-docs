@@ -52,6 +52,7 @@ This is an adaptation of STE principles, not a requirement for full controlled-v
 
 - Use American English, such as "behavior," "color," "initialize," and "analyze."
 - Write concepts and benefits in full sentences. Use specific claims with evidence rather than vague attribution.
+- Support every performance, scale, or cost benefit. Give a measured number with its conditions, such as "up to 1,000 concurrent connections per API process instead of 200." Alternatively, derive the benefit from a mechanism the page describes and state its limits, such as faster deployments because only changed streams are reprocessed. Otherwise, describe what changed instead of calling it "faster," "more efficient," or "more scalable." A source that asserts a benefit without a measurement is not evidence for it.
 - Omit promotional language, editorial filler, and statements that minimize difficulty. Avoid "breathtaking," "it's important to note," "simply," "just," "easily," and "obviously."
 - Avoid title and description filler such as "Comprehensive" or "Complete," and unnecessary transitions such as "moreover" or "furthermore."
 - Explain the practical meaning of "local-first" or "offline-first": apps read and write locally, respond instantly, and remain functional without a network connection.

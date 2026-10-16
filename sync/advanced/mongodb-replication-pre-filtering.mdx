@@ -8,7 +8,7 @@ description: "Exclude MongoDB documents before the PowerSync Service stores and 
   **Availability**: MongoDB replication pre-filtering is available for customers on our [Team and Enterprise](https://www.powersync.com/pricing) plans. Self-hosted deployments require the [Enterprise Self-Hosted Edition](/intro/self-hosting#enterprise-self-hosted-edition).
 </Note>
 
-{/* TODO: Confirm release status and minimum PowerSync Service version before publishing. */}
+{/* TODO: Confirm release status, minimum PowerSync Service version, and subscription-plan enforcement before publishing. */}
 
 Replication pre-filtering limits which MongoDB documents enter PowerSync bucket storage. Use it when your instance needs only a subset of a collection, such as active records or records for a fixed set of stores. With suitable source indexes, pre-filtering reduces initial snapshot work and storage for excluded documents.
 
@@ -65,6 +65,8 @@ This example replicates only todos with an explicit `archived: false` field. Eac
     Deploy the Sync Config using your usual [Cloud](/configuration/powersync-service/cloud-instances) or [self-hosted](/maintenance-ops/self-hosting/update-sync-rules) workflow. Deploy later filter changes as part of the Sync Config too.
 
     If validation reports an inefficient snapshot index, create the recommended index before deployment. Index warnings are advisory and do not block deployment.
+
+    Unsupported source settings, such as `post_images: off`, block deployment. Parsing a valid filter does not establish that your instance can execute it. The Open Edition parses filter expressions but rejects their deployment.
   </Step>
 </Steps>
 
@@ -92,6 +94,8 @@ Supported EJSON wrappers are `$oid`, `$date`, `$numberInt`, `$numberLong`, `$num
 
 Filters do not support comparisons between fields, computed values, `null`, array constants, or embedded-document constants. Operators such as `$ne`, `$not`, `$gt`, and `$lt` are not supported. Use explicit values, such as `archived: false`, instead of conditions such as “not true” or “field is missing.”
 
+YAML aliases are not supported inside filter expressions. Write each condition directly instead of referencing an anchor.
+
 ### Comparison Semantics
 
 Pre-filters use MongoDB aggregation expressions. Their comparison behavior differs from the query predicates you might use in `find()`.
@@ -108,7 +112,7 @@ Pre-filters use MongoDB aggregation expressions. Their comparison behavior diffe
 
 A native query such as `find({ store_id: 'store-a' })` can match the array in the last row. The pre-filter excludes that document because its `store_id` value is an array, not one of the scalar constants. See MongoDB's [aggregation `$in` reference](https://www.mongodb.com/docs/manual/reference/operator/aggregation/in/) for how it compares values.
 
-Nested paths also preserve arrays. If a document contains `items: [{ sku: 'sku-a' }, { sku: 'sku-b' }]`, the path `$$doc.items.sku` produces an array of SKU values. It does not match `$eq: ['$$doc.items.sku', 'sku-a']`. The supported pre-filter operators cannot express “any array element matches”; use a scalar source field for that condition.
+When a dotted path crosses an array of documents, MongoDB collects the nested field values into an array. For example, if a document contains `items: [{ sku: 'sku-a' }, { sku: 'sku-b' }]`, `$$doc.items.sku` evaluates to `['sku-a', 'sku-b']`. MongoDB does this automatically when it evaluates the path. A pre-filter compares that whole array against its constant, so `$eq: ['$$doc.items.sku', 'sku-a']` does not match. The supported pre-filter operators cannot express “any array element matches”; use a scalar source field for that condition.
 
 #### Numbers and Other Types
 
@@ -127,7 +131,9 @@ Keep the source field's type consistent with the filter constant. For example, c
 
 ## Collection Names and Wildcards
 
-Each `source_table_options` key identifies a collection. Use `collection`, `database.collection`, or `connection.database.collection`. Unqualified names use the connection's default database. The default connection tag is `default`.
+Each `source_table_options` key identifies a collection. Use `collection`, `database.collection`, or `default.database.collection`. Unqualified names use the connection's default database. An explicit connection tag must be `default`.
+
+Unquoted identifiers are converted to lowercase. Double-quote identifiers to preserve case or include a dot in a collection name. Retain those double quotes in YAML by enclosing the key in single quotes: `'"Todos"'` identifies the collection `Todos`, and `'"audit.events"'` identifies one collection named `audit.events`. Use the same identifier quoting in your SQL queries. For a literal double quote inside an identifier, write two double quotes.
 
 A final `%` matches a collection-name prefix. Database wildcards are not supported. For example:
 
@@ -149,7 +155,7 @@ Exact collection names override wildcards, regardless of declaration order. Amon
 
 Use `mongodb_filter_expression: disabled` to exclude a collection from a wildcard filter. An empty options object (`{}`) inherits the matching wildcard filter.
 
-These entries configure collections already selected by your Sync Streams queries. They do not cause additional collections to replicate.
+These entries configure collections already selected by your Sync Streams queries. Each filter entry must apply to at least one collection name or pattern referenced by those queries. The entries do not cause additional collections to replicate.
 
 ## Snapshot Indexes
 
@@ -168,6 +174,8 @@ For filters on multiple fields:
 
 - `$or` needs a suitable index for every branch. An unindexed branch can cause a collection scan for the whole filter.
 - `$and` can use an index on one term. Prefer the most selective term. For an `$and` of equality conditions, a compound index on those fields followed by `_id` can narrow the scan further.
+
+For an empty collection, validation checks the available index definitions. This confirms whether a compatible index exists, but it cannot confirm which query plan MongoDB will choose with data. Validate again after populating the collection to check the snapshot query plan.
 
 An index on only the filtered field can require MongoDB to read and sort all matching documents for every snapshot page. Including `_id` avoids that repeated work. MongoDB may still choose an `_id` index scan when a filter matches a large fraction of the collection.
 

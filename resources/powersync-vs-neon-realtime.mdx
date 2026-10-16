@@ -1,0 +1,128 @@
+---
+title: "PowerSync vs Neon Realtime"
+description: "A side-by-side look at PowerSync and Neon Realtime: where data lives, how writes and offline work, and what each supports."
+sidebarTitle: "PowerSync vs Neon Realtime"
+---
+
+[Neon Realtime](https://neon.com/docs/realtime/overview) lets your app subscribe to a SQL query on Neon Postgres and get updates as the data changes. Neon launched it in public beta in October 2026. It was built by the team behind Electric, who joined Neon in August 2026.
+
+PowerSync syncs data from your backend database into a SQLite database inside your app. The app reads and writes that local database directly, so it responds instantly and keeps working without a network connection. PowerSync syncs changes in both directions when the app is connected. PowerSync also [supports Neon as a source database](/integrations/neon), so you can use it with an existing Neon project.
+
+<Note>
+  This comparison reflects both products as of October 2026. Neon Realtime is in beta and is changing quickly. Check [Neon's documentation](https://neon.com/docs/realtime/overview) for its current status.
+</Note>
+
+## At a Glance
+
+|  | **PowerSync** | **Neon Realtime** |
+| --- | --- | --- |
+| Status | Generally available. Some SDKs and connectors are in beta or alpha. See [Feature Status](/resources/feature-status). | Public beta |
+| What the client holds | A persistent SQLite database with the synced tables | The results of each subscribed query, held in memory |
+| Source databases | Postgres, MongoDB, MySQL, SQL Server, Azure DocumentDB, and Convex | Neon Postgres |
+| Client SDKs | JavaScript (web, React Native, Node.js), Dart/Flutter, Kotlin, Swift, .NET, and Rust | TypeScript (browser and server), with React bindings |
+| Offline support | Built in: local reads, local writes, and a persistent upload queue | Offline persistence through TanStack DB |
+| Writes | Written to local SQLite, then uploaded to your backend from a queue | Sent to your backend API, with optimistic UI state until the write syncs back |
+| What you sync or subscribe to | Rows selected by Sync Streams | Any read-only, deterministic SQL query, including joins and aggregates |
+| TanStack DB | Optional integration (alpha) | Optional integration |
+| Read permissions | Sync Streams with claims from your auth provider's JWT | Your backend authorizes and seals each query |
+| Managed cloud | PowerSync Cloud | Neon (four AWS regions during the beta) |
+| Self-hosting | Yes | No |
+| Open source | Client SDKs are open source. The PowerSync Service is source-available. | Client SDK is open source. The Realtime service is not. |
+
+## How Data Is Stored on the Client
+
+PowerSync keeps a SQLite database on the device. Sync Streams define which rows each user receives, and the client SDK writes them into local tables. Your app queries those tables with normal SQLite, including joins, aggregates, and sorting. The data stays on the device across app restarts, and after a reconnect PowerSync normally downloads only the changes since the last sync.
+
+Neon Realtime works differently: there is no local database. It keeps the result of each live query in memory. Your app subscribes to a query, receives the full result, and then receives updates as transactions commit. If the connection drops, the app keeps showing the last result. When the connection returns, the subscription loads the query result again.
+
+They also differ in what you can query on the server:
+
+- Neon live queries can use almost any read-only Postgres query, including joins, aggregates, `GROUP BY`, `ORDER BY`, `LIMIT`, and window functions. Queries can't call non-deterministic functions such as `now()`.
+- PowerSync [Sync Streams](/sync/streams/overview) select the rows to sync, with support for filters, subqueries, and some joins. They don't support aggregation, sorting, or `LIMIT` on the server. Instead, you run those queries against the local SQLite database after the rows are synced.
+
+## How Writes Work
+
+Neither product writes directly to your database from the client. In both cases your backend receives the write, validates it, and commits it. Your backend also decides how to handle conflicts.
+
+Where they differ is what happens to a write before your backend accepts it:
+
+| Step | **PowerSync** | **Neon Realtime** |
+| --- | --- | --- |
+| 1. User makes a change | The app writes to local SQLite. The change shows in the UI immediately. | The app shows the change as optimistic UI state, for example with React's `useOptimistic` or TanStack DB. |
+| 2. Pending write | The client SDK stores the write in a persistent upload queue. | The pending write exists only in the app's UI state, unless you add a queue. |
+| 3. Send to the server | Your upload function sends queued writes to your backend API. | Your app calls your backend API. |
+| 4. Confirmation | The committed change syncs back down and replaces the local version. | Your API returns the Postgres transaction ID. The app waits for that transaction to arrive on the live query, then drops the optimistic state. |
+| If the request fails | The write stays in the queue and the client SDK retries it. If your backend rejects a write permanently, your upload function must handle the error so the queue can continue. | The optimistic change rolls back, and your app decides whether to retry. |
+
+## Offline Support
+
+PowerSync is built for offline use. Users can read synced data and make changes without a connection. The changes wait in the upload queue, which survives app restarts, and upload when the device reconnects. See [Client Architecture](/architecture/client-architecture) for details.
+
+With Neon Realtime, live query results stay available while the app is open, even if the connection drops. For offline persistence, Neon's documentation points to [TanStack DB](https://tanstack.com/db), which has its own persistence and offline write packages.
+
+## TanStack DB
+
+Both products work with [TanStack DB](https://tanstack.com/db), and neither requires it.
+
+- **PowerSync:** Collections read from the local SQLite database. They can load data eagerly or on demand. The integration is in alpha. See [TanStack Query & TanStack DB](/client-sdks/frameworks/tanstack).
+- **Neon Realtime:** Each collection is backed by one live query. TanStack DB manages optimistic state for writes while your backend commits them.
+
+## Auth and Permissions
+
+PowerSync clients connect with a JWT, either from your auth provider or issued by your backend. [Sync Streams](/sync/streams/overview) use claims from the token, such as the user ID, to decide which rows each user receives. Your backend authorizes writes when it receives them from the upload queue. See [Authentication](/configuration/auth/overview).
+
+Neon Realtime puts read authorization in your backend instead. When the app needs data, your backend authenticates the user, builds the SQL query with the user's parameters, and seals it into a short-lived token. The client uses that token to subscribe and cannot read or change the query inside it. Your backend can use any authentication method. Neon Realtime does not support Postgres row-level security (RLS) yet. Neon says it aims to add RLS before general availability.
+
+## Source Databases
+
+Maturity labels for PowerSync come from [Feature Status](/resources/feature-status).
+
+| Source database | **PowerSync** | **Neon Realtime** |
+| --- | --- | --- |
+| Postgres (including Neon) | GA | Neon Postgres only |
+| MongoDB | GA | — |
+| MySQL | Beta | — |
+| SQL Server (including Azure SQL Database) | Beta | — |
+| Azure DocumentDB | Alpha | — |
+| Convex | Experimental | — |
+
+## Client SDKs and Platforms
+
+PowerSync maturity labels come from [Feature Status](/resources/feature-status). See [Supported Platforms](/resources/supported-platforms) for minimum versions and platform details.
+
+| SDK | **PowerSync** | **Neon Realtime** |
+| --- | --- | --- |
+| React Native and Expo | GA | — |
+| JavaScript/TypeScript (web) | GA | Beta (browser) |
+| React | GA (React hooks) | Beta (React bindings) |
+| Capacitor | Beta | — |
+| Tauri | Alpha | — |
+| Node.js | GA | Beta (server) |
+| Dart/Flutter | GA | — |
+| Kotlin (Android, iOS, JVM) | GA | — |
+| Swift (iOS, macOS) | GA | — |
+| .NET | Beta | — |
+| Rust | Beta | — |
+
+On the backend, Neon Realtime also provides adapters for defining queries with Drizzle and Kysely. PowerSync supports Drizzle and Kysely on the client, along with other ORMs.
+
+## Hosting and Open Source
+
+|  | **PowerSync** | **Neon Realtime** |
+| --- | --- | --- |
+| Managed cloud | PowerSync Cloud | Runs inside Neon. Available in four AWS regions during the beta. |
+| Self-hosting | Yes. The [Open Edition](/intro/self-hosting) is free to self-host, and an Enterprise Self-Hosted Edition is available. | No. Realtime runs only on Neon's platform. |
+| Client SDKs | Open source (Apache 2.0, except the Kotlin SDK, which is MIT) | Open source (Apache 2.0) |
+| Sync service | Source-available under FSL-1.1-ALv2. Each release becomes Apache 2.0 after two years. | Not open source. Neon has not published the source code of the live query engine or the Live SQL API. |
+
+<Note>
+  You can't self-host Neon Realtime. If you need to run sync on your own infrastructure, for example for data residency or compliance, PowerSync supports that with the Open Edition or the Enterprise Self-Hosted Edition.
+</Note>
+
+You enable Neon Realtime per Neon branch, and it works with Neon branching and scale-to-zero. The Realtime service is free during the beta, but Neon still bills for database compute and data transfer.
+
+## Learn More
+
+- [Neon + PowerSync](/integrations/neon): set up PowerSync with a Neon database
+- [Feature Status](/resources/feature-status) and [Supported Platforms](/resources/supported-platforms)
+- [Neon Realtime documentation](https://neon.com/docs/realtime/overview)

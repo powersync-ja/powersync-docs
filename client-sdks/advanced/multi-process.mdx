@@ -1,0 +1,101 @@
+---
+title: "Multi-Process Access"
+description: "Special considerations when sharing a SQLite database with PowerSync across processes."
+---
+
+In most setups, an app runs as a single process. Both iOS and Android use a single process for UI and services by default, and sandboxing prevents other apps from accessing your app's SQLite databases.
+
+However, in some cases multiple processes need to access the same database file:
+
+- On Apple platforms, [app and system extensions][apple-extensions], such as home screen widgets, run in an independent process.
+- On desktop platforms, users can launch your app multiple times. Each instance runs in a separate process.
+
+## Multi-Process Considerations
+
+In general, it is safe to share a SQLite database across processes. On each platform, SQLite uses a locking scheme that prevents two processes from writing to the database at the same time. Parallel access to a database does not corrupt data.
+
+PowerSync adds these considerations when processes share a SQLite database:
+
+1. **Sync coordination:** When you call `connect()` on a PowerSync database, the new connection replaces earlier connections on the same instance. This replacement does not work across instances or processes. **Calling `connect()` from multiple processes is not safe** and typically leads to excessive sync volumes.
+2. **SQLite locks:** When two processes try to write to the same database file, SQLite waits for a timeout and then returns a `SQLITE_BUSY` error code. Within a single process, PowerSync uses internal _asynchronous_ locks to prevent concurrent writes. These locks wait without blocking and prevent the error. PowerSync SDKs do not provide equivalent locks across processes.
+3. **Missing updates:** PowerSync SDKs provide methods to watch for changes in a database. `watch()` methods use these change notifications to re-run queries, and the SDKs use them to invoke your upload callback after local writes. The notifications come from SQLite [update hooks][update hooks], which do not report writes from other processes.
+
+## Solutions
+
+Reliable multi-process access requires explicit inter-process communication, which is out of scope for PowerSync SDKs. The following sections describe possible approaches if your app needs multi-process access to a database.
+
+<Tip>
+  Within a single process, it is always safe to use the same PowerSync database instance across threads. This includes [background syncing](/client-sdks/advanced/background-syncing).
+
+  This page does not apply to the web, where PowerSync SDKs coordinate across tabs.
+</Tip>
+
+### Single-Process Apps
+
+PowerSync follows the [first law][first law] of distributed objects: don't distribute your objects. APIs like `watch()` and `connect()` are designed for single-process access. PowerSync does not try to emulate them across multiple processes.
+
+On desktop platforms, we strongly recommend that you build a single-instance app instead of managing multiple processes. On app start, check for an existing instance. If one exists, tell that process to open another window and exit the second process. Use a mechanism such as `app.requestSingleInstanceLock()` for Electron or multi-window support for Flutter.
+
+### Limited Second-Process Access
+
+If a single-process architecture is not possible, such as for app extensions on iOS, consider whether the second process needs full database access. For example, an iOS app might write to and sync a SQLite database while an extension only reads from it.
+
+This setup is safe if one process is clearly the primary process _and_ secondary processes only read from the database. All processes must open the database with the same schema. However, only the Swift SDK notifies `watch()` queries in secondary processes about writes from the primary process.
+
+### Full Multi-Process Access
+
+No PowerSync SDK supports unrestricted multi-process access, where multiple processes write to the database in parallel and each process connects with its own Sync Stream subscriptions.
+
+If your app requires this, consider an architecture where one process acts as a server for the other processes. The other processes only read from the database. They send writes and `connect()` requests to the server process through a custom, app-specific inter-process protocol.
+
+As a safeguard for desktop apps, the Dart SDK lets you replace its internal mutexes to prevent multiple processes from syncing at the same time. To opt in, extend `PowerSyncPlatform` and return a `FileMutex`. The example below throws for unknown mutex identifiers, so that a future SDK version that adds a mutex fails visibly instead of allowing unsafe multi-process access:
+
+```dart
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:powersync/native.dart';
+import 'package:powersync/powersync.dart';
+import 'package:sqlite_async/sqlite_async.dart';
+
+final class MultiProcessPlatform extends PowerSyncPlatform {
+  final FileMutex _syncMutex;
+  final FileMutex _crudMutex;
+
+  MultiProcessPlatform(Directory lockDirectory)
+      : _syncMutex = FileMutex(lockDirectory, 'ps-sync.lock'),
+        _crudMutex = FileMutex(lockDirectory, 'ps-crud.lock');
+
+  @override
+  Mutex namedMutex(String identifier) {
+    if (identifier.endsWith('-sync')) {
+      return _syncMutex;
+    } else if (identifier.endsWith('-crud')) {
+      return _crudMutex;
+    } else {
+      throw UnsupportedError('Unknown mutex id $identifier');
+    }
+  }
+}
+
+Future<PowerSyncDatabase> openDatabase() async {
+  final supportDir = await getApplicationSupportDirectory();
+  final lockDir = await getTemporaryDirectory();
+  await lockDir.create(recursive: true);
+
+  final db = PowerSyncDatabase(
+    schema: schema,
+    path: p.join(supportDir.path, 'app.db'),
+    platform: MultiProcessPlatform(lockDir),
+  );
+  await db.initialize();
+  return db;
+}
+```
+
+[apple-extensions]: https://developer.apple.com/documentation/technologyoverviews/app-extensions
+
+[update hooks]: https://sqlite.org/c3ref/update_hook.html
+
+[first law]: https://martinfowler.com/bliki/FirstLaw.html

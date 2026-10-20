@@ -219,7 +219,21 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     Also see [`ReadTransaction`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.Client.PowerSyncDatabase.ReadTransaction.html).
   </Tab>
   <Tab title="Rust">
-    Example not yet available.
+    ```Rust
+    use powersync::{PowerSyncDatabase, error::PowerSyncError};
+    use rusqlite::params;
+    
+    async fn delete_list(db: &PowerSyncDatabase, id: &str) -> Result<(), PowerSyncError> {
+        let mut writer = db.writer().await?;
+        let tx = writer.transaction()?;
+    
+        tx.execute("DELETE FROM lists WHERE id = ?", params![id])?;
+        tx.execute("DELETE FROM todos WHERE list_id = ?", params![id])?;
+    
+        tx.commit()?;
+        Ok(())
+    }
+    ```
   </Tab>
 </Tabs>
 
@@ -949,7 +963,22 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     ```
   </Tab>
   <Tab title="Rust">
-    Example not yet available.
+    ```Rust
+    use futures_lite::StreamExt;
+    use powersync::PowerSyncDatabase;
+    
+    async fn observe_status(db: &PowerSyncDatabase) {
+        let mut stream = db.watch_status();
+        // watch_status() also returns the current snapshot when first polled, but status() can be used
+        // if access to the status is needed synchronously.
+        let mut status = db.status();
+    
+        loop {
+            println!("PowerSync status: {status:?}");
+            status = stream.next().await.unwrap();
+        }
+    }
+    ```
   </Tab>
 </Tabs>
 
@@ -1128,7 +1157,17 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     ```
   </Tab>
   <Tab title="Rust">
-    Example not yet available.
+    ```Rust
+    use futures_lite::StreamExt;
+    use powersync::PowerSyncDatabase;
+    
+    async fn wait_for_initial_sync(db: &PowerSyncDatabase) {
+        db.watch_status()
+            .filter(|status| status.has_synced())
+            .next()
+            .await;
+    }
+    ```
   </Tab>
 </Tabs>
 
@@ -1465,6 +1504,28 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     - [Demo component](https://github.com/powersync-ja/powersync-dotnet/blob/main/demos/MAUITodo/Views/ListsPage.xaml.cs)
   </Tab>
   <Tab title="Rust">
-    Example not yet available.
+    The Rust SDK doesn't report global sync progress, but can report progress for a Sync Stream. For an auto-subscribe Sync Stream named `lists`, you can track progress with:
+
+    ```Rust
+    use futures_lite::StreamExt;
+    use powersync::PowerSyncDatabase;
+    
+    async fn print_progress(db: &PowerSyncDatabase) {
+        let stream = db.sync_stream("lists", None);
+        let mut status = db.watch_status();
+        while let Some(status) = status.next().await {
+            let progress = status
+                .for_stream(&stream)
+                .and_then(|stream| stream.progress);
+    
+            if let Some(progress) = progress {
+                println!(
+                    "Stream progress: {} out of {}",
+                    progress.downloaded, progress.total
+                );
+            }
+        }
+    }
+    ```
   </Tab>
 </Tabs>

@@ -1,6 +1,6 @@
 ---
 title: "Multi-Process Access"
-description: "Special considerations when sharing a SQLite database with PowerSync across processes."
+description: "Constraints and recommended architectures for sharing a PowerSync database across processes."
 ---
 
 In most setups, an app runs as a single process. Both iOS and Android use a single process for UI and services by default, and sandboxing prevents other apps from accessing your app's SQLite databases.
@@ -12,12 +12,12 @@ However, in some cases multiple processes need to access the same database file:
 
 ## Multi-Process Considerations
 
-In general, it is safe to share a SQLite database across processes. On each platform, SQLite uses a locking scheme that prevents two processes from writing to the database at the same time. Parallel access to a database does not corrupt data.
+In general, it is safe to share a SQLite database across processes. SQLite uses file locks to prevent two processes from writing to the database at the same time, so parallel access does not corrupt data.
 
 PowerSync adds these considerations when processes share a SQLite database:
 
-1. **Sync coordination:** When you call `connect()` on a PowerSync database, the new connection replaces earlier connections on the same instance. This replacement does not work across instances or processes. **Calling `connect()` from multiple processes is not safe** and typically leads to excessive sync volumes.
-2. **SQLite locks:** When two processes try to write to the same database file, SQLite waits for a timeout and then returns a `SQLITE_BUSY` error code. Within a single process, PowerSync uses internal _asynchronous_ locks to prevent concurrent writes. These locks wait without blocking and prevent the error. PowerSync SDKs do not provide equivalent locks across processes.
+1. **Sync coordination:** When you call `connect()` on a PowerSync database, the new connection replaces earlier connections. This replacement does not work if a database is opened multiple times in one or multiple processes. **Calling `connect()` from multiple processes is not safe** and typically causes duplicate downloads.
+2. **SQLite locks:** When two processes try to write to the same database file, SQLite waits for a timeout and then returns a `SQLITE_BUSY` error code. Within a single process, PowerSync SDKs use internal locks to serialize writes, so this error does not occur. PowerSync SDKs do not provide equivalent locks across processes.
 3. **Missing updates:** PowerSync SDKs provide methods to watch for changes in a database. `watch()` methods use these change notifications to re-run queries, and the SDKs use them to invoke your upload callback after local writes. The notifications come from SQLite [update hooks][update hooks], which do not report writes from other processes.
 
 ## Solutions
@@ -25,16 +25,16 @@ PowerSync adds these considerations when processes share a SQLite database:
 Reliable multi-process access requires explicit inter-process communication, which is out of scope for PowerSync SDKs. The following sections describe possible approaches if your app needs multi-process access to a database.
 
 <Tip>
-  Within a single process, it is always safe to use the same PowerSync database instance across threads. This includes [background syncing](/client-sdks/advanced/background-syncing).
+  Within a single process, it is always safe to use the same PowerSync database across threads. This includes [background syncing](/client-sdks/advanced/background-syncing).
 
   This page does not apply to the web, where PowerSync SDKs coordinate across tabs.
 </Tip>
 
 ### Single-Process Apps
 
-PowerSync follows the [first law][first law] of distributed objects: don't distribute your objects. APIs like `watch()` and `connect()` are designed for single-process access. PowerSync does not try to emulate them across multiple processes.
+APIs like `watch()` and `connect()` are designed for single-process access. PowerSync SDKs do not emulate them across multiple processes.
 
-On desktop platforms, we strongly recommend that you build a single-instance app instead of managing multiple processes. On app start, check for an existing instance. If one exists, tell that process to open another window and exit the second process. Use a mechanism such as `app.requestSingleInstanceLock()` for Electron or multi-window support for Flutter.
+On desktop platforms, build a single-instance app instead of managing multiple processes. On app start, check for an existing instance. If one exists, tell that process to open another window, and then exit the new process. For Electron, use `app.requestSingleInstanceLock()`. For Flutter, use a single-instance or [multiple windows][flutter-windows] from a single process.
 
 ### Limited Second-Process Access
 
@@ -44,11 +44,15 @@ This setup is safe if one process is clearly the primary process _and_ secondary
 
 ### Full Multi-Process Access
 
-No PowerSync SDK supports unrestricted multi-process access, where multiple processes write to the database in parallel and each process connects with its own Sync Stream subscriptions.
+No PowerSync SDK supports unrestricted multi-process access, where multiple processes write to the database in parallel and each process connects separately.
 
 If your app requires this, consider an architecture where one process acts as a server for the other processes. The other processes only read from the database. They send writes and `connect()` requests to the server process through a custom, app-specific inter-process protocol.
 
-As a safeguard for desktop apps, the Dart SDK lets you replace its internal mutexes to prevent multiple processes from syncing at the same time. To opt in, extend `PowerSyncPlatform` and return a `FileMutex`. The example below throws for unknown mutex identifiers, so that a future SDK version that adds a mutex fails visibly instead of allowing unsafe multi-process access:
+If you need parallel writes, use [`PRAGMA busy_timeout`](https://sqlite.org/pragma.html#pragma_busy_timeout) to make SQLite wait longer while another process is in a write transaction. If a write still fails with `SQLITE_BUSY`, retry it.
+
+If different apps share a database, for example through an [app group][app group] on Apple platforms, use the same PowerSync SDK version in all of them. The SQLite file format is stable across SQLite versions, but PowerSync SDKs are not designed for different SDK versions to open the same database. If they do, one SDK can revert internal migrations that another SDK applied. App versions that use different database schemas cause the same problem. App extensions are released in the same bundle as their app, so this problem does not affect them.
+
+As a safeguard for desktop apps, the Dart SDK lets you replace its internal mutexes to prevent multiple processes from syncing at the same time. To opt in, extend `PowerSyncPlatform` and return a `FileMutex` for sync locks. You still need to handle `SQLITE_BUSY` errors separately.
 
 ```dart
 import 'dart:io';
@@ -98,4 +102,6 @@ Future<PowerSyncDatabase> openDatabase() async {
 
 [update hooks]: https://sqlite.org/c3ref/update_hook.html
 
-[first law]: https://martinfowler.com/bliki/FirstLaw.html
+[flutter-windows]: https://flutter.dev/blog/desktop-windowing-apis
+
+[app group]: https://developer.apple.com/documentation/xcode/configuring-app-groups

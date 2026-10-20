@@ -1,205 +1,116 @@
 ---
 title: "Pricing Example"
-description: "Example showing how PowerSync Cloud plan costs are calculated based on synced operations and active users."
+description: "How to estimate PowerSync Cloud costs: what drives each usage metric, and how costs grow as your app scales."
 ---
 
-## Chat App Example
+Paid PowerSync Cloud plans have a monthly base fee that includes a set amount of usage. If your app uses more than that, you pay for the additional usage. Your usage grows with the number of users and with how much data each user syncs. This page explains what drives each usage metric, then shows how the costs of an example app grow as it scales.
 
-Use this real-world example of a basic chat app to gauge your PowerSync usage and costs, on the [Pro plan](https://www.powersync.com/pricing) of PowerSync Cloud. This is not an exact estimate, but it can help you better understand how your PowerSync usage would be billed. Usage costs for the Team plan can be calculated in the same way since only the base plan fee differs.
+## Rates and Plans
 
-<Note>
-  This use case has the peculiarity that all data is user-generated and necessarily shared with other users (in the form of messages). More typical use cases might sync the same server-side data with many different users and have less user-generated data to sync.
-</Note>
+The Pro and Team plans bill usage at the same rates. They differ only in their base fee and in how much usage they allow. Check the [pricing page](https://www.powersync.com/pricing) for current rates.
 
-### Overview: Costs by usage
+| Usage metric | Included | Additional usage |
+| --- | --- | --- |
+| Data synced | 30 GB per month | \$1 per GB |
+| Data hosted | 10 GB | \$1 per GB |
+| Peak concurrent clients | 1,000 | \$30 per block of 1,000 |
+| PowerSync Service instances | 2 | \$25 per instance per month |
 
-To illustrate typical costs, consider an example chat app, where users can initiate chats with other users. Users can see their active chats in a list, read messages, and send messages.
+<Info>
+  Included usage covers your whole organization, so include staging and development instances in your estimate.
+</Info>
 
-For this app, all messages are stored on a backend database like Postgres. PowerSync is used to make sure users see new messages in real-time, and can access or create messages even when their devices are offline.
+| Plan | Base fee | Maximum data hosted | Maximum peak concurrent clients |
+| --- | --- | --- | --- |
+| Pro | \$49 per month | 100 GB | 3,000 |
+| Team | \$599 per month | 500 GB | 10,000 |
 
-#### Assumptions
+Consider the [Enterprise plan](https://powersync.com/blog/powersync-cloud-enterprise-pricing-model) if your app needs more concurrent clients than the Team plan allows or has high, predictable usage. Enterprise offers lower rates in exchange for a usage commitment.
 
-User base assumptions:
+## What Drives Each Usage Metric
 
-- **Daily Active Users (DAUs) are 10% of total app installations.** These are the users that actively open and use your app on a given day, which is typically a small subset of your total app installations. For the calculations below, we estimated DAUs as 10% of the total number of app installations. We use this assumption as an input to calculate the total number of messages sent and received every day.
-- **Peak concurrent clients are 10% of DAUs.** This is the maximum number of users actively using your app at exactly the same time as other users, which is typically a small subset of your Daily Active Users. For the calculations below, we estimated peak concurrent clients as 10% of the total number of app installations.
+### Data Synced
 
-<Frame>
-  <img
-    src="/images/resources-4.avif"
-  />
-</Frame>
+Data synced is the data that devices download from the PowerSync Service. Each download counts, so 1 MB synced to 100 devices adds 100 MB. For a month, it is roughly:
 
-Data size, transfer and storage assumptions:
+```text
+data synced ≈ full downloads × data in each full download
+            + active users × changes each user downloads
+```
 
-- **Messages are 0.25 KB in size on average.** 1KB can store around half a page’s worth of text. We assume the average message size on this app will be a quarter of that.
-- **DAUs send and receive a combined total of 100 messages per day,** generating 100 rows in the messages table each day\*\*.\*\*
-- **Message data is only stored on local databases for three months.** Using PowerSync’s [Sync Streams](/sync/streams/overview) or [Sync Rules](/sync/rules/overview), only messages sent and received in the last 3 months are stored in the local database embedded within a user’s app.
-- **No attachments synced through PowerSync.** Attachments like files or photos are not synced through PowerSync.
-- **1 PowerSync instance.** The backend database connects to a single PowerSync instance. A more typical setup may use 2 PowerSync instances: one for syncing from the staging database and one for the production database. Since staging data volumes are often negligible, we’ve ignored that in this example.
+A full download happens when a new installation syncs for the first time, or when a user downloads everything again, for example because the app clears its local data on sign-out. To estimate the size of a full download, multiply the rows a user syncs by their average size. If you don't know your row size, start with about 1 KB per row. Data synced is higher in months with many full downloads, such as when many users join.
 
-#### Table of Assumptions
+Between full downloads, each user downloads only changes. A 1 MB update to data that 1,000 users sync adds 1 GB.
 
-| DAUs as % of all installs | 10% |
+Deploying changes to your Sync Streams can also make users download their data again. This is most common while you roll out your app, and occasional once your app is stable. See [Reducing Data Synced](/resources/usage-and-billing/reducing-usage#reducing-data-synced).
+
+### Data Hosted
+
+Data hosted is the data that the PowerSync Service stores to sync to your users. It includes a copy of the data that your Sync Streams select from your source database, plus a history of changes to that data. The history can make data hosted larger than the selected data, but daily compacting usually keeps it small.
+
+The more data your users share, the lower data hosted is. Data that several users sync, such as a team's projects, is stored once, not once for each user. If 50 users each sync 100 MB of their own data, data hosted is about 5 GB. If all 50 users sync the same 100 MB, it is about 100 MB.
+
+### Peak Concurrent Clients
+
+Peak concurrent clients is the highest number of clients connected at the same time during the billing cycle. It depends on how many users are online at your busiest time, not on your total number of users. As a rough guide, peak concurrent clients is often around 10% of daily active users (DAUs). Expect a higher percentage if users keep your app open for most of the day or the majority use it at the same time.
+
+## Measuring Your Usage
+
+On PowerSync Cloud, the [Metrics](/maintenance-ops/monitoring-and-alerting#usage-metrics) view in the Dashboard shows the actual usage of each instance. A beta release, or a test that runs representative workflows on representative data, usually gives a good indication of what your usage metrics will be. If you can't measure your usage yet, estimate it as the example below shows.
+
+## Example: Project Management App
+
+Consider a project management app. Teams use it to plan projects, assign tasks, and comment on each other's work. Each team's data syncs to every member, so members see each other's changes in real time.
+
+### Assumptions
+
+| Assumption | Value |
 | --- | --- |
-| Peak concurrent clients as % of DAUs | 10% |
-| Messages sent and received per day per DAU | 100 |
-| Message average size | 0.25 KB |
-| Messages kept on local database for | 3 months (90 days) |
+| DAUs | 50% of total users |
+| Peak concurrent clients | 10% of DAUs |
+| Full downloads per month | 10% of DAUs |
+| Users per team | 20 |
+| Team data (projects, tasks, and comments), synced to every member | 50 MB per team |
+| User data (notifications, drafts, and settings) | 2 MB per user |
+| Changes each DAU downloads per month | 20 MB |
 
-<Tabs>
-  <Tab title="Small (50K installs)">
-    For 50,000 app installs (5,000 Daily Active Users): **\$51/month** on the Pro plan.
+### Costs at Different Sizes
 
-    ## Data Synced
+The 100,000-user app needs at least the Team plan, because its data hosted and peak concurrent clients are above the Pro plan's maximums. At this scale, the [Enterprise plan](https://powersync.com/blog/powersync-cloud-enterprise-pricing-model) is usually a better fit, because it offers lower rates for high usage. The 1,000,000-user app is above the Team plan's maximums, so it needs the Enterprise plan, which has custom pricing.
 
-    |  |  |
-    | --- | --- |
-    | Data synced per month | 100 messages / day \* 5,000 DAUs \* 0.25 KB \* 30 = 3.75 GB / month |
+These plans and costs follow from this example's assumptions. Plan maximums limit data hosted and peak concurrent clients, not users, so your app can need a different plan at the same number of users.
 
-    | Total data synced costs / month |  |
-    | --- | --- |
-    | Usage: | 3.75 GB |
-    | Less included usage: | (30 GB) |
-    | Cost for additional usage: | \$0 |
-    | **Total usage costs** | **\$0 / month** |
+|  | 1,000 users | 10,000 users | 100,000 users | 1,000,000 users |
+| --- | --- | --- | --- | --- |
+| DAUs | 500 | 5,000 | 50,000 | 500,000 |
+| Teams | 50 | 500 | 5,000 | 50,000 |
+| Peak concurrent clients | 50 | 500 | 5,000 | 50,000 |
+| Data synced per month | 12.6 GB | 126 GB | 1,260 GB | 12,600 GB |
+| Data hosted | 4.5 GB | 45 GB | 450 GB | 4,500 GB |
+| Plan | Pro | Pro | Team | Enterprise |
+| Base fee | \$49 | \$49 | \$599 | Custom |
+| Data synced cost | \$0 | \$96 | \$1,230 | Custom |
+| Data hosted cost | \$0 | \$35 | \$440 | Custom |
+| Peak concurrent clients cost | \$0 | \$0 | \$120 | Custom |
+| **Total per month** | **\$49** | **\$180** | **\$2,389** | **Custom** |
 
-    ## Data Hosted
+Data synced and data hosted grow in proportion to users, so they make up most of the cost as the app grows. For example, the 10,000-user column is calculated as follows:
 
-    |  |  |
-    | --- | --- |
-    | Total size of replicated data to be hosted | 100 messages / day \* 5,000 DAUs \* 0.25 KB \* 90 days = 11.25 GB |
+- **Data synced:** 500 full downloads × 52 MB of team and user data = 26 GB, plus 5,000 DAUs × 20 MB of changes = 100 GB. That is 126 GB in total. After the 30 GB included, 96 GB × \$1 = \$96.
+- **Data hosted:** Count all users, not only DAUs, because the Service stores data for every user. 500 teams × 50 MB + 10,000 users × 2 MB = 45 GB. After the 10 GB included, 35 GB × \$1 = \$35. The history of changes makes actual data hosted a bit higher.
+- **Peak concurrent clients:** 10% × 5,000 = 500, which is within the 1,000 included, so \$0.
+- **Total:** \$49 + \$96 + \$35 + \$0 = \$180 per month.
 
-    | Total data hosted costs / month |  |
-    | --- | --- |
-    | Usage: | 11.25 GB |
-    | Less included usage: | (10 GB) |
-    | Cost for additional usage: | 2 GB \* \$1 / GB |
-    | **Total usage costs** | **\$2 / month** |
+## Factors That Affect Usage
 
-    ## Peak Concurrent Clients
+This table shows how common factors affect each usage metric.
 
-    |  |  |
-    | --- | --- |
-    | Total number of peak concurrent clients | 5,000 DAUs \* 10% = 500 peak concurrent clients |
+| Factor | Data synced | Data hosted | Peak concurrent clients |
+| --- | --- | --- | --- |
+| More users | Increases | Increases, except for data that all users share | Increases |
+| More data shared between users | Increases, because every full download includes it | Increases, but not for each user who syncs it | No effect |
+| More frequent changes | Increases, because each user who syncs the data downloads each change | Increases temporarily | No effect |
+| More data for each user | Increases, because full downloads are larger | Increases for each user | No effect |
+| Large rows, such as long JSON or text columns | Increases, because each change downloads the whole row, even if only one column changed | Increases, because each stored copy of the row is larger | No effect |
 
-    | Total peak concurrent clients costs / month |  |
-    | --- | --- |
-    | Usage: | 500 |
-    | Less included usage: | (1,000) |
-    | Cost for additional usage: | \$0 |
-    | **Total usage costs** | **\$0 / month** |
-
-    | Total monthly costs |  |
-    | --- | --- |
-    | Pro Plan | \$49 / month |
-    | Data synced | \$ 0 / month |
-    | Data hosted | \$ 2 / month |
-    | Peak concurrent clients | \$ 0 / month |
-    | **Total monthly costs** | **\$51 / month** |
-  </Tab>
-  <Tab title="Medium (1M installs)">
-    For 1,000,000 app installs (100,000 Daily Active Users): **\$399/month** on the Pro plan.
-
-    ## Data Synced
-
-    |  |  |
-    | --- | --- |
-    | Data synced per month | 100 messages / day \* 100,000 DAUs \* 0.25 KB \* 30 = 75 GB / month |
-
-    | Total data synced costs / month |  |
-    | --- | --- |
-    | Usage: | 75 GB |
-    | Less included usage: | (30 GB) |
-    | Cost for additional usage: | 45 GB \* \$1.00 / GB |
-    | **Total usage costs** | **\$45 / month** |
-
-    ## Data Hosted
-
-    |  |  |
-    | --- | --- |
-    | Total size of replicated data to be hosted | 100 messages / day \* 100,000 DAUs \* 0.25 KB \* 90 days = 225 GB |
-
-    | Total data hosted costs / month |  |
-    | --- | --- |
-    | Usage: | 225 GB |
-    | Less included usage: | (10 GB) |
-    | Cost for additional usage: | 215 GB \* \$1 / GB |
-    | **Total usage costs** | **\$215 / month** |
-
-    ## Peak Concurrent Clients
-
-    |  |  |
-    | --- | --- |
-    | Total number of peak concurrent clients | 100,000 DAUs \* 10% = 10,000 peak concurrent clients |
-
-    | Total peak concurrent clients costs / month |  |
-    | --- | --- |
-    | Usage: | 10,000 |
-    | Less included usage: | (1,000) |
-    | Cost for additional usage: | 9,000 \* \$30 / 1,000 |
-    | **Total usage costs** | **\$270 / month** |
-
-    | Total monthly costs |  |
-    | --- | --- |
-    | Pro Plan | \$ 49 / month |
-    | Data synced | \$45 / month |
-    | Data hosted | \$215 / month |
-    | Peak concurrent clients | \$270 / month |
-    | **Total monthly costs** | **\$579 / month** |
-  </Tab>
-  <Tab title="Large (10M installs)">
-    For 10,000,000 app installs (1,000,000 Daily Active Users): **\$6,064/month** on the Pro plan.
-
-    <Note>
-      At this scale, our [Enterprise plan](https://www.powersync.com/pricing) is typically more cost effective and provides more predictable billing.
-    </Note>
-
-    ## Data Synced
-
-    |  |  |
-    | --- | --- |
-    | Data synced per month | 100 messages / day \* 1,000,000 DAUs \* 0.25 KB \* 30 = 750 GB / month |
-
-    | Total data synced costs / month |  |
-    | --- | --- |
-    | Usage: | 750 GB |
-    | Less included usage: | (30 GB) |
-    | Cost for additional usage: | 720 GB \* \$1.00 / GB |
-    | **Total usage costs** | **\$720 / month** |
-
-    ## Data Hosted
-
-    |  |  |
-    | --- | --- |
-    | Total size of replicated data to be hosted | 100 messages / day \* 1,000,000 DAUs \* 0.25 KB \* 90 days = 2,250 GB |
-
-    | Total data hosted costs / month |  |
-    | --- | --- |
-    | Usage: | 2,250 GB |
-    | Less included usage: | (10 GB) |
-    | Cost for additional usage: | 2,240 GB \* \$1 / GB |
-    | **Total usage costs** | **\$2,240 / month** |
-
-    ## Peak Concurrent Clients
-
-    |  |  |
-    | --- | --- |
-    | Total number of peak concurrent clients | 1,000,000 DAUs \* 10% = 100,000 peak concurrent clients |
-
-    | Total peak concurrent clients costs / month |  |
-    | --- | --- |
-    | Usage: | 100,000 |
-    | Less included usage: | (1,000) |
-    | Cost for additional usage: | 99,000 \* \$30 / 1,000 |
-    | **Total usage costs** | **\$2,970 / month** |
-
-    | Total monthly costs |  |
-    | --- | --- |
-    | Pro Plan | \$ 49.00 / month |
-    | Data synced | \$720.00 / month |
-    | Data hosted | \$2,240.00 / month |
-    | Peak concurrent clients | \$2,970.00 / month |
-    | **Total monthly costs** | **\$6,064.00 / month** |
-  </Tab>
-</Tabs>
+To lower your usage, see [Reducing Usage](/resources/usage-and-billing/reducing-usage).

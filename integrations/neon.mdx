@@ -5,6 +5,7 @@ sidebarTitle: "Neon"
 ---
 
 import CreateCloudInstance from '/snippets/create-cloud-instance.mdx';
+import CreateCloudInstanceCli from '/snippets/create-cloud-instance-cli.mdx';
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
 import NeonEnableLogicalReplication from '/snippets/neon-enable-logical-replication.mdx';
@@ -53,11 +54,33 @@ Neon Auth handles sign-in. The Data API and PowerSync both accept the JWTs that 
 
 ### Create a Neon Project
 
-1. In the [Neon Console](https://console.neon.tech), create a project.
-2. Enable **Better Auth**. Neon calls this managed Better Auth service [Neon Auth](https://neon.com/docs/auth/overview).
-3. Enable the Data API under **Postgres database** > **Data API**, with both of these options selected:
-   - **Use Neon Auth:** The Data API accepts JWTs from Neon Auth.
-   - **Grant public schema access:** The `authenticated` role can read and write tables in the `public` schema, including tables you create later. This option is not selected by default. The demo app uploads writes as this role, so without these grants its uploads fail.
+Create a project with [Neon Auth](https://neon.com/docs/auth/overview), Neon's managed Better Auth service, and the [Data API](https://neon.com/docs/data-api/overview).
+
+<Tabs>
+  <Tab title="Web UI">
+    1. In the [Neon Console](https://console.neon.tech), create a project.
+    2. Enable **Better Auth**.
+    3. Enable the Data API under **Postgres database** > **Data API**, with **Use Neon Auth** and **Grant public schema access** selected. **Grant public schema access** is not selected by default.
+  </Tab>
+  <Tab title="CLI">
+    1. Install the Neon CLI and log in:
+       ```bash
+       npm i -g neon@latest
+       neon login
+       ```
+    2. Create a project. The output includes the project ID, which the following commands use as `<project-id>`:
+       ```bash
+       neon projects create --name powersync-neon-notes --region-id aws-us-east-2
+       ```
+    3. Enable Neon Auth and the Data API:
+       ```bash
+       neon neon-auth enable --project-id <project-id>
+       neon data-api create --project-id <project-id> --database neondb --auth-provider neon_auth --add-default-grants
+       ```
+  </Tab>
+</Tabs>
+
+The demo app uploads writes through the Data API as the `authenticated` role. **Grant public schema access** (`--add-default-grants` in the CLI) gives this role read and write access to tables in the `public` schema, including tables you create later. Without these grants, the demo app's uploads fail.
 
 ### Enable Logical Replication
 
@@ -75,7 +98,9 @@ The demo app uses [Drizzle](https://orm.drizzle.team/) migrations to create its 
    cd powersync-js/demos/react-neon-tanstack-query-notes
    pnpm install
    ```
-2. In the Neon Console, open **Connect** and copy the connection string with **Connection pooling** turned off. Neon recommends a direct connection for migrations.
+2. Get a direct connection string. Neon recommends a direct connection for migrations.
+   - **Web UI:** In the Neon Console, click **Connect**, turn off **Connection pooling**, and copy the connection string.
+   - **CLI:** Run `neon connection-string --project-id <project-id>`. It returns a direct connection string by default.
 3. Create a `.env` file in the demo directory and add the connection string:
    ```env
    DATABASE_URL=postgresql://neondb_owner:<password>@ep-cool-darkness-123456.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require
@@ -109,13 +134,13 @@ The RLS policies let each signed-in user read and write their own notes and para
 
 ### Create a PowerSync Database User
 
-Run the following SQL in the Neon Console under **Postgres database** > **SQL Editor**. The role needs `BYPASSRLS` so that PowerSync can replicate every row of the RLS-protected demo tables. Your Sync Streams then decide which rows each user receives.
+Run the following SQL in the Neon Console under **Postgres database** > **SQL Editor**, or with `psql "$(neon connection-string --project-id <project-id>)"`. The role needs `BYPASSRLS` so that PowerSync can replicate every row of the RLS-protected demo tables. Your Sync Streams then decide which rows each user receives.
 
 <PostgresPowerSyncUser />
 
 ### Create the Postgres Publication
 
-Run the following SQL in the Neon SQL Editor:
+Run the following SQL in the same way:
 
 <PostgresPowerSyncPublication />
 
@@ -123,41 +148,115 @@ Run the following SQL in the Neon SQL Editor:
 
 ### Create a PowerSync Cloud Instance
 
-<CreateCloudInstance />
+<Tabs>
+  <Tab title="Web UI">
+    <CreateCloudInstance />
+  </Tab>
+  <Tab title="CLI">
+    Run these commands in the demo directory.
+
+    <CreateCloudInstanceCli />
+  </Tab>
+</Tabs>
 
 ### Connect PowerSync to Neon
 
-<NeonConnection />
+<Tabs>
+  <Tab title="Web UI">
+    <NeonConnection />
+  </Tab>
+  <Tab title="CLI">
+    Add the connection to `powersync/service.yaml`. Use the host from `neon connection-string --project-id <project-id>`, with `powersync_role` as the user:
+
+    ```yaml
+    replication:
+      connections:
+        - type: postgresql
+          uri: postgresql://powersync_role@ep-cool-darkness-123456.c-2.us-east-2.aws.neon.tech/neondb
+          password:
+            secret: !env POWERSYNC_DATABASE_PASSWORD
+    ```
+  </Tab>
+</Tabs>
+
+### Configure Neon Auth
+
+The demo app sends PowerSync the JWT that Neon Auth issues for the signed-in user. To verify these JWTs, PowerSync needs two values from Neon:
+
+- **JWKS URL:** The public keys that Neon Auth publishes as a JSON Web Key Set (JWKS), for example `https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech/neondb/auth/.well-known/jwks.json`.
+- **JWT audience:** The origin of your Neon **Auth URL**, which is the URL without the path and without a trailing `/`, for example `https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech`. PowerSync rejects a token if its `aud` value doesn't match exactly.
+
+You also enable development tokens, which you use to [test your Sync Streams](#test-your-sync-streams-optional) at the end of this guide.
+
+<Tabs>
+  <Tab title="Web UI">
+    Find the **Auth URL** and **JWKS URL** in the Neon Console under **Settings** > **Better Auth**. Then, in the PowerSync Dashboard, go to the **Client Auth** view and set the following fields:
+
+    - **Development tokens:** Enable this setting.
+    - **JWKS URI:** Enter the **JWKS URL** from Neon.
+    - **JWT Audience:** Enter the origin of the **Auth URL** from Neon.
+
+    Then click **Save and Deploy**.
+  </Tab>
+  <Tab title="CLI">
+    `neon neon-auth status --project-id <project-id>` prints the Auth URL as `base_url` and the JWKS URL as `jwks_url`. Add a `client_auth` section to `powersync/service.yaml`:
+
+    ```yaml
+    client_auth:
+      jwks_uri: https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech/neondb/auth/.well-known/jwks.json
+      additional_audiences:
+        - https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech
+      allow_temporary_tokens: true
+    ```
+
+    You deploy this configuration together with your Sync Config in the next step.
+  </Tab>
+</Tabs>
 
 ### Configure Sync Streams
 
 [Sync Streams](/sync/streams/overview) define which data syncs to which users' devices. In the demo app, each user syncs their own notes and paragraphs, plus all shared notes.
 
-1. In the PowerSync Dashboard, go to the **Sync Streams** view.
-2. Replace the contents of the editor with the following Sync Config:
-   ```yaml
-   config:
-     edition: 3
-   streams:
-     user_notes:
-       auto_subscribe: true
-       # Sync notes and paragraphs belonging to the authenticated user
-       queries:
-         - SELECT * FROM notes WHERE owner_id = auth.user_id()
-         - SELECT paragraphs.* FROM paragraphs
-             INNER JOIN notes ON notes.id = paragraphs.note_id
-             WHERE notes.owner_id = auth.user_id()
-     shared_notes:
-       auto_subscribe: true
-       # Sync all shared notes to all users (not recommended for production)
-       queries:
-         - SELECT * FROM notes WHERE shared = TRUE
-         - SELECT paragraphs.* FROM paragraphs
-             INNER JOIN notes ON notes.id = paragraphs.note_id
-             WHERE notes.shared = TRUE
-   ```
-3. Click **Validate** and fix any errors.
-4. Click **Deploy**.
+Use the following Sync Config:
+
+```yaml
+config:
+  edition: 3
+streams:
+  user_notes:
+    auto_subscribe: true
+    # Sync notes and paragraphs belonging to the authenticated user
+    queries:
+      - SELECT * FROM notes WHERE owner_id = auth.user_id()
+      - SELECT paragraphs.* FROM paragraphs
+          INNER JOIN notes ON notes.id = paragraphs.note_id
+          WHERE notes.owner_id = auth.user_id()
+  shared_notes:
+    auto_subscribe: true
+    # Sync all shared notes to all users (not recommended for production)
+    queries:
+      - SELECT * FROM notes WHERE shared = TRUE
+      - SELECT paragraphs.* FROM paragraphs
+          INNER JOIN notes ON notes.id = paragraphs.note_id
+          WHERE notes.shared = TRUE
+```
+
+<Tabs>
+  <Tab title="Web UI">
+    1. In the PowerSync Dashboard, go to the **Sync Streams** view.
+    2. Replace the contents of the editor with the Sync Config above.
+    3. Click **Validate** and fix any errors.
+    4. Click **Deploy**.
+  </Tab>
+  <Tab title="CLI">
+    Replace the contents of `powersync/sync-config.yaml` with the Sync Config above. Then deploy the full configuration, which includes the database connection, client auth, and Sync Config:
+
+    ```bash
+    export POWERSYNC_DATABASE_PASSWORD=<powersync_role password>
+    powersync deploy
+    ```
+  </Tab>
+</Tabs>
 
 ## Run the Demo App
 
@@ -175,6 +274,8 @@ VITE_NEON_AUTH_URL=https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.ne
 # PowerSync Dashboard > Connect > instance URL
 VITE_POWERSYNC_URL=https://your-instance-id.powersync.journeyapps.com
 ```
+
+If you use the CLI, `neon data-api get --project-id <project-id> --database neondb` prints the Data API URL, and `neon neon-auth status --project-id <project-id>` prints the Auth URL as `base_url`. Your PowerSync instance URL is `https://<instance-id>.powersync.journeyapps.com`, where `<instance-id>` is the `instance_id` value in `powersync/cli.yaml`.
 
 ### Start the App
 
@@ -198,6 +299,19 @@ The notes list is empty at first. Create a note, then disconnect your device fro
 
 ### Test Your Sync Streams (Optional)
 
-To see which data syncs to a specific user, go to **Sync Test** in the PowerSync Dashboard. Generate a development token for a user who signed up in the demo app, and open it in the [Sync Diagnostics Client](/tools/diagnostics-client). Use the user's ID as the token subject. This ID is the `owner_id` value of the user's notes.
+To see which data syncs to a specific user, generate a development token for a user who signed up in the demo app, and open it in the [Sync Diagnostics Client](/tools/diagnostics-client). Use the user's ID as the token subject. This ID is the `owner_id` value of the user's notes.
+
+<Tabs>
+  <Tab title="Web UI">
+    In the PowerSync Dashboard, go to the **Sync Test** view. Enter the user ID as the token subject, then click **Generate token** and **Launch Sync Diagnostics Client**.
+  </Tab>
+  <Tab title="CLI">
+    In the demo directory, run the following command and paste the token into the [Sync Diagnostics Client](https://diagnostics-app.powersync.com):
+
+    ```bash
+    powersync generate token --subject=<user-id>
+    ```
+  </Tab>
+</Tabs>
 
 If you run into problems, ask us on [Discord](https://discord.gg/powersync).

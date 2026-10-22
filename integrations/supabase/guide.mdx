@@ -5,12 +5,14 @@ sidebarTitle: "Overview"
 ---
 
 import CreateCloudInstance from '/snippets/create-cloud-instance.mdx';
+import CreateCloudInstanceCli from '/snippets/create-cloud-instance-cli.mdx';
 import SupabaseConnection from '/snippets/supabase-database-connection.mdx';
+import SupabaseAuthSetup from '/snippets/supabase-auth-setup.mdx';
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
 import SupabaseGuidedSetup from '/snippets/supabase-guided-setup.mdx';
 
-This guide shows you how to configure PowerSync with [Supabase](https://supabase.com/). PowerSync syncs selected Supabase Postgres data into client-side SQLite. Client writes (mutations) are committed locally, queued by the SDK, and uploaded via Supabase's client libraries. Your app reads and writes from this local SQLite, so it stays highly responsive even in poor network conditions.
+This guide shows you how to set up PowerSync with [Supabase](https://supabase.com/) and run a to-do list demo app. The app reads and writes a local SQLite database, so it responds instantly and keeps working without a network connection.
 
 <SupabaseGuidedSetup />
 
@@ -20,100 +22,68 @@ If you use guided setup, still follow this guide to create the demo schema, conf
   <iframe className="w-full aspect-video" src="https://www.youtube.com/embed/Xg5FTYGPn5U?si=4TjdYEACDR2g98yh" title="YouTube video player" frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
 </Frame>
 
-<Check>
-  This guide takes 10-15 minutes to complete.
-</Check>
-
-<Warning>
-  Note: We are currently investigating an issue with Supabase logical replication where unused/idle instances have excessive WAL growth, resulting in maxed out disk usage. Supabase seem to have updated the default archive_timeout setting to 2 min, which seems to be part of the issue. The current recommendation for pet/hobby projects is to set a smaller `max_wal_size` and `max_slot_wal_keep_size`:
-
-  ```bash
-  supabase --experimental \
-    --project-ref <project-ref> \
-    postgres-config update --config max_wal_size=1GB
-  ```
-
-  and also:
-
-  ```bash
-  supabase --experimental \
-    --project-ref <project-ref> \
-    postgres-config update --config max_slot_wal_keep_size=1GB
-  ```
-</Warning>
-
-**Before you start, make sure you have:**
+Before you start, make sure you have:
 
 - A [Supabase](https://supabase.com/dashboard/sign-up) account
 - A [PowerSync Cloud](https://accounts.powersync.com/portal/powersync-signup?s=docs) account
-- For mobile/desktop apps: Flutter, React Native, Kotlin, or Xcode set up for your platform of choice
-- For web apps: [pnpm](https://pnpm.io/installation#using-npm) installed
+- For mobile and desktop apps: Flutter, React Native, Kotlin, or Xcode set up for your platform
+- For web apps: [pnpm](https://pnpm.io/installation) installed
 
 ## Architecture
 
-Upon successful integration of Supabase + PowerSync, your system architecture will look like this: (click to enlarge image)
-
-<Frame>
-  <img
-    src="/images/integration-guides/supabase/powersync-docs-diagram-supabase-integration.png"
-  />
+<Frame caption="Supabase + PowerSync architecture">
+  ![Diagram of the PowerSync Service syncing data from Supabase Postgres to SQLite in the app, and the app uploading writes to Supabase through the Supabase client library](/images/integration-guides/supabase/powersync-docs-diagram-supabase-integration.png)
 </Frame>
 
-The local SQLite database embedded in the PowerSync SDK is automatically kept in sync with the Supabase Postgres database (based on your Sync Streams as you will see later in this guide). Client-side data modifications are persisted in the local SQLite database as well as stored in an upload queue that gets processed via the Supabase client library when network connectivity is available. Therefore reads and writes can happen in the app regardless of whether the user is online or offline, by using the local SQLite database.
+The PowerSync Service replicates data from Supabase Postgres and syncs it to each client's SQLite database, based on your Sync Streams. When the app writes to SQLite, the PowerSync SDK also adds the change to an upload queue. While the device is online, the SDK calls the app's `uploadData()` function, which sends queued changes to Supabase through the Supabase client library. For more on how PowerSync works, see the [Architecture Overview](/architecture/architecture-overview).
 
-<Note>
-  For more details on PowerSync's general architecture, [see here](/architecture/architecture-overview).
-</Note>
-
-## Integration Guide/Tutorial Overview
-
-We will follow these steps to get an offline-first 'To-Do List' demo app up and running:
+## Overview
 
 <Steps>
-  <Step title="Configure Supabase:">
+  <Step title="Configure Supabase">
+    - Create a Supabase project
     - Create the demo database schema
-    - Create the Postgres user and publication
+    - Create the PowerSync database user and publication
   </Step>
-  <Step title="Configure PowerSync:">
-    - Create connection to Supabase
+  <Step title="Configure PowerSync">
+    - Connect PowerSync to Supabase
+    - Configure Supabase Auth
     - Configure Sync Streams
   </Step>
-  <Step title="Test the configuration">
-    Test the configuration using our provided PowerSync-Supabase 'To-Do List' demo app with your framework of choice.
+  <Step title="Run the Demo App">
+    Configure and run the to-do list demo app for your framework, then test sync.
   </Step>
 </Steps>
 
 ## Configure Supabase
 
-Create a new Supabase project (or use an existing project if you prefer) and follow the below steps.
+### Create a Supabase Project
 
-### Before You Start: Project Creation Settings
+You can use a new or existing project with its default settings.
 
-When you create a new Supabase project, two settings on the project creation screen affect how the demo app behaves. Reviewing them now saves debugging later.
+<Tabs>
+  <Tab title="Web UI">
+    In the [Supabase Dashboard](https://supabase.com/dashboard), create a project.
+  </Tab>
+  <Tab title="CLI">
+    Log in to the Supabase CLI, then create a project. `supabase orgs list` shows your organization IDs. The output of `supabase projects create` includes the project ref, which the following commands use as `<project-ref>`.
 
-**Automatically expose new tables and functions**
+    ```bash
+    supabase login
+    supabase projects create powersync-todolist --org-id <org-id> --db-password <db-password> --region us-east-1
+    ```
+  </Tab>
+</Tabs>
 
-This controls whether tables you create in the `public` schema are reachable via the Supabase Data API. The Data API is the auto-generated REST and GraphQL layer that the Supabase client libraries (such as `supabase-js`) call. In this integration, PowerSync handles the download path by replicating data from Postgres to client SQLite databases, but client writes still go back to Postgres through the Data API using `supabase-js`. If the tables are not exposed, the demo app cannot write changes back to your database. Supabase is rolling out a new default:
+Each of the following steps runs SQL. Run it in the Supabase **SQL Editor**, or save it to a file and run it with the Supabase CLI:
 
-- **From April 28, 2026:** the setting is available as an opt-in. New projects can choose to require explicit `grant` statements.
-- **From May 30, 2026:** the new default for all new projects is that tables in `public` are not exposed to the Data API on creation.
-- **From October 30, 2026:** the new default is enforced on all existing projects.
-
-The schema SQL in this guide includes explicit `grant` statements, so the demo app works under either default. See [this](https://github.com/orgs/supabase/discussions/45329) for more details.
-
-**Enable automatic RLS**
-
-This adds an event trigger that automatically enables Row Level Security on every new table created in the `public` schema. Enabling it is recommended because RLS is the authoritative security layer for any writes that reach Postgres through the Data API. If you leave it disabled, you can still enable RLS per table as the schema SQL in this guide does.
-
-<Warning>
-  Without RLS, any user with the `anon` or `authenticated` key can read and write every row in the table, regardless of who created it.
-</Warning>
+```bash
+supabase db query --linked --project-ref <project-ref> -f <file>.sql
+```
 
 ### Create the Demo Database Schema
 
-To set up the Postgres database for our _To-Do List_ demo app, we will create two new tables: `lists` and `todos`. The demo app will have access to these tables even while offline.
-
-Run the below SQL statements in your **Supabase SQL Editor**:
+The demo app uses two tables, `lists` and `todos`. Run the following SQL to create them:
 
 ```sql
 create table
@@ -165,13 +135,7 @@ create policy "todos in owned lists" on public.todos
   );
 ```
 
-<Info>
-  **Grants and RLS do different jobs, and you need both.** Grants control which Postgres roles can touch a table through the Data API. Without a grant, `supabase-js` returns a `42501: permission denied for table` error before RLS is ever evaluated. RLS runs after the grant succeeds and filters which rows that role can read or modify. Skipping RLS means any user with the `anon` or `authenticated` key can read and write every row.
-
-  This guide grants `authenticated` because the demo app requires sign-in. The `anon` role is intentionally left ungranted. If you wanted to expose a table for public read-only access (for example, a shared catalog visible to signed-out users), you would add `grant select on public.your_table to anon` along with an RLS policy scoping which rows `anon` can read.
-</Info>
-
-PowerSync's Sync Streams (configured later in this guide) control which rows get downloaded to each client and generally mirror your RLS setup. For more on how these work together, see [RLS and Sync Streams](/integrations/supabase/rls-and-sync-streams).
+Sync Streams, which you configure later, control which rows sync to each client. They usually mirror your RLS policies. See [RLS and Sync Streams](/integrations/supabase/rls-and-sync-streams).
 
 ### Create a PowerSync Database User
 
@@ -179,15 +143,13 @@ PowerSync's Sync Streams (configured later in this guide) control which rows get
   **Using guided Supabase setup in the Dashboard?** Skip this step and the next one. Guided setup creates the database user and publication for you. Continue at [Create a PowerSync Cloud Instance](#create-a-powersync-cloud-instance).
 </Tip>
 
-PowerSync uses the Postgres [Write Ahead Log (WAL)](https://www.postgresql.org/docs/current/wal-intro.html) to replicate data changes in order to keep PowerSync SDK clients up to date.
-
-Run the below SQL statement in your **Supabase SQL Editor** to create a Postgres role/user with replication privileges:
+PowerSync uses Postgres logical replication to read changes from your database. Run the following SQL to create a Postgres role with replication privileges:
 
 <PostgresPowerSyncUser />
 
 ### Create the Postgres Publication
 
-Run the below SQL statement in your **Supabase SQL Editor** to create a Postgres publication:
+Run the following SQL to create a Postgres publication:
 
 <PostgresPowerSyncPublication />
 
@@ -195,7 +157,16 @@ Run the below SQL statement in your **Supabase SQL Editor** to create a Postgres
 
 ### Create a PowerSync Cloud Instance
 
-<CreateCloudInstance />
+<Tabs>
+  <Tab title="Web UI">
+    <CreateCloudInstance />
+  </Tab>
+  <Tab title="CLI">
+    Run these commands in the directory of the demo app or your own app.
+
+    <CreateCloudInstanceCli />
+  </Tab>
+</Tabs>
 
 ### Connect PowerSync to Your Supabase
 
@@ -203,14 +174,54 @@ Run the below SQL statement in your **Supabase SQL Editor** to create a Postgres
   **Using guided Supabase setup in the Dashboard?** Run it now instead of the steps below. Click **Set Up with Supabase** in your instance's **Health** or **Database Connection** view and follow the on-screen steps. Then continue at [Configure Sync Streams](#configure-sync-streams).
 </Tip>
 
-<SupabaseConnection />
+<Tabs>
+  <Tab title="Web UI">
+    <SupabaseConnection />
+  </Tab>
+  <Tab title="CLI">
+    Add the connection to `powersync/service.yaml`. Use the direct host, `db.<project-ref>.supabase.co`, with `powersync_role` as the user:
+
+    ```yaml
+    replication:
+      connections:
+        - type: postgresql
+          uri: postgresql://powersync_role@db.<project-ref>.supabase.co:5432/postgres
+          password:
+            secret: !env POWERSYNC_DATABASE_PASSWORD
+    ```
+  </Tab>
+</Tabs>
+
+### Configure Supabase Auth
+
+<Tabs>
+  <Tab title="Web UI">
+    <SupabaseAuthSetup />
+  </Tab>
+  <Tab title="CLI">
+    Add a `client_auth` section to `powersync/service.yaml`:
+
+    ```yaml
+    client_auth:
+      supabase: true
+    ```
+
+    If your Supabase project uses legacy JWT secrets, also set `supabase_jwt_secret`:
+
+    ```yaml
+    client_auth:
+      supabase: true
+      supabase_jwt_secret:
+        secret: !env POWERSYNC_SUPABASE_JWT_SECRET
+    ```
+
+    You deploy this configuration together with your Sync Config in the next step.
+  </Tab>
+</Tabs>
 
 ### Configure Sync Streams
 
-[Sync Streams](/sync/streams/overview) allow developers to control which data gets synced to which user devices using a SQL-like syntax in a YAML file. For the demo app, we're going to specify that each user can only see their own to-do lists and list items.
-
-1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Sync Streams** view.
-2. Edit the Sync Streams in the editor and replace the contents with the below:
+[Sync Streams](/sync/streams/overview) define which data syncs to which users' devices. In the demo app, each user syncs their own lists and to-dos. Use the following Sync Config:
 
 ```yaml
 config:
@@ -223,21 +234,28 @@ streams:
     - SELECT todos.* FROM todos INNER JOIN lists ON todos.list_id = lists.id WHERE lists.owner_id = auth.user_id()
 ```
 
-3. Click **"Validate"** and ensure there are no errors. This validates your Sync Config against your Postgres database.
-4. Click **"Deploy"** to deploy your Sync Config.
+<Tabs>
+  <Tab title="Web UI">
+    1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to the **Sync Streams** view.
+    2. Replace the contents of the editor with the Sync Config above.
+    3. Click **Validate** and fix any errors.
+    4. Click **Deploy**.
+  </Tab>
+  <Tab title="CLI">
+    Replace the contents of `powersync/sync-config.yaml` with the Sync Config above. Then deploy the full configuration, which includes the database connection, client auth, and Sync Config:
 
-<Tip>
-  - For additional information on PowerSync's Sync Streams, refer to the [Sync Streams](/sync/streams/overview) documentation.
-  - If you're wondering how Sync Streams relate to Supabase Postgres [RLS](https://supabase.com/docs/guides/auth/row-level-security), see [this subsection](/integrations/supabase/rls-and-sync-streams).
-</Tip>
+    ```bash
+    export POWERSYNC_DATABASE_PASSWORD=<powersync_role password>
+    powersync deploy
+    ```
+  </Tab>
+</Tabs>
 
-## Test Everything (Using Our Demo App)
+## Run the Demo App
 
-In this step you'll test your setup using a 'To-Do List' demo app provided by PowerSync.
+### Clone the Demo App
 
-#### Clone the Demo App
-
-Clone the demo app based on your framework:
+Clone the to-do list demo app for your framework:
 
 <CodeGroup>
 
@@ -249,11 +267,13 @@ cd powersync.dart/demos/supabase-todolist/
 ```bash React Native
 git clone https://github.com/powersync-ja/powersync-js.git
 cd powersync-js/demos/react-native-supabase-todolist
+pnpm install
 ```
 
 ```bash JavaScript Web
 git clone https://github.com/powersync-ja/powersync-js.git
 cd powersync-js/demos/react-supabase-todolist
+pnpm install
 ```
 
 ```bash Kotlin
@@ -270,9 +290,9 @@ git clone https://github.com/powersync-ja/powersync-swift.git
 
 </CodeGroup>
 
-#### Configure the Demo App to Use Your PowerSync Instance
+### Configure the Demo App
 
-Locate the relevant config file for your framework:
+Create or open the config file for your framework:
 
 <CodeGroup>
 
@@ -283,7 +303,9 @@ cp lib/app_config_template.dart lib/app_config.dart
 ```
 
 ```bash React Native
-# Edit the `.env` file and insert the necessary credentials as detailed below.
+cp .env .env.local
+
+# Edit `.env.local` and insert the necessary credentials as detailed below.
 ```
 
 ```bash JavaScript Web
@@ -299,10 +321,10 @@ cp .env.local.template .env.local
 sdk.dir=/path/to/android/sdk
 
 # Enter your PowerSync instance URL
-POWERSYNC_URL=https://foo.powersync.journeyapps.com
-# Enter your Supabase project's URL and public anon key
-SUPABASE_URL=https://foo.supabase.co # from https://supabase.com/dashboard/project/_/settings/api
-SUPABASE_ANON_KEY=foo # from https://supabase.com/dashboard/project/_/settings/api-keys
+POWERSYNC_URL=https://your-instance-id.powersync.journeyapps.com
+# Enter your Supabase project URL and publishable key
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=sb_publishable_your-publishable-key
 ```
 
 ```bash Swift
@@ -311,14 +333,13 @@ SUPABASE_ANON_KEY=foo # from https://supabase.com/dashboard/project/_/settings/a
 
 </CodeGroup>
 
-<Note>
-  Supabase has replaced the legacy anon key with **publishable keys** (prefixed `sb_publishable_…`) by default on new projects. The demos still read environment variables named `SUPABASE_ANON_KEY` / `supabaseAnonKey`, but the value is interchangeable: paste your publishable key into the same variable. Existing projects that still use legacy JWT keys can continue to use the anon key directly.
-</Note>
+Set these values in the config file:
 
-1. In the relevant config file, replace the values for `supabaseUrl` (from the [Project URL](https://supabase.com/dashboard/project/_/settings/api) section in the Supabase dashboard) and `supabaseAnonKey` (from the [API Keys](https://supabase.com/dashboard/project/_/settings/api-keys) section in the Supabase dashboard).
-2. For the value of `powersyncUrl`, click **Connect** in the top bar of the [PowerSync Dashboard](https://dashboard.powersync.com/) and copy the instance URL from the dialog.
+- **Supabase URL:** Your project URL, `https://<project-ref>.supabase.co`. Find it in the Supabase Dashboard under [Project URL](https://supabase.com/dashboard/project/_/settings/api).
+- **Supabase key:** Your project's publishable key, or its legacy anon key. Find it under [API Keys](https://supabase.com/dashboard/project/_/settings/api-keys), or run `supabase projects api-keys --project-ref <project-ref>`.
+- **PowerSync URL:** Your instance URL. Click **Connect** in the top bar of the [PowerSync Dashboard](https://dashboard.powersync.com/) and copy it. If you use the CLI, the URL is `https://<instance-id>.powersync.journeyapps.com`, where `<instance-id>` is the `instance_id` value in `powersync/cli.yaml`.
 
-#### Run the App
+### Run the App
 
 <CodeGroup>
 
@@ -352,24 +373,25 @@ pnpm dev
 
 </CodeGroup>
 
-<Note>
-  For ease of use of the demo app, you can disable email confirmation in your Supabase Auth settings. In your Supabase project, go to "Authentication" -> "Providers" -> "Email" and then disable "Confirm email". If you keep email confirmation enabled, the Supabase user confirmation email will reference the default Supabase Site URL of `http://localhost:3000` — you can ignore this.
-</Note>
+<Tip>
+  To sign up without confirming your email address, turn off **Confirm email** in your Supabase project under **Authentication** > [Sign In / Providers](https://supabase.com/dashboard/project/_/auth/providers).
+</Tip>
 
-<img
-  src="/images/integration-8.png"
-  width="30%"
-/>
+<Frame caption="The sign-in screen of the Flutter demo app">
+  <img
+    src="/images/integration-8.png"
+    alt="Flutter demo app sign-in screen with email and password fields"
+    width="30%"
+  />
+</Frame>
 
-Once signed in to the demo app, you should see a blank list of to-do lists, so go ahead and create a new list. Try placing your device into airplane mode to test out the offline capabilities. Once the device is back online, you should see the data automatically appear in your Supabase dashboard (e.g. in the Table Editor).
+Sign up and create a list. Then put your device in airplane mode and add a to-do. When the device is back online, the SDK uploads the queued changes, and they appear in the Supabase Dashboard's Table Editor.
 
-For more information, explore the [PowerSync docs](/) or join us on [our community Discord](https://discord.gg/powersync) where our team is always available to answer questions.
+If you run into problems, ask us on [Discord](https://discord.gg/powersync).
 
-## Bonus: Optional Extras
+## Optional: Add Sample Data for New Users
 
-If you plan on sharing this demo app with other people, you may want to set up demo data triggers so that new user signups don't see an empty screen.
-
-It's useful to have some data when a user signs up to the demo app. The below trigger automatically creates some sample data when a user registers (you can run it in the Supabase SQL Editor). See [Supabase: Managing User Data](https://supabase.com/docs/guides/auth/managing-user-data#using-trigger) for more details.
+If you share the demo app with other people, you can add sample data for each new user, so that they don't start with an empty screen. The following trigger creates a list with two to-dos when a user signs up. Run it like the other SQL in this guide. See [Supabase: Managing User Data](https://supabase.com/docs/guides/auth/managing-user-data#using-trigger).
 
 ```sql
 create function public.handle_new_user_sample_data()
@@ -393,3 +415,32 @@ $$ language plpgsql security definer;
 
 create trigger new_user_sample_data after insert on auth.users for each row execute procedure public.handle_new_user_sample_data();
 ```
+
+## Troubleshooting
+
+### Uploads Fail With Error `42501`
+
+If changes from the app don't reach Supabase and your app logs error `42501`, the Data API rejected the upload. Check the error message:
+
+- **`permission denied for table`:** The `authenticated` role has no grant on the table. Grant access to each table that your app writes to, for example `grant select, insert, update, delete on public.lists to authenticated;`.
+- **`new row violates row-level security policy`:** An RLS policy rejected the write. Check that the row belongs to the signed-in user, for example that `owner_id` matches the user's ID.
+
+The demo [schema SQL](#create-the-demo-database-schema) shows both the grants and the RLS policies.
+
+### Disk Fills Up on an Idle Project
+
+If your Supabase project's WAL settings are large for its disk, Postgres can keep a growing amount of write-ahead log (WAL) while PowerSync is connected, even when the database is idle. This can fill the disk, especially on Free plan projects with a small disk.
+
+Check `max_wal_size` and `max_slot_wal_keep_size` with `SHOW max_wal_size;` and `SHOW max_slot_wal_keep_size;`. Lower any value that is more than half of your disk size. For example, on a 2 GB disk where both values are 4 GB, set both to 1 GB:
+
+```bash
+supabase --experimental --project-ref <project-ref> postgres-config update --config max_wal_size=1GB,max_slot_wal_keep_size=1GB
+```
+
+To change only one setting, pass only that key. The command restarts your database, so expect a brief interruption.
+
+A lower `max_slot_wal_keep_size` leaves less room for replication lag. If the lag exceeds it, Postgres invalidates PowerSync's replication slot. See [Recovering from an Invalidated Slot](/configuration/source-db/postgres-maintenance#recovering-from-an-invalidated-slot).
+
+### Unused Replication Slots
+
+If you stop or deprovision your PowerSync instance, its replication slot stays in your Supabase database and keeps WAL. Drop slots that you no longer need. See [Logical Replication Slots](/configuration/source-db/postgres-maintenance#logical-replication-slots).

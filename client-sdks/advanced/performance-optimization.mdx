@@ -50,6 +50,73 @@ If this reveals it took too long for a read connection to become available, cons
 
 For contention on the write connection, note that the PowerSync client processes changes from the PowerSync Service in a single write transaction after they've been downloaded. Due to consistency requirements, this transaction cannot be split into multiple steps, and especially for a large initial sync it can hold a write lock for several seconds.
 
+## Direct Tables
+
+<Note>
+  **Availability**
+
+  Direct tables are experimental. They were introduced in the following versions of our client SDKs:
+
+  - **JavaScript** (React Native: `2.3.4`, Web: `2.6.0`, Node.js: `1.2.1`)
+  - **Dart**: Version `2.6.0`.
+  - **Kotlin**: Version `1.16.0`.
+  - **Swift**: Version `1.17.0`.
+  - **.NET**: Not supported yet.
+  - **Rust**: Version `0.1.2`.
+</Note>
+
+By default, PowerSync stores all data as [JSON rows](/architecture/client-architecture#client-side-schema-and-sqlite-database-structure): synced rows are copied into local tables without modifications, and local updates modify an existing JSON object. This format is highly flexible and avoids schema migrations, but comes with a performance cost:
+
+- Every column read forces SQLite to decode the entire JSON object, making queries slower than queries on "real" SQLite tables.
+- JSON objects occupy more storage space than a native SQLite row, making databases slightly larger and increasing writes during large sync downloads.
+
+[Raw tables](/client-sdks/advanced/raw-tables) fix this by letting PowerSync sync into actual tables you define. With raw tables, you are responsible for creating and migrating them. Direct tables are raw tables that PowerSync manages for you, like the default JSON-based tables. In supported SDKs, you enable direct tables with a flag on the table definition:
+
+<CodeGroup>
+
+```typescript TypeScript
+const schema = new Schema({
+  users: new Table({ name: column.text }, { direct: true })
+});
+```
+
+```dart Dart/Flutter
+const schema = Schema([
+  Table.direct('users', [Column.text('name')])
+]);
+```
+
+```kotlin Kotlin
+val schema = Schema(
+  Table("users", listOf(Column.text("name")), direct = true)
+)
+```
+
+```swift Swift
+let schema = Schema(
+  Table(name: "users", columns: [.text("name")], direct: true)
+)
+```
+
+```rust Rust
+let mut schema = Schema::default();
+schema
+  .tables
+  .push(Table::create("users", vec![Column::text("name")], |tbl| {
+    tbl.direct = true
+  }));
+```
+
+</CodeGroup>
+
+Direct tables aren't based on views, so you can't set the `viewName` option on them. In the JavaScript SDKs, [High Performance Diffs](/client-sdks/high-performance-diffs) don't support direct tables yet.
+
+### Migrations
+
+To switch a table between the JSON-based format and a direct table, change the flag in your schema. PowerSync SDKs then migrate the existing data automatically. Schema changes on direct tables can take longer than on JSON-based tables: PowerSync must migrate the table itself, whereas JSON-based tables only need their views re-created.
+
+When you add or remove columns on an existing direct table, PowerSync detects the change and runs `ALTER TABLE` statements automatically. New columns contain `NULL` values until the next completed sync.
+
 ## Fixing Slow Queries
 
 If a query itself is expensive and takes a long time to run, several options can improve performance. Some of these require a restructuring of your app's schema.

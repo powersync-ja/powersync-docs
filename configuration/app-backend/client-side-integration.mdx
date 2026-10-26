@@ -32,8 +32,7 @@ The PowerSync Client SDK calls `uploadData()` automatically - you never call it 
 
 1. **After a local write** - Any `INSERT`, `UPDATE`, or `DELETE` on a PowerSync table adds an entry to the internal upload queue (the `ps_crud` table). The SDK monitors this table for changes and triggers `uploadData()` shortly after. See [How Local Writes Are Detected](#how-local-writes-are-detected) below for details on the underlying mechanism.
 2. **On initial connection / reconnection** - When `connect()` establishes (or re-establishes) a sync stream and the first message is received from the PowerSync Service, the SDK triggers `uploadData()` to flush any writes that were made while offline or disconnected.
-3. **On keepalive messages** - The PowerSync Service sends periodic keepalive messages (every 20 seconds, with slight jitter). Each keepalive triggers an upload attempt, ensuring pending writes are retried even if no new local writes have occurred.
-4. **After an error, with retry** - If `uploadData()` throws an error, the SDK waits for a configurable delay (default: 5 seconds, controlled by `retryDelayMs`) and then retries. This continues until the upload succeeds or the sync stream is disconnected.
+3. **After an error, with retry** - If `uploadData()` throws an error, the SDK waits for a configurable delay (default: 5 seconds, controlled by `retryDelayMs`) and then retries. This continues until the upload succeeds or the sync stream is disconnected.
 
 #### How Local Writes Are Detected
 
@@ -117,6 +116,8 @@ When `uploadData()` throws an error:
 3. It retries the upload from the beginning of the queue.
 4. If the sync stream disconnects during the retry wait, the upload loop exits and will resume when the connection is re-established.
 
+Throw from `uploadData()` only when a later retry can succeed: after a network error or a `5xx` response, or when you must fix a bug or a schema mismatch before your backend API can apply the write. If your backend API rejects a write permanently with an error response, for example because the write fails validation, log the rejected write and call `complete()` on its transaction or batch so that the upload queue can advance. When the client SDK next completes a sync with an empty upload queue, it [reverts](/handling-writes/handling-write-validation-errors#how-changes-are-rolled-back) every write in that transaction or batch that your backend API did not apply.
+
 #### Stalled Upload Queue Detection
 
 If the SDK detects that the same CRUD entry is at the front of the queue across consecutive upload iterations (i.e., `uploadData()` returned without error but didn't call `.complete()` on the batch or transaction), it logs a warning:
@@ -128,7 +129,7 @@ After logging this warning, the SDK **throws an internal error**, which causes i
 This typically means your `uploadData()` implementation is not calling `.complete()` after successfully processing entries. Always call `.complete()` on the `CrudBatch` or `CrudTransaction` to remove processed entries from the queue.
 
 <Tip>
-  `uploadData()` is only called while the sync stream is connected. If the device is offline, writes accumulate in the upload queue and are uploaded automatically when connectivity is restored and the sync stream reconnects.
+  While the device is offline, writes stay in the upload queue. The client SDK uploads them after the device reconnects.
 </Tip>
 
 ### When `fetchCredentials()` is Called

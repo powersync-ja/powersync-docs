@@ -3,100 +3,164 @@ title: "Local-Only Usage"
 description: "Use PowerSync for local-only data persistence without backend sync or authentication."
 ---
 
-Some apps need to store data before the user registers or signs in. Some of these users may register later and start syncing data with other devices or users, while others keep using the app without registering or going online.
+Some apps need to store data before the user registers or signs in. Some of these users register later and start syncing their data with other devices or users. Others keep using the app without registering or going online.
 
-PowerSync supports these scenarios. By default, all local changes will be stored in the upload queue, and will be uploaded to the backend server if the user registers at a later point.
+By default, the client SDK places every local write in the upload queue. When the user registers and the app connects, the client SDK uploads these writes to your backend. If the user never registers, the upload queue keeps growing. In many apps the queue stays small, but data-intensive apps can avoid this growth with one of these approaches:
 
-A caveat is that if the user never registers, this queue will keep on growing in size indefinitely. For many applications this should be small enough to not be significant, but some data-intensive applications may want to avoid the indefinite queue growth.
+- [Local-only tables](#local-only-tables): Store data in tables that do not record writes in the upload queue. Copy the data to synced tables when the user registers.
+- [Clearing the upload queue](#clearing-the-upload-queue): Store data in synced tables and delete the upload queue periodically.
 
-There are two general approaches we recommend for this:
+## Local-Only Tables
 
-### 1. Local-Only Tables
+The client SDK does not place writes to local-only tables in the upload queue, so the queue does not grow. Store data in local-only tables until the user registers or signs in.
 
-<Tabs>
-  <Tab title="Flutter">
-    ```dart
-    final table = Table.localOnly(
-      ...
+To define a local-only table, mark it as local-only in your client schema:
+
+<CodeGroup>
+
+```typescript JavaScript
+import { column, Schema, Table } from '@powersync/web'; // Or @powersync/react-native, @powersync/node
+
+const local_lists = new Table(
+  {
+    created_at: column.text,
+    name: column.text
+  },
+  { localOnly: true }
+);
+
+export const AppSchema = new Schema({
+  local_lists
+});
+```
+
+```dart Dart
+import 'package:powersync/powersync.dart';
+
+const schema = Schema([
+  Table.localOnly('local_lists', [
+    Column.text('created_at'),
+    Column.text('name'),
+  ]),
+]);
+```
+
+```kotlin Kotlin
+import com.powersync.db.schema.Column
+import com.powersync.db.schema.Schema
+import com.powersync.db.schema.Table
+
+val AppSchema: Schema = Schema(
+  listOf(
+    Table(
+      name = "local_lists",
+      columns = listOf(
+        Column.text("created_at"),
+        Column.text("name")
+      ),
+      localOnly = true
     )
-    ```
+  )
+)
+```
 
-    <Note>
-      **Flutter + Drift users:** If you're using local-only tables with `viewName` overrides, Drift's watch streams may not update correctly. See the [troubleshooting guide](/client-sdks/orms/flutter-orm-support#troubleshooting-watch-streams-with-local-only-tables) for the solution.
-    </Note>
-  </Tab>
-  <Tab title="JavaScript">
-    ```js
-    const lists = new Table({
-      ...
-    }, {
-      localOnly: true
-    });
-    ```
-  </Tab>
-  <Tab title="Kotlin">
-    ```kotlin
-    val Table = Table(
-        ...
-        localOnly = true
-    )
-    ```
-  </Tab>
-  <Tab title="Swift">
-    ```swift
-    let table = Table(
-        ...
-        localOnly: true
-    )
-    ```
-  </Tab>
-  <Tab title=".NET">
-    ```csharp
-    public static Table Todos = new Table
-    {
-        Name = "todos",
-        Columns =
-        {
-            // ... column definitions ...
-        },
-        LocalOnly = true
-    };
-    ```
-  </Tab>
-  <Tab title="Rust">
-    Example not yet available.
-  </Tab>
-</Tabs>
+```swift Swift
+import PowerSync
 
-Use local-only tables until the user has registered or signed in. This would not store any data in the upload queue, avoiding any overhead or growth in database size.
+let localLists = Table(
+  name: "local_lists",
+  columns: [
+    Column.text("created_at"),
+    Column.text("name")
+  ],
+  localOnly: true
+)
 
-Once the user registers, move the data over to synced tables, at which point the data would be placed in the upload queue.
+let AppSchema = Schema(localLists)
+```
+
+```csharp .NET
+using PowerSync.Common.DB.Schema;
+using PowerSync.Common.DB.Schema.Attributes;
+
+[Table("local_lists", LocalOnly = true)]
+public class LocalList
+{
+    [Column("id")]
+    public string Id { get; set; }
+
+    [Column("created_at")]
+    public string CreatedAt { get; set; }
+
+    [Column("name")]
+    public string Name { get; set; }
+}
+
+public static Schema PowerSyncSchema = new Schema(typeof(LocalList));
+```
+
+```rust Rust
+use powersync::schema::{Column, Schema, Table};
+
+pub fn app_schema() -> Schema {
+    let mut schema = Schema::default();
+    let local_lists = Table::create(
+        "local_lists",
+        vec![Column::text("created_at"), Column::text("name")],
+        |tbl| tbl.options.local_only = true,
+    );
+    schema.tables.push(local_lists);
+    schema
+}
+```
+
+</CodeGroup>
+
+### Moving Data to Synced Tables
+
+Define each local-only table and its synced counterpart as separate tables in your schema, for example `local_lists` and `lists`. When the user registers or signs in, run these statements in one write transaction:
+
+```sql
+INSERT INTO lists(id, created_at, name, owner_id)
+  SELECT id, created_at, name, ? FROM local_lists;
+DELETE FROM local_lists;
+```
+
+The `?` parameter sets `owner_id` to the ID of the signed-in user. The inserts place the rows in the upload queue, and the client SDK uploads them to your backend.
 
 <Warning>
-  **Copy local-only data into a separate synced table.** If you change an existing table from local-only to synced, or remove or rename a local-only table in your schema, the client SDK deletes that table and its data when the app applies the new schema. This data cannot be recovered.
-
-  Define the synced table as a separate table in your schema instead. Copy the rows into it, then delete them from the local-only table. The example apps below follow this approach and use the `viewName` option so that app queries keep using the same table name.
+  **Keep the local-only table and the synced table separate.** If you change an existing table from local-only to synced, or remove or rename a local-only table in your schema, the client SDK deletes that table and its data when the app applies the new schema. This data cannot be recovered.
 </Warning>
 
-The following example implementations are available:
+To keep the same table name in app queries before and after registration, use the `viewName` option:
+
+1. Before registration, set the view name of the local-only table to `lists`. Give the synced table an unused view name, such as `inactive_synced_lists`.
+2. When the user registers, update the schema so that the synced table uses the view name `lists`. Give the local-only table an unused view name, such as `inactive_local_lists`.
+3. Copy the data with the statements above, but read from `inactive_local_lists` instead of `local_lists`.
+
+These example apps implement this approach with `updateSchema()`:
 
 | Client framework | Link |
 | --- | --- |
-| Flutter To-Do List App (with Supabase) | [supabase-todolist-optional-sync](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist-optional-sync) |
 | React To-Do List App (with Supabase) | [react-supabase-todolist-optional-sync](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-supabase-todolist-optional-sync) |
+| Flutter To-Do List App (with Supabase) | [supabase-todolist-optional-sync](https://github.com/powersync-ja/powersync.dart/tree/main/demos/supabase-todolist-optional-sync) |
 
-### 2. Clearing the Upload Queue
+<Note>
+  If you use Drift with local-only tables that override `viewName`, Drift's watch streams may not update. See the [Drift troubleshooting guide](/client-sdks/orms/flutter-orm-support#troubleshooting-watch-streams-with-local-only-tables) for the fix.
+</Note>
 
-The upload queue can be cleared periodically (for example on every app start-up), avoiding the growth in database size over time. This can be done using:
+## Clearing the Upload Queue
+
+If you store data in synced tables, you can delete the upload queue periodically, for example on every app start:
 
 ```sql
 DELETE FROM ps_crud
 ```
 
-It is up to the application to then re-create the queue when the user registers, or upload data directly from the existing tables instead.
+The client SDK does not upload the deleted writes when the user registers. Your app must upload this data itself, for example by reading it from the tables and sending it to your backend.
 
-A small amount of metadata per row is also stored in the `ps_oplog` table. We do not recommend deleting this data, as it can cause or hide consistency issues when later uploading the data. If the overhead in `ps_oplog` is too much, rather use the local-only tables approach.
+The client SDK also stores one entry in the `ps_updated_rows` table for each row written locally. Do not delete these entries. When the app syncs, the client SDK uses them to find local rows that are missing from the synced data and removes those rows. Without these entries, such rows stay on the device. If this overhead is too large for your app, use [local-only tables](#local-only-tables) instead.
 
-### Local-Only Columns on Synced Tables
+## Local-Only Columns on Synced Tables
 
-If you need individual local-only columns on a table that is otherwise synced (rather than an entirely local-only table), this can be achieved with [raw tables](/client-sdks/advanced/raw-tables#local-only-columns).
+To store individual local-only columns on a table that otherwise syncs, use [raw tables](/client-sdks/advanced/raw-tables#local-only-columns).

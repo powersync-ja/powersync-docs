@@ -130,7 +130,7 @@ Wrap images in a `Frame` with a caption and descriptive alt text:
 
 ### Code Examples
 
-- Keep usage examples focused on the fundamentals. They may omit surrounding app setup and production error handling, but the demonstrated APIs and behavior must be correct. Use realistic data and expected output where useful. Test examples where practical. Never include real credentials or secrets.
+- Make examples complete and runnable where possible. If an example needs a lot of boilerplate just to run, such as app setup or connector wiring, you may leave that out. Make the omission clear with a comment or a sentence before the code block, such as `// Inside your backend connector`. The code you show must still be correct. Use realistic data and expected output where useful. Never include real credentials or secrets.
 - Give fenced code blocks a language tag. Use filenames only for self-hosted examples.
 - Do not use placeholder names such as `foo`, `bar`, or `example.com` in runnable examples.
 - In SQL, use table names directly unless an alias is necessary for a self-join or ambiguous column. Prefer `SELECT tasks.* FROM tasks JOIN projects ON ...` to aliases such as `t`.
@@ -152,7 +152,7 @@ Sync Rules are deprecated, but many customers still run them. New documentation 
 
 ## Verification
 
-- Verify technical claims and run code examples before publication. Select other checks appropriate to the change.
+- Verify technical claims and run code examples before publication. Run an example that leaves out boilerplate with the boilerplate added. If that is not practical, check every API and behavior it shows against the SDK source. Select other checks appropriate to the change.
 - Run `vale <file>` for changed MDX pages. Add new technical terms to `.github/vale/config/vocabularies/PowerSync/accept.txt`; do not add ordinary misspellings.
 - After link or navigation changes, run `pnpm check:links`. It runs the Mintlify path, anchor, and snippet checks through `scripts/check-links.mjs`, resolves anchors defined in imported snippets, and is the same check CI runs. It tells you if your Node version is unsupported. Validate repository instruction links as file paths, since the site checker does not cover them.
 - Use [the lint command](commands/lint-docs.md) for the check workflow and [the reviewer](agents/document-reviewer.md) for editorial review. Passing linters does not establish technical accuracy or style compliance.

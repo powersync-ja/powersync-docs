@@ -42,6 +42,8 @@ You need a `chats` table and a `messages` table. Each assistant message has a `s
 | `stopped` | Stopped by the user |
 | `error` | Generation failed. The row holds the error message. |
 
+Assistant messages also have a `claim_id` column. The worker sets a new value each time it claims a reply, and checks it on every later write. [Generating a Reply](#generating-a-reply) explains why.
+
 Two [Sync Streams](/sync/streams/overview) sync the data. The `chats` stream syncs the user's chat list, and the client subscribes to `chat_messages` for the chat that is open:
 
 ```yaml
@@ -66,15 +68,17 @@ See [Client-Side Usage](/sync/streams/client-usage) for how to subscribe in each
 
 1. When the user sends a message, the client writes it and an empty assistant message with the status `pending` in one local transaction. The UI shows the pending reply right away, even offline.
 2. The client SDK uploads both rows to your backend through the `uploadData()` function in your [backend connector](/configuration/app-backend/client-side-integration).
-3. A worker picks up the pending reply and changes its status to `streaming`. Make this update conditional on the status still being `pending`, so that only one worker generates each reply.
+3. A worker claims the pending reply: one update sets the status to `streaming` and stores a new claim ID, such as a random UUID, on the condition that the status is still `pending`. Only one worker can claim each reply.
 4. The worker sends the chat history to the model and streams the reply to clients with one of the [streaming options](#streaming-options).
 5. When the model finishes, the worker saves the full text and sets the status to `done`.
 
 Stop and retry are client writes too. Stop sets the status to `stopped`. Retry clears the text and sets the status back to `pending`, so the reply goes through the same steps as a new one.
 
+Every later write to the reply checks the claim ID and the status in its condition. A stop then takes effect at the worker's next write, which matches no row. The claim ID covers a retry that arrives before the old attempt has noticed the stop: the retry gets a new claim ID, so the old attempt's writes match nothing and cannot overwrite the new one.
+
 How the worker hears about new and stopped replies depends on what it is. If your backend API is the worker, it already sees these changes when it applies the upload, so it can start or cancel the reply right there. A separate worker needs a notification. With Postgres, a trigger can call `pg_notify()` when a reply changes.
 
-When a worker starts, it should also pick up replies that were left `pending` or `streaming` while it was down.
+When a worker starts, it should set replies left in `streaming` while it was down back to `pending`, then claim them along with any other pending replies.
 
 ## Streaming Options
 
@@ -90,7 +94,7 @@ flowchart LR
   service -->|"syncs each write"| client["Client"]
 ```
 
-The interval caps the write rate however fast the model produces tokens. Include `status = 'streaming'` in each update's condition, so that a write never overwrites a stop.
+The interval caps the write rate however fast the model produces tokens. Each update checks the claim ID and status, so a write never overwrites a stop or a retry.
 
 #### Pros
 
@@ -116,7 +120,7 @@ flowchart LR
   service -.->|"syncs the<br/>finished reply"| client
 ```
 
-The synced status still tells the client when to connect. While a reply is `streaming`, the client connects to the worker, receives the text so far, and then receives new text as it arrives. If the connection drops, the client reconnects until the status changes. When the finished reply syncs, the client shows the row instead of the streamed text. Authenticate the connection so that users can only read their own replies.
+The synced status still tells the client when to connect. While a reply is `streaming`, the client connects to the worker, receives the text so far, and then receives new text as it arrives. If the connection drops, the client reconnects until the status changes. A new claim ID means the worker started the reply over, after a restart or a retry, so the client connects again. When the finished reply syncs, the client shows the row instead of the streamed text. Authenticate the connection so that users can only read their own replies.
 
 #### Pros
 
@@ -140,6 +144,6 @@ The worker can also pace the text before sending it, which evens out models that
 
 ## Example Implementation
 
-The [AI chat demo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-ai-chat) {/* TODO: Verify the demo link after the react-ai-chat demo merges to main */} implements both options in a React app with Postgres. Its Node.js backend API is the worker: it applies uploads and calls the model with the [Vercel AI SDK](https://ai-sdk.dev). One setting switches between the options, and smoothing and pacing can each be turned off to see the raw steps. Without a model API key, the worker simulates replies. The demo's README covers running it locally.
+The [AI chat demo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-ai-chat) implements both options in a React app with Postgres. Its Node.js backend API is the worker: it applies uploads and calls the model with the [Vercel AI SDK](https://ai-sdk.dev). One setting switches between the options, and smoothing and pacing can each be turned off to see the raw steps. Without a model API key, the worker simulates replies. The demo's README covers running it locally.
 
 To build a backend API for your own app, see [App Backend Setup](/configuration/app-backend/setup).

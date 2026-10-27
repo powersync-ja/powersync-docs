@@ -1171,9 +1171,194 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
   </Tab>
 </Tabs>
 
-<Note>
-  `hasSynced` and `waitForFirstSync()` report whether a complete sync has finished at least once, possibly in an earlier app session. To wait until local data is up to date at a later point, for example after the app returns to the foreground, use [checkpoint requests](/client-sdks/checkpoint-requests).
-</Note>
+## Wait for Local Data to Catch Up
+
+`hasSynced` and `waitForFirstSync()` report whether a complete sync has finished at least once, possibly in an earlier app session. To wait until the local database has caught up with the server as of now, use [Sync Catch-Up](/client-sdks/checkpoint-requests): request a checkpoint, then wait for it to sync. These examples use it for a refresh action, so the refresh indicator stops only once the device has caught up.
+
+Checkpoint requests are in alpha. They require PowerSync Service v1.24.0 or later, and you must enable them with the `checkpointMode` option when calling `connect()`. See [Prerequisites](/client-sdks/checkpoint-requests#prerequisites).
+
+<Tabs>
+  <Tab title="Dart/Flutter">
+    ```dart
+    RefreshIndicator(
+      // The indicator stays visible until this future completes
+      onRefresh: () async {
+        try {
+          final checkpoint = await db.requestCheckpoint();
+          await checkpoint.waitForSync();
+        } catch (e) {
+          // Show the error to the user
+        }
+      },
+      child: ListView(children: listItems),
+    )
+    ```
+
+    See the [Flutter demo app](https://github.com/powersync-ja/powersync.dart/blob/main/demos/supabase-todolist-drift/lib/stores/refresh.dart) for a complete example.
+  </Tab>
+  <Tab title="React Native & Expo">
+    ```tsx
+    import { useState } from 'react';
+    import { RefreshControl, ScrollView } from 'react-native';
+    import { usePowerSync } from '@powersync/react-native';
+    
+    export function ListsScreen() {
+      const powerSync = usePowerSync();
+      const [refreshing, setRefreshing] = useState(false);
+    
+      const onRefresh = async () => {
+        setRefreshing(true);
+        try {
+          const checkpoint = await powerSync.requestCheckpoint();
+          await checkpoint.waitForSync();
+        } catch (e) {
+          // Show the error to the user
+        } finally {
+          setRefreshing(false);
+        }
+      };
+    
+      return (
+        <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+          {/* List items */}
+        </ScrollView>
+      );
+    }
+    ```
+
+    See the [React Native demo app](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-native-supabase-todolist/app/views/todos/lists.tsx) for a complete example.
+  </Tab>
+  <Tab title="JavaScript Web">
+    ```tsx
+    import { useState } from 'react';
+    import { usePowerSync } from '@powersync/react';
+    
+    export function RefreshButton() {
+      const powerSync = usePowerSync();
+      const [refreshing, setRefreshing] = useState(false);
+    
+      async function refresh() {
+        setRefreshing(true);
+        try {
+          const checkpoint = await powerSync.requestCheckpoint();
+          await checkpoint.waitForSync();
+        } catch (e) {
+          // Show the error to the user
+        } finally {
+          setRefreshing(false);
+        }
+      }
+    
+      return (
+        <button onClick={refresh} disabled={refreshing}>
+          {refreshing ? 'Refreshing...' : 'Refresh'}
+        </button>
+      );
+    }
+    ```
+
+    See the [React demo app](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/views/layout.tsx) for a complete example.
+  </Tab>
+  <Tab title="Capacitor">
+    The Capacitor SDK uses the same API as the JavaScript Web SDK, so the JavaScript Web example also applies.
+  </Tab>
+  <Tab title="Node.js">
+    ```js
+    const checkpoint = await db.requestCheckpoint();
+    await checkpoint.waitForSync();
+    
+    // This query now reflects the server state from when you created the request
+    const lists = await db.getAll('SELECT * FROM lists');
+    ```
+  </Tab>
+  <Tab title="Kotlin">
+    ```kotlin
+    @OptIn(ExperimentalCheckpointRequestsApi::class)
+    @Composable
+    fun RefreshButton(database: PowerSyncDatabase) {
+        val scope = rememberCoroutineScope()
+        var isRefreshing by remember { mutableStateOf(false) }
+    
+        IconButton(
+            onClick = {
+                scope.launch {
+                    isRefreshing = true
+                    try {
+                        val checkpoint = database.requestCheckpoint()
+                        checkpoint.waitForSync()
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        // Show the error to the user
+                    } finally {
+                        isRefreshing = false
+                    }
+                }
+            },
+            enabled = !isRefreshing,
+        ) {
+            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+        }
+    }
+    ```
+
+    See the [Kotlin demo app](https://github.com/powersync-ja/powersync-kotlin/blob/main/demos/supabase-todolist/shared/src/commonMain/kotlin/com/powersync/demos/components/RefreshIcon.kt) for a complete example.
+  </Tab>
+  <Tab title="Swift">
+    ```swift
+    List(lists) { list in
+        Text(list.name)
+    }
+    // The indicator stays visible until this closure returns
+    .refreshable {
+        do {
+            let checkpoint = try await db.requestCheckpoint()
+            try await checkpoint.waitForSync()
+        } catch {
+            // Show the error to the user
+        }
+    }
+    ```
+
+    See the [Swift demo app](https://github.com/powersync-ja/powersync-swift/blob/main/Demos/PowerSyncExample/PowerSyncExample/Components/ListView.swift) for a complete example.
+  </Tab>
+  <Tab title=".NET">
+    ```cs
+    // In XAML: <RefreshView x:Name="ListsRefreshView" Refreshing="OnRefreshing">
+    private async void OnRefreshing(object sender, EventArgs e)
+    {
+        try
+        {
+            var checkpoint = await db.RequestCheckpoint();
+            await checkpoint.WaitForSync();
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlert("Refresh failed", ex.Message, "OK");
+        }
+        finally
+        {
+            ListsRefreshView.IsRefreshing = false;
+        }
+    }
+    ```
+
+    See the [.NET MAUI demo app](https://github.com/powersync-ja/powersync-dotnet/blob/main/demos/MAUITodo/Views/ListsPage.xaml.cs) for a complete example.
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use powersync::{CheckpointError, PowerSyncDatabase};
+    
+    async fn refresh(db: &PowerSyncDatabase) -> Result<(), CheckpointError> {
+        let checkpoint = db.request_checkpoint().await?;
+        checkpoint.wait_for_sync().await
+    }
+    ```
+
+    See the [egui demo app](https://github.com/powersync-ja/powersync-native/blob/main/examples/egui_todolist/src/ui.rs) for a complete example.
+  </Tab>
+</Tabs>
+
+If the device is offline, `requestCheckpoint()` waits until it can reach the PowerSync Service again, so the refresh indicator stays visible until then. Consider offering the refresh action only while the database is connected. For timeouts and error types, see [Handling Wait Failures](/client-sdks/checkpoint-requests#handling-wait-failures).
 
 ## Report Sync Download Progress
 

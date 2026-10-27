@@ -1,6 +1,6 @@
 ---
 title: "AI Chat Streaming"
-description: "Stream AI chat replies to clients while the model generates them, either through your source database or over a separate connection, and smooth the text on the client."
+description: "Stream AI chat replies to clients while the model generates them, either through your source database or over a separate connection."
 sidebarTitle: "AI Chat Streaming"
 keywords:
   - "ai"
@@ -12,27 +12,32 @@ keywords:
   - "sse"
 ---
 
-In an AI chat, the assistant's reply appears a few words at a time while the model generates it. With PowerSync, each reply is a row in a synced table. A worker on your backend calls the model and writes the reply to that row in your backend database, which PowerSync calls the **source database**. The worker can be your backend API or a separate process. The PowerSync Service, the server between your source database and your clients, syncs the row to each client's local SQLite database like any other data. The client never calls the model, so model API keys stay on your server.
+With PowerSync, each AI chat reply is a row in a synced table. A **worker** on your server calls the model and writes the reply to that row in your source database. PowerSync then syncs the row to clients like any other data. The client never calls the model, so model API keys stay on your server.
 
-While the worker generates a reply, its text can reach clients in two ways:
+The worker is whatever generates replies. It can be your backend API, a separate worker process, or a background job.
 
-- **Streaming through the database**: the worker writes the text generated so far to the reply's row on an interval. PowerSync syncs each write.
-- **Streaming over a separate connection**: the worker sends new text to clients over a connection that does not go through the database. It writes the finished reply to the row once.
+Since replies are ordinary synced data:
 
-Both approaches use the same tables and the same [Sync Streams](/sync/streams/overview), which define the data that each client syncs. In both approaches, the worker saves the finished reply in the same synced row. To show the reply at a steady pace instead of in steps, the client can smooth the text, and the worker can pace it. The [AI chat demo](#example-implementation) shows both approaches in a React app with a Node.js backend.
-
-## Replies as Synced Data
-
-Because each reply is a synced row, your chat gets the following behavior:
-
-- If the user refreshes the page during a reply, the worker continues to generate it. The client shows the text generated so far and continues to receive new text.
+- A page refresh during a reply picks up where it left off.
 - The reply appears in every tab and on every device that has the chat open.
-- A question asked offline waits in the [upload queue](/client-sdks/writing-data#write-operations-and-upload-queue). The worker answers it after the client reconnects and uploads it.
-- Synced chats and messages are in the local SQLite database, so the app reads them without a network request and shows them while offline.
+- A question asked offline waits in the [upload queue](/client-sdks/writing-data#write-operations-and-upload-queue) and is answered when the client reconnects.
+- Chat history is in the local database, so it loads without a network request.
 
-## Syncing Chats and Messages
+While the model generates a reply, the text can reach clients through the database or over a separate connection. This page covers both.
 
-A chat app can sync its data with two Sync Streams:
+## Data Model
+
+You need a `chats` table and a `messages` table. Each assistant message has a `status` column that tells clients what state the reply is in:
+
+| Status | Meaning |
+| --- | --- |
+| `pending` | Waiting for a worker |
+| `streaming` | Being generated |
+| `done` | Finished |
+| `stopped` | Stopped by the user |
+| `error` | Generation failed. The row holds the error message. |
+
+Two [Sync Streams](/sync/streams/overview) sync the data. The `chats` stream syncs the user's chat list, and the client subscribes to `chat_messages` for the chat that is open:
 
 ```yaml
 config:
@@ -50,187 +55,75 @@ streams:
         AND user_id = auth.user_id()
 ```
 
-The `chats` stream syncs the user's chat list whenever the client connects. The client subscribes to `chat_messages` with a chat's ID while that chat is open. See [Client-Side Usage](/sync/streams/client-usage) for how to subscribe in each SDK. Both streams filter on [`auth.user_id()`](/sync/streams/parameters#auth-parameters), the signed-in user's ID, so each user syncs only their own chats and messages.
+See [Client-Side Usage](/sync/streams/client-usage) for how to subscribe in each SDK.
 
-## How a Reply Is Generated
+## Generating a Reply
 
-Both approaches share this flow:
+1. When the user sends a message, the client writes it and an empty assistant message with the status `pending` in one local transaction. The UI shows the pending reply right away, even offline.
+2. The client SDK uploads both rows to your backend through the `uploadData()` function in your [backend connector](/configuration/app-backend/client-side-integration).
+3. A worker picks up the pending reply and changes its status to `streaming`. Make this update conditional on the status still being `pending`, so that only one worker generates each reply.
+4. The worker sends the chat history to the model and streams the reply to clients with one of the approaches below.
+5. When the model finishes, the worker saves the full text and sets the status to `done`.
 
-1. The client writes two rows to its local SQLite database in one transaction: the user's message, and an empty assistant message with the status `pending`. The client SDK queues both rows in the upload queue and calls the `uploadData()` function that you implement in your [backend connector](/configuration/app-backend/client-side-integration). That function reads the rows from the queue and writes them to your source database, usually through your backend API.
-2. The worker learns that a reply is pending. If your backend API is the worker, it learns about the reply after it applies the upload from step 1. See [Starting and Stopping Replies](#starting-and-stopping-replies).
-3. The worker claims the reply with an update that changes its status from `pending` to `streaming` and stores a new **claim ID**, for example a random UUID. The update only matches while the status is still `pending`. If several workers try to claim the reply, only one update matches, so only one worker claims the reply. Every later write by the worker includes the claim ID in its condition, so that an older attempt cannot overwrite the reply after a retry.
-4. The worker calls the model, which streams the reply as tokens: small pieces of text, often parts of words. The text reaches the client while the model generates it. The two approaches differ mainly in this step.
-5. The worker saves the finished text in the row and sets the status to `done`. PowerSync syncs the row to every client subscribed to the chat.
+Stop and retry are client writes too. Stop sets the status to `stopped`. Retry clears the text and sets the status back to `pending`, so the reply goes through the same steps as a new one.
 
-The empty assistant message is the row that the worker fills. Because the client creates it locally, the UI shows the pending reply at once, even offline. The user can also stop the reply before a worker starts.
+How the worker hears about new and stopped replies depends on what it is. If your backend API is the worker, it already sees these changes when it applies the upload, so it can start or cancel the reply right there. A separate worker needs a notification. With Postgres, a trigger can call `pg_notify()` when a reply changes.
 
-The status column tells every client what state the reply is in:
-
-| Status | Meaning | Set by |
-| --- | --- | --- |
-| `pending` | The reply waits for a worker. | The client, for a new question or a retry. The worker, for a reply interrupted by a restart. |
-| `streaming` | A worker is generating the reply. | The worker |
-| `done` | The reply is finished. | The worker |
-| `stopped` | The user stopped the reply. | The client |
-| `error` | Generation failed. The row holds the error message. | The worker |
-
-To stop a reply, the client sets its status to `stopped`. To retry, the client clears the text and sets the status back to `pending`, so that the worker generates the reply again in the same way as a new question.
-
-A worker can take a moment to notice a stop. If the user retries the reply in that time, the old attempt is still running when a worker claims the retry. A condition on the status alone does not block the writes of the old attempt, because the status of the retried reply is `streaming` again. The claim of the retry stores a new claim ID, so these writes match no row and do not overwrite the new reply.
-
-### Starting and Stopping Replies
-
-The simplest way to start and stop replies is to generate them in your backend API. The changes that start and stop a reply already reach it as uploads. After the backend API commits an uploaded change that sets an assistant message to `pending`, it starts to generate that reply. It generates in the background, so that the upload request can finish without waiting for the model. When the backend API applies a change that stops a reply or deletes it, it cancels the model request. The demo works this way.
-
-If the worker is a separate process, it needs a notification instead. You also need a notification when clients write to your source database without going through your backend API, for example with the Supabase client library. With Postgres, a trigger, which is a function that the database runs when a row changes, calls `pg_notify()` when an assistant message is saved with the status `pending`. The worker keeps a database connection open and receives the notification with `LISTEN`. With another [source database](/configuration/source-db/setup), your backend API can notify a separate worker when it applies the change.
-
-When the worker starts, it resets replies that a crashed or restarted worker left in `streaming` back to `pending`, so that they are generated again from the beginning. It then generates every reply that is `pending`. For a separate worker, the pending replies include replies that clients created while it was down, because Postgres does not keep a notification for a worker that is not listening. With several workers, such as several instances of your backend API, this reset also restarts replies that another worker is still generating. The claim ID makes sure that only the newest attempt saves the reply, but both workers call the model. To avoid this duplicate work, record which worker owns each reply, and reset only the replies of workers that are no longer running.
+When a worker starts, it should also pick up replies that were left `pending` or `streaming` while it was down.
 
 ## Streaming Through the Database
 
-In this approach, the worker writes the text generated so far to the reply's row while the model generates it. Each write is an ordinary row update. The Service reads the update from your source database through [replication](/architecture/powersync-service#replication-from-the-source-database) and syncs it to every client subscribed to the chat. On the client, a [watched query](/client-sdks/watch-queries) reads the messages. A watched query runs again when its data changes, as `useQuery` does in React. After each synced write, the UI shows the longer text.
-
-In this diagram, the worker is your backend API. Thick arrows carry the text while the worker generates the reply:
+The worker writes the text generated so far to the reply's row on a fixed interval, such as every 100 ms. Each write is a normal update, so PowerSync syncs it and a [watched query](/client-sdks/watch-queries) re-renders the message.
 
 ```mermaid
 flowchart LR
-  client["Client<br/>(local SQLite)"] -->|"question and<br/>empty reply"| worker["Backend API<br/>(worker)"]
-  worker -->|"question and<br/>empty reply"| db[("Source<br/>database")]
-  worker <-->|tokens| model["Model"]
-  worker ==>|"text so far,<br/>on an interval"| db
-  db ==>|replication| service["PowerSync<br/>Service"]
-  service ==>|"syncs each write"| client
+  model["Model"] -->|tokens| worker["Worker"]
+  worker -->|"text so far,<br/>every 100 ms"| db[("Source<br/>database")]
+  db --> service["PowerSync<br/>Service"]
+  service -->|"syncs each write"| client["Client"]
 ```
 
-The worker collects tokens in memory and, on an interval, writes all the text generated so far as one update. The interval caps the write rate. With an interval of 100 ms, the worker writes a reply at most 10 times per second, however fast the model produces tokens. The demo uses that interval. The last write sets the status to `done`.
+The interval caps the write rate however fast the model produces tokens. Include `status = 'streaming'` in each update's condition, so that a write never overwrites a stop.
 
-The worker can also notice a stop from its own writes. It includes its claim ID and the status in the condition of each write:
+This is the simpler approach. PowerSync is the only channel to the client, clients that reconnect or open the chat mid-reply catch up through normal sync, and any worker can generate any reply.
 
-```sql
-UPDATE messages
-SET content = $1, status = $2
-WHERE id = $3 AND claim_id = $4 AND status = 'streaming'
-```
-
-When the user stops the reply, the client sets the status to `stopped`. After that change reaches the source database, the worker's next write matches no row, and the worker cancels the model request. So even a separate worker needs no stop notification. If the user also retries the reply, the claim ID no longer matches, so the next write of the old attempt still matches no row.
-
-This approach has these benefits:
-
-- PowerSync is the only channel to the client. You do not build or secure an extra endpoint. The client SDK resumes syncing on its own after a connection drops.
-- The partial text is in the row. A client that opens the chat or reconnects during a reply catches up through normal sync. It shows the text so far, then each later write.
-- Clients do not need to reach the worker that generates a reply, so any worker can generate any reply.
-
-It has these costs:
-
-- Each write syncs the whole row, including all the text generated so far. A long reply sends its early text again with every write. Each write goes to every client subscribed to the chat. With very long replies or many clients subscribed to a chat, the synced data adds up. On PowerSync Cloud, [data synced](/resources/usage-and-billing/usage-and-billing-faq) is a billed usage metric.
-- Each write is also an update in your source database. The Service keeps each write in its [operation history](/architecture/powersync-service#operation-history), a log of row changes that it uses to sync clients. Until [compacting](/maintenance-ops/compacting-buckets) runs, a client that syncs the chat for the first time downloads every earlier write of each reply, not only the latest text. Compacting removes the data of outdated writes. PowerSync Cloud compacts once per day.
-- The interval is a trade-off. A shorter interval gives smaller steps and shows text sooner, but causes more writes. A longer interval causes fewer writes, but each step is bigger. [Text smoothing](#smoothing-the-displayed-text) makes the steps less visible.
+The downside is data volume. Each write syncs the whole row, so a long reply sends its early text again with every write, to every client subscribed to the chat. The Service also keeps each write in its [operation history](/architecture/powersync-service#operation-history) until [compacting](/maintenance-ops/compacting-buckets) runs. On PowerSync Cloud, [data synced](/resources/usage-and-billing/usage-and-billing-faq) is a billed metric.
 
 ## Streaming Over a Separate Connection
 
-In this approach, the worker sends the text to clients over a separate connection while the model generates it. The worker writes the reply's text to the row only once, when the reply is finished. This section uses **Server-Sent Events (SSE)** for the connection. SSE is an HTTP response that stays open so that the server can send events as they happen.
-
-In this diagram, the worker is your backend API. Thick arrows carry the text while the worker generates the reply. Dotted arrows carry the finished reply once:
+The worker keeps the reply in memory while it generates and sends the text to clients over a separate connection, such as Server-Sent Events (SSE). It writes the reply to the database once, when it is finished.
 
 ```mermaid
 flowchart LR
-  client["Client<br/>(local SQLite)"] -->|"question and<br/>empty reply"| worker["Backend API<br/>(worker, SSE endpoint)"]
-  worker -->|"question and<br/>empty reply"| db[("Source<br/>database")]
-  worker <-->|tokens| model["Model"]
-  client -->|"connects while<br/>status is streaming"| worker
-  worker ==>|"text so far,<br/>then new text"| client
-  worker -.->|"finished reply,<br/>once"| db
-  db -.->|replication| service["PowerSync<br/>Service"]
+  model["Model"] -->|tokens| worker["Worker"]
+  worker -->|"SSE: text so far,<br/>then new text"| client["Client"]
+  worker -.->|"finished reply,<br/>once"| db[("Source<br/>database")]
+  db -.-> service["PowerSync<br/>Service"]
   service -.->|"syncs the<br/>finished reply"| client
 ```
 
-The worker keeps each reply's text in memory and serves it from an SSE endpoint:
+The synced status still tells the client when to connect. While a reply is `streaming`, the client connects to the worker, receives the text so far, and then receives new text as it arrives. If the connection drops, the client reconnects until the status changes. When the finished reply syncs, the client shows the row instead of the streamed text. Authenticate the connection so that users can only read their own replies.
 
-- The synced row still tells clients when to connect. Each client opens a connection for every reply whose synced status is `streaming`, so other tabs and devices stream the reply too.
-- Each connection first receives all the text generated so far, then new text as it arrives. A client that connects late or reconnects catches up this way.
-- If a connection drops or the worker cannot serve the reply, for example while the worker restarts, the client connects again after a short delay. It keeps trying while the synced status is `streaming`, and stops when the status changes. It also connects again when the claim ID in the synced row changes, because a new claim ID means that the worker started the reply over.
-- The endpoint serves a reply only to the user who owns it. For example, the client sends its access token in an `Authorization` header, and the endpoint checks the token before it streams. If you send the token in a header, read the stream with `fetch()`. The browser's built-in SSE client, `EventSource`, cannot set request headers.
-- When the reply is finished, the worker writes the full text and the `done` status to the row in one update, then closes the SSE connections. Keep showing the streamed text until that update syncs. The update carries the text and the status together, so the UI switches from the streamed text to the synced row without a gap.
+This keeps the token stream out of your database. Each reply is one text write regardless of its length, each event carries only new text, and clients get text without waiting for a write interval or sync.
 
-The worker does not write the row during generation, so it cannot detect a stop from an update that matches no row. If your backend API is the worker, it cancels the model request when it applies the stop. A separate worker needs a notification instead, for example from a second trigger that runs when a reply's status changes to `stopped`. After it cancels the request, the worker saves the text that it has sent so far.
+In exchange, there are more parts to build: an authenticated endpoint on the worker and reconnect logic on the client. The partial text exists only in the worker's memory, so a restart loses it and the reply starts over. With several workers, each client has to reach the worker that is generating its reply. Services such as Cloudflare Durable Objects solve this routing problem.
 
-This approach has these benefits:
+## Smoothing the Text
 
-- The worker writes the reply text to the database once, whatever its length. The token stream stays out of your source database. With many replies generated at the same time, the database receives one text write per reply instead of one per interval.
-- Each SSE event carries only the new text, not all the text generated so far.
-- Clients receive text as soon as the worker sends it, without waiting for a write interval, replication, or sync.
-- The finished reply is still a synced row, so chat history, multiple devices, and offline questions work as they do when you stream through the database.
+In both approaches, text arrives in steps: one synced write or one SSE event at a time. Some models also send text in a few large chunks. If the UI renders each step as it arrives, the reply jumps and pauses.
 
-It has these costs:
+To fix this, keep the received text separate from the displayed text, and reveal the difference a few characters per animation frame. Set the pace from how often text arrives, and show existing messages such as chat history without animation. The displayed text then trails the received text slightly.
 
-- During generation, the text exists only in the worker's memory. If the worker restarts, that text is lost. A client that opens the chat then sees an empty reply until a worker generates it again. When you stream through the database, an interrupted reply also starts over, but the text so far stays in the row while the worker is down.
-- With several workers, each client must reach the worker that generates its reply. If your backend API is the worker, a stop must reach that worker too, because the stop arrives as an upload. This requires routing each connection, and each of these stops, to the worker that claimed the reply, for example by recording that worker in the row. Services such as Cloudflare Durable Objects address this problem: each object has a unique name, so clients can send requests to the object that generates a specific reply.
-- You build and run more parts: the endpoint, its authentication, and the client's reconnect logic. A separate worker also needs the stop notification.
-
-## Smoothing the Displayed Text
-
-Text reaches the client in steps. When you stream through the database, each step is one synced write, so steps arrive about one write interval apart. When you stream over a separate connection, each step is one SSE event. Some models, Gemini included, also send text in a few large chunks. If the UI renders each step when it arrives, the reply jumps forward and then pauses. The client can smooth the text that it shows, and the worker can pace the text that it sends.
-
-### Smoothing on the Client
-
-To avoid these jumps and pauses, separate the text that the UI shows from the text that the client has received. The received text comes from the synced row or the SSE connection. The UI shows the start of the received text and reveals the rest a few characters per animation frame at a steady pace. Smoothing runs only on the client. It does not change what the worker writes or what PowerSync syncs, so you can tune it or remove it without changing the backend.
-
-To keep the pace steady, a smoother can do the following:
-
-- Measure the average time between arrivals, and spread each arrival over that time, up to a limit. The text keeps moving until the next arrival is due, instead of jumping ahead and then waiting. The limit keeps a long pause in the stream from slowing the text that follows.
-- Change speed gradually, so that the pace does not jump when arrivals speed up or slow down.
-- Cap the pace. Go faster than the cap only when the displayed text falls too far behind the received text.
-- Show text that is already present when a message first renders, such as chat history, immediately and without animation.
-
-The demo's `useSmoothText` React hook works this way. It caps the pace at about 150 characters per second, and spreads each arrival over at most 1 second.
-
-The cost is delay. When the model sends text faster than the pace cap, the displayed text can trail the received text by a few seconds.
-
-When you stream through the database, smoothing changes what the write interval controls. Without smoothing, a longer interval shows as bigger jumps. With smoothing, the reply keeps moving between writes, so a longer interval mainly adds delay. You can then choose the interval for write volume, as long as writes are closer together than the longest time that the smoother spreads an arrival over.
-
-### Pacing on the Worker
-
-The worker can also even out the text before it reaches any client. The worker reads the model's output as it arrives and sends it on at a steady rate. It holds back text that arrives faster than that rate. For example, the worker in the demo sends up to 100 characters per second, about 5 characters every 50 ms. The worker then sends even steps, whichever approach you use.
-
-Pacing has these costs:
-
-- A reply finishes after the model does, because the worker still has to send the text that it holds back.
-- When you stream through the database, the reply streams for longer, so it causes more writes in total. The write interval still caps the write rate. For example, at 100 characters per second and a 100 ms interval, a reply of 1,600 characters streams for about 16 seconds in about 160 writes. Without pacing, one reply of that length from the demo's model took about 2 seconds and 9 writes. Because each write syncs all the text generated so far, the synced data grows too.
-- When you stream over a separate connection and the user stops a reply, the worker saves the text that it has sent, not the text that it still holds back.
-
-Pacing on the worker does not replace smoothing on the client. Replication, sync, and the network add their own delays, so even steps from the worker can still arrive unevenly.
+The worker can also pace the text before sending it, which evens out models that send large chunks. The reply then finishes after the model does, and streaming through the database takes more writes. Smoothing on the client is still useful, because sync and the network add their own uneven delays.
 
 ## Choosing an Approach
 
-|  | Streaming through the database | Streaming over a separate connection |
-| --- | --- | --- |
-| Path of the text during generation | Worker → source database → PowerSync Service → client | Worker → SSE connection → client |
-| Where the partial text lives | In the reply's row | In the worker's memory |
-| Text writes to the database per reply | One per write interval during generation | One, when the reply finishes |
-| Data a client receives per update | All the text generated so far | Only the new text |
-| When new text reaches the client | After the next write, replication, and sync | As soon as the worker sends it |
-| Running several workers | Any worker can generate any reply | Each client must reach the worker that generates its reply |
-| Parts to build beyond the worker | None | An SSE endpoint with authentication, client reconnect logic, and a stop notification for a separate worker |
+Start with streaming through the database. It has fewer parts, and PowerSync handles delivery and reconnects. Consider a separate connection when the write load on your database or the data synced to clients grows too large. Long replies, many replies at once, and many clients per chat all add to both.
 
-If you are not sure which approach to use, start with streaming through the database. It has fewer parts. PowerSync delivers each write, including to clients that reconnect or open the chat during a reply.
-
-If the write load on your source database or the data synced to clients grows too large, consider a separate connection. Long replies and many replies generated at the same time increase both the write load and the synced data. Many clients subscribed to the same chat increase the synced data. Both approaches use the same tables, client writes, and Sync Streams, so switching later does not change your data model.
+Both approaches use the same tables, Sync Streams, and client writes, so you can switch later without changing your data model.
 
 ## Example Implementation
 
-The [AI chat demo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-ai-chat) {/* TODO: Verify the demo link after the react-ai-chat demo merges to main */} implements both approaches, smoothing on the client, and pacing on the worker. It uses React, Postgres, the PowerSync Web SDK, Sync Streams, and a Node.js backend API that applies uploads and calls the model with the [Vercel AI SDK](https://ai-sdk.dev). Postgres and the PowerSync Service run locally in Docker, started with the [PowerSync CLI](/tools/cli). One setting switches between the two approaches. Two other settings turn off smoothing on the client and pacing on the worker, so you can see the steps as they arrive.
+The [AI chat demo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-ai-chat) {/* TODO: Verify the demo link after the react-ai-chat demo merges to main */} implements both approaches in a React app with Postgres. Its Node.js backend API is the worker: it applies uploads and calls the model with the [Vercel AI SDK](https://ai-sdk.dev). One setting switches between the approaches, and smoothing and pacing can each be turned off to see the raw steps. Without a model API key, the worker simulates replies. The demo's README covers running it locally.
 
-The demo implements each concept in these files:
-
-- Sending, stopping, and retrying a reply: `src/library/chat.ts`
-- Uploading local changes and fetching access tokens: `src/library/powersync/BackendConnector.ts`
-- Applying uploads, and starting and stopping replies: `server/upload.ts`
-- Claiming replies and restarting interrupted ones: `server/replies.ts`
-- The tables: `powersync/docker/modules/database-postgres/init-scripts/01-init.sql`
-- Sync Streams: `powersync/sync-config.yaml`
-- Streaming through the database: `server/stream-postgres.ts`
-- Streaming over a separate connection: `server/stream-sse.ts` and `src/components/chat/useSseReply.ts`
-- Smoothing on the client: `src/components/chat/useSmoothText.ts`
-- Pacing on the worker: `server/throttle.ts`
-
-To build a backend API that applies uploads and issues access tokens for your own app, see [App Backend Setup](/configuration/app-backend/setup).
+To build a backend API for your own app, see [App Backend Setup](/configuration/app-backend/setup).

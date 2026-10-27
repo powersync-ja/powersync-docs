@@ -130,7 +130,7 @@ Wrap images in a `Frame` with a caption and descriptive alt text:
 
 ### Code Examples
 
-- Provide complete, runnable, tested examples with realistic data and expected output where useful. Never include real credentials or secrets.
+- Keep usage examples focused on the fundamentals. They may omit surrounding app setup and production error handling, but the demonstrated APIs and behavior must be correct. Use realistic data and expected output where useful. Test examples where practical. Never include real credentials or secrets.
 - Give fenced code blocks a language tag. Use filenames only for self-hosted examples.
 - Do not use placeholder names such as `foo`, `bar`, or `example.com` in runnable examples.
 - In SQL, use table names directly unless an alias is necessary for a self-join or ambiguous column. Prefer `SELECT tasks.* FROM tasks JOIN projects ON ...` to aliases such as `t`.

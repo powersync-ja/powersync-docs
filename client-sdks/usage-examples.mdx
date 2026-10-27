@@ -20,59 +20,12 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     [PowerSyncDatabase.writeTransaction(callback)](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#writetransaction) automatically commits changes after the transaction callback is completed if `tx.rollback()` has not explicitly been called. If an exception is thrown in the callback then changes are automatically rolled back.
 
     ```js
-    // ListsWidget.jsx
-    import React, { useState } from 'react';
-    
-    export const ListsWidget = () => {
-      const [lists, setLists] = useState([]);
-    
-      return (
-        <div>
-          <ul>
-            {lists.map((list) => (
-              <li key={list.id}>
-                {list.name}
-                <button
-                  onClick={async () => {
-                    try {
-                        await PowerSync.writeTransaction(async (tx) => {
-                            // Delete the main list
-                            await tx.execute(`DELETE FROM lists WHERE id = ?`, [item.id]);
-                            // Delete any children of the list
-                            await tx.execute(`DELETE FROM todos WHERE list_id = ?`, [item.id]);
-    
-                            // Transactions are automatically committed at the end of execution
-                            // Transactions are automatically rolled back if an exception occurred
-                          })
-                        // Watched queries should automatically reload after mutation
-                      } catch (ex) {
-                        Alert.alert('Error', ex.message)
-                      }
-                  }}
-                >
-                  Delete
-                </button>
-              </li>
-            ))}
-          </ul>
-          <button
-            onClick={async () => {
-              try {
-                  await PowerSync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
-                    'A list name',
-                    "[The user's uuid]"
-                  ])
-                  // Watched queries should automatically reload after mutation
-                } catch (ex) {
-                  Alert.alert('Error', ex.message)
-                }
-            }}
-          >
-            Create List
-          </button>
-        </div>
-      );
-    };
+    async function deleteList(db, listId) {
+      await db.writeTransaction(async (tx) => {
+        await tx.execute('DELETE FROM lists WHERE id = ?', [listId]);
+        await tx.execute('DELETE FROM todos WHERE list_id = ?', [listId]);
+      });
+    }
     ```
 
     Also see [PowerSyncDatabase.readTransaction(callback)](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#readtransaction).
@@ -83,57 +36,11 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     [PowerSyncDatabase.writeTransaction(callback)](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#writetransaction) automatically commits changes after the transaction callback is completed if [`tx.rollback()`](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/db/DBAdapter.ts#L53) has not explicitly been called. If an exception is thrown in the callback then changes are automatically rolled back.
 
     ```js
-    // ListsWidget.jsx
-    import {Alert, Button, FlatList, Text, View} from 'react-native';
-    
-    export const ListsWidget = () => {
-      // Populate lists with one of methods listed above
-      const [lists, setLists] = React.useState([]);
-    
-      return (
-        <View>
-          <FlatList
-            data={lists.map(list => ({key: list.id, ...list}))}
-            renderItem={({item}) => (<View>
-              <Text>{item.name}</Text>
-               <Button
-                  title="Delete"
-                  onPress={async () => {
-                      try {
-                        await PowerSync.writeTransaction(async (tx) => {
-                            // Delete the main list
-                            await tx.execute(`DELETE FROM lists WHERE id = ?`, [item.id]);
-                            // Delete any children of the list
-                            await tx.execute(`DELETE FROM todos WHERE list_id = ?`, [item.id]);
-    
-                            // Transactions are automatically committed at the end of execution
-                            // Transactions are automatically rolled back if an exception occurred
-                          })
-                        // Watched queries should automatically reload after mutation
-                      } catch (ex) {
-                        Alert.alert('Error', ex.message)
-                      }
-                    }}
-                />
-            </View>)}
-          />
-          <Button
-            title="Create List"
-            color="#841584"
-            onPress={async () => {
-                try {
-                  await PowerSync.execute('INSERT INTO lists (id, created_at, name, owner_id) VALUES (uuid(), datetime(), ?, ?) RETURNING *', [
-                    'A list name',
-                    "[The user's uuid]"
-                  ])
-                  // Watched queries should automatically reload after mutation
-                } catch (ex) {
-                  Alert.alert('Error', ex.message)
-                }
-              }}
-          />
-        </View>
-        )
+    async function deleteList(db, listId) {
+      await db.writeTransaction(async (tx) => {
+        await tx.execute('DELETE FROM lists WHERE id = ?', [listId]);
+        await tx.execute('DELETE FROM todos WHERE list_id = ?', [listId]);
+      });
     }
     ```
 
@@ -167,12 +74,12 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     Use `writeTransaction` to group statements that can write to the database.
 
     ```kotlin
-    database.writeTransaction {
-        database.execute(
-            sql = "DELETE FROM list WHERE id = ?",
+    database.writeTransaction { transaction ->
+        transaction.execute(
+            sql = "DELETE FROM lists WHERE id = ?",
             parameters = listOf(listId)
         )
-        database.execute(
+        transaction.execute(
             sql = "DELETE FROM todos WHERE list_id = ?",
             parameters = listOf(listId)
         )
@@ -184,10 +91,10 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 
     ```swift
     // Delete a list and its todos in a transaction
-    func deleteList(db: PowerSyncDatabase, listId: String) async throws {
+    func deleteList(db: any PowerSyncDatabaseProtocol, listId: String) async throws {
         try await db.writeTransaction { tx in
-            try await tx.execute(sql: "DELETE FROM lists WHERE id = ?", parameters: [listId])
-            try await tx.execute(sql: "DELETE FROM todos WHERE list_id = ?", parameters: [listId])
+            try tx.execute(sql: "DELETE FROM lists WHERE id = ?", parameters: [listId])
+            try tx.execute(sql: "DELETE FROM todos WHERE list_id = ?", parameters: [listId])
         }
     }
     ```
@@ -348,20 +255,19 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
   <Tab title="React Native & Expo">
     Use [PowerSyncDatabase.execute](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#execute) to run INSERT, UPDATE or DELETE queries.
 
-    ```js
-    const handleButtonClick = async () => {
-      await db.execute(
-        'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
-        ['Fred', 'fred@example.org']
-      );
-    };
+    ```jsx
+    import { Button } from 'react-native';
     
-    return (
-      <button onClick={handleButtonClick} title="+">
-        <span>+</span>
-        <i className="material-icons">add</i>
-      </button>
-    );
+    export function AddCustomerButton({ db }) {
+      const handleButtonClick = async () => {
+        await db.execute(
+          'INSERT INTO customers(id, name, email) VALUES(uuid(), ?, ?)',
+          ['Fred', 'fred@example.org']
+        );
+      };
+    
+      return <Button title="Add customer" onPress={handleButtonClick} />;
+    }
     ```
   </Tab>
   <Tab title="Capacitor">
@@ -446,275 +352,113 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
 
 ## Send Changes in Local Data to Your Backend Service
 
+The PowerSync Client SDK calls `uploadData()` to send local writes to your backend. To generate a backend connector for your SDK, open your instance in the [PowerSync Dashboard](https://dashboard.powersync.com/), select **Client SDK Setup**, and select your app language.
+
+The examples below read a queued transaction, send all its entries to your backend, and mark it complete after the upload succeeds. Each entry includes the operation (`PUT`, `PATCH`, or `DELETE`), table, row ID, and changed data.
+
+The backend API calls represent your own API client, which must send every entry and report upload failures. For validation errors and conflicts, see [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors).
+
 <Tabs>
   <Tab title="JavaScript Web">
-    Override [uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) to send local updates to your backend service.
-
     ```js
-    // Implement the uploadData method in your backend connector
     async function uploadData(database) {
-      const batch = await database.getCrudBatch();
-      if (batch === null) return;
+      const transaction = await database.getNextCrudTransaction();
+      if (!transaction) return;
     
-      for (const op of batch.crud) {
-        switch (op.op) {
-          case 'put':
-            // Send the data to your backend service
-            // replace `_myApi` with your own API client or service
-            await _myApi.put(op.table, op.opData);
-            break;
-          default:
-            // TODO: implement the other operations (patch, delete)
-            break;
-        }
-      }
-    
-      await batch.complete();
+      await backendApi.uploadChanges(transaction.crud);
+      await transaction.complete();
     }
     ```
   </Tab>
   <Tab title="React Native & Expo">
-    Override [uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) to send local updates to your backend service.
-
     ```js
-    // Implement the uploadData method in your backend connector
     async function uploadData(database) {
-      const batch = await database.getCrudBatch();
-      if (batch === null) return;
+      const transaction = await database.getNextCrudTransaction();
+      if (!transaction) return;
     
-      for (const op of batch.crud) {
-        switch (op.op) {
-          case 'put':
-            // Send the data to your backend service
-            // replace `_myApi` with your own API client or service
-            await _myApi.put(op.table, op.opData);
-            break;
-          default:
-            // TODO: implement the other operations (patch, delete)
-            break;
-        }
-      }
-    
-      await batch.complete();
+      await backendApi.uploadChanges(transaction.crud);
+      await transaction.complete();
     }
     ```
   </Tab>
   <Tab title="Capacitor">
-    Override [uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) to send local updates to your backend service.
-
     ```js
-    // Implement the uploadData method in your backend connector
     async function uploadData(database) {
-      const batch = await database.getCrudBatch();
-      if (batch === null) return;
+      const transaction = await database.getNextCrudTransaction();
+      if (!transaction) return;
     
-      for (const op of batch.crud) {
-        switch (op.op) {
-          case 'put':
-            // Send the data to your backend service
-            // replace `_myApi` with your own API client or service
-            await _myApi.put(op.table, op.opData);
-            break;
-          default:
-            // TODO: implement the other operations (patch, delete)
-            break;
-        }
-      }
-    
-      await batch.complete();
+      await backendApi.uploadChanges(transaction.crud);
+      await transaction.complete();
     }
     ```
   </Tab>
   <Tab title="Node.js">
-    Override [uploadData](https://github.com/powersync-ja/powersync-js/blob/ed5bb49b5a1dc579050304fab847feb8d09b45c7/packages/common/src/client/connection/PowerSyncBackendConnector.ts#L24) to send local updates to your backend service.
-
     ```js
-    // Implement the uploadData method in your backend connector
     async function uploadData(database) {
-      const batch = await database.getCrudBatch();
-      if (batch === null) return;
+      const transaction = await database.getNextCrudTransaction();
+      if (!transaction) return;
     
-      for (const op of batch.crud) {
-        switch (op.op) {
-          case 'put':
-            // Send the data to your backend service
-            // replace `_myApi` with your own API client or service
-            await _myApi.put(op.table, op.opData);
-            break;
-          default:
-            // TODO: implement the other operations (patch, delete)
-            break;
-        }
-      }
-    
-      await batch.complete();
+      await backendApi.uploadChanges(transaction.crud);
+      await transaction.complete();
     }
     ```
   </Tab>
   <Tab title="Dart/Flutter">
-    Override [uploadData](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncBackendConnector/uploadData.html) to send local updates to your backend service.
-
     ```dart
     @override
     Future<void> uploadData(PowerSyncDatabase database) async {
-      final batch = await database.getCrudBatch();
-      if (batch == null) return;
-      for (var op in batch.crud) {
-        switch (op.op) {
-          case UpdateType.put:
-            // Send the data to your backend service
-            // Replace `_myApi` with your own API client or service
-            await _myApi.put(op.table, op.opData!);
-            break;
-          default:
-            // TODO: implement the other operations (patch, delete)
-            break;
-        }
-      }
-      await batch.complete();
+      final transaction = await database.getNextCrudTransaction();
+      if (transaction == null) return;
+    
+      await backendApi.uploadChanges(transaction.crud);
+      await transaction.complete();
     }
     ```
   </Tab>
   <Tab title="Kotlin">
-    Override `uploadData` to send local updates to your backend service. If you are using Supabase, see [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/integrations/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) for a complete implementation.
-
     ```kotlin
-    /**
-     * This function is called whenever there is data to upload, whether the device is online or offline.
-     * If this call throws an error, it is retried periodically.
-     */
     override suspend fun uploadData(database: PowerSyncDatabase) {
+        val transaction = database.getNextCrudTransaction() ?: return
     
-        val transaction = database.getNextCrudTransaction() ?: return;
-    
-        var lastEntry: CrudEntry? = null;
-        try {
-    
-            for (entry in transaction.crud) {
-                lastEntry = entry;
-    
-                val table = supabaseClient.from(entry.table)
-                when (entry.op) {
-                    UpdateType.PUT -> {
-                        val data = entry.opData?.toMutableMap() ?: mutableMapOf()
-                        data["id"] = entry.id
-                        table.upsert(data)
-                    }
-    
-                    UpdateType.PATCH -> {
-                        table.update(entry.opData!!) {
-                            filter {
-                                eq("id", entry.id)
-                            }
-                        }
-                    }
-    
-                    UpdateType.DELETE -> {
-                        table.delete {
-                            filter {
-                                eq("id", entry.id)
-                            }
-                        }
-                    }
-                }
-            }
-    
-            transaction.complete(null);
-    
-        } catch (e: Exception) {
-            println("Data upload error - retrying last entry: ${lastEntry!!}, $e")
-            throw e
-        }
+        backendApi.uploadChanges(transaction.crud)
+        transaction.complete(null)
     }
     ```
   </Tab>
   <Tab title="Swift">
-    Override `uploadData` to send local updates to your backend service.
-
     ```swift
-    class MyConnector: PowerSyncBackendConnector {
-        override func uploadData(database: PowerSyncDatabaseProtocol) async throws {
-            guard let batch = try await database.getCrudBatch() else { return }
-            for entry in batch.crud {
-                switch entry.op {
-                case .put:
-                    // Send the data to your backend service
-                    // Replace `_myApi` with your own API client or service
-                    // `opDataTyped` preserves SQLite types as a `[String: JsonValue]` dictionary.
-                    // Use `opData` for the legacy `[String: String?]` representation.
-                    try await _myApi.put(table: entry.table, data: entry.opDataTyped ?? [:])
-                default:
-                    // TODO: implement the other operations (patch, delete)
-                    break
-                }
-            }
-            try await batch.complete()
-        }
+    func uploadData(database: any PowerSyncDatabaseProtocol) async throws {
+        guard let transaction = try await database.getNextCrudTransaction() else { return }
+    
+        try await backendApi.uploadChanges(transaction.crud)
+        try await transaction.complete()
     }
     ```
-
-    <Note>
-      As of v1.14, `CrudBatch`, `CrudEntry`, and `CrudTransaction` are concrete `struct`s instead of protocols. Existing code that reads their properties continues to work unchanged, but they can no longer be constructed in user code (for example, in tests or mocks).
-    </Note>
   </Tab>
   <Tab title=".NET">
-    Override `UploadData` to send local updates to your backend service.
-
     ```cs
-    public class MyConnector : IPowerSyncBackendConnector
+    public async Task UploadData(IPowerSyncDatabase database)
     {
-        public async Task UploadData(IPowerSyncDatabase database)
-        {
-            var transaction = await database.GetNextCrudTransaction();
-            if (transaction == null) return;
+        var transaction = await database.GetNextCrudTransaction();
+        if (transaction == null) return;
     
-            try
-            {
-                foreach (var operation in transaction.Crud)
-                {
-                    switch (operation.Op)
-                    {
-                        case UpdateType.PUT:
-                            // Send the data to your backend service
-                            // Replace _myApi with your own API client or service
-                            await _myApi.Put(operation.Table, operation.OpData);
-                            break;
-                        default:
-                            // TODO: implement the other operations (PATCH, DELETE)
-                            break;
-                    }
-                }
-                await transaction.Complete();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Upload error: {ex.Message}");
-                throw;
-            }
-        }
+        await backendApi.UploadChanges(transaction.Crud);
+        await transaction.Complete();
     }
     ```
   </Tab>
   <Tab title="Rust">
-    Implement `upload_data` on your `BackendConnector` to send local changes to your backend service. Use `db.crud_transactions()` and iterate with `try_next()`; for each transaction, inspect `tx.crud` and call your API, then `tx.complete().await?`:
-
     ```rust
-    use async_trait::async_trait;
+    use futures_lite::StreamExt;
     
-    #[async_trait]
-    impl BackendConnector for MyBackendConnector {
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
-            let mut local_writes = self.db.crud_transactions();
-            while let Some(tx) = local_writes.try_next().await? {
-                for op in &tx.crud {
-                    // Send the data to your backend service
-                    // Replace with your own API client or service
-                    // match on op.op (e.g. Put, Patch, Delete) and op.table, op.id, op.op_data
-                }
-                tx.complete().await?;
-            }
-            Ok(())
+    // Inside your BackendConnector implementation
+    async fn upload_data(&self) -> Result<(), PowerSyncError> {
+        let mut transactions = self.db.crud_transactions();
+        while let Some(transaction) = transactions.try_next().await? {
+            self.backend_api.upload_changes(&transaction.crud).await?;
+            transaction.complete().await?;
         }
+        Ok(())
     }
     ```
   </Tab>
@@ -726,73 +470,44 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
   <Tab title="JavaScript Web">
     Use [PowerSyncDatabase.connected](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#connected) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#registerlistener) to listen for status changes to your PowerSync instance.
 
-    ```js
-    // Example of using connected status to show online or offline
+    ```jsx
+    import * as React from 'react';
     
-    // Tap into connected
-    const [connected, setConnected] = React.useState(powersync.connected);
+    export function ConnectionStatus({ powersync }) {
+      const [connected, setConnected] = React.useState(powersync.connected);
     
-    React.useEffect(() => {
-    // Register listener for changes made to the powersync status
-      return powersync.registerListener({
-        statusChanged: (status) => {
-          setConnected(status.connected);
-        }
-      });
-    }, [powersync]);
+      React.useEffect(() => {
+        return powersync.registerListener({
+          statusChanged: (status) => {
+            setConnected(status.connected);
+          }
+        });
+      }, [powersync]);
     
-    // Icon to show connected or not connected to powersync
-    // as well as the last synced time
-    <Icon
-      name={connected ? 'wifi' : 'wifi-off'}
-      type="material-community"
-      color="black"
-      size={20}
-      style={{ padding: 5 }}
-      onPress={() => {
-        Alert.alert(
-          'Status',
-          `${connected ? 'Connected' : 'Disconnected'}. \nLast Synced at ${powersync.currentStatus?.lastSyncedAt.toISOString() ?? '-'
-          }\nVersion: ${powersync.sdkVersion}`
-        );
-      }}
-    />;
+      return <span>{connected ? 'Connected' : 'Disconnected'}</span>;
+    }
     ```
   </Tab>
   <Tab title="React Native & Expo">
     Use [PowerSyncDatabase.connected](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#connected) and register an event listener with [PowerSyncDatabase.registerListener](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#registerlistener) to listen for status changes to your PowerSync instance.
 
-    ```js
-    // Example of using connected status to show online or offline
+    ```jsx
+    import * as React from 'react';
+    import { Text } from 'react-native';
     
-    // Tap into connected
-    const [connected, setConnected] = React.useState(powersync.connected);
+    export function ConnectionStatus({ powersync }) {
+      const [connected, setConnected] = React.useState(powersync.connected);
     
-    React.useEffect(() => {
-    // Register listener for changes made to the powersync status
-      return powersync.registerListener({
-        statusChanged: (status) => {
-          setConnected(status.connected);
-        }
-      });
-    }, [powersync]);
+      React.useEffect(() => {
+        return powersync.registerListener({
+          statusChanged: (status) => {
+            setConnected(status.connected);
+          }
+        });
+      }, [powersync]);
     
-    // Icon to show connected or not connected to powersync
-    // as well as the last synced time
-    <Icon
-      name={connected ? 'wifi' : 'wifi-off'}
-      type="material-community"
-      color="black"
-      size={20}
-      style={{ padding: 5 }}
-      onPress={() => {
-        Alert.alert(
-          'Status',
-          `${connected ? 'Connected' : 'Disconnected'}. \nLast Synced at ${powersync.currentStatus?.lastSyncedAt.toISOString() ?? '-'
-          }\nVersion: ${powersync.sdkVersion}`
-        );
-      }}
-    />;
+      return <Text>{connected ? 'Connected' : 'Disconnected'}</Text>;
+    }
     ```
   </Tab>
   <Tab title="Capacitor">
@@ -1057,7 +772,7 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
     @override
     void initState() {
       super.initState();
-      _syncStatusSubscription = watchSyncStatus.listen((status) {
+      _syncStatusSubscription = watchSyncStatus().listen((status) {
         setState(() {
           hasSynced = status.hasSynced ?? false;
         });
@@ -1121,6 +836,7 @@ import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-call
                 ProgressView().task {
                     do {
                         try await powersync.waitForFirstSync()
+                        didSync = true
                     } catch {
                         // TODO: Handle errors
                     }
@@ -1265,7 +981,10 @@ Checkpoint requests are in alpha. They require PowerSync Service v1.24.0 or late
           // Show the error to the user
         }
       },
-      child: ListView(children: listItems),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: listItems,
+      ),
     )
     ```
 
@@ -1358,8 +1077,6 @@ Checkpoint requests are in alpha. They require PowerSync Service v1.24.0 or late
   </Tab>
 </Tabs>
 
-If the device is offline, `requestCheckpoint()` waits until it can reach the PowerSync Service again, so the refresh indicator stays visible until then. Consider offering the refresh action only while the database is connected. For timeouts and error types, see [Handling Wait Failures](/client-sdks/checkpoint-requests#handling-wait-failures).
-
 ## Report Sync Download Progress
 
 <Tabs>
@@ -1368,10 +1085,10 @@ If the device is offline, `requestCheckpoint()` waits until it can reach the Pow
 
     Example (React, using [MUI](https://mui.com) components):
 
-    ```jsx
+    ```tsx
     import { Box, LinearProgress, Stack, Typography } from '@mui/material';
     import { useStatus } from '@powersync/react';
-    import { FC, ReactNode } from 'react';
+    import type { FC } from 'react';
     
     export const SyncProgressBar: FC<{ priority?: number }> = ({ priority }) => {
       const status = useStatus();
@@ -1409,9 +1126,9 @@ If the device is offline, `requestCheckpoint()` waits until it can reach the Pow
 
     Example:
 
-    ```jsx
+    ```tsx
     import { useStatus } from '@powersync/react';
-    import { FC, ReactNode } from 'react';
+    import type { FC } from 'react';
     import { View } from 'react-native';
     import { Text, LinearProgress } from '@rneui/themed';
     
@@ -1426,7 +1143,7 @@ If the device is offline, `requestCheckpoint()` waits until it can reach the Pow
     
       return (
         <View>
-          <LinearProgress variant="determinate" value={progress.downloadedFraction * 100} />
+          <LinearProgress variant="determinate" value={progress.downloadedFraction} />
           {progress.downloadedOperations == progress.totalOperations ? (
             <Text>Applying server-side changes</Text>
           ) : (

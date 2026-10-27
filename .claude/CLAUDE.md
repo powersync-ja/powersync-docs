@@ -118,7 +118,7 @@ Use the Mintlify skill for syntax. These project conventions take precedence ove
 | `<Info>` | Neutral background context |
 | `<Check>` | Success confirmations |
 
-In platform lists, tabs, code groups, accordions, and cards, order SDKs as follows: JavaScript variants (React Native, Web, Node.js), Dart, Kotlin, Swift, .NET, Rust. Put platform-specific extras such as Capacitor and Tauri after the JavaScript variants they belong to.
+In platform lists, tabs, code groups, accordions, and cards, order SDKs as follows: JavaScript variants (Web, React Native, Node.js), Dart, Kotlin, Swift, .NET, Rust. Put platform-specific extras such as Capacitor and Tauri after the JavaScript variants they belong to.
 
 Wrap images in a `Frame` with a caption and descriptive alt text:
 

@@ -11,7 +11,9 @@ import RustWatch from '/snippets/rust/basic-watch-query.mdx';
 import JavaScriptAsyncWatch from '/snippets/basic-watch-query-javascript-async.mdx';
 import JavaScriptCallbackWatch from '/snippets/basic-watch-query-javascript-callback.mdx';
 
-These examples assume that your app already has a PowerSync database instance, as described in the Getting Started steps for your [Client SDK](/client-sdks/overview). Each example focuses on one task and leaves out other app setup.
+These examples assume that your app already has a PowerSync database instance, as described in the Getting Started steps for your [Client SDK](/client-sdks/overview). Examples may leave out other app setup for brevity.
+
+React examples that use PowerSync hooks require a `PowerSyncContext.Provider` above the component, with your database instance as its `value`.
 
 ## Using Transactions to Group Changes
 
@@ -96,16 +98,16 @@ These examples delete a list and its todos together, so the app never keeps todo
     - [`readTransaction()` API reference](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteConnection/readTransaction.html)
   </Tab>
   <Tab title="Kotlin">
-    `writeTransaction` runs the block inside a transaction. Run each statement on the `transaction` that the block receives. PowerSync saves the changes when the block finishes, and rolls them back if the block throws an exception.
+    `writeTransactionAsync` runs the block inside a transaction. Run each statement with `executeAsync()` on the `transaction` that the block receives. PowerSync saves the changes when the block finishes, and rolls them back if the block throws an exception.
 
     ```kotlin
     suspend fun deleteList(database: PowerSyncDatabase, listId: String) {
-        database.writeTransaction { transaction ->
-            transaction.execute(
+        database.writeTransactionAsync { transaction ->
+            transaction.executeAsync(
                 sql = "DELETE FROM lists WHERE id = ?",
                 parameters = listOf(listId)
             )
-            transaction.execute(
+            transaction.executeAsync(
                 sql = "DELETE FROM todos WHERE list_id = ?",
                 parameters = listOf(listId)
             )
@@ -189,7 +191,7 @@ These examples delete a list and its todos together, so the app never keeps todo
 
 ## Listen for Changes in Data
 
-A watch query runs a SQL query again whenever the tables it reads from change, and gives you the new results. Use it to keep your UI up to date with local data, including changes that arrive through sync.
+A watch query runs a SQL query again whenever the tables it reads from change, and gives you the new results. Use it to keep your UI up to date as data changes.
 
 <Tabs>
   <Tab title="JavaScript Web">
@@ -657,21 +659,13 @@ The sync status tells you whether the app is connected to the PowerSync Service,
 
 <Tabs>
   <Tab title="JavaScript Web">
-    `connected` holds the current connection state. `registerListener()` calls `statusChanged` whenever the status changes, and returns a function that removes the listener. This React component uses both to show the connection state.
+    `useStatus()` returns the current sync status and re-renders the component when it changes. Read `connected` to show the connection state.
 
     ```jsx
-    import * as React from 'react';
+    import { useStatus } from '@powersync/react';
     
-    export function ConnectionStatus({ db }) {
-      const [connected, setConnected] = React.useState(db.connected);
-    
-      React.useEffect(() => {
-        return db.registerListener({
-          statusChanged: (status) => {
-            setConnected(status.connected);
-          }
-        });
-      }, [db]);
+    export function ConnectionStatus() {
+      const { connected } = useStatus();
     
       return <span>{connected ? 'Connected' : 'Disconnected'}</span>;
     }
@@ -680,26 +674,18 @@ The sync status tells you whether the app is connected to the PowerSync Service,
     **Learn more:**
 
     - [`SyncStatus` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/SyncStatus)
-    - [`registerListener()` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#registerlistener)
+    - [React Hooks](/client-sdks/frameworks/react)
     - [Sync Stream status](/sync/streams/client-usage#checking-sync-status)
   </Tab>
   <Tab title="React Native & Expo">
-    `connected` holds the current connection state. `registerListener()` calls `statusChanged` whenever the status changes, and returns a function that removes the listener. This React Native component uses both to show the connection state.
+    `useStatus()` returns the current sync status and re-renders the component when it changes. Read `connected` to show the connection state.
 
     ```jsx
-    import * as React from 'react';
+    import { useStatus } from '@powersync/react-native';
     import { Text } from 'react-native';
     
-    export function ConnectionStatus({ db }) {
-      const [connected, setConnected] = React.useState(db.connected);
-    
-      React.useEffect(() => {
-        return db.registerListener({
-          statusChanged: (status) => {
-            setConnected(status.connected);
-          }
-        });
-      }, [db]);
+    export function ConnectionStatus() {
+      const { connected } = useStatus();
     
       return <Text>{connected ? 'Connected' : 'Disconnected'}</Text>;
     }
@@ -708,7 +694,7 @@ The sync status tells you whether the app is connected to the PowerSync Service,
     **Learn more:**
 
     - [`SyncStatus` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/SyncStatus)
-    - [`registerListener()` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#registerlistener)
+    - [React Hooks](/client-sdks/frameworks/react)
     - [Sync Stream status](/sync/streams/client-usage#checking-sync-status)
   </Tab>
   <Tab title="Node.js">
@@ -734,48 +720,33 @@ The sync status tells you whether the app is connected to the PowerSync Service,
     The Capacitor SDK uses the same API as the JavaScript Web SDK, so the JavaScript Web example also applies.
   </Tab>
   <Tab title="Dart/Flutter">
-    `statusStream` emits a new `SyncStatus` whenever the status changes, and `currentStatus` holds the latest one. This app bar shows an icon for the current state, including errors, connecting, uploading, and downloading.
+    `statusStream` emits a new `SyncStatus` whenever the status changes, and `currentStatus` holds the latest one. This widget uses a `StreamBuilder` to update an icon for the current state, including errors, connecting, uploading, and downloading.
 
     ```dart
-    class _StatusAppBarState extends State<StatusAppBar> {
-      late SyncStatus _connectionState;
-      StreamSubscription<SyncStatus>? _syncStatusSubscription;
+    import 'package:flutter/material.dart';
+    import 'package:powersync/powersync.dart';
     
-      @override
-      void initState() {
-        super.initState();
-        _connectionState = db.currentStatus;
-        _syncStatusSubscription = db.statusStream.listen((event) {
-          setState(() {
-            _connectionState = db.currentStatus;
-          });
-        });
-      }
+    class ConnectionStatus extends StatelessWidget {
+      final PowerSyncDatabase db;
     
-      @override
-      void dispose() {
-        super.dispose();
-        _syncStatusSubscription?.cancel();
-      }
+      const ConnectionStatus({super.key, required this.db});
     
       @override
       Widget build(BuildContext context) {
-        final statusIcon = _getStatusIcon(_connectionState);
-    
-        return AppBar(
-          title: Text(widget.title),
-          actions: <Widget>[
-            // Other actions
-            statusIcon
-          ],
+        return StreamBuilder<SyncStatus>(
+          stream: db.statusStream,
+          initialData: db.currentStatus,
+          builder: (context, snapshot) => _getStatusIcon(snapshot.requireData),
         );
       }
     }
     
+    Widget _makeIcon(String label, IconData icon) {
+      return Tooltip(message: label, child: Icon(icon));
+    }
+    
     Widget _getStatusIcon(SyncStatus status) {
       if (status.anyError != null) {
-        // The error message is verbose, could be replaced with something
-        // more user-friendly
         if (!status.connected) {
           return _makeIcon(status.anyError!.toString(), Icons.cloud_off);
         } else {
@@ -786,8 +757,6 @@ The sync status tells you whether the app is connected to the PowerSync Service,
       } else if (!status.connected) {
         return _makeIcon('Not connected', Icons.cloud_off);
       } else if (status.uploading && status.downloading) {
-        // The status changes often between downloading, uploading and both,
-        // so we use the same icon for all three
         return _makeIcon('Uploading and downloading', Icons.cloud_sync_outlined);
       } else if (status.uploading) {
         return _makeIcon('Uploading', Icons.cloud_sync_outlined);
@@ -854,60 +823,21 @@ The sync status tells you whether the app is connected to the PowerSync Service,
     - [Sync Stream status](/sync/streams/client-usage#checking-sync-status)
   </Tab>
   <Tab title=".NET">
-    `Events.OnStatusChanged.ListenAsync()` (since v0.0.11-alpha.1) yields an update each time the status changes. This example prints the current state, including errors, connecting, uploading, and downloading.
+    `Events.OnStatusChanged.ListenAsync()` (since v0.0.11-alpha.1) yields an update each time the status changes. Pass a cancellation token to stop listening.
 
     ```cs
     using PowerSync.Common.Client;
-    using PowerSync.Common.DB.Crud;
     
-    class StatusIndicator
+    async Task ObserveStatus(PowerSyncDatabase db, CancellationToken ct = default)
     {
-        private SyncStatus? _currentStatus;
-    
-        public async Task StartListeningAsync(PowerSyncDatabase db, CancellationToken ct = default)
+        var listener = db.Events.OnStatusChanged.ListenAsync(ct);
+        await foreach (var update in listener)
         {
-            var listener = db.Events.OnStatusChanged.ListenAsync(ct);
-            await foreach (var update in listener)
-            {
-                _currentStatus = update.Status;
-                UpdateStatusIcon(_currentStatus);
-            }
-        }
-    
-        private void UpdateStatusIcon(SyncStatus status)
-        {
+            var status = update.Status;
             var dataFlow = status.DataFlowStatus;
-            var hasError = dataFlow.DownloadError != null || dataFlow.UploadError != null;
     
-            if (hasError)
-            {
-                var errorMessage = dataFlow.DownloadError?.Message ?? dataFlow.UploadError?.Message ?? "Unknown error";
-                Console.WriteLine(status.Connected ? $"Error: {errorMessage} - Sync problem" : $"Error: {errorMessage} - Not connected");
-            }
-            else if (status.Connecting)
-            {
-                Console.WriteLine("Connecting...");
-            }
-            else if (!status.Connected)
-            {
-                Console.WriteLine("Not connected");
-            }
-            else if (dataFlow.Uploading && dataFlow.Downloading)
-            {
-                Console.WriteLine("Uploading and downloading");
-            }
-            else if (dataFlow.Uploading)
-            {
-                Console.WriteLine("Uploading");
-            }
-            else if (dataFlow.Downloading)
-            {
-                Console.WriteLine("Downloading");
-            }
-            else
-            {
-                Console.WriteLine("Connected");
-            }
+            Console.WriteLine($"Connected: {status.Connected}");
+            Console.WriteLine($"Uploading: {dataFlow.Uploading}, downloading: {dataFlow.Downloading}");
         }
     }
     ```
@@ -950,21 +880,13 @@ If the first sync completed in an earlier app session, `hasSynced` is already `t
 
 <Tabs>
   <Tab title="JavaScript Web">
-    `currentStatus.hasSynced` is `true` once the first full sync has completed. This React component listens for status changes and updates when that happens. To wait in code instead, call `await db.waitForFirstSync()`.
+    `hasSynced` is `true` once the first full sync has completed. `useStatus()` updates the component when that happens. To wait in code instead, call `await db.waitForFirstSync()`.
 
     ```jsx
-    import * as React from 'react';
+    import { useStatus } from '@powersync/react';
     
-    export function InitialSyncStatus({ db }) {
-      const [hasSynced, setHasSynced] = React.useState(db.currentStatus.hasSynced ?? false);
-    
-      React.useEffect(() => {
-        return db.registerListener({
-          statusChanged: (status) => {
-            setHasSynced(!!status.hasSynced);
-          }
-        });
-      }, [db]);
+    export function InitialSyncStatus() {
+      const { hasSynced } = useStatus();
     
       return <div>{hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...'}</div>;
     }
@@ -977,22 +899,14 @@ If the first sync completed in an earlier app session, `hasSynced` is already `t
     - [Prioritized Sync](/sync/streams/prioritized-sync)
   </Tab>
   <Tab title="React Native & Expo">
-    `currentStatus.hasSynced` is `true` once the first full sync has completed. This React Native component listens for status changes and updates when that happens. To wait in code instead, call `await db.waitForFirstSync()`.
+    `hasSynced` is `true` once the first full sync has completed. `useStatus()` updates the component when that happens. To wait in code instead, call `await db.waitForFirstSync()`.
 
     ```jsx
-    import * as React from 'react';
+    import { useStatus } from '@powersync/react-native';
     import { Text } from 'react-native';
     
-    export function InitialSyncStatus({ db }) {
-      const [hasSynced, setHasSynced] = React.useState(db.currentStatus.hasSynced ?? false);
-    
-      React.useEffect(() => {
-        return db.registerListener({
-          statusChanged: (status) => {
-            setHasSynced(!!status.hasSynced);
-          }
-        });
-      }, [db]);
+    export function InitialSyncStatus() {
+      const { hasSynced } = useStatus();
     
       return <Text>{hasSynced ? 'Initial sync completed!' : 'Busy with initial sync...'}</Text>;
     }
@@ -1096,11 +1010,9 @@ If the first sync completed in an earlier app session, `hasSynced` is already `t
     - [Prioritized Sync](/sync/streams/prioritized-sync)
   </Tab>
   <Tab title=".NET">
-    `CurrentStatus.HasSynced` is `true` once the first full sync has completed. To wait in code instead, call `await db.WaitForFirstSync()`. To wait only for data with a specific priority, pass a `PrioritySyncRequest`.
+    `CurrentStatus.HasSynced` is `true` once the first full sync has completed. To wait in code instead, call `await db.WaitForFirstSync()`.
 
     ```cs
-    using PowerSync.Common.Client;
-    
     if (db.CurrentStatus.HasSynced == true)
     {
         Console.WriteLine("Initial sync completed!");
@@ -1112,10 +1024,6 @@ If the first sync completed in an earlier app session, `hasSynced` is already `t
     
     // Wait until the first full sync has completed
     await db.WaitForFirstSync();
-    
-    // Wait for a specific priority level to complete syncing
-    var prioritySyncRequest = new PowerSyncDatabase.PrioritySyncRequest { Priority = 1 };
-    await db.WaitForFirstSync(request: prioritySyncRequest);
     ```
 
     **Learn more:**
@@ -1386,7 +1294,7 @@ Checkpoint requests are in alpha. They require PowerSync Service v1.24.0 or late
 
 While a download is in progress, the sync status reports how many operations have downloaded out of the total. Use it to show a progress bar, especially during a long first sync. When no download is active, there is no progress value.
 
-Several of these examples accept an optional priority. With a priority, they show progress toward the data with that priority instead of the full sync. See [Prioritized Sync](/sync/streams/prioritized-sync).
+Several of these examples accept an optional priority. With a priority, they show progress toward the data with that priority and all higher priorities instead of the full sync. See [Prioritized Sync](/sync/streams/prioritized-sync).
 
 <Tabs>
   <Tab title="JavaScript Web">
@@ -1497,9 +1405,8 @@ Several of these examples accept an optional priority. With a priority, they sho
     class SyncProgressBar extends StatelessWidget {
       final PowerSyncDatabase db;
     
-      /// When set, show progress towards the [BucketPriority] instead of towards
-      /// the full sync.
-      final BucketPriority? priority;
+      /// When set, show progress for this priority and all higher priorities.
+      final StreamPriority? priority;
     
       const SyncProgressBar({
         super.key,
@@ -1563,19 +1470,18 @@ Several of these examples accept an optional priority. With a priority, they sho
     import androidx.compose.ui.Modifier
     import androidx.compose.ui.unit.dp
     import com.powersync.PowerSyncDatabase
-    import com.powersync.bucket.BucketPriority
+    import com.powersync.bucket.StreamPriority
     import com.powersync.compose.composeState
     
     /**
      * Shows a progress bar while a sync is active.
      *
-     * The [priority] parameter can be set to, instead of showing progress until the end of the entire
-     * sync, only show progress until data in the [BucketPriority] is synced.
+     * When [priority] is set, include that priority and all higher priorities.
      */
     @Composable
     fun SyncProgressBar(
         db: PowerSyncDatabase,
-        priority: BucketPriority? = null,
+        priority: StreamPriority? = null,
     ) {
         val state by db.currentStatus.composeState()
         val progress = state.downloadProgress?.let {
@@ -1656,59 +1562,39 @@ Several of these examples accept an optional priority. With a priority, they sho
     - [Swift demo component](https://github.com/powersync-ja/powersync-swift/blob/main/Demos/PowerSyncExample/PowerSyncExample/Components/ListView.swift)
   </Tab>
   <Tab title=".NET">
-    `DownloadProgress()` returns `null` when no download is active. `DownloadedFraction` is a value from 0.0 to 1.0. This class prints the progress each time the status changes.
+    `DownloadProgress()` returns `null` when no download is active. `DownloadedFraction` is a value from 0.0 to 1.0. Pass a cancellation token to stop listening.
 
     ```cs
     using PowerSync.Common.Client;
-    using PowerSync.Common.DB.Crud;
     
-    class SyncProgressBar
+    async Task ReportSyncProgress(
+        PowerSyncDatabase db,
+        int? priority = null,
+        CancellationToken ct = default)
     {
-        private PowerSyncDatabase _db;
-        private int? _priority; // Optional: when set, show progress towards this priority instead of the full sync
-        private SyncStatus? _currentStatus;
-    
-        public SyncProgressBar(PowerSyncDatabase db, int? priority = null)
+        var listener = db.Events.OnStatusChanged.ListenAsync(ct);
+        await foreach (var update in listener)
         {
-            _db = db;
-            _priority = priority;
-        }
+            var totalProgress = update.Status.DownloadProgress();
     
-        public async Task StartListeningAsync(CancellationToken ct = default)
-        {
-            var listener = _db.Events.OnStatusChanged.ListenAsync(ct);
-            await foreach (var update in listener)
-            {
-                _currentStatus = update.Status;
-                DisplayProgress();
-            }
-        }
-    
-        public void DisplayProgress()
-        {
-            var status = _currentStatus;
-            var totalProgress = status?.DownloadProgress();
-    
-            var progress = _priority == null 
+            var progress = priority == null
                 ? totalProgress 
-                : totalProgress?.UntilPriority(_priority.Value);
+                : totalProgress?.UntilPriority(priority.Value);
     
-            if (progress != null)
+            if (progress == null)
             {
-                var fraction = progress.DownloadedFraction; // 0.0 to 1.0
-                var downloadedOps = progress.DownloadedOperations;
-                var totalOps = progress.TotalOperations;
+                continue;
+            }
     
-                Console.WriteLine($"Sync progress: {fraction * 100:F1}%");
+            Console.WriteLine($"Sync progress: {progress.DownloadedFraction:P1}");
     
-                if (downloadedOps == totalOps)
-                {
-                    Console.WriteLine("Applying server-side changes...");
-                }
-                else
-                {
-                    Console.WriteLine($"Downloaded {downloadedOps} out of {totalOps} operations");
-                }
+            if (progress.DownloadedOperations == progress.TotalOperations)
+            {
+                Console.WriteLine("Applying server-side changes...");
+            }
+            else
+            {
+                Console.WriteLine($"Downloaded {progress.DownloadedOperations} out of {progress.TotalOperations} operations");
             }
         }
     }

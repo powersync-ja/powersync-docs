@@ -56,7 +56,7 @@ If a query itself is expensive and takes a long time to run, several options can
 
 1. Where possible, filter on the `id` column of tables to reduce the number of rows read, which makes queries more efficient. When filtering on other columns of large tables, make sure these columns are covered by indexes declared in your app's schema.
 2. For auto-updating watched queries on frequently-changed tables, queries might run very often. Watched queries should typically be cheap to run, as they otherwise risk blocking SQLite connections for too long. For more expensive queries that still need to be watched, consider increasing their throttle to run them less often.
-3. By default, PowerSync tables are views over JSON data that extract columns by parsing from JSON each time a row is accessed. While SQLite has a cache for parsed JSON, this can still be inefficient for queries computing on columns. [Managed tables](#managed-tables) store data in SQLite columns instead, at the cost of slower schema changes.
+3. By default, PowerSync tables are views over JSON data that extract columns by parsing from JSON each time a row is accessed. While SQLite has a cache for parsed JSON, this is still slow for queries that read many rows, for example to filter, sort or aggregate. [Managed tables](#managed-tables) store data in SQLite columns instead, at the cost of slower schema changes.
 4. If your app runs the same quick queries many times, SQLite spends part of each run reading the SQL and planning the query again. In the JavaScript Web and Dart SDKs, a [prepared statement cache](#prepared-statement-cache) keeps recently planned queries so that SQLite can reuse them.
 5. In the JavaScript SDKs, you can replace regular watched queries with [High Performance Diffs](/client-sdks/high-performance-diffs). These use triggers internally to report only changed rows back to your app.
 
@@ -115,9 +115,17 @@ For more information, see the `preparedStatementsCache` option [for JavaScript](
   - **Rust**: Version `0.2.0`.
 </Note>
 
-By default, each table in your client-side schema is a **managed view**. PowerSync stores synced rows as [JSON in an internal table](/architecture/client-architecture#client-side-schema-and-sqlite-database-structure) and creates a SQLite view that extracts your columns from it. Queries on the view decode the JSON of every row they read.
+By default, each table in your client-side schema is a **managed view**. PowerSync stores synced rows as [JSON in an internal table](/architecture/client-architecture#client-side-schema-and-sqlite-database-structure) and creates a SQLite view that extracts your columns from the JSON. Queries on the view decode the JSON of every row they read.
 
-Queries on a **managed table** run faster than on a managed view. A managed table stores rows in a SQLite table with a column for each column in your schema, so queries read values directly instead of decoding JSON. You query and write to it with the same SQL statements as a managed view. PowerSync still creates and migrates the table, and it still adds local writes to the upload queue.
+Queries on a **managed table** run faster than on a managed view, because they read values directly instead of decoding JSON. A managed table stores rows in a SQLite table with a column for each column in your schema. You query and write to it with the same SQL statements as a managed view. PowerSync still creates and migrates the table and adds local writes to the upload queue.
+
+How much faster depends on how many rows a query reads:
+
+- **Most gain:** Queries that filter, sort or aggregate across many rows, such as `SELECT sum(hours) FROM time_entries`.
+- **Some gain:** Queries that return many rows, such as `SELECT * FROM tasks` on a large table.
+- **Little gain:** Queries that look up a few rows by `id` or through an index.
+
+Indexes speed up lookups on managed views, so keep indexes on join keys and on columns you often filter by. It isn't practical to index every column you query, though. An index also doesn't help a query that returns many rows. Managed tables make these queries faster without extra indexes.
 
 <Info>
   **Benchmarks**
@@ -139,8 +147,8 @@ Start with managed views. Change a table's type only if you hit a limit: its que
 | Queries read | JSON, through a view | SQLite columns | SQLite columns |
 | Schema changes | Near-instant | Take longer as the table grows | Migrations you write |
 
-- **Managed views:** Use these by default: schema changes are near-instant, because PowerSync only re-creates the views. Queries that read many rows of a large table can be slower than on a managed table.
-- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table that you filter, sort or aggregate on columns without an index. The trade-off is that schema changes on a managed table take longer as the table grows.
+- **Managed views:** Use these by default: schema changes are near-instant, because PowerSync only re-creates the views. The trade-off is slower queries that read many rows, such as aggregates and long lists.
+- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table whose queries read many rows, for example to filter, sort, aggregate or list them. The trade-off is that schema changes on a managed table take longer as the table grows.
 - **Raw tables:** Use [raw tables](/client-sdks/advanced/raw-tables) when you want full control over the SQLite table, for example to add foreign keys, custom triggers or expression indexes, or to use a library such as [Room](/client-sdks/orms/kotlin/room) that manages the schema. The trade-off is that you have to create and migrate the table yourself.
 
 ### Enabling Managed Tables

@@ -1,0 +1,150 @@
+---
+title: "Reference Write Implementation"
+sidebarTitle: "Reference Write Implementation"
+description: "Run PowerSync's open-source write API against your source database, and connect your app to it with the reference connector."
+---
+
+If you don't have a write API yet, you can run the reference write implementation instead of building one. It has two parts:
+
+- The **reference write API**: a Node.js (Express) server that receives uploaded transactions and applies them to your source database. It supports Postgres, MongoDB, MySQL, and SQL Server.
+- The **reference connector**: a TypeScript backend connector with an `uploadData()` that calls the reference write API. You copy it into your app.
+
+An [OpenAPI spec](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml) defines the API between the two parts. If your backend runs on another stack, see [Building the Write API in Your Own Stack](#building-the-write-api-in-your-own-stack).
+
+If your source database is Supabase and you rely on RLS policies to authorize writes, use the [Edge Function route](/handling-writes/write-path/supabase-edge-function) instead. The reference write API on this page doesn't switch to Supabase's `authenticated` role, so the grants and RLS policies that you set up for signed-in users don't apply to its writes.
+
+<Frame caption="The reference connector sends queued transactions to the reference write API, which applies each one to the source database.">
+  ![Diagram of the reference write implementation. The source database replicates to the PowerSync Service, which syncs to the SDK in the client app. The reference connector's uploadData() sends queued transactions, as defined by the OpenAPI spec, to the reference write API, which writes each transaction atomically to the source database. The write API has authorization, mapping, and dead-letter hooks, and verifies the same JWTs as PowerSync.](/images/handling-writes/reference-write-implementation.png)
+</Frame>
+
+## Before You Start
+
+- A PowerSync instance that replicates your source database.
+- A PowerSync app. The reference connector is written in TypeScript. For other languages, port the connector, using the OpenAPI spec as the contract.
+- Each table that your app writes to has an `id` primary key or unique column that holds the client's row ID. On MongoDB, each collection also needs a `$jsonSchema` validator that declares `_id` with one `bsonType`: `string`, `objectId`, `int`, or `long`. The reference write API converts each row ID to that type.
+- Docker, or Node.js 24 and pnpm 9.
+
+<Warning>
+  By default, the reference write API accepts every write from any authenticated user. Add your authorization checks (step 5) before you expose it to real users.
+</Warning>
+
+## Set Up
+
+<Steps>
+  <Step title="Clone the Repository and Configure the Database">
+    Clone [powersync-reference-write-implementation](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main). In a `.env.local` file at the repository root, set:
+
+    - `DATABASE_TYPE`: `postgres` (the default), `mongodb`, `mysql`, or `mssql`.
+    - `DATABASE_URI`: the connection string for the database that your PowerSync instance replicates.
+
+    Tables and columns must match the names in your client-side schema, unless you add a custom mapping.
+  </Step>
+  <Step title="Configure Authentication">
+    The reference write API verifies the same JWTs as your PowerSync instance, so your app can use one token for syncing and for writes. It accepts only tokens signed with asymmetric keys. It reads its settings in one of two modes:
+
+    - **File mode** (the default): reads your PowerSync config. For PowerSync Cloud, export it with the [PowerSync CLI](/tools/cli):
+      ```bash
+      powersync login
+      powersync fetch config --instance-id="<instance-id>" --output=json > backend/standalone/config/powersync-config.json
+      ```
+      Also set `AUTH_ISSUER` to your auth provider's issuer, unless you use Supabase Auth on a standard Supabase domain.
+    - **Env mode**: set `AUTH_MODE=env`, `AUTH_ISSUER`, `AUTH_AUDIENCE`, and `AUTH_JWKS_URI`. Use this for providers such as Clerk and Auth0, and for [development tokens](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md) when you don't have an auth provider yet.
+
+    For self-hosted PowerSync and the full list of variables, see the repository's [authentication setup](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/setup.md). For Supabase Auth and Clerk details, see [providers](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/providers.md).
+  </Step>
+  <Step title="Start the Write API">
+    <Tabs>
+      <Tab title="Docker">
+        From the repository root:
+
+        ```bash
+        docker compose up --build
+        ```
+      </Tab>
+      <Tab title="Node.js">
+        Copy `backend/.env.template` to `backend/.env` and set the same variables there. Then, from the repository root:
+
+        ```bash
+        pnpm --dir backend install
+        pnpm --dir backend dev
+        ```
+      </Tab>
+    </Tabs>
+
+    The API listens at `http://localhost:6060`. At startup, it checks its settings and connects to the database, and stops with an error that names any invalid setting. While it runs, `GET /` returns `200`, or `503` if it can't reach the database.
+  </Step>
+  <Step title="Connect Your App">
+    Copy the reference connector from the repository's [`example-client`](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/example-client) folder into your app. If your app already has a `fetchCredentials()`, keep it, and copy only `uploadData()` and the code it uses.
+
+    There are two versions of the connector:
+
+    - **Single file**: has the fewest dependencies. Set the write API URL, the PowerSync instance URL, and the batch size in the constants at the top of the file.
+    - **Modular**: reads the same settings from `VITE_` environment variables.
+
+    Use a write API URL that the device can reach: `localhost` on a phone refers to the phone. Then replace the demo `fetchAuthToken()` with code that gets the token from your auth provider, and pass the connector to your PowerSync database:
+
+    ```typescript
+    import { PowersyncConnector } from './PowersyncConnector';
+    
+    await db.connect(new PowersyncConnector());
+    ```
+  </Step>
+  <Step title="Add Authorization">
+    Add your checks to the `authorize()` function in `backend/standalone/src/auth/authorizer.ts`. It receives the transaction's operations and the verified token's `sub` and claims, and returns `false` to reject the transaction. By default, it allows every write and logs an error for each transaction until you replace it. See the repository's [authorization guide](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/authorization.md).
+
+    On Postgres, the reference write API also sets `request.jwt.claims` for each transaction, which RLS policies can read. Postgres skips RLS for table owners, superusers, and roles with `BYPASSRLS`, so policies only apply if `DATABASE_URI` connects as a role without those rights. A policy can also make an `UPDATE` or `DELETE` change nothing instead of failing. Don't rely on RLS alone unless you've checked both.
+  </Step>
+</Steps>
+
+## How Uploads Are Applied
+
+The reference connector sends transactions to a single endpoint, `POST /api/data`. The reference write API applies each transaction in its own database transaction, so either all of its changes are stored or none are. It returns one result per transaction, in the order they were sent.
+
+By default, the connector sends one transaction per request. To send up to 50 transactions in one request, set the connector's maximum batch size. The connector never splits a transaction across requests.
+
+The reference write API has no conflict detection. Writes are applied in the order they arrive, so the last write to a column wins. A `PATCH` to a deleted row changes nothing, and a `PUT` with the ID of a deleted row creates the row again. See the repository's [conflict resolution notes](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/conflict-resolution.md) and [Handling Update Conflicts](/handling-writes/handling-update-conflicts).
+
+## How Failures Are Handled
+
+The reference write API classifies each failed transaction, and the reference connector acts on the result:
+
+| Failure | Examples | Outcome |
+| --- | --- | --- |
+| Temporary | Lost database connection, deadlock | [Retryable error](/handling-writes/write-path/concepts#retryable-errors): the connector keeps the transaction and the SDK retries it. |
+| Permanent | Constraint violation, invalid data, unknown table | [Rejected write](/handling-writes/write-path/concepts#rejected-writes): the connector removes the transaction from the queue. The write API passes it to the dead-letter hook, which only logs it by default. |
+| Not authorized | `authorize()` returns `false`, or Postgres returns error `42501` for a missing grant or an RLS check | [Blocked transaction](/handling-writes/write-path/concepts#blocked-transactions): the connector keeps the transaction, and later writes wait behind it. |
+
+To resolve a blocked transaction, override `onFatalTransaction()` in your copy of the connector. Return `'complete'` to drop the transaction, or `'retain'` to keep it. The default keeps it.
+
+The default dead-letter hook doesn't store anything. To keep rejected writes, replace `onDeadLetter()` in `backend/standalone/src/fatal-error-handler.ts` with code that writes them to your own storage. See the repository's [error handling guide](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md).
+
+## Customization
+
+| To change | Edit | Guide |
+| --- | --- | --- |
+| Which writes each user may make | `authorize()` in `backend/standalone/src/auth/authorizer.ts` | [Authorization](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/authorization.md) |
+| How client tables and columns map to the source database | A custom mapper, installed in `backend/standalone/src/persistence/persister-factories.ts` | [Schema mapping](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/schema-mapping.md) |
+| Which failures are blocked transactions, and where rejected writes go | `backend/standalone/src/fatal-error-handler.ts` | [Error handling](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md) |
+| What the app does with a blocked transaction | `onFatalTransaction()` in your copy of the connector | [Error handling](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md) |
+
+## Building the Write API in Your Own Stack
+
+If your backend runs on another stack, you can build the same write API there:
+
+1. Implement `POST /api/data` as defined in the OpenAPI spec.
+2. Apply each transaction in its own database transaction, and return one result per transaction, in order.
+3. Use the reference connector as it is, or port it to your app's SDK.
+
+To see how the reference write API decides which database errors are retryable and which are rejected writes, read the error mapping for your database in its `backend/shared/src/persistence` folder.
+
+<Note>
+  Coming soon: a prompt for your coding agent and a step-by-step guide for building the write API in another stack.
+</Note>
+
+{/* TODO(write-path): Add the other-stack prompt and the hand-written tutorial when they exist. */}
+
+## Related Pages
+
+- [Write Path Concepts](/handling-writes/write-path/concepts): authentication and what happens when a write fails.
+- [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors): how rejected changes are rolled back on the client.
+- [Client-Side Integration](/configuration/app-backend/client-side-integration): the backend connector, and when the SDK calls `uploadData()`.

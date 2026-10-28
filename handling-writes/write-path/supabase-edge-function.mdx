@@ -1,0 +1,144 @@
+---
+title: "Supabase: Edge Function Route"
+sidebarTitle: "Supabase (Edge Function)"
+description: "Deploy the reference write API as a Supabase Edge Function, so that each uploaded transaction is applied atomically and your RLS policies authorize every write."
+---
+
+This route uses the [reference write implementation](/handling-writes/write-path/reference-write-implementation). You deploy its write API as a Supabase Edge Function, and your app sends writes to the function with the reference connector. Compared with the [PostgREST route](/handling-writes/write-path/supabase-postgrest), you deploy and maintain one function, and in return each transaction is applied in one database transaction.
+
+The function runs each write as the signed-in user. Inside each transaction, it switches to the `authenticated` role and sets the user's token claims. Policies that use `auth.uid()` therefore work the same way as for requests from supabase-js.
+
+<Frame caption="The Edge Function runs inside your Supabase project. Supabase Auth issues the tokens, and RLS policies authorize each write.">
+  ![Diagram of the Edge Function route. Inside Supabase, an Edge Function runs the reference write API as the signed-in user and writes each transaction atomically to Postgres, where RLS policies apply. Supabase Postgres replicates to the PowerSync Service, which syncs to the SDK in the client app. The reference connector's uploadData() sends queued transactions to the Edge Function. Supabase Auth issues the JWTs that the Edge Function and PowerSync verify.](/images/handling-writes/supabase-edge-function.png)
+</Frame>
+
+## Before You Start
+
+- PowerSync connected to your Supabase project and configured for [Supabase Auth](/configuration/auth/supabase-auth). See the [Supabase guide](/integrations/supabase/guide).
+- Your Supabase project signs tokens with asymmetric JWT signing keys, the default for new projects. Projects that use the legacy JWT secret must [migrate](/configuration/auth/supabase-auth#migrating-from-legacy-to-new-jwt-signing-keys) first.
+- Each table that your app writes to has an `id` primary key or unique column that holds the client's row ID.
+- An app that signs users in with supabase-js.
+- The [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started).
+
+## Set Up
+
+<Steps>
+  <Step title="Add Grants and RLS Policies">
+    Grant the `authenticated` role access to every table that your app writes to, enable RLS on each one, and add a policy for each operation that your app uploads:
+
+    - A `PUT` is an upsert, so it needs `INSERT` and `UPDATE` policies, and the existing row must be visible to the user.
+    - A `PATCH` needs an `UPDATE` policy, and a `DELETE` needs a `DELETE` policy.
+
+    Use `WITH CHECK` so that users can't assign rows to someone else. For example:
+
+    ```sql
+    grant select, insert, update, delete on public.lists to authenticated;
+    alter table public.lists enable row level security;
+    
+    create policy "Owners manage their lists" on public.lists
+      for all to authenticated
+      using (owner_id = (select auth.uid()))
+      with check (owner_id = (select auth.uid()));
+    ```
+
+    <Warning>
+      If `authenticated` has grants on a table that has RLS disabled, any signed-in user can write any row in it. Check every table in the schemas that your app writes to, not only the tables that you sync.
+    </Warning>
+  </Step>
+  <Step title="Deploy the Function">
+    Clone [powersync-reference-write-implementation](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main). From its `backend` folder, link your project and deploy the function:
+
+    ```bash
+    supabase link --project-ref <project-ref>
+    supabase functions deploy powersync-write
+    ```
+
+    If Docker isn't running, add `--use-api` to the deploy command.
+
+    The function connects to your project's database directly. Each function worker keeps up to three connections, and they all count against your database's connection limit. If many workers run at once, set the function to use the transaction pooler: copy the pooler connection string from **Connect** > **Transaction pooler** in the Supabase dashboard, URL-encode any special characters in the password, and add `sslmode=verify-full`:
+
+    ```bash
+    supabase secrets set POWERSYNC_DATABASE_URL='postgresql://postgres.<project-ref>:<password>@<pooler-host>:6543/postgres?sslmode=verify-full'
+    ```
+
+    <Warning>
+      Against your project, run only `supabase functions deploy powersync-write` and `supabase secrets set` from this repository. Other commands, such as `supabase config push`, can apply the repository's local development config to your project.
+    </Warning>
+
+    To deploy from your own repository instead, see the repository's [Supabase Edge Function guide](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/supabase/README.md#deploy-to-your-project).
+  </Step>
+  <Step title="Check the Deployment">
+    ```bash
+    curl -i -X POST https://<project-ref>.supabase.co/functions/v1/powersync-write/api/data
+    ```
+
+    A request without a token returns `401`.
+  </Step>
+  <Step title="Connect Your App">
+    Copy the reference connector into your app, as described in the reference write implementation's [setup steps](/handling-writes/write-path/reference-write-implementation#set-up). Then make these changes:
+
+    1. Set the connector's write API URL to `https://<project-ref>.supabase.co/functions/v1/powersync-write`. Your PowerSync instance URL doesn't change.
+    2. Pass your app's supabase-js client to the connector, and replace `fetchCredentials()` and `getAuthToken()` with the code below. This code reads the session on every call.
+    3. Remove `fetchAuthToken()` and the `_authToken` field, including the line in `onTransportError()` that resets it. supabase-js refreshes the session itself. The connector clears its cache only after a rejected request, so while the cache is in place, sync keeps sending an expired token.
+
+    ```typescript
+    constructor(private readonly supabase: SupabaseClient) {
+      // existing setup
+    }
+    
+    async fetchCredentials() {
+      const session = await this.getSession();
+      return {
+        endpoint: this.config.powersyncUrl,
+        token: session.access_token,
+        expiresAt: session.expires_at ? new Date(session.expires_at * 1000) : undefined
+      };
+    }
+    
+    private async getSession() {
+      const { data: { session }, error } = await this.supabase.auth.getSession();
+      if (!session || error) throw new Error('Not signed in to Supabase');
+      return session;
+    }
+    
+    // Write requests call this to get their token.
+    private async getAuthToken(): Promise<string> {
+      return (await this.getSession()).access_token;
+    }
+    ```
+
+    This code is for the modular connector. In the single-file connector, use `POWERSYNC_URL` instead of `this.config.powersyncUrl`.
+
+    The function accepts only a signed-in user's access token. It rejects API keys, anon tokens, and service-role tokens.
+  </Step>
+</Steps>
+
+## How Failures Are Handled
+
+| Failure | Outcome |
+| --- | --- |
+| An RLS policy or missing grant denies a write | [Retryable error](/handling-writes/write-path/concepts#retryable-errors) for the whole transaction. The connector keeps it and the SDK retries it, so no write is lost. Until you fix the policy, grant, or data, it holds back every later write from that user. |
+| `authorize()` in `authorizer.ts` returns `false` | [Rejected write](/handling-writes/write-path/concepts#rejected-writes). The connector removes the transaction from the queue, and the function passes it to the dead-letter hook. To keep these transactions in the queue instead, change `requiresClientHandling` in `fatal-error-handler.ts`. |
+| Constraint violation, invalid data, or another permanent error | [Rejected write](/handling-writes/write-path/concepts#rejected-writes). The connector removes the transaction from the queue, and the function passes it to the dead-letter hook in `fatal-error-handler.ts`, which only logs it by default. |
+| Temporary error, such as a lost connection | Retryable error. |
+
+A policy can also hide a row from the user. A `PATCH` or `DELETE` on a hidden row succeeds without changing anything. The app's local change reverts after the next sync.
+
+Because an RLS denial is retried, a mistake in a policy shows up as a growing upload queue and repeated `uploadError` values in the sync status. To stop one denied write from holding up the queue, add a retry limit to your copy of the connector. When a transaction reaches the limit, drop it or store it.
+
+## Customization
+
+Edit these files in `backend/supabase/functions/powersync-write/`, then deploy again:
+
+| File | Use it to |
+| --- | --- |
+| `mapper.ts` | Map client tables and columns to different names in Postgres. |
+| `authorizer.ts` | Add checks that RLS can't express, such as rejecting a transaction based on the tables it touches. RLS still applies to every write it allows. |
+| `fatal-error-handler.ts` | Choose which permanent failures become blocked transactions, and store rejected writes. The function waits for the dead-letter hook before it responds, so a slow hook delays uploads. In the app, the connector's `onFatalTransaction()` keeps blocked transactions by default. |
+| `config.ts` | Change the batch failure policy, the connection pool size, and the statement timeout. |
+
+## Related Pages
+
+- [Reference Write Implementation](/handling-writes/write-path/reference-write-implementation): how uploads are applied, batching, and conflict behavior.
+- [Write Path Concepts](/handling-writes/write-path/concepts): what happens when a write fails.
+- [Supabase guide](/integrations/supabase/guide): set up Supabase and PowerSync.

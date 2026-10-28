@@ -1,0 +1,57 @@
+---
+title: "Supabase: PostgREST Route"
+sidebarTitle: "Supabase (PostgREST)"
+description: "Write changes from the upload queue to Supabase with the Supabase client SDK, and understand why multi-operation transactions aren't atomic on this route."
+---
+
+On this route, `uploadData()` uses the Supabase client SDK to send each queued change to Supabase's Data API, which is built on PostgREST. You don't deploy a separate write API: Supabase's grants and row-level security (RLS) policies decide which writes each user can make. The [Supabase guide](/integrations/supabase/guide) and the Supabase demo apps use this route.
+
+## Transactions Are Not Atomic
+
+The Supabase client SDK has no transaction support. `uploadData()` sends each change in a transaction as a separate request, and each request commits on its own. If one change in a transaction fails, the changes before it stay in the database.
+
+For example, an app creates a list and its first item in one local transaction. If the insert of the item fails, the list is still created in Supabase.
+
+If your app needs all changes in a transaction to be applied together or not at all, you have two options:
+
+- Use the [Edge Function route](/handling-writes/write-path/supabase-edge-function), which runs the reference write implementation as a Supabase Edge Function and applies each transaction atomically.
+- Write a Postgres function that applies the whole transaction, and call it from `uploadData()` with the Supabase client's `rpc()` method.
+
+## How the Demo Connector Handles Errors
+
+The `uploadData()` in the React Supabase demo app ([`SupabaseConnector.ts`](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/library/powersync/SupabaseConnector.ts)) checks the Postgres error code that Supabase returns:
+
+| Error code | Meaning | What the connector does |
+| --- | --- | --- |
+| Class `22` | Data exception, such as a type mismatch | Logs the error and marks the transaction complete |
+| Class `23` | Constraint violation, such as `NOT NULL`, `FOREIGN KEY`, or `UNIQUE` | Logs the error and marks the transaction complete |
+| `42501` | Insufficient privilege, usually a missing grant or an RLS policy that rejects the write | Logs the error and marks the transaction complete |
+| Any other error | For example, a network error | Throws, so the SDK retries |
+
+When the connector marks the transaction complete after an error, it drops the failed change and every change after it in the same transaction. These become [rejected writes](/handling-writes/write-path/concepts#rejected-writes): the app's local data reverts after the next sync, and the error appears only in the app's logs. For the causes of `42501`, see [Uploads Fail With Error `42501`](/integrations/supabase/guide#uploads-fail-with-error-42501).
+
+The connector retries every other error, including errors that can never succeed, such as `PGRST204` for a column that doesn't exist in Supabase. Such a transaction becomes a [blocked transaction](/handling-writes/write-path/concepts#blocked-transactions) and holds back every later write until you fix the cause. Check the app's logs for repeated upload errors.
+
+To reduce the number of requests, you can merge consecutive changes to the same table into one request. See [Improve Supabase Connector](/integrations/supabase/connector-performance).
+
+## Prompt for Your Coding Agent
+
+To have a coding agent write `uploadData()` for this route, copy this prompt into it. It asks the agent to use the same error handling as the demo connector.
+
+```text Build with AI icon=sparkles wrap
+Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skills. Then follow the skills to implement uploadData() in this project's PowerSync backend connector, so that it writes changes to Supabase with the Supabase client. For Postgres error classes 22 and 23 and error code 42501, log the error and complete the transaction. For any other error, throw so that PowerSync retries.
+```
+
+<Note>
+  Coming soon: a dedicated prompt for this route.
+</Note>
+
+{/* TODO(write-path): Add a dedicated Supabase PostgREST route prompt when it exists. */}
+
+## Related Pages
+
+- [Supabase guide](/integrations/supabase/guide): set up Supabase, PowerSync, and a demo app.
+- [Write Path Concepts](/handling-writes/write-path/concepts): what happens when a write fails.
+- [Handling Update Conflicts](/handling-writes/handling-update-conflicts): what happens when two clients change the same row.
+- [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution): strategies for resolving conflicts.
+- [Client-Side Integration](/configuration/app-backend/client-side-integration): the backend connector, and when the SDK calls `uploadData()`.

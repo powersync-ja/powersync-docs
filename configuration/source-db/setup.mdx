@@ -329,6 +329,8 @@ For self-hosted MongoDB, or for creating custom roles on MongoDB Atlas, PowerSyn
 
 To replicate data from MongoDB to PowerSync in a consistent manner, PowerSync uses Change Streams with [post-images](https://www.mongodb.com/docs/v6.0/reference/command/collMod/#change-streams-with-document-pre--and-post-images) to get the complete document after each change. This requires the `changeStreamPreAndPostImages` option to be enabled on replicated collections.
 
+The Service requests pre-images only when [replication pre-filters](/sync/advanced/mongodb-replication-pre-filtering) are configured on the connection. MongoDB's `changeStreamPreAndPostImages` setting enables capture of both pre-images and post-images, even when the Service requests only post-images.
+
 PowerSync supports three configuration options for post-images:
 
 1. **Off**: (`post_images: off`): Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling post-images instead.
@@ -363,6 +365,24 @@ Post-images can be configured for PowerSync instances as follows:
     Configure `post_images` in the `service.yaml` file.
   </Card>
 </CardGroup>
+
+#### Image Capture for New Collections
+
+**Auto-Configure** handles image configuration during normal operation, including for newly discovered collections. Replication lag or Service downtime can delay discovery of a new collection. If documents are updated before automatic configuration completes, missing post-images can require the Service to create a new replication stream and snapshot all replicated collections again.
+
+To avoid this full reprocess, create new collections with image capture enabled before writing to them. Run this command in `mongosh` against the source database:
+
+```javascript
+db.createCollection('todos', {
+  changeStreamPreAndPostImages: { enabled: true }
+});
+```
+
+With **Read-only**, you must enable image capture yourself on every replicated collection. The command above also meets that requirement.
+
+Keep `changeStreamPreAndPostImages` enabled while a collection is replicated. Disabling it can interrupt replication and require a full reprocess.
+
+See MongoDB's [`db.createCollection()` reference](https://www.mongodb.com/docs/manual/reference/method/db.createCollection/) for the collection options.
 
 ### Replication Pre-filtering
 

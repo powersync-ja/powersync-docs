@@ -8,7 +8,7 @@ description: "Exclude MongoDB documents before the PowerSync Service stores and 
   **Availability**: MongoDB replication pre-filtering is available for customers on our [Team and Enterprise](https://www.powersync.com/pricing) plans. Self-hosted deployments require the [Enterprise Self-Hosted Edition](/intro/self-hosting#enterprise-self-hosted-edition).
 </Note>
 
-{/* TODO: Confirm release status, minimum PowerSync Service version, and subscription-plan enforcement before publishing. */}
+{/* TODO: Confirm release status and minimum PowerSync Service version before publishing. */}
 
 Replication pre-filtering limits which MongoDB documents enter PowerSync bucket storage. Use it when your instance needs only a subset of a collection, such as active records or records for a fixed set of stores. With suitable source indexes, pre-filtering reduces initial snapshot work and storage for excluded documents.
 
@@ -20,6 +20,7 @@ Define filters in your Sync Config under `config.source_table_options`. The Serv
 
 ## Prerequisites
 
+- Sync Config edition 3 (`config.edition: 3`).
 - MongoDB 6.0 or later. Azure DocumentDB is not supported for pre-filtering.
 - [Post Images](/configuration/source-db/setup#post-images) set to **Auto-Configure** (`post_images: auto_configure`) or **Read-only** (`post_images: read_only`). Pre-filtering does not support `post_images: off`.
 - With **Auto-Configure**, grant the Service permission to enable `changeStreamPreAndPostImages`. With **Read-only**, enable it yourself on every replicated collection. See [MongoDB Permissions](/configuration/source-db/setup#mongodb-permissions).
@@ -62,11 +63,13 @@ This example replicates only todos with an explicit `archived: false` field. Eac
     This filter excludes documents where `archived` is missing. Set `archived: false` explicitly on every document you want to replicate.
   </Step>
   <Step title="Deploy Your Sync Config">
-    Deploy the Sync Config using your usual [Cloud](/configuration/powersync-service/cloud-instances) or [self-hosted](/maintenance-ops/self-hosting/update-sync-rules) workflow. Deploy later filter changes as part of the Sync Config too.
+    Deploy the Sync Config using your usual [Cloud](/configuration/powersync-service/cloud-instances) or [self-hosted](/maintenance-ops/self-hosting/update-sync-rules) workflow. Adding, changing, or removing filters forces a full reprocess: the Service creates a new replication stream and snapshots all replicated collections. Allow for that source database work when planning the deployment.
 
     If validation reports an inefficient snapshot index, create the recommended index before deployment. Index warnings are advisory and do not block deployment.
 
     Unsupported source settings, such as `post_images: off`, block deployment. Parsing a valid filter does not establish that your instance can execute it. The Open Edition parses filter expressions but rejects their deployment.
+
+    If your plan or Service edition no longer supports pre-filtering, replication stops for a saved Sync Config that contains filters. Restore support, or remove the filters and deploy a new Sync Config. The Service does not silently ignore filters after a downgrade.
   </Step>
 </Steps>
 
@@ -195,8 +198,9 @@ During replication, the Service keeps stored data consistent with the pre-filter
 
 Pre-filtering reduces stored data, but excluded changes still have some network and processing cost. MongoDB sends compact progress events for excluded changes so that the Service can advance its recovery position through a backlog of excluded writes.
 
-## Example Implementation
+### Image Availability and Recovery
 
-{/* TODO: Verify that the demo is published at this URL before publishing this page. */}
+When a connection has pre-filters, the Service requests pre-images on its change stream with `fullDocumentBeforeChange: 'whenAvailable'`. Pre-filtering uses these images to check whether an updated or deleted document previously matched the filter. Without pre-filters, the Service does not request or use pre-images.
 
-The [self-hosted MongoDB pre-filtering demo](https://github.com/powersync-ja/self-host-demo/tree/main/demos/nodejs-mongodb-prefiltering) filters archived lists and todos. It includes source indexes, seed data, and a stream writer so you can compare source counts with the client's synced data.
+Pre-filtering requires the post-image captured for each update. When adding replicated collections, follow [Image Capture for New Collections](/configuration/source-db/setup#image-capture-for-new-collections) to avoid a full reprocess, including with **Auto-Configure**.
+

@@ -1,109 +1,111 @@
 ---
 title: "Writing Data"
-description: "Write data to the local SQLite database and manage the upload queue with the PowerSync SDK."
+description: "Use SQL to update client-side SQLite and send queued changes to your application backend."
 sidebarTitle: "Overview"
 ---
 
-Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements. PowerSync automatically queues these writes and uploads them to your backend via the `uploadData()` function in your [backend connector](/intro/setup-guide#connect-to-powersync-service-instance).
+PowerSync applies each SQL INSERT, UPDATE, or DELETE immediately to client-side SQLite and records the change in an upload queue. Your UI can react to the local result without waiting for a network round trip.
+
+While connected, the SDK calls the `uploadData()` method that you implement in your backend connector. Your implementation sends queued changes (mutations) to your application backend, where you retain control over authorization, validation, and business logic before applying them to your source database. The resulting backend state then syncs to clients through PowerSync. If connectivity is interrupted, writes remain available locally and queued until the SDK can retry them.
 
 ## Basic Write Operations
 
 <CodeGroup>
-  ```typescript TypeScript
-  // Insert a new todo
-  await db.execute(
-    'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
-    [listId, 'Buy groceries']
-  );
 
-  // Update a todo
-  await db.execute(
-    'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
-    [todoId]
-  );
+```typescript TypeScript
+// Insert a new todo
+await db.execute(
+  'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
+  [listId, 'Buy groceries']
+);
 
-  // Delete a todo
-  await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
-  ```
+// Update a todo
+await db.execute(
+  'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
+  [todoId]
+);
 
-  ```kotlin Kotlin
-  // Insert a new todo
-  database.writeTransaction {
-    database.execute(
-      sql = "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)",
-      parameters = listOf(listId, "Buy groceries")
-    )
-  }
+// Delete a todo
+await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
+```
 
-  // Update a todo
-  database.execute(
-    sql = "UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?",
-    parameters = listOf(todoId)
-  )
+```kotlin Kotlin
+// Insert a new todo
+database.execute(
+  sql = "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)",
+  parameters = listOf(listId, "Buy groceries")
+)
 
-  // Delete a todo
-  database.execute(
-    sql = "DELETE FROM todos WHERE id = ?",
-    parameters = listOf(todoId)
-  )
-  ```
+// Update a todo
+database.execute(
+  sql = "UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?",
+  parameters = listOf(todoId)
+)
 
-  ```swift Swift
-  // Insert a new todo
-  try await db.execute(
-    sql: "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)",
-    parameters: [listId, "Buy groceries"]
-  )
+// Delete a todo
+database.execute(
+  sql = "DELETE FROM todos WHERE id = ?",
+  parameters = listOf(todoId)
+)
+```
 
-  // Update a todo
-  try await db.execute(
-    sql: "UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?",
-    parameters: [todoId]
-  )
+```swift Swift
+// Insert a new todo
+try await db.execute(
+  sql: "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)",
+  parameters: [listId, "Buy groceries"]
+)
 
-  // Delete a todo
-  try await db.execute(
-    sql: "DELETE FROM todos WHERE id = ?",
-    parameters: [todoId]
-  )
-  ```
+// Update a todo
+try await db.execute(
+  sql: "UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?",
+  parameters: [todoId]
+)
 
-  ```dart Dart/Flutter
-  // Insert a new todo
-  await db.execute(
-    'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
-    [listId, 'Buy groceries']
-  );
+// Delete a todo
+try await db.execute(
+  sql: "DELETE FROM todos WHERE id = ?",
+  parameters: [todoId]
+)
+```
 
-  // Update a todo
-  await db.execute(
-    'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
-    [todoId]
-  );
+```dart Dart/Flutter
+// Insert a new todo
+await db.execute(
+  'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
+  [listId, 'Buy groceries']
+);
 
-  // Delete a todo
-  await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
-  ```
+// Update a todo
+await db.execute(
+  'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
+  [todoId]
+);
 
-  ```csharp .NET
-  // Insert a new todo
-  await db.Execute(
-    "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), datetime(), ?, ?)",
-    new[] { listId, "Buy groceries" }
-  );
+// Delete a todo
+await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
+```
 
-  // Update a todo
-  await db.Execute(
-    "UPDATE todos SET completed = 1, completed_at = datetime() WHERE id = ?",
-    new[] { todoId }
-  );
+```csharp .NET
+// Insert a new todo
+await db.Execute(
+  "INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), datetime(), ?, ?)",
+  new[] { listId, "Buy groceries" }
+);
 
-  // Delete a todo
-  await db.Execute(
-    "DELETE FROM todos WHERE id = ?", 
-    new[] { todoId }
-  );
-  ```
+// Update a todo
+await db.Execute(
+  "UPDATE todos SET completed = 1, completed_at = datetime() WHERE id = ?",
+  new[] { todoId }
+);
+
+// Delete a todo
+await db.Execute(
+  "DELETE FROM todos WHERE id = ?", 
+  new[] { todoId }
+);
+```
+
 </CodeGroup>
 
 <Note>
@@ -121,7 +123,7 @@ See [ORM Support](/client-sdks/orms/overview) to learn which ORMs PowerSync supp
 PowerSync automatically queues writes and uploads them to your backend. The upload queue stores three types of operations:
 
 | Operation | Purpose | Contents | SQLite Statement |
-|-----------|---------|----------|------------------|
+| --- | --- | --- | --- |
 | `PUT` | Create new row | Contains the value for each non-null column | Generated by `INSERT` statements. |
 | `PATCH` | Update existing row | Contains the row `id`, and value of each changed column. | Generated by `UPDATE` statements. |
 | `DELETE` | Delete existing row | Contains the row `id` | Generated by `DELETE` statements. |
@@ -130,6 +132,7 @@ The SDK automatically processes this queue by calling your `uploadData()` functi
 
 For details on how to structure your backend to accept these writes, see [Writing Client Changes](/handling-writes/writing-client-changes).
 
+To wait until a write has uploaded and its result has synced back, for example before showing values your backend generates, use a [checkpoint request](/client-sdks/checkpoint-requests#relationship-to-local-writes).
 
 ## Advanced Topics
 

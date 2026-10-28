@@ -3,55 +3,34 @@ title: "Partitioned Tables (Postgres)"
 description: "Sync data from Postgres partitioned tables using wildcard table name matching."
 ---
 
-For partitioned tables in Postgres, each individual partition is replicated and processed using [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)).
+{/* Split page: the Sync Rules (Legacy) version of this page is sync/rules/partitioned-tables.mdx. When you change shared behavior or fix an error here, check whether that page needs the same change. Do not mention Sync Rules on this page. */}
+
+For partitioned tables in Postgres, each individual partition is replicated and processed using [Sync Streams](/sync/streams/overview).
 
 To use the same queries and same output table name for each partition, use `%` for wildcard suffix matching of the table name:
 
-<Tabs>
-  <Tab title="Sync Streams">
-    ```yaml
-    streams:
-      user_todos:
-        queries:
-          # Wildcard matches all user partition tables (e.g. users_2024, users_2025)
-          - SELECT * FROM "users_%" WHERE id = auth.user_id()
-          # Wildcard matches all todo partition tables (e.g. todos_2024, todos_2025)
-          - SELECT * FROM "todos_%" AS todos WHERE user_id = auth.user_id()
-    ```
-  </Tab>
-  <Tab title="Sync Rules (Legacy)">
-    ```yaml
-      by_user:
-        # Use wildcard in a parameter query
-        parameters: SELECT id AS user_id FROM "users_%"
-        data:
-          # Use wildcard in a data query
-          - SELECT * FROM "todos_%" AS todos WHERE user_id = bucket.user_id
-    ```
-  </Tab>
-</Tabs>
+```yaml
+streams:
+  user_todos:
+    queries:
+      # Wildcard matches all user partition tables (e.g. users_2024, users_2025)
+      - SELECT * FROM "users_%" WHERE id = auth.user_id()
+      # Wildcard matches all todo partition tables (e.g. todos_2024, todos_2025)
+      - SELECT * FROM "todos_%" AS todos WHERE user_id = auth.user_id()
+```
 
 The wildcard character can only be used as the last character in the table name. To match tables across multiple schemas instead, see [Wildcard Schemas](/sync/advanced/schemas-and-connections#wildcard-schemas-postgres).
 
-When using wildcard table names, you can filter on the original table suffix. In Sync Streams, use the `table_suffix()` function, prefixed with the table name or alias from the `FROM` clause (requires PowerSync Service v1.24.0 or later). In legacy Sync Rules, the suffix is available as the special `_table_suffix` column instead:
+When using wildcard table names, you can filter on the original table suffix with the `table_suffix()` function, prefixed with the table name or alias from the `FROM` clause. This requires PowerSync Service v1.24.0 or later:
 
-<Tabs>
-  <Tab title="Sync Streams">
-    ```yaml
-    config:
-      edition: 3
+```yaml
+config:
+  edition: 3
 
-    streams:
-      active_todos:
-        query: SELECT * FROM "todos_%" AS todos WHERE todos.table_suffix() != 'archived'
-    ```
-  </Tab>
-  <Tab title="Sync Rules (Legacy)">
-    ```sql
-    SELECT * FROM "todos_%" AS todos WHERE _table_suffix != 'archived'
-    ```
-  </Tab>
-</Tabs>
+streams:
+  active_todos:
+    query: SELECT * FROM "todos_%" AS todos WHERE todos.table_suffix() != 'archived'
+```
 
 When no table alias is provided, the original table name is preserved.
 

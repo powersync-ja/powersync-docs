@@ -706,11 +706,11 @@ Now it's time to integrate PowerSync into your app. This involves installing the
 Add the PowerSync Client SDK to your app project. PowerSync provides SDKs for various platforms and frameworks.
 
 <Tabs>
-  <Tab title="React Native / Expo">
-    <ReactNativeInstallation />
-  </Tab>
   <Tab title="JavaScript Web">
     <JavaScriptWebInstallation />
+  </Tab>
+  <Tab title="React Native / Expo">
+    <ReactNativeInstallation />
   </Tab>
   <Tab title="Node.js">
     <NodeInstallation />
@@ -784,8 +784,8 @@ For development, you can use the development token you generated in the [Generat
 
 <CodeGroup>
 
-```typescript React Native (TS)
-import type { CommonPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/react-native';
+```typescript Web & Capacitor (TS)
+import type { CommonPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/web';
 import { db } from './Database';
 
 class Connector implements PowerSyncBackendConnector {
@@ -815,8 +815,8 @@ const connector = new Connector();
 await db.connect(connector);
 ```
 
-```typescript Web & Capacitor (TS)
-import type { CommonPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/web';
+```typescript React Native (TS)
+import type { CommonPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/react-native';
 import { db } from './Database';
 
 class Connector implements PowerSyncBackendConnector {
@@ -865,6 +865,92 @@ export class Connector implements PowerSyncBackendConnector {
 
 // connect the database to PowerSync Service
 const connector = new Connector();
+await db.connect(connector);
+```
+
+```rust Tauri (Rust)
+// For Tauri, connecting to PowerSync must be done in Rust so that sync state
+// is shared across all windows. Calling connect() from JavaScript will throw.
+//
+// 1. Define your backend connector in Rust:
+
+use async_trait::async_trait;
+use tauri_plugin_powersync::PowerSyncExt;
+use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase, SyncOptions};
+use powersync::error::PowerSyncError;
+
+struct MyBackendConnector {
+    db: PowerSyncDatabase,
+}
+
+#[async_trait]
+impl BackendConnector for MyBackendConnector {
+    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+        // for development: use development token
+        Ok(PowerSyncCredentials {
+            endpoint: "https://your-instance.powersync.com".to_string(),
+            token: "your-development-token-here".to_string(),
+        })
+    }
+
+    async fn upload_data(&self) -> Result<(), PowerSyncError> {
+        let mut local_writes = self.db.crud_transactions();
+        while let Some(tx) = local_writes.try_next().await? {
+            // upload to your backend API
+            tx.complete().await?;
+        }
+        Ok(())
+    }
+}
+
+// 2. Add a Tauri command that receives the database handle from JavaScript:
+#[tauri::command]
+async fn connect<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    handle: usize,
+) -> tauri_plugin_powersync::Result<()> {
+    let database = app.powersync().database_from_javascript_handle(handle)?;
+    let options = SyncOptions::new(MyBackendConnector { db: database.clone() });
+    database.connect(options).await;
+    Ok(())
+}
+
+// 3. Register the command in your Tauri builder:
+// .invoke_handler(tauri::generate_handler![connect])
+
+// 4. Then call it from JavaScript after initializing the database:
+// await db.init();
+// await invoke('connect', { handle: db.rustHandle });
+```
+
+```dart Dart/Flutter
+import 'package:powersync/powersync.dart';
+
+class Connector extends PowerSyncBackendConnector {
+  @override
+  Future<PowerSyncCredentials> fetchCredentials() async {
+    return PowerSyncCredentials(
+      endpoint: 'https://your-instance.powersync.com',
+      token: 'your-development-token-here'
+    );
+  }
+
+  @override
+  Future<void> uploadData(PowerSyncDatabase database) async {
+    final transaction = await database.getNextCrudTransaction();
+    if (transaction == null) return;
+
+    for (final op in transaction.crud) {
+      final record = {...op.opData, 'id': op.id};
+      // upload to your backend API
+    }
+
+    await transaction.complete();
+  }
+}
+
+// connect the database to PowerSync Service
+final connector = Connector();
 await db.connect(connector);
 ```
 
@@ -927,37 +1013,6 @@ class Connector: PowerSyncBackendConnector {
 // connect the database to PowerSync Service
 let connector = Connector()
 await db.connect(connector: connector)
-```
-
-```dart Dart/Flutter
-import 'package:powersync/powersync.dart';
-
-class Connector extends PowerSyncBackendConnector {
-  @override
-  Future<PowerSyncCredentials> fetchCredentials() async {
-    return PowerSyncCredentials(
-      endpoint: 'https://your-instance.powersync.com',
-      token: 'your-development-token-here'
-    );
-  }
-
-  @override
-  Future<void> uploadData(PowerSyncDatabase database) async {
-    final transaction = await database.getNextCrudTransaction();
-    if (transaction == null) return;
-
-    for (final op in transaction.crud) {
-      final record = {...op.opData, 'id': op.id};
-      // upload to your backend API
-    }
-
-    await transaction.complete();
-  }
-}
-
-// connect the database to PowerSync Service
-final connector = Connector();
-await db.connect(connector);
 ```
 
 ```csharp .NET
@@ -1035,61 +1090,6 @@ db.connect(SyncOptions::new(MyBackendConnector {
 .await;
 ```
 
-```rust Tauri (Rust)
-// For Tauri, connecting to PowerSync must be done in Rust so that sync state
-// is shared across all windows. Calling connect() from JavaScript will throw.
-//
-// 1. Define your backend connector in Rust:
-
-use async_trait::async_trait;
-use tauri_plugin_powersync::PowerSyncExt;
-use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase, SyncOptions};
-use powersync::error::PowerSyncError;
-
-struct MyBackendConnector {
-    db: PowerSyncDatabase,
-}
-
-#[async_trait]
-impl BackendConnector for MyBackendConnector {
-    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        // for development: use development token
-        Ok(PowerSyncCredentials {
-            endpoint: "https://your-instance.powersync.com".to_string(),
-            token: "your-development-token-here".to_string(),
-        })
-    }
-
-    async fn upload_data(&self) -> Result<(), PowerSyncError> {
-        let mut local_writes = self.db.crud_transactions();
-        while let Some(tx) = local_writes.try_next().await? {
-            // upload to your backend API
-            tx.complete().await?;
-        }
-        Ok(())
-    }
-}
-
-// 2. Add a Tauri command that receives the database handle from JavaScript:
-#[tauri::command]
-async fn connect<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    handle: usize,
-) -> tauri_plugin_powersync::Result<()> {
-    let database = app.powersync().database_from_javascript_handle(handle)?;
-    let options = SyncOptions::new(MyBackendConnector { db: database.clone() });
-    database.connect(options).await;
-    Ok(())
-}
-
-// 3. Register the command in your Tauri builder:
-// .invoke_handler(tauri::generate_handler![connect])
-
-// 4. Then call it from JavaScript after initializing the database:
-// await db.init();
-// await invoke('connect', { handle: db.rustHandle });
-```
-
 </CodeGroup>
 
 Once connected, you can read from and write to the client-side SQLite database. PowerSync automatically syncs changes from your source database down into the SQLite database. For client-side mutations to be uploaded back to your source database, you need to complete the backend integration as explained below.
@@ -1146,6 +1146,20 @@ for await (const todos of stream) {
 // });
 ```
 
+```dart Dart/Flutter
+// Get all todos
+final todos = await db.getAll('SELECT * FROM todos');
+
+// Get a single todo
+final todo = await db.get('SELECT * FROM todos WHERE id = ?', [todoId]);
+
+// Watch for changes
+db.watch('SELECT * FROM todos WHERE list_id = ?', [listId])
+  .listen((todos) {
+    // Update UI when data changes
+  });
+```
+
 ```kotlin Kotlin
 // Get all todos
 val todos = database.getAll("SELECT * FROM todos") { cursor ->
@@ -1183,20 +1197,6 @@ for try await todos in db.watch(
 ) {
   // Update UI when data changes
 }
-```
-
-```dart Dart/Flutter
-// Get all todos
-final todos = await db.getAll('SELECT * FROM todos');
-
-// Get a single todo
-final todo = await db.get('SELECT * FROM todos WHERE id = ?', [todoId]);
-
-// Watch for changes
-db.watch('SELECT * FROM todos WHERE list_id = ?', [listId])
-  .listen((todos) {
-    // Update UI when data changes
-  });
 ```
 
 ```csharp .NET
@@ -1319,6 +1319,23 @@ await db.execute(
 await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
 ```
 
+```dart Dart/Flutter
+// Insert a new todo
+await db.execute(
+  'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
+  [listId, 'Buy groceries']
+);
+
+// Update a todo
+await db.execute(
+  'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
+  [todoId]
+);
+
+// Delete a todo
+await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
+```
+
 ```kotlin Kotlin
 // Insert a new todo
 database.writeTransaction { ctx ->
@@ -1359,23 +1376,6 @@ try await db.execute(
   sql: "DELETE FROM todos WHERE id = ?",
   parameters: [todoId]
 )
-```
-
-```dart Dart/Flutter
-// Insert a new todo
-await db.execute(
-  'INSERT INTO todos (id, created_at, list_id, description) VALUES (uuid(), date(), ?, ?)',
-  [listId, 'Buy groceries']
-);
-
-// Update a todo
-await db.execute(
-  'UPDATE todos SET completed = 1, completed_at = date() WHERE id = ?',
-  [todoId]
-);
-
-// Delete a todo
-await db.execute('DELETE FROM todos WHERE id = ?', [todoId]);
 ```
 
 ```csharp .NET

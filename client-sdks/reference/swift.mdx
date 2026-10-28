@@ -12,6 +12,7 @@ import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
 import SwiftSubscribeSyncStream from '/snippets/swift/subscribe-sync-stream.mdx';
 
 ```text Build with AI icon=sparkles wrap
@@ -273,6 +274,22 @@ func deleteTodo(id: String) async throws {
 }
 ```
 
+## Waiting for the Latest Server Data
+
+<CheckpointRequestsIntro />
+
+```swift
+// Opt in when connecting
+try await db.connect(
+    connector: connector,
+    options: ConnectOptions(checkpointMode: .requests())
+)
+
+// Later: wait until local data is up to date
+let checkpoint = try await db.requestCheckpoint()
+try await checkpoint.waitForSync(timeout: 30)
+```
+
 ## Configure Logging
 
 You can supply your own logger. It must conform to the [LoggerProtocol](https://powersync-ja.github.io/powersync-swift/documentation/powersync/loggerprotocol):
@@ -296,13 +313,7 @@ By default, the Swift SDK stores databases in `applicationSupportDirectory`. If 
   Support for app groups and extensions was added in version 1.15, and is experimental.
 </Warning>
 
-With app groups and extensions, multiple processes might access the database at the same time. SQLite uses shared memory and file locking to make this safe, but there are still concerns that aren't relevant when the database is only accessed from a single context:
-
-1. Concurrent writes to the database are not allowed. Within a process, the PowerSync SDK uses Swift actors to schedule writes. Outside of SQLite using file locks, there is no additional coordination for multi-process access.
-   - Consider using [`PRAGMA busy_timeout`](https://sqlite.org/pragma.html#pragma_busy_timeout) to make SQLite wait longer.
-   - Be ready to handle `SQLITE_BUSY` errors if multiple processes attempt to write to the database.
-2. Do not call `connect()` in more than one process: If two processes attempt to connect to the PowerSync Service for the same database, this wastes resources and can also lead to concurrency issues. If you share databases with extensions or app groups, ensure there is only one context responsible for connecting.
-3. Avoid multiple versions of the Swift SDK: While the SQLite file format is stable and databases can safely be accessed from multiple processes using their own SQLite version, the PowerSync SDK is not designed with this in mind. In particular, opening the same database file from multiple processes can cause PowerSync-internal migrations to get reverted. This is not a concern for app extensions released as part of the same bundle, but something to be aware of for app groups.
+With app groups and extensions, multiple processes might access the database at the same time. See [Multi-Process Access](/client-sdks/advanced/multi-process) for important constraints, including that only one process may call `connect()`.
 
 ## Custom HTTP Clients and Headers
 
@@ -350,5 +361,5 @@ See [Supported Platforms -> Swift SDK](/resources/supported-platforms#swift).
 Update the version number in `Package.swift` or via Xcode Package Dependencies as documented in the installation instructions: [Installation](/client-sdks/reference/swift#installation).
 
 <Warning>
-  **Upgrading to v1.14**: This release removes the internal Kotlin dependency and re-implements the SQLite connection pool logic natively in Swift. The public API is unchanged, but the internals are a full rewrite. We recommend testing queries in your app after upgrading to this version.
+  **Upgrading to v1.14**: This release removes the internal Kotlin dependency and re-implements the SQLite connection pool logic natively in Swift. The public API is unchanged, except that `CrudBatch`, `CrudEntry`, and `CrudTransaction` are now structs that you cannot create in your own code, for example in tests or mocks. The internals are a full rewrite, so we recommend testing queries in your app after upgrading to this version.
 </Warning>

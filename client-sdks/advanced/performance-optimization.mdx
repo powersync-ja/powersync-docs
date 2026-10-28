@@ -65,12 +65,11 @@ For contention on the write connection, note that the PowerSync client processes
   - **Rust**: Version `0.1.2`.
 </Note>
 
-By default, PowerSync stores all data as [JSON rows](/architecture/client-architecture#client-side-schema-and-sqlite-database-structure): synced rows are copied into local tables without modifications, and local updates modify an existing JSON object. This format is highly flexible and avoids schema migrations, but comes with a performance cost:
+PowerSync supports three types of table structures to sync data into:
 
-- Every column read forces SQLite to decode the entire JSON object, making queries slower than queries on "real" SQLite tables. In our tests, we've seen a 2x improvement for `SELECT *` queries, and a 5x improvement for aggregates, filters and ordering on columns without an index.
-- JSON objects occupy more storage space than a native SQLite row, making databases slightly larger and increasing writes during large sync downloads. In our tests, direct tables decrease the file size by around 20%.
-
-[Raw tables](/client-sdks/advanced/raw-tables) fix this by letting PowerSync sync into actual tables you define. With raw tables, you are responsible for creating and migrating them. Direct tables are raw tables that PowerSync manages for you, like the default JSON-based tables. In supported SDKs, you enable direct tables with a flag on the table definition:
+1. Managed views, storing data as [JSON rows](/architecture/client-architecture#client-side-schema-and-sqlite-database-structure). Synced rows are copied into local tables without modifications, and local updates modify an existing JSON object. This format is highly flexible and avoids schema migrations, but comes with a performance cost because SQLite needs to decode JSON for each query.
+2. [Raw tables](/client-sdks/advanced/raw-tables), allowing you to define tables to sync into. Raw tables allow faster queries, but make you responsible for creating and migrating them.
+3. Managed tables, enabled by setting the `direct` flag on `Table` options. These match the query performance of raw tables while still allowing PowerSync SDKs to create and migrate them automatically.
 
 <CodeGroup>
 
@@ -109,7 +108,12 @@ schema
 
 </CodeGroup>
 
-Direct tables aren't based on views, so you can't set the `viewName` option on them. In the JavaScript SDKs, [High Performance Diffs](/client-sdks/high-performance-diffs) don't support direct tables yet.
+In our testing, enabling the `direct` flag had significant performance benefits:
+
+- Not decoding JSON on reads improves query performance, we've seen a 2x improvement for `SELECT *` queries, and a 5x improvement for aggregates, filters and ordering on columns without an index.
+- By avoiding the overhead of storing JSON, direct tables decrease the file size by around 20%. This depends on the data stored, the overhead is lower for large string values for example.
+
+Queries and mutating SQL statements work the same for managed views and managed tables. Direct tables aren't based on views, so you can't set the `viewName` option on them. In the JavaScript SDKs, [High Performance Diffs](/client-sdks/high-performance-diffs) don't support direct tables yet.
 
 ### Migrations
 

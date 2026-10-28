@@ -117,15 +117,21 @@ For more information, see the `preparedStatementsCache` option [for JavaScript](
 
 By default, each table in your client-side schema is a **managed view**. PowerSync stores synced rows as [JSON in an internal table](/architecture/client-architecture#client-side-schema-and-sqlite-database-structure) and creates a SQLite view that extracts your columns from it. Queries on the view decode the JSON of every row they read.
 
-A **managed table** stores rows in a SQLite table with a column for each column in your schema, so queries read values directly. You query and write to it with the same SQL statements as a managed view. PowerSync still creates and migrates the table, and it still adds local writes to the upload queue.
+Queries on a **managed table** run faster than on a managed view. A managed table stores rows in a SQLite table with a column for each column in your schema, so queries read values directly instead of decoding JSON. You query and write to it with the same SQL statements as a managed view. PowerSync still creates and migrates the table, and it still adds local writes to the upload queue.
 
-In our tests on a table with 1 million rows, `SELECT *` queries were about 2x faster on a managed table. Filtering, sorting or aggregating on a column without an index was about 6x faster. The database file was about 20% smaller. How much storage you save depends on your data. Rows with large text values save less, because the JSON overhead is a smaller part of each row.
+<Info>
+  **Benchmarks**
 
-These numbers come from simulated benchmarks, so results in your app depend on your data and queries. If you try managed tables, let us know how they perform in your app.
+  In our tests on a table with 1 million rows, `SELECT *` queries were about 2x faster on a managed table. Filtering, sorting or aggregating on a column without an index was about 6x faster.
+
+  These numbers come from simulated benchmarks, so results in your app depend on your data and queries. If you try managed tables, let us know how they perform in your app.
+
+  Managed tables can also make the database file slightly smaller, because rows don't repeat the column names that JSON stores. How much depends on your data. For example, rows with large text values save less.
+</Info>
 
 ### Choosing a Table Type
 
-The table types differ in two ways: who creates and migrates the table, and whether queries read JSON or SQLite columns.
+Start with managed views. Change a table's type only if you hit a limit: its queries are too slow, or you need SQLite features that the client-side schema can't define. You choose the type for each table, so one schema can mix all three.
 
 |  | Managed views (default) | Managed tables | Raw tables |
 | --- | --- | --- | --- |
@@ -134,7 +140,7 @@ The table types differ in two ways: who creates and migrates the table, and whet
 | Schema changes | Near-instant | Take longer as the table grows | Migrations you write |
 
 - **Managed views:** Use these by default: schema changes are near-instant, because PowerSync only re-creates the views. Queries that read many rows of a large table can be slower than on a managed table.
-- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table that you filter, sort or aggregate on columns without an index. You set this per table, so the other tables can stay managed views. The trade-off is that schema changes on a managed table take longer as the table grows.
+- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table that you filter, sort or aggregate on columns without an index. The trade-off is that schema changes on a managed table take longer as the table grows.
 - **Raw tables:** Use [raw tables](/client-sdks/advanced/raw-tables) when you want full control over the SQLite table, for example to add foreign keys, custom triggers or expression indexes, or to use a library such as [Room](/client-sdks/orms/kotlin/room) that manages the schema. The trade-off is that you have to create and migrate the table yourself.
 
 ### Enabling Managed Tables

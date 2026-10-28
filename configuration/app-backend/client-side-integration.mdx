@@ -10,7 +10,7 @@ After you've [instantiated](/intro/setup-guide#instantiate-the-powersync-databas
 
 | Purpose | Description |
 | --- | --- |
-| **Uploading mutations to your backend:** | Mutations that are made to the client-side SQLite database are uploaded to your backend application, where you control how they're applied to your backend source database (Postgres, MongoDB, MySQL, SQL Server, or Convex). This is how PowerSync achieves bi-directional syncing of data: The [PowerSync Service](/architecture/powersync-service) provides the _server-to-client read path_ based on your [Sync Streams](/sync/streams/overview) (or legacy [Sync Rules](/sync/rules/overview)), and the _client-to-server write path_ goes via your backend. |
+| **Uploading mutations to your backend:** | Mutations that are made to the client-side SQLite database are uploaded to your backend application, where you control how they're applied to your backend source database (Postgres, MongoDB, MySQL, SQL Server, or Convex). This is how PowerSync achieves bi-directional syncing of data: The [PowerSync Service](/architecture/powersync-service) provides the _server-to-client read path_ based on your [Sync Streams](/sync/streams/overview), and the _client-to-server write path_ goes via your backend. |
 | **Authentication integration:** (optional) | PowerSync uses JWTs for authentication between the Client SDK and PowerSync Service. Some [authentication providers](/configuration/auth/overview#common-authentication-providers) generate JWTs for users which PowerSync can verify directly. For others, some code must be [added to your application backend](/configuration/auth/custom) to generate the JWTs. |
 
 ## Backend Connector
@@ -32,8 +32,7 @@ The PowerSync Client SDK calls `uploadData()` automatically - you never call it 
 
 1. **After a local write** - Any `INSERT`, `UPDATE`, or `DELETE` on a PowerSync table adds an entry to the internal upload queue (the `ps_crud` table). The SDK monitors this table for changes and triggers `uploadData()` shortly after. See [How Local Writes Are Detected](#how-local-writes-are-detected) below for details on the underlying mechanism.
 2. **On initial connection / reconnection** - When `connect()` establishes (or re-establishes) a sync stream and the first message is received from the PowerSync Service, the SDK triggers `uploadData()` to flush any writes that were made while offline or disconnected.
-3. **On keepalive messages** - The PowerSync Service sends periodic keepalive messages (every 20 seconds, with slight jitter). Each keepalive triggers an upload attempt, ensuring pending writes are retried even if no new local writes have occurred.
-4. **After an error, with retry** - If `uploadData()` throws an error, the SDK waits for a configurable delay (default: 5 seconds, controlled by `retryDelayMs`) and then retries. This continues until the upload succeeds or the sync stream is disconnected.
+3. **After an error, with retry** - If `uploadData()` throws an error, the SDK waits for a configurable delay (default: 5 seconds, controlled by `retryDelayMs`) and then retries. This continues until the upload succeeds or the sync stream is disconnected.
 
 #### How Local Writes Are Detected
 
@@ -117,6 +116,8 @@ When `uploadData()` throws an error:
 3. It retries the upload from the beginning of the queue.
 4. If the sync stream disconnects during the retry wait, the upload loop exits and will resume when the connection is re-established.
 
+Throw from `uploadData()` only when a later retry can succeed: after a network error or a `5xx` response, or when you must fix a bug or a schema mismatch before your backend API can apply the write. If your backend API rejects a write permanently with an error response, for example because the write fails validation, log the rejected write and call `complete()` on its transaction or batch so that the upload queue can advance. When the client SDK next completes a sync with an empty upload queue, it [reverts](/handling-writes/handling-write-validation-errors#how-changes-are-rolled-back) every write in that transaction or batch that your backend API did not apply.
+
 #### Stalled Upload Queue Detection
 
 If the SDK detects that the same CRUD entry is at the front of the queue across consecutive upload iterations (i.e., `uploadData()` returned without error but didn't call `.complete()` on the batch or transaction), it logs a warning:
@@ -128,7 +129,7 @@ After logging this warning, the SDK **throws an internal error**, which causes i
 This typically means your `uploadData()` implementation is not calling `.complete()` after successfully processing entries. Always call `.complete()` on the `CrudBatch` or `CrudTransaction` to remove processed entries from the queue.
 
 <Tip>
-  `uploadData()` is only called while the sync stream is connected. If the device is offline, writes accumulate in the upload queue and are uploaded automatically when connectivity is restored and the sync stream reconnects.
+  While the device is offline, writes stay in the upload queue. The client SDK uploads them after the device reconnects.
 </Tip>
 
 ### When `fetchCredentials()` is Called
@@ -168,22 +169,22 @@ The PowerSync sync token is used exclusively for the connection between the Clie
 For an example implementation of a PowerSync 'backend connector', see the SDK guide for your platform:
 
 <CardGroup cols={3}>
-  <Card title="Dart/Flutter" icon="flutter" href="/client-sdks/reference/flutter#3-integrate-with-your-backend">
+  <Card title="JavaScript Web" icon="js" href="/client-sdks/reference/javascript-web#3-integrate-with-your-backend">
   </Card>
 
   <Card title="React Native & Expo" icon="react" href="/client-sdks/reference/react-native-and-expo#3-integrate-with-your-backend">
   </Card>
 
-  <Card title="JavaScript Web" icon="js" href="/client-sdks/reference/javascript-web#3-integrate-with-your-backend">
+  <Card title="Node.js" icon="node-js" href="/client-sdks/reference/node#3-integrate-with-your-backend">
   </Card>
 
   <Card title="Capacitor (beta)" icon="c" href="/client-sdks/reference/capacitor#3-integrate-with-your-backend">
   </Card>
 
-  <Card title="Node.js" icon="node-js" href="/client-sdks/reference/node#3-integrate-with-your-backend">
+  <Card title="Tauri (alpha)" icon="/logo/tauri_sidebar.svg" href="/client-sdks/reference/tauri#3-integrate-with-your-backend">
   </Card>
 
-  <Card title="Tauri (alpha)" icon="/logo/tauri_sidebar.svg" href="/client-sdks/reference/tauri#3-integrate-with-your-backend">
+  <Card title="Dart/Flutter" icon="flutter" href="/client-sdks/reference/flutter#3-integrate-with-your-backend">
   </Card>
 
   <Card title="Kotlin" icon="android" href="/client-sdks/reference/kotlin#3-integrate-with-your-backend">

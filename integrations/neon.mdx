@@ -5,103 +5,116 @@ sidebarTitle: "Neon"
 ---
 
 import CreateCloudInstance from '/snippets/create-cloud-instance.mdx';
+import CreateCloudInstanceCli from '/snippets/create-cloud-instance-cli.mdx';
 import PostgresPowerSyncUser from '/snippets/postgres-powersync-user.mdx';
 import PostgresPowerSyncPublication from '/snippets/postgres-powersync-publication.mdx';
-import NeonDatabaseSetup from '/snippets/neon-database-setup.mdx';
+import NeonEnableLogicalReplication from '/snippets/neon-enable-logical-replication.mdx';
 import NeonConnection from '/snippets/neon-database-connection.mdx';
 
-This guide provides instructions for how to configure PowerSync for use with your [Neon](https://neon.tech/) project using a TypeScript demo app.
+This guide shows you how to set up PowerSync with [Neon](https://neon.com/) and run a React notes demo app. The app reads and writes a local SQLite database, so it responds instantly and keeps working without a network connection.
 
-<Info>
-  Before you proceed, this guide assumes that you have already signed up for free accounts with both Neon and PowerSync Cloud (our cloud-hosted offering). If you haven't signed up for a **PowerSync** (Cloud) account yet, [click here](https://accounts.powersync.com/portal/powersync-signup?s=docs) (and if you haven't signed up for Neon yet, [do so now](https://console.neon.tech/signup)).
-</Info>
+The demo app is a fork of Neon's [Data API and Neon Auth demo](https://github.com/neondatabase-labs/neon-data-api-neon-auth) with PowerSync added.
 
-<Info>
-  For web apps, this guide assumes that you have [pnpm](https://pnpm.io/installation#using-npm) installed.
-</Info>
+<Note>
+  Comparing PowerSync with Neon Realtime? See [PowerSync vs Neon Realtime](/resources/alternatives/neon-realtime).
+</Note>
 
-<Check>
-  This guide takes 10-15 minutes to complete.
-</Check>
+Before you start, make sure you have:
+
+- A [Neon](https://console.neon.tech/signup) account
+- A [PowerSync Cloud](https://accounts.powersync.com/portal/powersync-signup?s=docs) account
+- [pnpm](https://pnpm.io/installation) installed
 
 ## Architecture
 
-Upon successful integration of Neon + PowerSync, your system architecture will look like this: (click to enlarge image)
-
-<Frame>
-  {/* TODO: Add Neon-specific architecture diagram */}
-
-  <img
-    src="/images/integration-guides/neon/powersync-docs-diagram-neon-integration.png"
-  />
+<Frame caption="Neon + PowerSync architecture">
+  ![Diagram of the PowerSync Service syncing data from Neon Postgres to SQLite in the app, and the app uploading writes to Neon through the Neon TypeScript SDK](/images/integration-guides/neon/powersync-docs-diagram-neon-integration.png)
 </Frame>
 
-The local SQLite database embedded in the PowerSync SDK is automatically kept in sync with the Neon Postgres database (based on your Sync Streams as you will see later in this guide). Client-side data modifications are persisted in the local SQLite database as well as stored in an upload queue that gets processed via the Neon Data API when network connectivity is available. Therefore reads and writes can happen in the app regardless of whether the user is online or offline, by using the local SQLite database.
+The PowerSync Service replicates data from Neon Postgres and syncs it to each client's SQLite database, based on your Sync Streams. When the app writes to SQLite, the PowerSync SDK also adds the change to an upload queue. While the device is online, the SDK calls the app's `uploadData()` function, which sends queued changes to Neon through the [Neon Data API](https://neon.com/docs/data-api/overview).
 
-<Info>
-  For more details on PowerSync's general architecture, [see here](/architecture/architecture-overview).
-</Info>
+Neon Auth handles sign-in. The Data API and PowerSync both accept the JWTs that Neon Auth issues. For more on how PowerSync works, see the [Architecture Overview](/architecture/architecture-overview).
 
-## Integration Guide/Tutorial Overview
-
-We will follow these steps to get an offline-first 'Notes' demo app up and running:
+## Overview
 
 <Steps>
-  <Step title="Configure Neon:">
-    - Create a Neon project with Auth and Data API
-    - Set up the database schema
-    - Configure logical replication
+  <Step title="Configure Neon">
+    - Create a Neon project with Neon Auth and the Data API
+    - Enable logical replication
+    - Create the demo database schema
+    - Create the PowerSync database user and publication
   </Step>
-  <Step title="Configure PowerSync:">
-    - Create connection to Neon
-    - Configure authentication
+  <Step title="Configure PowerSync">
+    - Connect PowerSync to Neon
+    - Configure Neon Auth
     - Configure Sync Streams
   </Step>
-  <Step title="Test the configuration">
-    Test the configuration using our provided PowerSync-Neon 'Notes' demo app.
+  <Step title="Run the Demo App">
+    Configure and run the notes demo app, then test sync.
   </Step>
 </Steps>
 
 ## Configure Neon
 
-### Create a Neon Project with Auth and Data API
+### Create a Neon Project
 
-1. Go to [pg.new](https://pg.new) to create a new Neon project.
-2. In the Neon Console, navigate to your project and enable:
-   - **Neon Auth** — Go to the **Auth** page in the left sidebar and enable it
-   - **Data API** — Go to the **Data API** page in the left sidebar and enable it
+Create a project with [Neon Auth](https://neon.com/docs/auth/overview), Neon's managed Better Auth service, and the [Data API](https://neon.com/docs/data-api/overview).
 
-### Set Up the Database
+<Tabs>
+  <Tab title="Web UI">
+    1. In the [Neon Console](https://console.neon.tech), create a project.
+    2. Enable **Better Auth**.
+    3. Enable the Data API under **Postgres database** > **Data API**. Keep **Use Neon Auth** selected and select **Grant public schema access**, which is off by default.
+  </Tab>
+  <Tab title="CLI">
+    1. Install the Neon CLI and log in:
+       ```bash
+       npm i -g neon@latest
+       neon login
+       ```
+    2. Create a project. The output includes the project ID, which the following commands use as `<project-id>`:
+       ```bash
+       neon projects create --name powersync-neon-notes --region-id aws-us-east-2
+       ```
+    3. Enable Neon Auth and the Data API:
+       ```bash
+       neon neon-auth enable --project-id <project-id>
+       neon data-api create --project-id <project-id> --database neondb --auth-provider neon_auth --add-default-grants
+       ```
+  </Tab>
+</Tabs>
 
-The demo app uses Drizzle ORM for schema management. The schema includes `notes` and `paragraphs` tables with Row Level Security (RLS) policies.
+The demo app uploads writes through the Data API as the `authenticated` role. **Grant public schema access** (`--add-default-grants` in the CLI) gives this role read and write access to tables in the `public` schema, including tables you create later. Without these grants, the demo app's uploads fail.
 
-Clone the demo repository and run the migration:
+### Enable Logical Replication
 
-```bash
-git clone https://github.com/powersync-ja/powersync-js.git
-cd powersync-js
-pnpm install
-pnpm build:packages
-cd demos/react-neon-tanstack-query-notes
-```
+PowerSync uses Postgres logical replication to read changes from your database.
 
-Create a `.env` file in the project root with your database connection string:
+<NeonEnableLogicalReplication />
 
-```env
-DATABASE_URL=postgresql://user:password@your-project-id.pooler.region.neon.tech/neondb?sslmode=require
-```
+### Create the Demo Database Schema
 
-<Tip>
-  Find your connection string in the Neon Console → Dashboard → Connect → Connection string (select "Pooled connection") → Copy snippet.
-</Tip>
+The demo app uses [Drizzle](https://orm.drizzle.team/) migrations to create its tables and Row Level Security (RLS) policies.
 
-Run the migration to create the tables and RLS policies:
+1. Clone the demo app and install its dependencies:
+   ```bash
+   git clone https://github.com/powersync-ja/powersync-js.git
+   cd powersync-js/demos/react-neon-tanstack-query-notes
+   pnpm install
+   ```
+2. Get a direct connection string:
+   - **Web UI:** In the Neon Console, click **Connect**, turn off **Connection pooling**, and copy the connection string.
+   - **CLI:** Run `neon connection-string --project-id <project-id>`. It returns a direct connection string by default.
+3. Create a `.env` file in the demo directory and add the connection string:
+   ```env
+   DATABASE_URL=postgresql://neondb_owner:<password>@ep-cool-darkness-123456.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+   ```
+4. Run the migration:
+   ```bash
+   pnpm db:migrate
+   ```
 
-```bash
-pnpm db:migrate
-```
-
-This creates the following schema:
+The migration creates these tables:
 
 ```sql
 CREATE TABLE "notes" (
@@ -121,35 +134,98 @@ CREATE TABLE "paragraphs" (
 );
 ```
 
-The migration also sets up RLS policies so users can only access their own notes (and shared notes).
+The RLS policies let each signed-in user read and write their own notes and paragraphs, and read shared notes and their paragraphs.
 
-### Configure Logical Replication, User and Publication
+### Create a PowerSync Database User
 
-PowerSync uses logical replication to sync data from your Neon database.
+Run the following SQL in the Neon Console under **Postgres database** > **SQL Editor**, or with `psql "$(neon connection-string --project-id <project-id>)"`. The role needs `BYPASSRLS` so that PowerSync can replicate every row of the RLS-protected demo tables. Your Sync Streams then decide which rows each user receives.
 
-<NeonDatabaseSetup />
+<PostgresPowerSyncUser />
 
-## Configuring PowerSync
+### Create the Postgres Publication
+
+Run the following SQL in the SQL Editor or with `psql`:
+
+<PostgresPowerSyncPublication />
+
+## Configure PowerSync
 
 ### Create a PowerSync Cloud Instance
 
-<CreateCloudInstance />
+<Tabs>
+  <Tab title="Web UI">
+    <CreateCloudInstance />
+  </Tab>
+  <Tab title="CLI">
+    Run these commands in the demo directory.
 
-### Connect PowerSync to Your Neon Database
+    <CreateCloudInstanceCli />
+  </Tab>
+</Tabs>
 
-<NeonConnection />
+### Connect PowerSync to Neon
+
+<Tabs>
+  <Tab title="Web UI">
+    <NeonConnection />
+  </Tab>
+  <Tab title="CLI">
+    Add the connection to `powersync/service.yaml`. Use the host from `neon connection-string --project-id <project-id>`, with `powersync_role` as the user:
+
+    ```yaml
+    replication:
+      connections:
+        - type: postgresql
+          uri: postgresql://powersync_role@ep-cool-darkness-123456.c-2.us-east-2.aws.neon.tech/neondb
+          password:
+            secret: !env POWERSYNC_DATABASE_PASSWORD
+    ```
+  </Tab>
+</Tabs>
+
+### Configure Neon Auth
+
+The demo app sends PowerSync the JWT that Neon Auth issues for the signed-in user. To verify these JWTs, PowerSync needs two values from Neon:
+
+- **JWKS URL:** The public keys that Neon Auth publishes as a JSON Web Key Set (JWKS), for example `https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech/neondb/auth/.well-known/jwks.json`.
+- **JWT audience:** The origin of your Neon **Auth URL**, which is the URL without the path and without a trailing `/`, for example `https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech`. PowerSync rejects a token if its `aud` value doesn't match exactly.
+
+You also enable development tokens, which you use to [test your Sync Streams](#test-your-sync-streams-optional) at the end of this guide.
+
+<Tabs>
+  <Tab title="Web UI">
+    Find the **Auth URL** and **JWKS URL** in the Neon Console under **Settings** > **Better Auth**. Then, in the PowerSync Dashboard, go to the **Client Auth** view and set the following fields:
+
+    - **Development tokens:** Enable this setting.
+    - **JWKS URI:** Enter the **JWKS URL** from Neon.
+    - **JWT Audience:** Enter the origin of the **Auth URL** from Neon.
+
+    Then click **Save and Deploy**.
+  </Tab>
+  <Tab title="CLI">
+    `neon neon-auth status --project-id <project-id>` prints the Auth URL as `base_url` and the JWKS URL as `jwks_url`. Add a `client_auth` section to `powersync/service.yaml`:
+
+    ```yaml
+    client_auth:
+      jwks_uri: https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech/neondb/auth/.well-known/jwks.json
+      additional_audiences:
+        - https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech
+      allow_temporary_tokens: true
+    ```
+
+    You deploy this configuration together with your Sync Config in the next step.
+  </Tab>
+</Tabs>
 
 ### Configure Sync Streams
 
-[Sync Streams](/sync/streams/overview) allow developers to control which data gets synced to which user devices using a SQL-like syntax in a YAML file. For the demo app, we're going to specify that each user can only see their own notes (plus any shared notes).
+[Sync Streams](/sync/streams/overview) define which data syncs to which users' devices. In the demo app, each user syncs their own notes and paragraphs, plus all shared notes and their paragraphs.
 
-1. In the PowerSync Dashboard, select your project and instance and go to the **Sync Streams** view.
-2. Edit the Sync Config in the editor and replace the contents with the below:
+Use the following Sync Config:
 
 ```yaml
 config:
   edition: 3
-
 streams:
   user_notes:
     auto_subscribe: true
@@ -169,36 +245,43 @@ streams:
           WHERE notes.shared = TRUE
 ```
 
-3. Click **"Validate"** and ensure there are no errors. This validates your Sync Config against your Postgres database.
-4. Click **"Deploy"** to deploy your Sync Config.
+<Tabs>
+  <Tab title="Web UI">
+    1. In the PowerSync Dashboard, go to the **Sync Streams** view.
+    2. Replace the contents of the editor with the Sync Config above.
+    3. Click **Validate** and fix any errors.
+    4. Click **Deploy**.
+  </Tab>
+  <Tab title="CLI">
+    Replace the contents of `powersync/sync-config.yaml` with the Sync Config above. Then deploy the full configuration, which includes the database connection, client auth, and Sync Config:
 
-<Tip>
-  - For additional information on PowerSync's Sync Streams, refer to the [Sync Streams](/sync/streams/overview) documentation.
-</Tip>
+    ```bash
+    export POWERSYNC_DATABASE_PASSWORD=<powersync_role password>
+    powersync deploy
+    ```
+  </Tab>
+</Tabs>
 
-## Test Everything (Using Our Demo App)
-
-In this step you'll test your setup using the 'Notes' demo app. This is a modified version of Neon's demo app.
+## Run the Demo App
 
 ### Configure Environment Variables
 
-In the demo project directory (`powersync-js/demos/react-neon-notes-tanstack`), update your `.env` file with the following:
+Add the following variables to the `.env` file in the demo directory:
 
 ```env
-# Neon Data API URL
-# Find this in Neon Console → Data API page → "API URL"
-VITE_NEON_DATA_API_URL=https://your-project-id.data-api.neon.tech
+# Neon Console > Postgres database > Data API > API URL
+VITE_NEON_DATA_API_URL=https://ep-cool-darkness-123456.apirest.c-2.us-east-2.aws.neon.tech/neondb/rest/v1
 
-# Neon Auth Base URL
-# Find this in Neon Console → Auth page → "Auth URL"
-VITE_NEON_AUTH_URL=https://your-project-id.auth.neon.tech
+# Neon Console > Settings > Better Auth > Auth URL
+VITE_NEON_AUTH_URL=https://ep-cool-darkness-123456.neonauth.c-2.us-east-2.aws.neon.tech/neondb/auth
 
-# PowerSync instance URL
-# Find this in PowerSync Dashboard → Connect button
-VITE_POWERSYNC_URL=https://your-instance.powersync.journeyapps.com
+# PowerSync Dashboard > Connect > instance URL
+VITE_POWERSYNC_URL=https://your-instance-id.powersync.journeyapps.com
 ```
 
-### Run the App
+If you use the CLI, `neon data-api get --project-id <project-id> --database neondb` prints the Data API URL, and `neon neon-auth status --project-id <project-id>` prints the Auth URL as `base_url`. Your PowerSync instance URL is `https://<instance-id>.powersync.journeyapps.com`, where `<instance-id>` is the `instance_id` value in `powersync/cli.yaml`.
+
+### Start the App
 
 Start the development server:
 
@@ -206,26 +289,33 @@ Start the development server:
 pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+Open [http://localhost:5173](http://localhost:5173) and sign up. Neon Auth accepts requests from `localhost` while **Allow Localhost** is on, which is the default. If you deploy the app, add its domain in the Neon Console under **Settings** > **Better Auth** > **Domains**.
 
-Once signed in to the demo app, you should see a blank list of notes, so go ahead and create a new note. Try disabling wifi on your device to test out the offline capabilities. Once back online, you should see the data automatically sync.
+The notes list is empty at first. Create a note, then disconnect your device from the network (for example, turn off Wi-Fi) and edit the note. When you reconnect, the SDK uploads the queued changes, and they appear in the `notes` and `paragraphs` tables in Neon.
 
-<Frame>
-  <img
-    src="/images/integration-guides/neon/demo-app.png"
-  />
+<Frame caption="The demo app after creating two notes">
+  ![Demo app showing a list of two notes for the signed-in user](/images/integration-guides/neon/demo-app.png)
 </Frame>
 
-### Test Sync (Optional)
+<Note>
+  If a note disappears shortly after you create it, the Data API rejected the upload with a permission error (`42501`), and the demo app discarded the change. To grant access to the demo tables, run `GRANT SELECT, INSERT, UPDATE, DELETE ON notes, paragraphs TO authenticated;` in the SQL Editor.
+</Note>
 
-During development, you can use the **Sync Test** feature in the PowerSync Dashboard to validate your Sync Streams:
+### Test Your Sync Streams (Optional)
 
-1. Click on **"Sync Test"** in the PowerSync Dashboard.
-2. Enter the UUID of a user in your Neon Auth database to generate a test JWT.
-3. Click **"Launch Sync Diagnostics Client"** to test the Sync Streams.
+To see which data syncs to a specific user, generate a development token for a user who signed up in the demo app, and open it in the [Sync Diagnostics Client](/tools/diagnostics-client). Use the user's ID as the token subject. This ID is the `owner_id` value of the user's notes.
 
-For more information, explore the [PowerSync docs](/) or join us on [our community Discord](https://discord.gg/powersync) where our team is always available to answer questions.
+<Tabs>
+  <Tab title="Web UI">
+    In the PowerSync Dashboard, go to the **Sync Test** view. Enter the user ID as the token subject, then click **Generate token** and **Launch Sync Diagnostics Client**.
+  </Tab>
+  <Tab title="CLI">
+    In the demo directory, run the following command and paste the token into the [Sync Diagnostics Client](https://diagnostics-app.powersync.com):
 
-<Warning>
-  After deployment, update your Neon Auth settings to allow your Vercel domain. Go to Neon Console → Auth page and add your Vercel URL (e.g., `https://your-project.vercel.app`) to the allowed origins.
-</Warning>
+    ```bash
+    powersync generate token --subject=<user-id>
+    ```
+  </Tab>
+</Tabs>
+
+If you run into problems, ask us on [Discord](https://discord.gg/powersync).

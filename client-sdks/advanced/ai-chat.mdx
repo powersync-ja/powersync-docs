@@ -1,0 +1,111 @@
+---
+title: "AI Chat"
+description: "Build an AI chat feature using PowerSync, with chats stored as synced rows and replies streamed to clients while the model generates them."
+sidebarTitle: "AI Chat"
+keywords:
+  - "ai"
+  - "llm"
+  - "chat"
+  - "chatbot"
+  - "streaming"
+  - "server-sent events"
+  - "sse"
+---
+
+This guide shows you how to build an AI chat feature using PowerSync. Chats and messages are synced rows. Your backend calls the model and writes the reply into the database, and PowerSync syncs it to the client like any other data. That gives you offline chat history and the same chat on every device.
+
+Showing a reply while the model is still generating it is a separate step. The second half of this guide covers two ways to do that, which we have built and tested: streaming through the database, and streaming over a direct connection from your backend.
+
+## Store Chats as Synced Data
+
+Only your backend calls the model. The part of your backend that does this can be the API itself, a separate process, or a background job, as long as it can write to your source database. The client never calls the model, so your model API keys stay on your backend.
+
+Because the client reads and writes only to its local database:
+
+- A chat opens without a network request.
+- A reply in progress survives a page refresh, and shows in every tab and device where the chat is open.
+- A message sent offline waits in the [upload queue](/client-sdks/writing-data#write-operations-and-upload-queue) until the client reconnects.
+- If a Sync Stream shares a chat between users, they all see new messages and replies as they arrive.
+
+### Define the Tables
+
+Create a `chats` table and a `messages` table. Give assistant messages a `status` column so that the client can show whether a reply is pending, being generated, done, stopped, or failed. If generation fails, store the error message on the row as well.
+
+### Sync the Chats
+
+Define two [Sync Streams](/sync/streams/overview). The `chats` stream syncs the user's chats, and the client subscribes to `chat_messages` for the chat that is open:
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  chats:
+    auto_subscribe: true
+    query: SELECT * FROM chats WHERE user_id = auth.user_id()
+
+  chat_messages:
+    query: |
+      SELECT * FROM messages
+      WHERE chat_id = subscription.parameter('chat_id')
+        AND user_id = auth.user_id()
+```
+
+See [Client-Side Usage](/sync/streams/client-usage) for how to subscribe in each SDK.
+
+### Generate Replies on Your Backend
+
+1. When the user sends a message, the client writes two rows in one local transaction: the user's message, and an empty assistant message with a pending status. The UI shows the pending reply right away, even offline.
+2. The client SDK uploads both rows to your backend through `uploadData()` in your [backend connector](/configuration/app-backend/client-side-integration).
+3. The backend claims the pending reply with a conditional update, so that only one backend instance works on it.
+4. The backend sends the chat history to the model.
+5. When the model finishes, the backend saves the full text and marks the reply as done.
+
+If you stop here, the client receives the reply when the write from step 5 syncs.
+
+## Stream Replies While the Model Generates Them
+
+With the steps above, the client receives no reply text until the reply is complete. To show it sooner, the backend has to send partial text to the client during step 4. There are several ways to do this. These are the two that we have built and tested, and the demo at the end implements both.
+
+### Stream Through the Database
+
+The backend writes the text it has so far into the reply's row at a fixed interval, for example every 100 ms. PowerSync syncs each update, and a [watch query](/client-sdks/watch-queries) on the client re-renders the message. The interval keeps the write rate steady no matter how fast the model produces tokens.
+
+```mermaid
+flowchart LR
+  model["Model"] -->|tokens| backend["Backend"]
+  backend -->|"text so far,<br/>every 100 ms"| db[("Source<br/>database")]
+  db --> service["PowerSync<br/>Service"]
+  service -->|"syncs each write"| client["Client"]
+```
+
+This is the simpler option. A client that opens the chat mid-reply catches up through normal sync.
+
+The cost is writes. Every update syncs the whole row, so a long reply sends its earlier text again with each write, to every client subscribed to the chat.
+
+### Stream Over a Separate Connection
+
+The backend keeps the reply in memory and sends the text to clients over a separate connection, for example Server-Sent Events (SSE). It writes the row once, when the reply is finished.
+
+```mermaid
+flowchart LR
+  model["Model"] -->|tokens| backend["Backend"]
+  backend -->|"SSE: text so far,<br/>then new text"| client["Client"]
+  backend -.->|"finished reply,<br/>once"| db[("Source<br/>database")]
+  db -.-> service["PowerSync<br/>Service"]
+  service -.->|"syncs the<br/>finished reply"| client
+```
+
+When a reply is being generated, open a connection to the backend and show the text as it arrives. If the connection drops, open it again. When the finished reply syncs through PowerSync, show the row and close the connection.
+
+Each reply is written once to your database. On the other hand, you have to build and secure the streaming endpoint yourself, and the partial text only exists in the backend's memory, so a restart means the reply starts over. If you run more than one backend instance, each client also has to connect to the instance that is generating its reply. Cloudflare Durable Objects and similar services solve that.
+
+### Smooth the Text on the Client
+
+With either option, text arrives in steps, and some models send it in large chunks. If the UI renders each step as it arrives, the reply jumps and pauses. Keep the received text separate from the displayed text, and reveal the difference a few characters per animation frame, at a speed based on how often text arrives. Show existing messages without animation. The backend can also pace the text before sending it, at the cost of a later finish and, through the database, more writes.
+
+## Run the Demo
+
+The [AI chat demo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-ai-chat) implements both options in a React app with Postgres. Its Node.js backend applies uploads and calls the model with the [Vercel AI SDK](https://ai-sdk.dev).
+
+To build a backend API for your own app, see [App Backend Setup](/configuration/app-backend/setup).

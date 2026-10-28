@@ -134,8 +134,8 @@ The table types differ in two ways: who creates and migrates the table, and whet
 | Schema changes | Near-instant | Take longer as the table grows | Migrations you write |
 
 - **Managed views:** Use these by default: schema changes are near-instant, because PowerSync only re-creates the views. Queries that read many rows of a large table can be slower than on a managed table.
-- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table that you filter, sort or aggregate on columns without an index. You set this per table, so the other tables can stay managed views. Schema changes on a managed table take longer as the table grows.
-- **Raw tables:** Use [raw tables](/client-sdks/advanced/raw-tables) when you want full control over the SQLite table, for example to add foreign keys, custom triggers or expression indexes, or to use a library such as [Room](/client-sdks/orms/kotlin/room) that manages the schema. You then create and migrate the table yourself.
+- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table that you filter, sort or aggregate on columns without an index. You set this per table, so the other tables can stay managed views. The trade-off is that schema changes on a managed table take longer as the table grows.
+- **Raw tables:** Use [raw tables](/client-sdks/advanced/raw-tables) when you want full control over the SQLite table, for example to add foreign keys, custom triggers or expression indexes, or to use a library such as [Room](/client-sdks/orms/kotlin/room) that manages the schema. The trade-off is that you have to create and migrate the table yourself.
 
 ### Enabling Managed Tables
 
@@ -180,7 +180,7 @@ schema
 
 Before you switch a table, check how managed tables differ from managed views:
 
-- **Column types:** Managed views cast each value to the column type in your schema. Managed tables store values with the type they were synced or written with, so a value synced as text into an `integer` column stays text. Filters and sorting on that column can then return different results than on a managed view.
+- **Column types:** Managed views cast each value to the column type in your schema, both when the view reads from the JSON and when its triggers write to it. Managed tables have no view or casting triggers, so they store values with the type they were synced or written with, so a value synced as text into an `integer` column stays text. Filters and sorting on that column can then return different results than on a managed view.
 - **View names:** Managed tables aren't views, so you can't set the `viewName` option. If you use `viewName` to [move data from a local-only table to a synced table](/client-sdks/advanced/local-only-usage#moving-data-to-synced-tables), keep that table as a managed view.
 - **High Performance Diffs:** In the JavaScript SDKs, [High Performance Diffs](/client-sdks/high-performance-diffs) don't support managed tables yet. Keep tables that you watch with High Performance Diffs as managed views.
 
@@ -190,4 +190,4 @@ To switch a table between a managed view and a managed table, change the `direct
 
 When you add or remove columns, PowerSync runs the `ALTER TABLE` statements for you. These changes process every row in the table, whereas a managed view only needs its view re-created. In our tests on a table with 1 million rows, switching between a managed view and a managed table took a few seconds. Adding or dropping a column took up to about a second. On a managed view, both are near-instant.
 
-A new column on a managed table is `NULL` until the next completed sync. On a device that is offline after an app update, the column stays `NULL` until the device reconnects. After the sync, PowerSync fills the column from synced data that is already on the device, so nothing downloads again. This copy adds to the time that adding a column takes.
+If an app update adds an already-synced column to your client schema, a managed view shows its values immediately, even offline. A managed table shows `NULL` in that column until the next completed sync, so offline devices see `NULL` until they reconnect. New columns are usually already synced, because the recommended order for [additive schema changes](/maintenance-ops/deploying-schema-changes) publishes the app last. After the sync, PowerSync fills the column from synced data that is already on the device, so nothing downloads again. This copy adds to the time that adding a column takes.

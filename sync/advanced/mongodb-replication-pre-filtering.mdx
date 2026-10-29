@@ -8,8 +8,6 @@ description: "Exclude MongoDB documents before the PowerSync Service stores and 
   **Availability**: MongoDB replication pre-filtering is available for customers on our [Team and Enterprise](https://www.powersync.com/pricing) plans. Self-hosted deployments require the [Enterprise Self-Hosted Edition](/intro/self-hosting#enterprise-self-hosted-edition).
 </Note>
 
-{/* TODO: Confirm release status and minimum PowerSync Service version before publishing. */}
-
 Replication pre-filtering limits which MongoDB documents enter PowerSync bucket storage. Use it when your instance needs only a subset of a collection, such as active records or records for a fixed set of stores. With suitable source indexes, pre-filtering reduces initial snapshot work and storage for excluded documents.
 
 Define filters in your Sync Config under `config.source_table_options`. The Service applies them during the initial snapshot and ongoing change-stream replication, before evaluating Sync Streams queries. A filter applies to the whole instance, independently of which client connects.
@@ -20,6 +18,7 @@ Define filters in your Sync Config under `config.source_table_options`. The Serv
 
 ## Prerequisites
 
+- PowerSync Service 1.28.0 or later.
 - Sync Config edition 3 (`config.edition: 3`).
 - MongoDB 6.0 or later. Azure DocumentDB is not supported for pre-filtering.
 - [Post Images](/configuration/source-db/setup#post-images) set to **Auto-Configure** (`post_images: auto_configure`) or **Read-only** (`post_images: read_only`). Pre-filtering does not support `post_images: off`.
@@ -67,9 +66,11 @@ This example replicates only todos with an explicit `archived: false` field. Eac
 
     If validation reports an inefficient snapshot index, create the recommended index before deployment. Index warnings are advisory and do not block deployment.
 
+    An active `mongodb_filter_expression` on a non-MongoDB source, such as Postgres, fails Sync Config validation and blocks deployment.
+
     Unsupported source settings, such as `post_images: off`, block deployment. Parsing a valid filter does not establish that your instance can execute it. The Open Edition parses filter expressions but rejects their deployment.
 
-    If your plan or Service edition no longer supports pre-filtering, replication stops for a saved Sync Config that contains filters. Restore support, or remove the filters and deploy a new Sync Config. The Service does not silently ignore filters after a downgrade.
+    If your plan or Service edition no longer supports pre-filtering, replication stops for a saved Sync Config that contains filters. A missing filtering module causes replication error `PSYNC_S1348`. Restore support, or remove the filters and deploy a new Sync Config. The Service does not silently ignore filters after a downgrade.
   </Step>
 </Steps>
 
@@ -183,6 +184,12 @@ For an empty collection, validation checks the available index definitions. This
 An index on only the filtered field can require MongoDB to read and sort all matching documents for every snapshot page. Including `_id` avoids that repeated work. MongoDB may still choose an `_id` index scan when a filter matches a large fraction of the collection.
 
 For index options, see MongoDB's [`createIndex()` reference](https://www.mongodb.com/docs/manual/reference/method/db.collection.createIndex/).
+
+## Snapshot Progress
+
+For a filtered collection, the snapshot total counts only documents that match the pre-filter. The Service first tries to count matching documents within a timeout. If that count fails or times out, the Service estimates the total by sampling the collection. If sampling also fails, no total is available.
+
+The total can therefore be approximate or unavailable while the snapshot continues. An unavailable total does not indicate that replication has stopped.
 
 ## Changes to Filtered Documents
 

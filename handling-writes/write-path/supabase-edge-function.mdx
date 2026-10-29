@@ -117,9 +117,9 @@ The function runs each write as the signed-in user. Inside each transaction, it 
 
 | Failure | Outcome |
 | --- | --- |
-| An RLS policy or missing grant denies a write | [Retryable error](/handling-writes/write-path/concepts#retryable-errors) for the whole transaction. The connector keeps it and the SDK retries it, so no write is lost. Until you fix the policy, grant, or data, it holds back every later write from that user. |
+| An RLS policy or missing grant denies a write | [Blocked transaction](/handling-writes/write-path/concepts#blocked-transactions). The function reports the denial as a retryable error, so the connector keeps the transaction and the SDK retries it. No write is lost, but until you fix the policy, grant, or data, it holds back every later write from that user. To change this, edit `permissionErrorsRetryable` in `rls.ts`. |
 | `authorize()` in `authorizer.ts` returns `false` | [Rejected write](/handling-writes/write-path/concepts#rejected-writes). The connector removes the transaction from the queue, and the function passes it to the dead-letter hook. To keep these transactions in the queue instead, change `requiresClientHandling` in `fatal-error-handler.ts`. |
-| Constraint violation, invalid data, or another permanent error | [Rejected write](/handling-writes/write-path/concepts#rejected-writes). The connector removes the transaction from the queue, and the function passes it to the dead-letter hook in `fatal-error-handler.ts`, which only logs it by default. |
+| Constraint violation, invalid data, another permanent error, or any database error the function doesn't recognize | [Rejected write](/handling-writes/write-path/concepts#rejected-writes). The connector removes the transaction from the queue, and the function passes it to the dead-letter hook in `fatal-error-handler.ts`, which only logs it by default, so the user's change is lost. |
 | Temporary error, such as a lost connection | Retryable error. |
 
 A policy can also hide a row from the user. A `PATCH` or `DELETE` on a hidden row succeeds without changing anything. The app's local change reverts after the next sync.
@@ -136,6 +136,10 @@ Edit these files in `backend/supabase/functions/powersync-write/`, then deploy a
 | `authorizer.ts` | Add checks that RLS can't express, such as rejecting a transaction based on the tables it touches. RLS still applies to every write it allows. |
 | `fatal-error-handler.ts` | Choose which permanent failures become blocked transactions, and store rejected writes. The function waits for the dead-letter hook before it responds, so a slow hook delays uploads. In the app, the connector's `onFatalTransaction()` keeps blocked transactions by default. |
 | `config.ts` | Change the batch failure policy, the connection pool size, and the statement timeout. |
+
+## Before Production
+
+Before you deploy the function for real users, review the [production checklist](/handling-writes/write-path/reference-write-implementation#before-production). It covers authorization, demo authentication, and how failed writes are recovered.
 
 ## Related Pages
 

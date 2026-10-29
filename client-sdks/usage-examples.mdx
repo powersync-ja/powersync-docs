@@ -40,7 +40,7 @@ These examples delete a list and its todos together, so the app never keeps todo
     - [`writeTransaction()` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#writetransaction)
     - [`readTransaction()` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#readtransaction)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `writeTransaction()` runs your callback inside a transaction. PowerSync saves the changes when the callback finishes, and rolls them back if the callback throws an error.
 
     ```js
@@ -211,7 +211,7 @@ A watch query runs a SQL query again whenever the tables it reads from change, a
     - [Live Queries / Watch Queries](/client-sdks/watch-queries), including incremental and differential results
     - [`watch()` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#watch)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `watch()` gives you new results each time the query's tables change. You can read the results with an async iterator (`for await`), or receive them in an `onResult` callback.
 
     <Tabs>
@@ -328,7 +328,7 @@ The insert examples use `uuid()`, a SQL function that PowerSync provides, to gen
     - [Writing Data](/client-sdks/writing-data)
     - [`execute()` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#execute)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `execute()` runs a SQL statement. The `?` placeholders take their values from the parameter array. This React Native button inserts a new customer when pressed.
 
     ```jsx
@@ -495,7 +495,7 @@ To generate a complete backend connector for your SDK, open your instance in the
     - [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors)
     - [JavaScript Web SDK: Integrate with Your Backend](/client-sdks/reference/javascript-web#3-integrate-with-your-backend)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `getNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `complete()` only after your backend has accepted the changes.
 
     ```js
@@ -634,7 +634,7 @@ To generate a complete backend connector for your SDK, open your instance in the
     ```rust
     use futures_lite::StreamExt;
     
-    // Inside your BackendConnector implementation
+    // Inside your MutationUploader implementation
     async fn upload_data(&self) -> Result<(), PowerSyncError> {
         let mut transactions = self.db.crud_transactions();
         while let Some(transaction) = transactions.try_next().await? {
@@ -649,7 +649,7 @@ To generate a complete backend connector for your SDK, open your instance in the
 
     - [Writing Client Changes](/handling-writes/writing-client-changes)
     - [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors)
-    - [Rust SDK: Integrate with Your Backend](/client-sdks/reference/rust#3-integrate-with-your-backend)
+    - [Rust SDK: Upload Local Mutations](/client-sdks/reference/rust#4-upload-local-mutations)
   </Tab>
 </Tabs>
 
@@ -677,7 +677,7 @@ The sync status tells you whether the app is connected to the PowerSync Service,
     - [React Hooks](/client-sdks/frameworks/react)
     - [Sync Stream status](/sync/streams/client-usage#checking-sync-status)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `useStatus()` returns the current sync status and re-renders the component when it changes. Read `connected` to show the connection state.
 
     ```jsx
@@ -898,7 +898,7 @@ If the first sync completed in an earlier app session, `hasSynced` is already `t
     - [`waitForFirstSync()` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/CommonPowerSyncDatabase#waitforfirstsync)
     - [Prioritized Sync](/sync/streams/prioritized-sync)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `hasSynced` is `true` once the first full sync has completed. `useStatus()` updates the component when that happens. To wait in code instead, call `await db.waitForFirstSync()`.
 
     ```jsx
@@ -1097,7 +1097,7 @@ Checkpoint requests are in alpha. They require PowerSync Service v1.24.0 or late
     - [Handling Wait Failures](/client-sdks/checkpoint-requests#handling-wait-failures)
     - [React demo app](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/app/views/layout.tsx)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `requestCheckpoint()` asks the PowerSync Service for a checkpoint. `waitForSync()` resolves once the local database has synced that checkpoint. `RefreshControl` shows the pull-to-refresh indicator until the wait finishes.
 
     ```tsx
@@ -1336,7 +1336,7 @@ Several of these examples accept an optional priority. With a priority, they sho
     - [`SyncStatus` API reference](https://powersync-ja.github.io/powersync-js/common/interfaces/SyncStatus)
     - [React demo component](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-supabase-todolist/src/components/widgets/GuardBySync.tsx)
   </Tab>
-  <Tab title="React Native & Expo">
+  <Tab title={"React Native & Expo"}>
     `useStatus()` returns the current sync status and re-renders the component when it changes. `downloadProgress.downloadedFraction` is a value from 0.0 to 1.0. This example uses `LinearProgress` from React Native Elements, which expects a value in that range.
 
     ```tsx
@@ -1637,3 +1637,197 @@ Several of these examples accept an optional priority. With a priority, they sho
     - [Sync Streams client usage](/sync/streams/client-usage)
   </Tab>
 </Tabs>
+
+## Connect for Downloads or Uploads only
+
+When calling `connect()`, you can either:
+
+1. Pass a `PowerSyncBackendConnector` instance, which is responsible for both authenticating and uploads.
+2. Implement the authenticating and uploading parts independently, which also allows connecting for downloads or uploads only.
+
+For this, use the `Authenticator` and `MutationUploader` types.
+
+<Tabs>
+  <Tab title="JavaScript">
+    You can implement `Authenticator` and an upload callback independently.
+
+    ```TypeScript
+    import {
+      Authenticator,
+      CommonPowerSyncDatabase,
+      ResolveCredentialsOptions,
+      UploadMutationsOptions
+    } from '@powersync/common';
+    
+    class MyAuthenticator implements Authenticator {
+      #cachedToken: string | null = null;
+    
+      async resolveCredentials(options: ResolveCredentialsOptions): Promise<string> {
+        if (this.#cachedToken) {
+          return this.#cachedToken;
+        }
+    
+        // TODO: Fetch token from your backend or re-use a token stored in your app's state.
+        const response = await fetch('https://example.org/token');
+        return (this.#cachedToken = await response.text());
+      }
+    
+      invalidateCredentials(): void {
+        this.#cachedToken = null;
+      }
+    }
+    
+    async function uploadData({ database }: UploadMutationsOptions) {
+      for await (const tx of database.getCrudTransactions()) {
+        // TODO: Upload transaction to your backend
+        tx.complete();
+      }
+    }
+    ```
+
+    This then allows:
+
+    - Connecting for downloads only: `await db.connect({powerSyncEndpoint: endpoint, authenticator: new MyAuthenticator()})`, where `endpoint` is the PowerSync service to connect to (e.g. `https://<instance id>.powersync.journeyapps.com`)
+    - Connecting for uploads only: `await db.connect({ upload: uploadData })`. As this only involves your backend, no PowerSync service endpoint or authenticator is required.
+    - Connecting for both downloads and uploads: `db.connect({ powerSyncEndpoint: '', authenticator: new MyAuthenticator(), upload: uploadData })`. This roughly matches a call to `connect()` with a `PowerSyncBackendConnector`, but allows implementing authentication and uploads independently.
+  </Tab>
+  <Tab title="Dart/Flutter">
+    You can implement `Authenticator` and the upload callback independently:
+
+    ```Dart
+    import 'package:http/http.dart';
+    import 'package:powersync/powersync.dart';
+    
+    class MyAuthenticator implements Authenticator {
+      String? _cachedToken;
+    
+      @override
+      Future<String> resolveCredentials(Future<void> abortSignal) async {
+        if (_cachedToken case final cached?) {
+          return cached;
+        }
+    
+        // TODO: Fetch token from your backend or re-use a token stored in your app's state.
+        final response = await get(.parse('https://example.org/token'));
+        return _cachedToken = response.body;
+      }
+    
+      @override
+      void invalidateCredentials() {
+        _cachedToken = null;
+      }
+    }
+    
+    Future<void> uploadData(PowerSyncDatabase db) async {
+      await for (final tx in db.getCrudTransactions()) {
+        // TODO: Upload transaction to your backend
+        await tx.complete();
+      }
+    }
+    ```
+
+    This then allows:
+
+    - Connecting for downloads only: `await db.connect(connector: .downloadOnly(endpoint: endpoint, authenticator: MyAuthenticator()))`, where `endpoint` is the PowerSync service to connect to (e.g. `https://<instance id>.powersync.journeyapps.com`)
+    - Connecting for uploads only: `db.connect(connector: .uploadOnly(MutationUploader(uploadData)))`. As this only involves your backend, no PowerSync service endpoint or authenticator is required.
+    - Connecting for both downloads and uploads: `db.connect(connector: .new(endpoint: endpoint, authenticator: MyAuthenticator(), uploader: MutationUploader(uploadData)))`. This roughly matches a call to `connect()` with a `PowerSyncBackendConnector`, but allows implementing authentication and uploads independently.
+  </Tab>
+  <Tab title="Kotlin">
+    You can implement `Authenticator` and an upload callback independently.
+
+    ```Kotlin
+    import com.powersync.PowerSyncDatabase
+    import com.powersync.connectors.Authenticator
+    
+    class MyAuthenticator: Authenticator {
+        private var cachedToken: String? = null
+    
+        override suspend fun resolveCredentials(): String {
+            cachedToken?.let { return it }
+    
+            val token: String = TODO("Fetch a token from your backend or re-use a token stored in your app's state.")
+            cachedToken = token
+            return token
+        }
+    
+        override fun invalidateCredentials() {
+            cachedToken = null
+        }
+    }
+    
+    suspend fun uploadData(db: PowerSyncDatabase) {
+        db.getCrudTransactions().collect { tx ->
+            // TODO: Upload transaction to your backend
+            tx.complete(null)
+        }
+    }
+    ```
+
+    Next, use `connect` overloads to connect in download or upload-only mode:
+
+    - `db.connect(endpoint, authenticator = MyAuthenticator())` to connect in download-only mode. Pass the endpoint of the PowerSync service to connect to. You don't need to provide the upload callback for this.
+    - `db.connect(uploader = ::uploadData)` to connect in upload-only mode. This doesn't need a PowerSync service endpoint or authenticator.
+    - `db.connect(endpoint, authenticator = MyAuthenticator(), uploader = ::uploadData)` to connect both for downloads and uploads. This roughly matches what the SDK does when a `PowerSyncBackendConnector` is passed, except that it allows you to implement the authenticator and uploader independently.
+  </Tab>
+  <Tab title="Swift">
+    You can implement `Authenticator` and an upload callback independently.
+
+    ```swift
+    actor MyAuthenticator: PowerSync.Authenticator {
+        private var cachedToken: String?
+        
+        func resolveCredentials() async throws -> String {
+            if let cachedToken {
+                return cachedToken
+            }
+    
+            // TODO: Fetch token from your backend or re-use a token stored in your app's state.
+            let (data, _) = try await URLSession.shared.data(from: URL(string: "https://example.org/token")!)
+            let token = String(data: data, encoding: .utf8)!
+            cachedToken = token
+            return token
+        }
+        
+        func invalidateCredentials() async {
+            cachedToken = nil
+        }
+    }
+    
+    func uploadData(db: PowerSyncDatabaseProtocol) async throws {
+        for try await transaction in db.getCrudTransactions() {
+            // TODO: Upload transaction to your backend
+            try await transaction.complete()
+        }
+    }
+    ```
+
+    Next, use
+
+    - `PowerSyncDatabaseProtocol.connect(endpoint:authenticator:options:)` to connect in download-only mode. Pass the endpoint of the PowerSync service to connect to. You don't need to provide the upload callback for this.
+    - `PowerSyncDatabaseProtocol.connect(mutationUploader:options:)` to connect in upload-only mode. This doesn't need a PowerSync service endpoint or authenticator.
+    - `PowerSyncDatabaseProtocol.connect(endpoint:authenticator:mutationUploader:options)` to connect both for downloads and uploads. This roughly matches what the SDK does when a `PowerSyncBackendConnector` is passed, except that it allows you to implement the authenticator and uploader independently.
+
+    **Learn more:**
+
+    - [`SyncStatusData` API reference](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncstatusdata/)
+    - [`SyncDownloadProgress` API reference](https://powersync-ja.github.io/powersync-swift/documentation/powersync/syncdownloadprogress/)
+    - [Swift demo component](https://github.com/powersync-ja/powersync-swift/blob/main/Demos/PowerSyncExample/PowerSyncExample/Components/ListView.swift)
+  </Tab>
+  <Tab title=".NET">
+    Connecting in download or upload-only mode is not yet available for the .NET SDK.
+  </Tab>
+  <Tab title="Rust">
+    On the Rust SDK, the option of passing a `PowerSyncBackendConnector` is no longer available. Implementing `Authenticator` and `MutationUploader` is the only option.
+
+    **Learn more:**
+
+    - [Stream Changes from PowerSync](/client-sdks/reference/rust#3-stream-changes-from-powersync)
+    - [Upload Local Mutations](/client-sdks/reference/rust#4-upload-local-mutations)
+  </Tab>
+</Tabs>
+
+<Warning>
+  When switching from `PowerSyncBackendConnector` to `Authenticator`, note that the PowerSync SDK does not cache tokens from an `Authenticator`. This gives you more control over when exactly a new token should be fetched (and makes it easier to re-use a backend token your app might already have), but also means that `resolveCredentials` should not fetch a fresh token every time its called.
+</Warning>
+
+On the web, note that all tabs must agree on the connection mode. For example, it's not allowed to have one tab connect in download-only mode while another tab connects for uploads.

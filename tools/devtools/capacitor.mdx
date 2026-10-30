@@ -1,0 +1,95 @@
+---
+title: "PowerSync DevTools for Capacitor"
+description: "Inspect the PowerSync client of a Capacitor app on an iOS simulator or Android emulator with the Vite DevTools plugin."
+sidebarTitle: "Capacitor"
+---
+
+A Capacitor app runs in a WebView. With live reload, the WebView loads your app from the Vite dev server on your computer. Thus, the [Vite DevTools plugin](/tools/devtools/vite) can read the database of the app on the simulator or emulator.
+
+A release build loads the app from bundled files, not from the dev server. Thus, DevTools is not available in a release build.
+
+## Requirements
+
+{/* TODO: Confirm that @powersync/capacitor 0.9.5 is released with the emitDiagnostics override and sdkName (changesets quiet-owls-wave, brave-lamps-glow) before publishing. */}
+
+- `@powersync/capacitor` 0.9.5 or later.
+- Vite 7 or later. The Vite dev server must serve your app.
+
+## Set Up DevTools
+
+<Steps>
+  <Step title="Install the packages">
+    ```bash
+    npm install -D @powersync/diagnostics @vitejs/devtools
+    ```
+  </Step>
+  <Step title="Add the plugin">
+    In `vite.config.ts`, enable Vite DevTools, add the PowerSync plugin, and set `server.host`:
+
+    ```typescript
+    import { defineConfig } from 'vite';
+    import powersyncDevtools from '@powersync/diagnostics/vite';
+    
+    export default defineConfig({
+      // Lets the simulator or emulator reach the dev server during live reload.
+      server: { host: true },
+      devtools: { apply: 'serve' },
+      plugins: [powersyncDevtools()]
+    });
+    ```
+
+    The `devtools` option requires Vite 8.3 or later. If you use Vite 7, use the `DevTools()` plugin. Refer to [PowerSync DevTools for Vite](/tools/devtools/vite#set-up-devtools).
+  </Step>
+  <Step title="Optional: Enable diagnostics when you connect">
+    To show the total number of operations for each bucket in the **Buckets** tab, set `diagnostics: true` when you connect:
+
+    ```typescript
+    await db.connect(connector, { diagnostics: true });
+    ```
+  </Step>
+  <Step title="Run the app with live reload">
+    Start the dev server. Then run the app on a simulator or emulator. Use the port of your dev server.
+
+    <Tabs>
+      <Tab title="iOS simulator">
+        ```bash
+        npx cap run ios --live-reload --host localhost --port 5173
+        ```
+      </Tab>
+      <Tab title="Android emulator">
+        In the Android emulator, `localhost` is the emulator, not your computer. Thus, you must first forward the dev server port to your computer:
+
+        ```bash
+        adb reverse tcp:5173 tcp:5173
+        npx cap run android --live-reload --host localhost --port 5173
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  <Step title="Trust the app and open DevTools">
+    Vite DevTools must trust each WebView before it shows data. To trust the app on the simulator or emulator:
+
+    1. In the app, tap **Unauthorized** in the Vite DevTools dock.
+    2. Find the six-digit code in the dev server terminal. Below the code, the terminal shows the user agent of the client that asked for it, for example `iOS 18.7 mobile`.
+    3. Type the code in the app.
+
+    Then tap the **PowerSync** entry in the dock.
+
+    You can also use DevTools in a browser on your computer. The browser shows the same data as the dock in the app:
+
+    1. Open the link that the dev server terminal shows next to the code. The link opens in your default browser and trusts that browser. You cannot use the link to trust the app, because the link does not open in the app.
+    2. In that browser, open `http://localhost:5173/__devtools/`. The app on the simulator or emulator is attached as a database. If more than one database is attached, select one in the database list in the DevTools header.
+  </Step>
+</Steps>
+
+To learn what each tab shows, read [Using DevTools](/tools/devtools/using-devtools).
+
+## MCP Tools
+
+Coding agents use the [Vite MCP endpoint](/tools/devtools/mcp) to read the database of the app on the simulator or emulator. Keep the app open with live reload while the agent uses the tools.
+
+## Troubleshooting
+
+**DevTools shows "No PowerSync database attached".** Sometimes the database of the app detaches from DevTools and does not attach again. To attach it again, close the app and open it again.
+
+**Requests to your backend fail during live reload.** With live reload, the app loads from `http://localhost:5173`, not from the device. If your backend allows only specific origins (CORS), add this address. Or send the requests through the dev server with [`server.proxy`](https://vite.dev/config/server-options#server-proxy).

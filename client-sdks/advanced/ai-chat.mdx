@@ -29,7 +29,7 @@ Because the client reads and writes only to its local database:
 
 ### Tables
 
-Create a `chats` table and a `messages` table. Give assistant messages a `status` column so that the client can show whether a reply is pending, being generated, done, stopped, or failed. If generation fails, store the error message on the row as well.
+Create a `chats` table and a `messages` table. Give AI-generated messages a `status` column so that the client can show whether a reply is pending, being generated, done, stopped, or failed. If generation fails, store the error message on the row as well.
 
 ### Sync Streams
 
@@ -55,19 +55,19 @@ See [Client-Side Usage](/sync/streams/client-usage) for how to subscribe in each
 
 ### Generating Replies
 
-1. When the user sends a message, the client writes two rows in one local transaction: the user's message, and an empty assistant message with a pending status. The UI shows the pending reply right away, even offline.
+1. When the user sends a message, the client writes two rows in one local transaction: the user's message, and an empty message for the AI reply, with a pending status. The UI shows the pending reply right away, even offline.
 2. The client SDK uploads both rows to your backend through `uploadData()` in your [backend connector](/configuration/app-backend/client-side-integration).
-3. The backend claims the pending reply with a conditional update, so that only one backend instance works on it.
-4. The backend sends the chat history to the model.
+3. The backend claims the pending reply with a conditional update, so that only one backend process works on it.
+4. The backend sends the chat history to the AI model.
 5. When the model finishes, the backend saves the full text and marks the reply as done.
 
 The client receives each reply when the write from step 5 syncs.
 
 ## Streaming Replies While the Model Generates Them
 
-To show reply text before the reply is complete, the backend has to send partial text to the client during step 4. We have built and tested two ways to do this, and the [demo](#example-implementation) implements both.
+To show reply text before the reply is complete, the backend has to send partial text to the client during step 4. We have tested two ways to do this, and we have a [demo](#example-implementation) available that implements both.
 
-### Streaming Through the Database
+### 1. Streaming Through the Database
 
 As new text arrives, the backend writes the text it has so far into the reply's row, at most once per interval, for example every 100 ms. PowerSync syncs each update, and a [watch query](/client-sdks/watch-queries) on the client re-renders the message. The interval caps the write rate no matter how fast the model produces tokens.
 
@@ -83,9 +83,9 @@ This is the simpler of the two, because PowerSync is the only channel to the cli
 
 The downside is volume. Each write is an update in your source database, and it syncs the whole row, so a long reply sends its earlier text again with every write, to every client subscribed to the chat.
 
-### Streaming Over a Separate Connection
+### 2. Streaming Over a Separate Connection
 
-The backend keeps the reply in memory and sends the text to clients over a separate connection, for example Server-Sent Events (SSE). It writes the row once, when the reply is finished. In the diagram, dashed arrows carry the finished reply.
+The backend keeps the reply in memory and sends the text to clients over a separate connection, for example [Server-Sent Events (SSE)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events). It writes the row once, when the reply is finished. In the diagram, dashed arrows carry the finished reply.
 
 ```mermaid
 flowchart LR
@@ -98,7 +98,7 @@ flowchart LR
 
 When a reply is being generated, the client opens a connection to the backend and shows the text as it arrives. If the connection drops, it opens it again. When the finished reply syncs through PowerSync, the client shows the row and closes the connection.
 
-Each reply is written to your database once, however long it is. On the other hand, you have to build and secure the streaming endpoint yourself, and the partial text only exists in the backend's memory, so a restart means the reply starts over. If you run more than one backend instance, each client also has to connect to the instance that is generating its reply. Cloudflare Durable Objects and similar services solve that.
+Each reply is written to your database once, however long it is. On the other hand, you have to build and secure the streaming endpoint yourself. If you run more than one backend process, each client also has to connect to the process that is generating its reply. [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/) and similar services solve that.
 
 ### Smoothing the Text
 
@@ -107,5 +107,3 @@ With either option, text arrives in steps, and some models send it in large chun
 ## Example Implementation
 
 The [AI chat demo](https://github.com/powersync-ja/powersync-js/tree/main/demos/react-ai-chat) implements both options in a React app with Postgres. Its Node.js backend applies uploads and calls the model with the [Vercel AI SDK](https://ai-sdk.dev).
-
-To build a backend API for your own app, see [App Backend Setup](/configuration/app-backend/setup).

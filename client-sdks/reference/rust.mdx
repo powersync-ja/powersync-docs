@@ -218,17 +218,9 @@ Next, create a database:
 
 ### 3. Stream Changes from PowerSync
 
-The PowerSync client SDK connects to a PowerSync service to download and sync changes. To establish a connection, it needs an `Authenticator` providing an [authentication token](/configuration/auth/overview).
+The PowerSync client SDK connects to the PowerSync Service to download changes. To connect, it needs the Service endpoint and an `Authenticator` that provides an [authentication token](/configuration/auth/overview).
 
-The backend connector connects the PowerSync client SDK to your application backend. The SDK uses it to:
-
-1. Get an auth token to connect to the PowerSync instance.
-2. Upload client-side writes to your backend API. The SDK places every write to the SQLite database in an upload queue and uploads the queue to your backend when the user is connected. Your backend then applies the changes to the source database.
-
-The authenticator must implement `resolve_credentials`, which is called by the SDK to get authentication credentials. The SDK does not cache these values, a typical implementation would return a token cached in your app's state. Optionally, you can implement `invalidate_credentials` to invalidate the cache. The SDK invokes that on a 401 or when the PowerSync service indicates that the token is about to expire.
-
-1. `fetch_credentials` - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
-2. `upload_data` - The SDK calls this method whenever it has client-side writes to upload to your backend API. Implement how those writes are processed and uploaded. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for the app backend implementation.
+The authenticator must implement `resolve_credentials`, which returns the token. The SDK does not cache the returned token and can call `resolve_credentials` several times while connected, so a typical implementation returns a token cached in your app's state. Optionally, implement `invalidate_credentials` to clear that cache. The SDK calls it when the Service rejects the token with a 401 or when the token has expired or is about to expire. See [Authentication Setup](/configuration/auth/overview) for how to generate tokens.
 
 **Example:**
 
@@ -256,7 +248,7 @@ impl Authenticator for MyAuthenticator {
 }
 ```
 
-With the authenticator implemented, you can initiate a connection to the PowerSync service to download changes in real time:
+With the authenticator implemented, you can initiate a connection to the PowerSync Service to download changes in real time:
 
 ```Rust
 db.connect(SyncOptions::download_only(
@@ -268,7 +260,9 @@ db.connect(SyncOptions::download_only(
 
 ### 4. Upload Local Mutations
 
-`SyncOptions::download_only` can sync changes from your backend, but local mutations to the database would never be uploaded. For a complete sync, you also need to define a `MutationUploader` responsible for uploading changes to your backend. You can skip this step if you only want to sync data from the server to the client.
+The SDK places every write to the SQLite database in an upload queue and calls the `MutationUploader` when the queue has writes to upload. Your backend then applies the changes to the source database. See [When `uploadData()` is Called](/configuration/app-backend/client-side-integration#when-uploaddata-is-called) for triggers, throttling, and retry behavior, and [Writing Client Changes](/handling-writes/writing-client-changes) for the app backend implementation.
+
+`SyncOptions::download_only` does not upload local writes. If the app writes to the local database while connected in download-only mode, the sync status reports a download error because the SDK cannot apply downloaded data over pending local writes. Skip this step only if the app never writes to the local database.
 
 **Example:**
 
@@ -284,8 +278,7 @@ struct MyMutationUploader {
 #[async_trait]
 impl MutationUploader for MyMutationUploader {
     async fn upload(&self) -> Result<(), PowerSyncError> {
-        // Implement uploadData to send local changes to your backend service
-        // You can omit this method if you only want to sync data from the server to the client
+        // Send local changes to your backend service
         // See an example implementation under Usage Examples (sub-page)
         // See https://docs.powersync.com/handling-writes/writing-client-changes for considerations.
         let mut local_writes = self.db.crud_transactions();
@@ -384,7 +377,7 @@ For transactions, use the [`transaction`](https://docs.rs/rusqlite/latest/rusqli
 
 ```rust
 // Opt in when connecting
-let mut options = SyncOptions::new(MyBackendConnector { db: db.clone() });
+let mut options = SyncOptions::new(endpoint, MyAuthenticator, MyMutationUploader { db: db.clone() });
 options.with_checkpoint_mode(CheckpointMode::Requests(Default::default()));
 db.connect(options).await;
 

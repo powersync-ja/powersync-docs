@@ -1,0 +1,57 @@
+---
+title: "Write Path Concepts"
+sidebarTitle: "Concepts"
+description: "How the write API authenticates uploads, and what happens to a write that fails temporarily, is rejected, or blocks the upload queue."
+---
+
+These concepts apply to every write path setup, whether you use your own API or Supabase.
+
+## Authenticating Writes
+
+<Warning>
+  PowerSync does not authenticate or authorize writes. Your write API is responsible for both.
+</Warning>
+
+If your auth provider issues JWTs, we recommend that your write API verify the same JWT that your app sends to PowerSync. Your backend connector's `fetchCredentials()` already returns this token, so `uploadData()` can send it in the request's `Authorization` header. To verify the token:
+
+1. Check the signature with your auth provider's keys, usually from its JWKS URL.
+2. Check the issuer and expiry.
+3. Accept the audience that your PowerSync instance is configured for. If your write API already verifies tokens for a different audience, add this one to the accepted list.
+
+The `sub` claim holds the user ID. Use it to decide which writes that user is allowed to make. See [Authentication](/configuration/auth/overview) for the audience and keys each provider uses.
+
+## What Happens When a Write Fails
+
+The SDK removes changes from the upload queue only when `uploadData()` calls `complete()` on them. If `uploadData()` throws an error or returns without calling `complete()`, the changes stay in the queue. The SDK calls `uploadData()` again after a delay. It keeps doing this while the sync stream is connected. For details, see [Error Handling](/configuration/app-backend/client-side-integration#error-handling).
+
+<Warning>
+  The queue is ordered, so a change that stays at the front holds back every write behind it. No later writes from that device upload until the change leaves the queue.
+</Warning>
+
+When a write fails, your write API and `uploadData()` decide between the following outcomes.
+
+### Retryable Errors
+
+A **retryable error** is a failure that is likely to succeed later without any change to the write, such as a network error, a timeout, or a database that is temporarily unavailable. `uploadData()` throws, and the SDK retries.
+
+### Rejected Writes
+
+A **rejected write** is a write that your write API will never apply, for example because it fails validation. The write API tells `uploadData()` that it rejected the write, preferably with a 2xx response that includes the reason. `uploadData()` then marks the write complete, and the queue keeps moving.
+
+The rejected change stays in the local database until the upload queue is empty and the client has synced. Then the local data is replaced with the state from your source database. See [How Changes Are Rolled Back](/handling-writes/handling-write-validation-errors#how-changes-are-rolled-back).
+
+To keep a record of rejected writes, your write API can store each one in a **dead-letter queue**: a table or queue on your backend that you inspect later. See [Dead-Letter Queue](/handling-writes/handling-write-validation-errors#dead-letter-queue) for the ordering trade-off this brings.
+
+If `uploadData()` throws for a write that can never succeed, such as one that violates a constraint, the write stays at the front of the queue. The same happens if `uploadData()` returns without calling `complete()`. The SDK retries the write until someone fixes the cause. This happens for any response status, 4xx or 5xx, because your `uploadData()` code decides how to handle the response. If `uploadData()` throws, the sync status shows an `uploadError` on every attempt.
+
+### Blocked Transactions
+
+A **blocked transaction** is a failed transaction that stays in the upload queue and prevents later writes from uploading. Your app may retain it on purpose, for example when the write API refuses a write because the user lacks a permission that an administrator can grant. `uploadData()` throws instead of marking the transaction complete, so no later writes upload.
+
+Your app needs a way to resolve a blocked transaction, such as showing the problem to the user. When the cause is fixed, the next retry succeeds. If the write should be dropped instead, `uploadData()` calls `complete()` on the transaction. The change is rolled back like a rejected write, so the user loses the changes they made in that transaction.
+
+## Related Pages
+
+- [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors): how rejected changes are rolled back on the client.
+- [Handling Update Conflicts](/handling-writes/handling-update-conflicts): what happens when two clients change the same row.
+- [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution): strategies for resolving conflicts in your write API.

@@ -1,0 +1,204 @@
+---
+title: "Use Your Existing API"
+sidebarTitle: "Existing API"
+description: "Write an uploadData() function that sends changes from the upload queue to the API your app already uses for writes."
+---
+
+Your existing API can serve as your write API. Your API may need small changes so that its responses tell `uploadData()` what to do with each change.
+
+## What `uploadData()` Must Do
+
+Your `uploadData()` function reads queued transactions from the database. Each change is a `PUT`, `PATCH`, or `DELETE` on one row of a table in your client-side schema. See [Write Operations Recorded on the Client](/handling-writes/writing-client-changes#write-operations-recorded-on-the-client).
+
+For each transaction, `uploadData()` must:
+
+1. Send each change to the matching endpoint of your API, authenticated the way your API expects. If your auth provider issues JWTs, this can be the token your app sends to PowerSync. See [Authenticating Writes](/handling-writes/write-path/concepts#authenticating-writes).
+2. Classify the result of each call as success, a [retryable error](/handling-writes/write-path/concepts#retryable-errors), or a [rejected write](/handling-writes/write-path/concepts#rejected-writes).
+3. Throw on a retryable error, such as a network error or a 5xx response. The SDK keeps the transaction and retries it later.
+4. Log a rejected write and continue. If your API returns 4xx for validation errors or conflicts, treat those responses as rejected writes. Throwing on them instead turns them into a [blocked transaction](/handling-writes/write-path/concepts#blocked-transactions). A 401 from an expired token is different: refresh the token and retry.
+5. Mark the transaction complete once every change in it was applied or rejected.
+
+If your code catches an error without throwing it and then completes the transaction, the SDK removes the failed changes from the queue too. Do this only after deciding to discard them.
+
+A retry sends the whole transaction again, including changes your API already applied. Make each call safe to repeat. A create or delete should not be rejected on retry solely because the earlier attempt succeeded.
+
+## What Your API Must Do
+
+- **Apply changes before responding.** Write to the source database while the request is open, instead of queueing the work for later. After an upload, the client waits for a checkpoint that includes its changes. If a change is not in the source database yet, it disappears from the device until it syncs back. See [Consistency](/architecture/consistency).
+- **Return 5xx only for temporary errors.** Use 5xx for problems that clear up, such as a database that is briefly unavailable. A 5xx for a write that can never succeed makes `uploadData()` retry it until someone fixes the cause.
+- **Report rejected writes.** For validation errors and conflicts, return 2xx with the reason in the response body. Alternatively, write the reason to a table that syncs back to the client. Your app can then show the error to the user. See [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors).
+
+Any API style works, with one endpoint or several. One request per change is fine for typical volumes. If your app makes many writes at once, such as bulk imports, an endpoint that accepts a batch of changes needs fewer requests. See [Writing Client Changes](/handling-writes/writing-client-changes) for the options.
+
+## Prompt for Your Coding Agent
+
+To have a coding agent write `uploadData()`, copy this prompt into it. The agent installs the PowerSync agent skills, finds your connector, client-side schema, and API, and asks you about anything it can't find before it writes code. It then adapts the `uploadData()` in the prompt to your SDK and your API.
+
+The prompt's default is to log and discard rejected writes so they can't block the queue. It asks whether you also want a retry cap or a dead-letter queue.
+
+````text Build with AI expandable icon=sparkles wrap
+You are implementing/hardening the `uploadData` connector method for a PowerSync client SDK integration in this project.
+
+## Start from the PowerSync agent skills and docs
+
+PowerSync publishes agent skills covering its SDKs, backend integration and debugging. Install them into this project before you explore, unless they are already here (look for a `powersync` skill wherever this project keeps skills):
+
+- skills.sh (Cursor, Codex, Copilot, Windsurf and others): `npx skills add powersync-ja/agent-skills`
+- Claude Code: `/plugin marketplace add powersync-ja/agent-skills`, then `/plugin install powersync-skills@powersync`
+- Gemini CLI: `gemini skills install https://github.com/powersync-ja/agent-skills.git --path skills/powersync`
+
+The skills are listed at https://skills.sh/powersync-ja/agent-skills and the source is at https://github.com/powersync-ja/agent-skills. Read the `powersync` skill for the SDK this project uses. Where it and this prompt differ on `uploadData` specifics, follow this prompt and tell me what differed.
+
+Docs for this task:
+
+- Using your existing API: https://docs.powersync.com/handling-writes/write-path/existing-api
+- Write path concepts: https://docs.powersync.com/handling-writes/write-path/concepts
+- Writing client changes: https://docs.powersync.com/handling-writes/writing-client-changes
+- Handling write and validation errors: https://docs.powersync.com/handling-writes/handling-write-validation-errors
+- Handling update conflicts: https://docs.powersync.com/handling-writes/handling-update-conflicts
+- Custom conflict resolution: https://docs.powersync.com/handling-writes/custom-conflict-resolution
+- PowerSync agent skills: https://docs.powersync.com/tools/ai-tools#powersync-agent-skills
+
+## Before you write any code: interview me, don't guess
+
+Explore the repo first (see "Find the existing PowerSync setup" below), then ask me everything you're still unsure about, in one batch. If an answer reveals a new unknown, ask another round. Repeat until nothing that affects correctness is still assumed. Only then start writing code.
+
+Never invent an answer to something that affects correctness. If you're not certain, ask. A wrong guess about which errors are retryable, or how batching should behave, doesn't fail right away. It shows up weeks later as a stuck queue or lost data (see "Known failure modes" below).
+
+At minimum, always ask:
+
+1. **Batch size:** how many pending transactions should one `uploadData` call attempt to upload at once? (1 = strictly one transaction per call, which is a safe default.)
+2. **Hardening:** whether I want any of the items under "Production hardening to raise with me" now, or as follow-ups. Without them, a `fatal_error` is logged and discarded so it can't block the queue, and a `retryable_error` is retried until it succeeds.
+3. **Backend API surface:** see item 3 under "Find the existing PowerSync setup" below. Only ask if you can't find or infer it yourself.
+
+Beyond these three, once you've explored the repo, ask about anything else you're not sure of before you write `callBackendApi` or change the control flow. For example: the auth mechanism the backend expects, whether it already returns distinguishable status codes or just success/failure, how it reports validation vs. conflict errors, whether an existing partial `uploadData` implementation needs its current behavior preserved, or anything else specific to this project that the implementation below doesn't cover. If you reach the implementation below and are still filling a gap with an assumption, stop and ask.
+
+## Find the existing PowerSync setup
+
+Look for, in this order:
+
+1. **The existing connector file:** usually named something like `*Connector.ts`/`*Connector.dart`/similar, implementing the PowerSync SDK's backend connector interface and containing (or stubbing) `uploadData`. This is the file you'll be editing.
+2. **The client schema:** usually `AppSchema.ts`/`schema.ts` or similar, defining `Table`s passed to `Schema(...)`. This tells you the table/column shape backing each mutation's `opData` (a `CrudEntry`), which you need to map mutations onto backend requests.
+3. **The backend API surface:** an existing OpenAPI/Swagger spec, generated API client, or hand-written `fetch`/`axios`/similar wrapper calling this project's backend. Most PowerSync customers already have a working backend API and are connecting `uploadData` to it rather than building a new one. Assume that's the case here unless told otherwise.
+
+If you can't find the backend API surface in this repo (for example, the backend lives in a separate repo, or there isn't one yet), ask me for: the relevant endpoint(s) or API docs, the auth mechanism to use, and how the API reports validation/conflict errors (status codes, error body shape).
+
+## Known failure modes to design against
+
+These come from recurring PowerSync support reports. Treat them as requirements:
+
+- **Stuck upload queue.** A common `uploadData` bug: one mutation that always fails is retried forever and blocks every mutation queued behind it. Every error path below must end in one of two ways: the mutation succeeds, or it's classified and handled (retried, or discarded with an error log). No error can be silently ignored. The backend matters here too: a 5xx must mean "try again later", never "this will never work", because a "retryable" error that always fails is a stuck queue. A retry cap, in the hardening list near the end, is the client-side safety net for a backend that can't promise that.
+- **`complete()` must never be called on a caught/swallowed error.** Apps have lost mutations this way: an error handler didn't throw the error again, so `complete()` ran as if the mutation had succeeded. Only call `complete()` after a real success, or after you've decided to discard or dead-letter a mutation.
+- **Classify errors explicitly, not only as success or failure.** Many existing `uploadData` implementations only distinguish "it worked" from "it didn't", which is what leads to stuck queues and lost data. Every backend call must resolve to one of: `success`, `retryable_error` (network error, timeout, 5xx: try again), or `fatal_error` (validation, conflict, 4xx that isn't going to succeed on retry).
+- **Retries re-send mutations that were already applied.** A `retryable_error` partway through a transaction leaves the whole transaction in the queue, so the next attempt sends the earlier mutations again. Each backend call must be safe to repeat: a create that already exists, or a delete of a row that is already gone, must not turn into a `fatal_error` that discards later work. Ask me how the backend handles a repeated create if you can't tell.
+- **Batch size does not reduce the number of requests.** `BATCH_SIZE` only sets how many transactions one `uploadData` call processes, and the SDK calls `uploadData` again until the queue is empty. The code below still sends one request per mutation. If request volume is a problem (large imports, bulk UI actions), the fix is a backend endpoint that accepts a batch of mutations; raise that with me rather than raising `BATCH_SIZE`.
+
+## Implementation to translate, not rewrite from scratch
+
+The code below fully specifies the control flow: batching, error classification, and completion. It's written for the common case where the backend is a set of existing per-resource REST endpoints rather than a transaction-atomic write API. If the backend can apply a whole transaction in one request, tell me before you write code. In that case, the PowerSync reference connector at https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/example-client, which uploads whole transactions, is a better starting point than the code below.
+
+Translate this into the project's actual language/SDK (Dart, Kotlin, Swift, C#, JS/TS, or whatever this project uses), keeping the structure, comments, and error handling intact. The only part to design from scratch is `callBackendApi`. Everything else should be a close translation.
+
+```typescript
+import type { AbstractPowerSyncDatabase, CrudEntry, CrudTransaction } from '@powersync/web';
+
+// --- Config, answered by me above ---
+const BATCH_SIZE = /* transactions per uploadData call */;
+
+// --- What every backend call must resolve to ---
+type MutationOutcome =
+  | { status: 'success' }
+  | { status: 'retryable_error'; message?: string }
+  | { status: 'fatal_error'; errorCode?: string; message?: string };
+
+/**
+ * The one function to design from scratch.
+ *
+ * Map this mutation onto the project's existing backend API, and map the response back
+ * onto MutationOutcome. Suggested default HTTP-status mapping, unless the backend's own docs say
+ * otherwise:
+ *   2xx                              -> inspect the response body for per-operation failures;
+ *                                       return success only if this mutation was applied
+ *   network error / timeout / 5xx / 429 -> retryable_error
+ *   401 / 403                        -> ask me: an expired token should be refreshed and retried,
+ *                                       not discarded
+ *   not found on DELETE              -> success: the row is already gone, for example because a
+ *                                       retry re-sent a delete the backend already applied
+ *   not found on PATCH               -> fatal_error: the row was deleted, so the update can never apply
+ *   validation / conflict 4xx        -> fatal_error when the backend confirms a permanent rejection
+ *   other responses                  -> classify using the backend's documented contract
+ */
+async function callBackendApi(mutation: CrudEntry): Promise<MutationOutcome> {
+  // mutation.op is 'PUT' | 'PATCH' | 'DELETE'
+  // mutation.table is the client-side table name (map it to your API's resource)
+  // mutation.opData holds the changed columns for PUT/PATCH
+  // mutation.id is the row id
+  throw new Error('TODO: call the backend API for this mutation, per the API surface found/described above');
+}
+
+// --- uploadData itself ---
+//
+// Pulls up to BATCH_SIZE pending transactions, then processes them in order. Within a
+// transaction, mutations are applied one at a time so a single rejected mutation can be
+// discarded without blocking the rest of that transaction or anything queued after it. The first
+// retryable_error stops processing and throws. Anything not yet completed stays in the queue
+// for the next attempt, which is what makes PowerSync retry.
+
+async function uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
+  const transactions: CrudTransaction[] = [];
+
+  for await (const transaction of database.getCrudTransactions()) {
+    transactions.push(transaction);
+    if (transactions.length >= BATCH_SIZE) break;
+  }
+  if (transactions.length === 0) return;
+
+  for (const transaction of transactions) {
+    for (const mutation of transaction.crud) {
+      const outcome = await callBackendApi(mutation);
+
+      if (outcome.status === 'success') {
+        continue;
+      }
+
+      if (outcome.status === 'fatal_error') {
+        // The backend said this exact mutation can never succeed as sent. Retrying it would block
+        // the queue forever, so log it as an error and move on. The log line is how you find out
+        // about the bug that caused it. If discarding the mutation is unacceptable,
+        // add the dead-letter storage described below.
+        console.error('Discarding a mutation the backend rejected', mutation, outcome);
+        continue;
+      }
+
+      // retryable_error: throwing makes the PowerSync SDK call uploadData again after a delay.
+      // This transaction, and everything queued after it, is left uncompleted on purpose.
+      throw new Error(`Retryable error uploading transaction: ${outcome.message ?? 'unknown'}`);
+    }
+
+    // Every mutation in this transaction is now applied or discarded, so the queue can move
+    // past it.
+    await transaction.complete();
+  }
+}
+```
+
+## Production hardening to raise with me
+
+The implementation above is the minimum. Before you finish, ask which of these I want now, and leave the rest as named follow-ups in the connector's comments. There are many reasonable ways to build each, so match whatever the project already uses rather than inventing a mechanism:
+
+- **A retry cap.** Without one, a backend that answers 5xx for a permanent failure blocks the queue forever. It needs a persisted counter per transaction, not an in-memory one, because the queue survives restarts.
+- **Dead-letter storage** for rejected or retry-exhausted mutations, instead of log and discard. Store them somewhere a developer can inspect: a dead-letter table on the backend, or your error tracker.
+- **Client status in your logging or error aggregation.** Ship upload failures with the mutation's table, operation and id, plus the SDK's sync status (connected, uploading, last upload error), so a stuck queue on one device is visible from the backend.
+
+## Before you finish
+
+- Confirm `getCrudTransactions()` and the `CrudEntry` and `CrudTransaction` field names used above (`op`, `table`, `opData`, `id`) against the PowerSync SDK version and language in this project. Names differ slightly across SDKs, and this prompt may be ahead of or behind the installed version.
+- Tell me which hardening items you added and which you left as named follow-ups in the connector.
+- Tell me, in plain language, how `callBackendApi` classifies responses (which HTTP statuses and response shapes you treated as retryable or fatal), so I can check it against how the backend behaves.
+````
+
+## Related Pages
+
+- [Writing Client Changes](/handling-writes/writing-client-changes): ways to structure your write API.
+- [Client-Side Integration](/configuration/app-backend/client-side-integration): the backend connector, and when the SDK calls `uploadData()`.
+- [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution): strategies for handling conflicts in your write API.

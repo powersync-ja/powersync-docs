@@ -8,7 +8,7 @@ Your existing API can serve as your write API. Your API may need small changes s
 
 ## What `uploadData()` Must Do
 
-The SDK passes queued changes to `uploadData()` as transactions. Each change is a `PUT`, `PATCH`, or `DELETE` on one row of a table in your client-side schema. See [Write Operations Recorded on the Client](/handling-writes/writing-client-changes#write-operations-recorded-on-the-client).
+Your `uploadData()` function reads queued transactions from the database. Each change is a `PUT`, `PATCH`, or `DELETE` on one row of a table in your client-side schema. See [Write Operations Recorded on the Client](/handling-writes/writing-client-changes#write-operations-recorded-on-the-client).
 
 For each transaction, `uploadData()` must:
 
@@ -117,11 +117,14 @@ type MutationOutcome =
  * Map this mutation onto the project's existing backend API, and map the response back
  * onto MutationOutcome. Suggested default HTTP-status mapping, unless the backend's own docs say
  * otherwise:
- *   2xx                              -> success
+ *   2xx                              -> inspect the response body for per-operation failures;
+ *                                       return success only if this mutation was applied
  *   network error / timeout / 5xx / 429 -> retryable_error
  *   401 / 403                        -> ask me: an expired token should be refreshed and retried,
  *                                       not discarded
- *   other 4xx (validation, conflict, not found on update/delete) -> fatal_error
+ *   validation / conflict 4xx        -> fatal_error when the backend confirms a permanent rejection
+ *   not found on repeated delete    -> success if the backend's retry semantics permit it
+ *   other responses                  -> classify using the backend's documented contract
  */
 async function callBackendApi(mutation: CrudEntry): Promise<MutationOutcome> {
   // mutation.op is 'PUT' | 'PATCH' | 'DELETE'

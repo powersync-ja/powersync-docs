@@ -47,7 +47,7 @@ If your source database is Supabase and you rely on RLS policies to authorize wr
       powersync login
       powersync fetch config --instance-id="<instance-id>" --output=json > backend/standalone/config/powersync-config.json
       ```
-      Also set `AUTH_ISSUER` to your auth provider's issuer, unless you use Supabase Auth on a standard Supabase domain.
+      Also set `AUTH_ISSUER` to your auth provider's issuer, unless you use Supabase Auth on a standard Supabase domain. For a non-Supabase Cloud export, set `AUTH_INSTANCE_URL` to your PowerSync instance URL, or set `AUTH_AUDIENCE` to the complete accepted audience list. See the [authentication variables](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/setup.md#variables).
     - **Env mode**: set `AUTH_MODE=env`, `AUTH_ISSUER`, `AUTH_AUDIENCE`, and `AUTH_JWKS_URI`. Use this for providers such as Clerk and Auth0, and for [development tokens](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md) when you don't have an auth provider yet.
 
     For self-hosted PowerSync and the full list of variables, see the repository's [authentication setup](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/setup.md). For Supabase Auth and Clerk details, see [providers](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/providers.md).
@@ -81,7 +81,20 @@ If your source database is Supabase and you rely on RLS policies to authorize wr
     - **Single file**: has the fewest dependencies. Set the write API URL, the PowerSync instance URL, and the batch size in the constants at the top of the file.
     - **Modular**: reads the same settings from `VITE_` environment variables.
 
-    Use a write API URL that the device can reach: `localhost` on a phone refers to the phone. Then replace the demo `fetchAuthToken()` with code that gets the token from your auth provider, and pass the connector to your PowerSync database:
+    Use a write API URL that the device can reach: `localhost` on a phone refers to the phone.
+
+    Replace the demo `fetchAuthToken()` with code that retrieves the current token from your auth provider. If the provider SDK manages session refresh, remove the `_authToken` field, its initialization in the constructor, and its reset in `onTransportError()`. Then replace `getAuthToken()` with:
+
+    ```typescript
+    // Inside your copied PowersyncConnector class.
+    private async getAuthToken(): Promise<string> {
+      return this.fetchAuthToken();
+    }
+    ```
+
+    The demo cache is cleared only after an upload request fails authentication. Keeping it can make `fetchCredentials()` return an expired token even after the provider refreshes the session. See [client authentication](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/README.md#authentication) for provider integration.
+
+    Pass the connector to your PowerSync database:
 
     ```typescript
     import { PowersyncConnector } from './PowersyncConnector';

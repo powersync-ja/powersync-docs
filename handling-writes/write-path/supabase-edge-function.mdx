@@ -79,7 +79,7 @@ The function runs each write as the signed-in user. Inside each transaction, it 
 
     1. Set the connector's write API URL to `https://<project-ref>.supabase.co/functions/v1/powersync-write`. Your PowerSync instance URL doesn't change.
     2. Pass your app's supabase-js client to the connector, and replace `fetchCredentials()` and `getAuthToken()` with the code below. This code reads the session on every call.
-    3. Remove `fetchAuthToken()` and the `_authToken` field, including the line in `onTransportError()` that resets it. supabase-js refreshes the session itself. The connector clears its cache only after a rejected request, so while the cache is in place, sync keeps sending an expired token.
+    3. Remove `fetchAuthToken()` and any remaining `_authToken` field, constructor initialization, and reset in `onTransportError()`. supabase-js manages session refresh, so read its current session for both sync and mutation uploads.
 
     ```typescript
     constructor(private readonly supabase: SupabaseClient) {
@@ -117,7 +117,7 @@ The function runs each write as the signed-in user. Inside each transaction, it 
 
 | Failure | Outcome |
 | --- | --- |
-| An RLS policy or missing grant denies a write | [Blocked transaction](/handling-writes/write-path/concepts#blocked-transactions). The function reports the denial as a retryable error, so the connector keeps the transaction and the SDK retries it. No write is lost, but until you fix the policy, grant, or data, it holds back every later write from that user. To change this, edit `permissionErrorsRetryable` in `rls.ts`. |
+| An RLS policy or missing grant denies a write | [Blocked transaction](/handling-writes/write-path/concepts#blocked-transactions). The function reports the denial as a retryable error, so the connector keeps the transaction and the SDK retries it. No write is lost, but until you fix the policy, grant, or data, it holds back every later write from that device. To change this, edit `permissionErrorsRetryable` in `rls.ts`. |
 | `authorize()` in `authorizer.ts` returns `false` | [Rejected write](/handling-writes/write-path/concepts#rejected-writes). The connector removes the transaction from the queue, and the function passes it to the dead-letter hook. To keep these transactions in the queue instead, change `requiresClientHandling` in `fatal-error-handler.ts`. |
 | Constraint violation, invalid data, another permanent error, or any database error the function doesn't recognize | [Rejected write](/handling-writes/write-path/concepts#rejected-writes). The connector removes the transaction from the queue, and the function passes it to the dead-letter hook in `fatal-error-handler.ts`, which only logs it by default, so the user's change is lost. |
 | Temporary error, such as a lost connection | Retryable error. |

@@ -37,40 +37,64 @@ Once enabled, restart the service and the metrics endpoint will return Prometheu
   If you're running multiple containers (e.g. splitting up replication containers and API containers) you need to scrape the metrics separately for each container.
 </Note>
 
-## Sync Connection Outcomes
+## Metrics
 
-`powersync_sync_connections_total` counts sync connections as they close, plus connection attempts the Service rejects before a stream opens. `powersync_concurrent_connections` remains the gauge for streams that are currently open.
+### `powersync_sync_connections_total`
 
-Each series has `outcome`, `close_reason`, and `transport` (`http_stream` or `rsocket`) labels. The `error_code` label is present only for `error` and `rejected` outcomes.
+Allows you to monitor sync connection errors and rejected attempts, identify recurring error codes or rejection reasons.
 
-| `outcome` | `close_reason` | `error_code` |
-| --- | --- | --- |
-| `ok` | `client_closed`, `service_closed`, `process_shutdown`, `unknown` | Omitted |
-| `error` | `stream_error` | PowerSync error code, or `other` |
-| `rejected` | `service_unavailable` | `PSYNC_S2003` |
-| `rejected` | `no_sync_config` | `PSYNC_S2302` |
-| `rejected` | `storage_error` | PowerSync error code, or `other` |
-| `rejected` | `sync_config_error` | PowerSync error code, or `other` |
-| `rejected` | `concurrency_limit` | `PSYNC_S2304` over RSocket, `other` over HTTP |
+#### Fields
 
-- `ok` refers to closes that are not stream errors, for example token expiry, Sync Config switches, shutdown, and client-side failures can produce `ok`.
-- `storage_error` and `sync_config_error` are failures to load or parse the active Sync Config while setting up the stream.
-- Over HTTP, `concurrency_limit` returns a bare 429 with no PowerSync error code, so `error_code` is `other`.
-- Requests that fail authentication or validation are not counted.
+Each series has an `outcome`, `close_reason`, `error_code` and `transport` (`http_stream` or `rsocket`) labels.
 
-See [Error Codes](/debugging/error-codes) for the meaning of each `PSYNC_` code.
+<Accordion title="Outcomes, Close Reasons, and Error Codes">
+  ##### Outcome `ok`
 
-### PromQL Examples
+  Closed without a stream error.
 
-Series are not initialized to zero, so rate() and increase() can miss the first error or rejection.
+  - Close reasons: `client_closed`, `service_closed`, `process_shutdown`, or `unknown`
+  - Includes token expiry, Sync Config switches, and client-side failures. Does not confirm successful sync.
+  - Error code is ommited.
 
-Rate of closes and rejections by outcome:
+  ##### Outcome `error`
+
+  Closed with a stream error.
+
+  - Close reason: `stream_error`
+  - Error code: PowerSync error code or `other`
+
+  ##### Outcome `rejected`
+
+  Connection attempt rejected.
+
+  | close_reason | error_code |
+  | --- | --- |
+  | `service_unavailable` | `PSYNC_S2003` |
+  | `no_sync_config` | `PSYNC_S2302` |
+  | `storage_error` | PowerSync error code or `other` |
+  | `sync_config_error` | PowerSync error code or `other` |
+  | `concurrency_limit` | RSocket: `PSYNC_S2304`, HTTP: `other` |
+
+  `storage_error` and `sync_config_error` are failures to load or parse the active Sync Config.
+
+  See [Error Codes](/debugging/error-codes) for the meaning of each `PSYNC_` code.
+</Accordion>
+
+#### Use Case Examples
+
+Below are some queries to help you troubleshoot sync connection issues.
+
+##### Did Connection Failures Increase After a Deployment?
+
+Graph this query across the deployment window to check for increased errors or rejections:
 
 ```promql
 sum by (outcome, transport) (rate(powersync_sync_connections_total[5m]))
 ```
 
-Stream errors in the last hour, by code:
+##### Which Errors Are Interrupting Sync?
+
+If sync is interrupted, check which stream errors occurred in the last hour:
 
 ```promql
 sum by (error_code, transport) (
@@ -78,10 +102,22 @@ sum by (error_code, transport) (
 ) > 0
 ```
 
-Rejected attempts in the last hour, by reason:
+##### Why Can't Clients Establish a Sync Connection?
+
+If clients cannot start syncing, check for rejected attempts in the last hour:
 
 ```promql
 sum by (close_reason, transport) (
   increase(powersync_sync_connections_total{outcome="rejected"}[1h])
 ) > 0
 ```
+
+Use the rejection reason to check the active Sync Config, connection limit, or Service logs.
+
+<Note>
+  `powersync_concurrent_connections` remains the gauge for streams that are currently open.
+
+  Requests that fail authentication or validation are not counted.
+
+  Series are not initialized to zero, so `rate()` and `increase()` can miss the first error or rejection.
+</Note>

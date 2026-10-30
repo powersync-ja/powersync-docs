@@ -18,15 +18,15 @@ For each transaction, `uploadData()` must:
 4. Log a rejected write and continue. If your API returns 4xx for validation errors or conflicts, treat those responses as rejected writes. Throwing on them instead turns them into a [blocked transaction](/handling-writes/write-path/concepts#blocked-transactions). A 401 from an expired token is different: refresh the token and retry.
 5. Mark the transaction complete once every change in it was applied or rejected.
 
-If your code catches an error without throwing it again and then marks the transaction complete, the change is lost without any error.
+If your code catches an error without throwing it and then completes the transaction, the SDK removes the failed changes from the queue too. Do this only after deciding to discard them.
 
-A retry sends the whole transaction again, including changes your API already applied. Make each call safe to repeat, so that a create that already exists or a delete of a missing row is not reported as a rejected write.
+A retry sends the whole transaction again, including changes your API already applied. Make each call safe to repeat. A create or delete should not be rejected on retry solely because the earlier attempt succeeded.
 
 ## What Your API Must Do
 
 - **Apply changes before responding.** Write to the source database while the request is open, instead of queueing the work for later. After an upload, the client waits for a checkpoint that includes its changes. If a change is not in the source database yet, it disappears from the device until it syncs back. See [Consistency](/architecture/consistency).
 - **Return 5xx only for temporary errors.** Use 5xx for problems that clear up, such as a database that is briefly unavailable. A 5xx for a write that can never succeed makes `uploadData()` retry it until someone fixes the cause.
-- **Report rejected writes.** For validation errors and conflicts, return 2xx with the reason in the response body, or write the reason to a table that syncs back to the client, so your app can show it to the user. See [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors).
+- **Report rejected writes.** For validation errors and conflicts, return 2xx with the reason in the response body. Alternatively, write the reason to a table that syncs back to the client. Your app can then show the error to the user. See [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors).
 
 Any API style works, with one endpoint or several. One request per change is fine for typical volumes. If your app makes many writes at once, such as bulk imports, an endpoint that accepts a batch of changes needs fewer requests. See [Writing Client Changes](/handling-writes/writing-client-changes) for the options.
 
@@ -162,8 +162,8 @@ async function uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
       if (outcome.status === 'fatal_error') {
         // The backend said this exact mutation can never succeed as sent. Retrying it would block
         // the queue forever, so log it as an error and move on. The log line is how you find out
-        // about the bug that caused it. If losing the mutation is not
-        // acceptable, that is the dead-letter storage in the hardening list below.
+        // about the bug that caused it. If discarding the mutation is unacceptable,
+        // add the dead-letter storage described below.
         console.error('Discarding a mutation the backend rejected', mutation, outcome);
         continue;
       }

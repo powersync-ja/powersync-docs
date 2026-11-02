@@ -1,10 +1,22 @@
 ---
 title: "Write Path Concepts"
 sidebarTitle: "Concepts"
-description: "How the write API authenticates uploads, and what happens to a write that fails temporarily, is rejected, or blocks the upload queue."
+description: "What the upload queue records, how the write API authenticates and applies uploads, and what happens to a write that fails temporarily, is rejected, or blocks the upload queue."
 ---
 
 These concepts apply to every write path setup, whether you use your own API or Supabase.
+
+## Write Operations
+
+The client SDK records each change to a synced table in the upload queue as one of three operations:
+
+| Operation | Recorded for | Contains |
+| --- | --- | --- |
+| `PUT` | `INSERT` | The row `id` and the value of each non-null column. |
+| `PATCH` | `UPDATE` | The row `id` and the value of each changed column. |
+| `DELETE` | `DELETE` | The row `id`. |
+
+The SDK groups the operations from one local database transaction into a transaction in the upload queue.
 
 ## Authenticating Writes
 
@@ -19,6 +31,12 @@ If your auth provider issues JWTs, we recommend that your write API verify the s
 3. Accept the audience that your PowerSync instance is configured for. If your write API already verifies tokens for a different audience, add this one to the accepted list.
 
 The `sub` claim holds the user ID. Use it to decide which writes that user is allowed to make. See [Authentication](/configuration/auth/overview) for the audience and keys each provider uses.
+
+## Applying Writes Before Responding
+
+Your write API must store each write in the source database before it responds. Don't put writes in a queue to process later.
+
+After an upload, the client requests a write checkpoint. This checkpoint marks the source database position at that moment. The client then waits until it has synced data up to that checkpoint before it updates the local database with the synced data. If a write is not in the source database yet, the synced data does not include it, and the change disappears from the device. It appears again after the write reaches the source database and syncs. See [Consistency](/architecture/consistency).
 
 ## What Happens When a Write Fails
 
@@ -38,9 +56,11 @@ A **retryable error** is a failure that is likely to succeed later without any c
 
 A **rejected write** is a write that your write API will never apply, for example because it fails validation. The write API tells `uploadData()` that it rejected the write, preferably with a 2xx response that includes the reason. `uploadData()` then marks the write complete, and the queue keeps moving.
 
-The rejected change stays in the local database until the upload queue is empty and the client has synced. Then the local data is replaced with the state from your source database. See [How Changes Are Rolled Back](/handling-writes/handling-write-validation-errors#how-changes-are-rolled-back).
+The rejected change stays in the local database until the upload queue is empty and the client has synced. Then the local data is replaced with the state from your source database. See [How Changes Are Rolled Back](#how-changes-are-rolled-back).
 
-To keep a record of rejected writes, your write API can store each one in a **dead-letter queue**: a table or queue on your backend that you inspect later. See [Dead-Letter Queue](/handling-writes/handling-write-validation-errors#dead-letter-queue) for the ordering trade-off this brings.
+To keep a record of rejected writes, your write API can store each one in a **dead-letter queue**: a table or queue on your backend that you inspect later. If you apply a dead-lettered write later, newer writes from the same client may already be in your source database, so the writes are applied out of order.
+
+To show the user why a write was rejected, return the reason in the 2xx response, or write it to a table that syncs back to the client. See [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution) for examples.
 
 If `uploadData()` throws for a write that can never succeed, such as one that violates a constraint, the write stays at the front of the queue. The same happens if `uploadData()` returns without calling `complete()`. The SDK retries the write until someone fixes the cause. This happens for any response status, 4xx or 5xx, because your `uploadData()` code decides how to handle the response. If `uploadData()` throws, the sync status shows an `uploadError` on every attempt.
 
@@ -50,8 +70,18 @@ A **blocked transaction** is a failed transaction that stays in the upload queue
 
 Your app needs a way to resolve a blocked transaction, such as showing the problem to the user. When the cause is fixed, the next retry succeeds. If the write should be dropped instead, `uploadData()` calls `complete()` on the transaction. The change is rolled back like a rejected write, so the user loses the changes they made in that transaction.
 
+## How Changes Are Rolled Back
+
+The client has no explicit rollback operation. Instead, the client SDK keeps a copy of the data as last synced from the source database, separate from local changes. When the upload queue is empty and the client has synced up to its latest write checkpoint, the SDK replaces the local data with that synced copy. As a result:
+
+- A change that your write API applied appears in the synced copy, so the local data stays the same.
+- A change that your write API applied in a modified form is replaced with the version from your source database.
+- A change that your write API rejected is not in the synced copy, so the local data returns to its last synced state.
+- A change that a later write from another client overwrote is replaced with that other write.
+
+Until then, the local database keeps the user's changes, so your app shows them while uploads are pending or the device is offline.
+
 ## Related Pages
 
-- [Handling Write / Validation Errors](/handling-writes/handling-write-validation-errors): how rejected changes are rolled back on the client.
 - [Handling Update Conflicts](/handling-writes/handling-update-conflicts): what happens when two clients change the same row.
 - [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution): strategies for resolving conflicts in your write API.

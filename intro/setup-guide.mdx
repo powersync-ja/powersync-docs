@@ -1053,26 +1053,28 @@ await db.Connect(new MyConnector());
 
 ```rust Rust
 use async_trait::async_trait;
-use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase, SyncOptions};
+use futures_lite::StreamExt;
+use powersync::{Authenticator, MutationUploader, PowerSyncDatabase, SyncOptions};
 use powersync::error::PowerSyncError;
 use std::sync::Arc;
 
-struct MyBackendConnector {
-    client: Arc<dyn http_client::HttpClient>,
+struct MyAuthenticator;
+
+#[async_trait]
+impl Authenticator for MyAuthenticator {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        // for development: use development token
+        Ok(Arc::new("your-development-token-here".to_string()))
+    }
+}
+
+struct MyMutationUploader {
     db: PowerSyncDatabase,
 }
 
 #[async_trait]
-impl BackendConnector for MyBackendConnector {
-    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        // for development: use development token
-        Ok(PowerSyncCredentials {
-            endpoint: "https://your-instance.powersync.com".to_string(),
-            token: "your-development-token-here".to_string(),
-        })
-    }
-
-    async fn upload_data(&self) -> Result<(), PowerSyncError> {
+impl MutationUploader for MyMutationUploader {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
         let mut local_writes = self.db.crud_transactions();
         while let Some(tx) = local_writes.try_next().await? {
             // upload to your backend API
@@ -1083,10 +1085,11 @@ impl BackendConnector for MyBackendConnector {
 }
 
 // connect the database to PowerSync Service
-db.connect(SyncOptions::new(MyBackendConnector {
-    client,
-    db: db.clone(),
-}))
+db.connect(SyncOptions::new(
+    "https://your-instance.powersync.com",
+    MyAuthenticator,
+    MyMutationUploader { db: db.clone() },
+))
 .await;
 ```
 

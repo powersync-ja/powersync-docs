@@ -32,7 +32,7 @@ The PowerSync Client SDK calls `uploadData()` automatically - you never call it 
 
 1. **After a local write** - Any `INSERT`, `UPDATE`, or `DELETE` on a PowerSync table adds an entry to the internal upload queue (the `ps_crud` table). The SDK monitors this table for changes and triggers `uploadData()` shortly after. See [How Local Writes Are Detected](#how-local-writes-are-detected) below for details on the underlying mechanism.
 2. **On initial connection / reconnection** - When `connect()` establishes (or re-establishes) a sync stream and the first message is received from the PowerSync Service, the SDK triggers `uploadData()` to flush any writes that were made while offline or disconnected.
-3. **After an error, with retry** - If `uploadData()` throws an error, the SDK waits for a configurable delay (default: 5 seconds, controlled by `retryDelayMs`) and then retries. This continues until the upload succeeds or the sync stream is disconnected.
+3. **After an error, with retry** - If `uploadData()` throws an error, the SDK waits for a configurable delay (default: 5 seconds, controlled by the retry delay connection option: `retryDelayMs` in JavaScript, `retryDelay` in Kotlin, Swift and Dart) and then retries. This continues until the upload succeeds or the sync stream is disconnected.
 
 #### How Local Writes Are Detected
 
@@ -62,7 +62,7 @@ The default throttle interval varies by SDK:
 | SDK | Default | Option Name |
 | --- | --- | --- |
 | JavaScript / React Native / Node / Capacitor / Tauri | 1,000 ms | `crudUploadThrottleMs` |
-| Kotlin | 1,000 ms | `crudThrottleMs` |
+| Kotlin | 1,000 ms | `crudThrottle` (in `SyncOptions`) |
 | Swift | 1 second | `crudThrottle` (seconds) |
 | .NET | 1,000 ms | `CrudUploadThrottleMs` |
 | Dart / Flutter | 10 ms | `crudThrottleTime` |
@@ -85,7 +85,7 @@ db.connect(
 ```
 
 ```kotlin Kotlin
-database.connect(connector, crudThrottleMs = 500L)
+database.connect(connector, SyncOptions(crudThrottle = 500.milliseconds))
 ```
 
 ```swift Swift
@@ -134,7 +134,7 @@ This typically means your `uploadData()` implementation is not calling `.complet
 
 ### When `fetchCredentials()` is Called
 
-The PowerSync Client SDK **caches credentials internally** and `fetchCredentials` is called in the following scenarios:
+For a `PowerSyncBackendConnector`, the PowerSync Client SDK **caches credentials internally** and `fetchCredentials` is called in the following scenarios:
 
 1. **On initial connection** - When `connect()` is called and no cached credentials are available.
 2. **Before the token expires** - The PowerSync Service sends periodic keepalive messages that include the remaining lifetime of the current JWT. When the token has **30 seconds or less** remaining, the SDK pre-fetches new credentials in the background to ensure a seamless transition.
@@ -146,6 +146,8 @@ For a JWT with a 1-hour expiry, `fetchCredentials()` is typically called **appro
 <Tip>
   Your `fetchCredentials()` implementation should always return a fresh token when called, even if the currently cached token is not yet expired.
 </Tip>
+
+When connecting with an `Authenticator` implementation directly (instead of extending or implementing `PowerSyncBackendConnector`), caching tokens is your responsibility. The SDK calls the optional `invalidateCredentials` method on your `Authenticator` when the PowerSync Service rejects the token or the token has expired. Use it as a signal to clear your cache.
 
 ### Recommended JWT Expiry Duration
 
@@ -196,7 +198,7 @@ For an example implementation of a PowerSync 'backend connector', see the SDK gu
   <Card title=".NET (beta)" icon="microsoft" href="/client-sdks/reference/dotnet#3-integrate-with-your-backend">
   </Card>
 
-  <Card title="Rust (beta)" icon="rust" href="/client-sdks/reference/rust#3-integrate-with-your-backend">
+  <Card title="Rust (beta)" icon="rust" href="/client-sdks/reference/rust#3-stream-changes-from-powersync">
   </Card>
 </CardGroup>
 

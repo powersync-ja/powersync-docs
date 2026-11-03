@@ -14,6 +14,7 @@ import MutationConfirmationWithReturning from '/snippets/javascript-mutation-con
 import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
 import JavaScriptSubscribeSyncStream from '/snippets/javascript/subscribe-sync-stream.mdx';
+import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
 
 ```text Build with AI icon=sparkles wrap
 Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skills. Then follow the skills to onboard this project to PowerSync using the Tauri SDK.
@@ -315,6 +316,49 @@ export const deleteListWithTodos = async (id) => {
 ```
 
 <MutationConfirmationWithReturning />
+
+## Waiting for the Latest Server Data
+
+<CheckpointRequestsIntro />
+
+In Tauri apps, sync runs in Rust, so you opt in and request checkpoints from Rust. This requires `tauri-plugin-powersync` 0.1.0 or later. In your `connect` command, set the checkpoint mode before connecting:
+
+```Rust
+use powersync::CheckpointMode;
+
+let mut options = SyncOptions::new(MyRustConnector {
+    db: database.clone(),
+});
+options.with_checkpoint_mode(CheckpointMode::Requests(Default::default()));
+database.connect(options).await;
+```
+
+Then add a command that requests a checkpoint and waits for it to sync:
+
+```Rust
+use powersync::error::PowerSyncError;
+
+#[tauri::command]
+async fn wait_for_latest_data<R: Runtime>(
+    app: AppHandle<R>,
+    handle: usize,
+) -> tauri_plugin_powersync::Result<()> {
+    let database = app.powersync().database_from_javascript_handle(handle)?;
+    let checkpoint = database
+        .request_checkpoint()
+        .await
+        .map_err(PowerSyncError::from)?;
+    checkpoint.wait_for_sync().await.map_err(PowerSyncError::from)?;
+
+    Ok(())
+}
+```
+
+Register it with `tauri::generate_handler![connect, wait_for_latest_data]`, then invoke it from JavaScript, for example on pull-to-refresh:
+
+```TypeScript
+await invoke<void>('wait_for_latest_data', { handle: db.rustHandle });
+```
 
 ## Configure Logging
 

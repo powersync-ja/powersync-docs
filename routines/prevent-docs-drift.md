@@ -20,11 +20,11 @@ sources:
   - https://github.com/powersync-ja/powersync-dashboard
 mcp_connections: none
 created: 2026-05-11
-routine_updated: 2026-09-01
-last_synced: 2026-09-01
+prompt_source: this file on main, read by the routine at the start of every run
+config_last_synced: 2026-10-27  # the settings above; push changes to them with /schedule
 ---
 
-> Everything below the rule is the routine's prompt. See [README.md](./README.md) for how to change it.
+> Everything below the rule is the routine's prompt. The routine reads this file from `main` at the start of every run, so a change merged here takes effect on the next run. See [README.md](./README.md).
 
 ---
 
@@ -156,6 +156,16 @@ Body:
 
 <disclaimer line>
 ```
+
+### Assign the Source PR's Author
+
+Assign the author of the source PR to the issue, but only if they belong to the `powersync-ja/maintainers` GitHub team. Never assign external contributors or bots.
+
+- Check membership with the GitHub tool `mcp__github__get_team_members` (org `powersync-ja`, team slug `maintainers`). Load it with `ToolSearch`. Fetch the member list once per run, before the first assignment, and compare each PR author's login against it.
+- The team is secret. If the tool returns an error or an empty list, assign no one this run and say so in the run summary. Don't use `gh` for this check, because it isn't authenticated in this sandbox.
+- When you file a new issue, set the author as its assignee.
+- When you comment on an existing issue, add the author to its assignees. Keep everyone already assigned.
+- If an assignment fails, note it in the run summary and carry on.
 
 ## Step 6: Sweep Open Issues for Status Changes
 

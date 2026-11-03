@@ -15,39 +15,17 @@ See [Handling Update Conflicts](/handling-writes/handling-update-conflicts) for 
 
 **Collaborative documents**: Multiple people edit different paragraphs simultaneously. Automatic merging prevents losing anyone's work.
 
-## How Data Flows Through PowerSync
+## Where Conflicts Are Resolved
 
-Understanding the data flow helps you decide where to implement conflict resolution.
+Each client's writes reach your source database through its upload queue and your write API, and the result syncs back to every client. See [Write Path Overview](/handling-writes/write-path/overview). Conflicts arise when multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
 
-### Client to Backend
-
-When a user updates data in your app:
-
-1. **Client writes to local SQLite** - Changes happen instantly, even offline
-2. **PowerSync queues the operation** - Stored in the upload queue
-3. **Client sends operation(s) to your backend** - Your `uploadData` function processes it
-4. **Backend writes to source database** - Postgres, MySQL, MongoDB etc.
-
-### Backend to Client
-
-When data changes on the server:
-
-1. **Source database updates** - Direct writes or changes from other clients
-2. **PowerSync Service detects changes** - Through replication stream
-3. **Clients download updates** - Based on their Sync Streams
-4. **Local SQLite updates** - Changes merge into the client's database
-
-**Conflicts arise when**: Multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
+Your write API resolves these conflicts: it receives each operation and decides what to store in the source database. Some strategies below also record extra data on the client, such as timestamps or a change log, or sync conflict records back to the client.
 
 ---
 
 ## Understanding Operations & `CrudEntry`
 
-PowerSync tracks three operation types:
-
-- **PUT** - Creates new row or replaces entire row (includes all non-null columns)
-- **PATCH** - Updates specific fields only (includes ID + changed columns)
-- **DELETE** - Removes row (includes only ID)
+Your write API receives each change as a `PUT`, `PATCH`, or `DELETE` operation. See [Write Operations](/handling-writes/write-path/concepts#write-operations) for what each one contains.
 
 ### `CrudEntry` Structure
 

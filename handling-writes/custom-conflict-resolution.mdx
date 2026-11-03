@@ -29,7 +29,7 @@ Your write API receives each change as a `PUT`, `PATCH`, or `DELETE` operation. 
 
 ### `CrudEntry` Structure
 
-When your `uploadData` receives transactions, each one has this structure:
+Each entry in `transaction.crud` has these fields:
 
 ```typescript
 interface CrudEntry {
@@ -40,7 +40,7 @@ interface CrudEntry {
   opData?: Record<string, any>;          // Changed column values (optional)
   transactionId?: number;                // Groups ops from same transaction
   metadata?: string;                     // Custom metadata (trackMetadata)
-  trackPrevious?: Record<string, any>;  // Previous values (trackPrevious)
+  previousValues?: Record<string, any>; // Previous values (trackPreviousValues)
 }
 ```
 
@@ -48,33 +48,39 @@ interface CrudEntry {
 
 **Client-side connector sends:**
 
+Map the fields explicitly because the SDK's `CrudEntry.toJSON()` uses different field names.
+
 ```javascript
 // uploadData in your client connector
 async uploadData(database) {
   const transaction = await database.getNextCrudTransaction();
   if (!transaction) return;
+
+  const batch = transaction.crud.map(({ op, table, id, opData, metadata, previousValues }) => ({
+    op,
+    table,
+    id,
+    opData,
+    metadata,
+    previousValues
+  }));
   
   // Send to your backend API
-  const response = await fetch('https://yourapi.com/data', {
+  const response = await fetch('/api/data', {
     method: 'POST',
-    body: JSON.stringify({
-      batch: transaction.crud  // Array of CrudEntry objects
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ batch })
   });
 
-  // Throw on temporary failures so that the SDK retries the transaction.
-  // A rejected transaction is still completed, so it doesn't block later uploads.
-  if (response.status >= 500) {
+  // This backend returns 2xx for applied or permanently rejected transactions.
+  // Retain other failures, including expired tokens and rate limits, for retry.
+  if (!response.ok) {
     throw new Error(`Upload failed with status ${response.status}`);
   }
 
   await transaction.complete();
 }
 ```
-
-<Warning>
-  The following structure is only received by the backend if the transactions are not mutated in your client's `uploadData` function
-</Warning>
 
 **Backend API receives:**
 
@@ -380,7 +386,7 @@ This is where your domain rules live. The logic becomes the gatekeeper that bloc
 **Backend API (Node.js):**
 
 ```javascript
-async function validateOrderUpdate(operation) {
+async function validateOrderUpdate(db, operation) {
   const { id, opData } = operation;
   
   const result = await db.query(
@@ -463,7 +469,7 @@ async function validateOrderUpdate(operation) {
 
 ## Strategy 5: Server-Side Conflict Recording
 
-Sometimes you can’t automatically fix a conflict. Both versions might be valid, and you need a human to choose. In those cases you record the conflict instead of picking a winner. You save both versions in a write_conflicts table and sync that back to the client so the user can decide.
+Sometimes you can’t automatically fix a conflict. Both versions might be valid, and you need a human to choose. In those cases you record the conflict instead of picking a winner. You save both versions in a `write_conflicts` table and sync that back to the client so the user can decide.
 
 The flow is simple: detect the conflict, store the client and server versions, surface it in the UI, and let the user choose or merge. After they resolve it, you mark the conflict as handled.
 
@@ -506,7 +512,7 @@ streams:
 **Backend API (Node.js):**
 
 ```javascript
-async function handleUpdateWithConflictRecording(operation, userId) {
+async function handleUpdateWithConflictRecording(db, operation, userId) {
   const { id, opData } = operation;
   
   const result = await db.query(
@@ -1111,6 +1117,8 @@ async function processOperation(operation) {
 
 Here's how to tie it all together in a Node.js backend with Postgres.
 
+Include the helpers from Strategies 4 and 5 and your order patch and delete handlers. Add authentication middleware before the route to set `req.user`.
+
 **Backend API (Node.js + Express):**
 
 ```javascript
@@ -1118,6 +1126,7 @@ import express from 'express';
 import { Pool } from 'pg';
 
 const app = express();
+app.use(express.json());
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL
 });

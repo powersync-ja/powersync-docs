@@ -15,43 +15,21 @@ See [Handling Update Conflicts](/handling-writes/handling-update-conflicts) for 
 
 **Collaborative documents**: Multiple people edit different paragraphs simultaneously. Automatic merging prevents losing anyone's work.
 
-## How Data Flows Through PowerSync
+## Where Conflicts Are Resolved
 
-Understanding the data flow helps you decide where to implement conflict resolution.
+Each client's writes reach your source database through its upload queue and your write API, and the result syncs back to every client. See [Write Path Overview](/handling-writes/write-path/overview). Conflicts arise when multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
 
-### Client to Backend
-
-When a user updates data in your app:
-
-1. **Client writes to local SQLite** - Changes happen instantly, even offline
-2. **PowerSync queues the operation** - Stored in the upload queue
-3. **Client sends operation(s) to your backend** - Your `uploadData` function processes it
-4. **Backend writes to source database** - Postgres, MySQL, MongoDB etc.
-
-### Backend to Client
-
-When data changes on the server:
-
-1. **Source database updates** - Direct writes or changes from other clients
-2. **PowerSync Service detects changes** - Through replication stream
-3. **Clients download updates** - Based on their Sync Streams
-4. **Local SQLite updates** - Changes merge into the client's database
-
-**Conflicts arise when**: Multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
+Your write API resolves these conflicts: it receives each operation and decides what to store in the source database. Some strategies below also record extra data on the client, such as timestamps or a change log, or sync conflict records back to the client.
 
 ---
 
 ## Understanding Operations & `CrudEntry`
 
-PowerSync tracks three operation types:
-
-- **PUT** - Creates new row or replaces entire row (includes all non-null columns)
-- **PATCH** - Updates specific fields only (includes ID + changed columns)
-- **DELETE** - Removes row (includes only ID)
+Your write API receives each change as a `PUT`, `PATCH`, or `DELETE` operation. See [Write Operations](/handling-writes/write-path/concepts#write-operations) for what each one contains.
 
 ### `CrudEntry` Structure
 
-When your `uploadData` receives transactions, each one has this structure:
+Each entry in `transaction.crud` has these fields:
 
 ```typescript
 interface CrudEntry {
@@ -62,7 +40,7 @@ interface CrudEntry {
   opData?: Record<string, any>;          // Changed column values (optional)
   transactionId?: number;                // Groups ops from same transaction
   metadata?: string;                     // Custom metadata (trackMetadata)
-  trackPrevious?: Record<string, any>;  // Previous values (trackPrevious)
+  previousValues?: Record<string, any>; // Previous values (trackPreviousValues)
 }
 ```
 
@@ -70,27 +48,39 @@ interface CrudEntry {
 
 **Client-side connector sends:**
 
+Map the fields explicitly because the SDK's `CrudEntry.toJSON()` uses different field names.
+
 ```javascript
 // uploadData in your client connector
 async uploadData(database) {
   const transaction = await database.getNextCrudTransaction();
   if (!transaction) return;
+
+  const batch = transaction.crud.map(({ op, table, id, opData, metadata, previousValues }) => ({
+    op,
+    table,
+    id,
+    opData,
+    metadata,
+    previousValues
+  }));
   
   // Send to your backend API
-  await fetch('https://yourapi.com/data', {
+  const response = await fetch('/api/data', {
     method: 'POST',
-    body: JSON.stringify({
-      batch: transaction.crud  // Array of CrudEntry objects
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ batch })
   });
-  
+
+  // This backend returns 2xx for applied or permanently rejected transactions.
+  // Retain other failures, including expired tokens and rate limits, for retry.
+  if (!response.ok) {
+    throw new Error(`Upload failed with status ${response.status}`);
+  }
+
   await transaction.complete();
 }
 ```
-
-<Warning>
-  The following structure is only received by the backend if the transactions are not mutated in your client's `uploadData` function
-</Warning>
 
 **Backend API receives:**
 
@@ -112,7 +102,7 @@ async uploadData(database) {
 ```
 
 <Tip>
-  Operations are **idempotent** - your backend may receive the same operation multiple times. Use `clientId` and the operation's ID to detect and skip duplicates.
+  Your backend may receive the same operation more than once, because a retry sends the whole transaction again. Make each operation safe to repeat. See [Retryable Errors](/handling-writes/write-path/concepts#retryable-errors).
 </Tip>
 
 ---
@@ -396,7 +386,7 @@ This is where your domain rules live. The logic becomes the gatekeeper that bloc
 **Backend API (Node.js):**
 
 ```javascript
-async function validateOrderUpdate(operation) {
+async function validateOrderUpdate(db, operation) {
   const { id, opData } = operation;
   
   const result = await db.query(
@@ -479,7 +469,7 @@ async function validateOrderUpdate(operation) {
 
 ## Strategy 5: Server-Side Conflict Recording
 
-Sometimes you can’t automatically fix a conflict. Both versions might be valid, and you need a human to choose. In those cases you record the conflict instead of picking a winner. You save both versions in a write_conflicts table and sync that back to the client so the user can decide.
+Sometimes you can’t automatically fix a conflict. Both versions might be valid, and you need a human to choose. In those cases you record the conflict instead of picking a winner. You save both versions in a `write_conflicts` table and sync that back to the client so the user can decide.
 
 The flow is simple: detect the conflict, store the client and server versions, surface it in the UI, and let the user choose or merge. After they resolve it, you mark the conflict as handled.
 
@@ -522,7 +512,7 @@ streams:
 **Backend API (Node.js):**
 
 ```javascript
-async function handleUpdateWithConflictRecording(operation, userId) {
+async function handleUpdateWithConflictRecording(db, operation, userId) {
   const { id, opData } = operation;
   
   const result = await db.query(
@@ -1127,6 +1117,8 @@ async function processOperation(operation) {
 
 Here's how to tie it all together in a Node.js backend with Postgres.
 
+Include the helpers from Strategies 4 and 5 and your order patch and delete handlers. Add authentication middleware before the route to set `req.user`.
+
 **Backend API (Node.js + Express):**
 
 ```javascript
@@ -1134,9 +1126,13 @@ import express from 'express';
 import { Pool } from 'pg';
 
 const app = express();
+app.use(express.json());
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL
 });
+
+// Thrown when a business rule rejects an operation
+class RejectedOperationError extends Error {}
 
 app.post('/api/data', async (req, res) => {
   const { batch } = req.body;
@@ -1164,8 +1160,16 @@ app.post('/api/data', async (req, res) => {
     
   } catch (error) {
     await db.query('ROLLBACK');
-    console.error('Operation failed:', error);
-    res.status(500).json({ error: error.message });
+    if (error instanceof RejectedOperationError) {
+      // Rejected by a business rule: respond with 2xx and the reason, so that the
+      // client completes the transaction instead of retrying it
+      res.json({ success: false, rejected: error.message });
+    } else {
+      // Unexpected error: respond with 5xx so that the client retries the transaction.
+      // A permanent error here blocks the upload queue until you fix the cause.
+      console.error('Operation failed:', error);
+      res.status(500).json({ error: error.message });
+    }
   } finally {
     db.release();
   }
@@ -1176,7 +1180,7 @@ async function handleOrderOperation(db, op, userId) {
     // Use business rule validation (Strategy 4)
     const result = await validateOrderUpdate(db, op);
     if (result.conflict) {
-      throw new Error(result.message);
+      throw new RejectedOperationError(result.message);
     }
   } else if (op.op === 'PATCH') {
     await handleOrderPatch(db, op, userId);

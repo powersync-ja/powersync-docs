@@ -55,13 +55,19 @@ async uploadData(database) {
   if (!transaction) return;
   
   // Send to your backend API
-  await fetch('https://yourapi.com/data', {
+  const response = await fetch('https://yourapi.com/data', {
     method: 'POST',
     body: JSON.stringify({
       batch: transaction.crud  // Array of CrudEntry objects
     })
   });
-  
+
+  // Throw on temporary failures so that the SDK retries the transaction.
+  // A rejected transaction is still completed, so it doesn't block later uploads.
+  if (response.status >= 500) {
+    throw new Error(`Upload failed with status ${response.status}`);
+  }
+
   await transaction.complete();
 }
 ```
@@ -90,7 +96,7 @@ async uploadData(database) {
 ```
 
 <Tip>
-  Operations are **idempotent** - your backend may receive the same operation multiple times. Use `clientId` and the operation's ID to detect and skip duplicates.
+  Your backend may receive the same operation more than once, because a retry sends the whole transaction again. Make each operation safe to repeat. See [Retryable Errors](/handling-writes/write-path/concepts#retryable-errors).
 </Tip>
 
 ---
@@ -1116,6 +1122,9 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL
 });
 
+// Thrown when a business rule rejects an operation
+class RejectedOperationError extends Error {}
+
 app.post('/api/data', async (req, res) => {
   const { batch } = req.body;
   const userId = req.user.id; // From auth middleware
@@ -1142,8 +1151,16 @@ app.post('/api/data', async (req, res) => {
     
   } catch (error) {
     await db.query('ROLLBACK');
-    console.error('Operation failed:', error);
-    res.status(500).json({ error: error.message });
+    if (error instanceof RejectedOperationError) {
+      // Rejected by a business rule: respond with 2xx and the reason, so that the
+      // client completes the transaction instead of retrying it
+      res.json({ success: false, rejected: error.message });
+    } else {
+      // Unexpected error: respond with 5xx so that the client retries the transaction.
+      // A permanent error here blocks the upload queue until you fix the cause.
+      console.error('Operation failed:', error);
+      res.status(500).json({ error: error.message });
+    }
   } finally {
     db.release();
   }
@@ -1154,7 +1171,7 @@ async function handleOrderOperation(db, op, userId) {
     // Use business rule validation (Strategy 4)
     const result = await validateOrderUpdate(db, op);
     if (result.conflict) {
-      throw new Error(result.message);
+      throw new RejectedOperationError(result.message);
     }
   } else if (op.op === 'PATCH') {
     await handleOrderPatch(db, op, userId);

@@ -64,15 +64,15 @@ This example replicates only todos with an explicit `archived: false` field. Eac
   <Step title="Deploy Your Sync Config">
     Deploy the Sync Config as you normally would. For PowerSync Cloud, use the [Dashboard or CLI](/intro/setup-guide#deploy-your-configuration). For self-hosted instances, see [Update Sync Streams](/maintenance-ops/self-hosting/update-sync-rules). Adding, changing, or removing filters forces a full reprocess: the Service creates a new replication stream and snapshots all replicated collections. Allow for that source database work when planning the deployment.
 
-    If validation reports an inefficient snapshot index, create the recommended index before deployment. Index warnings are advisory and do not block deployment.
-
-    An active `mongodb_filter_expression` on a non-MongoDB source, such as Postgres, fails Sync Config validation and blocks deployment.
-
-    Unsupported source settings, such as `post_images: off`, block deployment. Parsing a valid filter does not establish that your instance can execute it. The Open Edition parses filter expressions but rejects their deployment.
-
-    If your plan or Service edition no longer supports pre-filtering, replication stops for a saved Sync Config that contains filters. A missing filtering module causes replication error `PSYNC_S1348`. Restore support, or remove the filters and deploy a new Sync Config. The Service does not silently ignore filters after a downgrade.
+    Validate the Sync Config before you deploy it. Use the **Validate** button in the Dashboard, `powersync validate` in the [CLI](/tools/cli), or the `/api/sync-rules/v1/validate` endpoint for self-hosted instances. If validation reports an inefficient snapshot index, create the recommended index before deployment. Index warnings are advisory and do not block deployment.
   </Step>
 </Steps>
+
+## Deployment and Replication Errors
+
+- **Non-MongoDB source**: An active `mongodb_filter_expression` on a source such as Postgres fails Sync Config validation and blocks deployment.
+- **Unsupported Post Images setting**: `post_images: off` blocks deployment. Set Post Images to **Auto-Configure** or **Read-only**.
+- **Pre-filtering no longer available**: If your plan or Service edition stops supporting pre-filtering, replication stops for a saved Sync Config that contains filters, with error `PSYNC_S1348`. The Service does not ignore the filters. Restore support, or remove the filters and deploy a new Sync Config.
 
 ## Supported Expressions
 
@@ -85,7 +85,7 @@ Filters use a restricted subset of MongoDB aggregation expressions. The supporte
 | `$and` | `$and: [<filter>, <filter>]` | Every filter matches. |
 | `$or` | `$or: [<filter>, <filter>]` | At least one filter matches. |
 
-For `$eq` and `$in`, put the source field first, using `$$doc.<path>`. Nested fields such as `$$doc.customer.tier` are supported. Numeric path segments, such as `$$doc.items.0`, are not supported. `$in` lists and `$and` or `$or` operands must be nonempty.
+For `$eq` and `$in`, put the source field first, using `$$doc.<path>`. Nested fields such as `$$doc.customer.tier` are supported. Numeric path segments, such as `$$doc.items.0`, and segments that start with `$` are not supported. `$in` lists and `$and` or `$or` operands must be nonempty.
 
 Constants can be strings, numbers, booleans, or BSON values expressed as Extended JSON (EJSON). For example, match an ObjectId with:
 
@@ -137,7 +137,7 @@ Keep the source field's type consistent with the filter constant. For example, c
 
 Each `source_table_options` key identifies a collection. Use `collection`, `database.collection`, or `default.database.collection`. Unqualified names use the connection's default database. An explicit connection tag must be `default`.
 
-Unquoted identifiers are converted to lowercase. Double-quote identifiers to preserve case or include a dot in a collection name. Retain those double quotes in YAML by enclosing the key in single quotes: `'"Todos"'` identifies the collection `Todos`, and `'"audit.events"'` identifies one collection named `audit.events`. Use the same identifier quoting in your SQL queries. For a literal double quote inside an identifier, write two double quotes.
+Unquoted identifiers are converted to lowercase. Double-quote identifiers to preserve case or include a dot in a collection name. Retain those double quotes in YAML by enclosing the key in single quotes: `'"Todos"'` identifies the collection `Todos`, and `'"audit.events"'` identifies one collection named `audit.events`. Use the same identifier quoting in your Sync Streams queries. For a literal double quote inside an identifier, write two double quotes.
 
 A final `%` matches a collection-name prefix. Database wildcards are not supported. For example:
 
@@ -179,7 +179,7 @@ For filters on multiple fields:
 - `$or` needs a suitable index for every branch. An unindexed branch can cause a collection scan for the whole filter.
 - `$and` can use an index on one term. Prefer the most selective term. For an `$and` of equality conditions, a compound index on those fields followed by `_id` can narrow the scan further.
 
-For an empty collection, validation checks the available index definitions. This confirms whether a compatible index exists, but it cannot confirm which query plan MongoDB will choose with data. Validate again after populating the collection to check the snapshot query plan.
+For an empty collection, validation checks the available index definitions. This confirms whether a compatible index exists, but it cannot confirm which query plan MongoDB will choose with data. After you populate the collection, [validate the Sync Config](#configure-pre-filtering) again to check the snapshot query plan.
 
 An index on only the filtered field can require MongoDB to read and sort all matching documents for every snapshot page. Including `_id` avoids that repeated work. MongoDB may still choose an `_id` index scan when a filter matches a large fraction of the collection.
 
@@ -205,8 +205,8 @@ During replication, the Service keeps stored data consistent with the pre-filter
 
 Pre-filtering reduces stored data, but excluded changes still have some network and processing cost. MongoDB sends compact progress events for excluded changes so that the Service can advance its recovery position through a backlog of excluded writes.
 
-### Image Availability and Recovery
+### Pre-Images and Post-Images
 
-When a connection has pre-filters, the Service requests pre-images on its change stream with `fullDocumentBeforeChange: 'whenAvailable'`. Pre-filtering uses these images to check whether an updated or deleted document previously matched the filter. Without pre-filters, the Service does not request or use pre-images.
+When a connection has pre-filters, the Service also requests pre-images on its change stream with `fullDocumentBeforeChange: 'whenAvailable'`. Pre-filtering uses these images to check whether an updated or deleted document previously matched the filter. The `changeStreamPreAndPostImages` setting that Post Images requires captures both pre-images and post-images, so pre-filtering needs no additional MongoDB setting.
 
-Pre-filtering requires the post-image captured for each update. When adding replicated collections, enable `changeStreamPreAndPostImages` as described in [Post Images](/configuration/source-db/setup#post-images) to avoid a full reprocess, including with **Auto-Configure**.
+When adding replicated collections, enable `changeStreamPreAndPostImages` when you create them, as described in [Post Images](/configuration/source-db/setup#post-images). This avoids a full reprocess, including with **Auto-Configure**.

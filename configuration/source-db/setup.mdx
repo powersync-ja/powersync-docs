@@ -358,7 +358,7 @@ The Service requests pre-images only when [replication pre-filters](/sync/advanc
 PowerSync supports three configuration options for post-images:
 
 1. **Off**: (`post_images: off`): Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling post-images instead.
-2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
+2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on each replicated collection after the Service discovers it. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
 3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in your Sync Streams. Replication will error if this is not configured. This option is ideal when permissions are restricted.
 
 To manually configure collections for `read_only` mode, run this command on each collection:
@@ -390,11 +390,9 @@ Post-images can be configured for PowerSync instances as follows:
   </Card>
 </CardGroup>
 
-#### Image Capture for New Collections
+With **Auto-Configure**, replication lag or Service downtime can delay discovery of a new collection. If documents in that collection are updated before the Service enables `changeStreamPreAndPostImages`, the post-images for those updates are missing. The Service then creates a new replication stream and snapshots all replicated collections again.
 
-**Auto-Configure** handles image configuration during normal operation, including for newly discovered collections. Replication lag or Service downtime can delay discovery of a new collection. If documents are updated before automatic configuration completes, missing post-images can require the Service to create a new replication stream and snapshot all replicated collections again.
-
-To avoid this full reprocess, create new collections with image capture enabled before writing to them. Run this command in `mongosh` against the source database:
+To avoid this full reprocess, enable the option when you create a collection, before writing to it. This also meets the **Read-only** requirement for new collections. Run this command in `mongosh` against the source database:
 
 ```javascript
 db.createCollection('todos', {
@@ -402,11 +400,7 @@ db.createCollection('todos', {
 });
 ```
 
-With **Read-only**, you must enable image capture yourself on every replicated collection. The command above also meets that requirement.
-
 Keep `changeStreamPreAndPostImages` enabled while a collection is replicated. Disabling it can interrupt replication and require a full reprocess.
-
-See MongoDB's [`db.createCollection()` reference](https://www.mongodb.com/docs/manual/reference/method/db.createCollection/) for the collection options.
 
 ### Replication Pre-filtering
 

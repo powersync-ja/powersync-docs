@@ -159,6 +159,8 @@ export const db = new PowerSyncDatabase({
   database: {
     // Filename for the SQLite database — it's important to only instantiate one instance per file.
     dbFilename: 'powersync.db'
+    // Use a suitable OPFS storage (recommeded). The default is IndexedDB for backwards compatibility.
+    vfs: 'auto',
     // Optional. Directory where the database file is located.
     // dbLocation: 'path/to/directory'
   }
@@ -404,13 +406,25 @@ powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.WEB_
 
 This SDK supports multiple Virtual File Systems (VFS), each responsible for storing the local SQLite database. The VFS you choose determines where data persists, how multiple browser tabs interact with the database, and whether concurrent reads are possible.
 
-#### 1. IDBBatchAtomicVFS (Default)
+#### 1. Automatic VFS Selection (recommended)
+
+Configure `vfs: 'auto'` when creating databases to make PowerSync select a suitable VFS automatically.
+
+Currently, PowerSync tries to store data using the Origin Private File System (OPFS). When OPFS is unavailable (e.g. in private windows in Safari or Firefox), this falls back to an in-memory database.
+For OPFS storage, the [simple OPFS](#3-opfs-based-alternatives) implementation is used.
+
+If you need to support a wide range of browsers, using `vfs: 'auto'` is the recommended option for a fast and
+simple file system implementation.
+
+#### 2. IDBBatchAtomicVFS (Default)
 
 The default VFS for applications that need the broadest browser compatibility. It uses IndexedDB for storage. Multiple tabs are fully supported across most modern browsers, and no additional configuration is needed.
 
-#### 2. OPFS-Based Alternatives
+<Note>Modern browsers also support OPFS, and `vfs: 'auto'` is much faster than IndexedDB storage.</Note>
 
-PowerSync supports three OPFS (Origin Private File System) implementations that are generally faster than IndexedDB:
+#### 3. OPFS-Based Alternatives
+
+PowerSync supports four OPFS (Origin Private File System) implementations that are generally faster than IndexedDB:
 
 **OPFSCoopSyncVFS**
 
@@ -426,6 +440,30 @@ export const db = new PowerSyncDatabase({
   database: {
     dbFilename: 'exampleVFS.db',
     vfs: WASQLiteVFS.OPFSCoopSyncVFS
+  }
+});
+```
+
+**SimpleOpfsVFS**
+
+This is a simplified variant of `OPFSCoopSyncVFS` which is faster on most browsers. It comes in three variants, out of which PowerSync automatically selects the best one based on available browser features:
+
+1. Shared workers (Firefox, Safari 27.3+): While relevant OPFS methods are only available in dedicated workers, shared workers can open their own dedicated workers on these browsers. This allows them to be shared across tabs.
+2. Concurrent file handles (Chromium-based browsers): Multiple tabs open the same underlying database file, and use navigator locks to avoid concurrent writes.
+3. Open coordination (older Safari versions): A tab keeps a database file open until it's idle and another tab is asking for it, at which point files are closed to allow progress in another tab.
+
+This VFS does not support `ATTACH` for additional databases. SQLite temporary data, such as materialized CTEs, always stays in memory.
+
+Example configuration:
+
+```js
+import { PowerSyncDatabase, WASQLiteVFS } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'exampleVFS.db',
+    vfs: WASQLiteVFS.SimpleOpfsVFS
   }
 });
 ```
@@ -505,6 +543,7 @@ export const db = new PowerSyncDatabase({
 | --- | --- | --- | --- | --- |
 | IDBBatchAtomicVFS | ✅ | ❌ | ❌ | Broadest compatibility, minimal setup |
 | OPFSCoopSyncVFS | ✅ | ✅ | ❌ | Multi-tab + Safari/iOS support |
+| SimpleOpfsVFS | ✅ | ✅ | ❌ | Fast and simple VFS, reasonable default |
 | AccessHandlePoolVFS | ❌ | ❌ | ❌ | Single-tab, single worker, access-handle OPFS |
 | OPFSWriteAheadVFS | ✅ | ❌ | ✅ | Chromium only; parallel reads via WAL + readers |
 | InMemoryVfs | ✅ | ❌ | ❌ | Development, small data sizes |

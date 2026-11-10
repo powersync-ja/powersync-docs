@@ -1,69 +1,213 @@
 ```typescript PowerSyncConnector.ts
-import type { CommonPowerSyncDatabase, PowerSyncBackendConnector } from '@powersync/react-native';
+import type { AbstractPowerSyncDatabase, CrudTransaction, PowerSyncBackendConnector } from '@powersync/react-native';
 
-// The endpoint on your backend that applies uploaded writes to your source database.
-// See https://docs.powersync.com/handling-writes/writing-client-changes
-const BACKEND_UPLOAD_URL = 'https://your-backend.example.com/api/upload';
+// Uploads local writes to the PowerSync reference write API, one transaction per request.
+// Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
+// If your backend has a different API, change the request and response handling in postTransaction() to match it,
+// or have a coding agent write uploadData() for your API:
+// https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
+// For several transactions per request and client-side backoff, see the full reference connector:
+// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
+
+/** Base URL of the write API. On a phone or emulator, `localhost` refers to the device itself. */
+const BACKEND_URL = 'http://localhost:6060';
+
+/** Abort a write API request after this many milliseconds. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Consecutive retryable errors for one transaction before it is passed to onFatalTransaction(). */
+const RETRY_MAX_ATTEMPTS = 10;
 
 export class MyBackendConnector implements PowerSyncBackendConnector {
+  private authToken: string | null = null;
+  private retryKey: number | string | null = null;
+  private retryCount = 0;
+
   async fetchCredentials() {
-    // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
-    // Supabase and Firebase tokens can be reused as they are:
-    // - https://docs.powersync.com/configuration/auth/supabase-auth
-    // - https://docs.powersync.com/configuration/auth/firebase-auth
     return {
       endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
-      // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
-      token: 'An authentication token'
+      token: await this.getAuthToken()
     };
   }
 
   /**
-   * Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
-   * keepalives, and keeps calling it until the upload queue is empty. Throwing makes the SDK retry after a delay.
+   * Uploads the oldest queued transaction. The SDK calls this after local writes, on (re)connect and on
+   * keepalives, and keeps calling it until the upload queue is empty. Throwing keeps the transaction queued,
+   * and the SDK retries after a delay.
    * See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
    */
-  async uploadData(database: CommonPowerSyncDatabase) {
-    // One local SQLite transaction per call keeps each upload atomic. To upload many small transactions in
-    // bulk, use `database.getCrudBatch(limit)` instead; it has the same `crud` entries and `complete()`.
+  async uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
     const transaction = await database.getNextCrudTransaction();
     if (!transaction) {
       return;
     }
 
-    // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction in
-    // one request keeps round trips down and lets your backend apply it atomically.
-    // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
-    const batch = transaction.crud.map((op) => ({
-      op: op.op, // 'PUT', 'PATCH' or 'DELETE'
-      table: op.table,
-      id: op.id,
-      data: op.opData // Changed columns for PUT and PATCH, undefined for DELETE
-    }));
-
-    const response = await fetch(BACKEND_UPLOAD_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ batch })
-    });
-
-    // Your backend's status code decides what happens to the transaction.
-    // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
-    if (response.ok) {
-      // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and write
-      // conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
-      await transaction.complete();
-      return;
+    let result: TransactionResult;
+    try {
+      result = await this.postTransaction(transaction);
+    } catch (error) {
+      // Network errors, timeouts and non-2xx responses. These don't count toward RETRY_MAX_ATTEMPTS.
+      if (error instanceof AuthenticationError) {
+        this.authToken = null; // Fetch a new token before the next attempt.
+      }
+      throw error;
     }
-    if (response.status >= 400 && response.status < 500) {
-      // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the transaction,
-      // otherwise everything behind it stays stuck.
-      console.error(`Backend rejected upload with ${response.status}, discarding transaction`, batch);
-      await transaction.complete();
-      return;
+
+    result = this.applyRetryLimit(transaction, result);
+
+    if (result.status === 'retryable_error') {
+      throw new Error(result.message ?? 'Retryable error');
     }
-    // 5xx or a network failure: temporary. Throwing keeps the transaction queued and the SDK retries it.
-    throw new Error(`Upload failed with ${response.status}`);
+    if (result.status === 'not_attempted') {
+      throw new Error('Write API did not attempt the transaction');
+    }
+    if (result.status === 'fatal_error' && result.requires_client_handling) {
+      if ((await this.onFatalTransaction(transaction, result)) === 'retain') {
+        throw new Error(`Transaction retained after ${result.failed_operation.error_code}`);
+      }
+    }
+    // Success, a fatal error that the write API already handled (for example, with a dead-letter hook),
+    // or a fatal error that onFatalTransaction() chose to discard.
+    await transaction.complete();
+  }
+
+  /**
+   * Called for fatal errors that the write API leaves to the client, and when a transaction reaches
+   * RETRY_MAX_ATTEMPTS. 'retain' keeps the transaction queued, which blocks later uploads, and the SDK calls this
+   * again on its next attempt. Return 'complete' to discard the transaction, for example after telling the user.
+   * See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
+   */
+  protected async onFatalTransaction(
+    transaction: CrudTransaction,
+    result: FatalResult
+  ): Promise<'retain' | 'complete'> {
+    console.error('Transaction needs client handling:', result.failed_operation.error_code, result.message);
+    return 'retain';
+  }
+
+  /**
+   * Returns the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
+   * The token is cached until the write API rejects it. If your auth provider's SDK refreshes sessions itself,
+   * return `this.fetchAuthToken()` directly instead.
+   */
+  private async getAuthToken(): Promise<string> {
+    if (!this.authToken) {
+      this.authToken = await this.fetchAuthToken();
+    }
+    return this.authToken;
+  }
+
+  /**
+   * Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+   * Supabase and Firebase tokens can be used as they are:
+   * - https://docs.powersync.com/configuration/auth/supabase-auth
+   * - https://docs.powersync.com/configuration/auth/firebase-auth
+   * To use a development token with the write API, see
+   * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
+   */
+  private async fetchAuthToken(): Promise<string> {
+    return 'An authentication token';
+  }
+
+  /** Sends one transaction to POST /api/data and returns its result. */
+  private async postTransaction(transaction: CrudTransaction): Promise<TransactionResult> {
+    const body = {
+      transactions: [
+        {
+          transaction_id: transaction.transactionId,
+          crud: transaction.crud.map((op) => ({
+            id: op.id,
+            op: op.op, // 'PUT', 'PATCH' or 'DELETE'
+            table: op.table,
+            transaction_id: op.transactionId,
+            op_data: op.opData // Changed columns for PUT and PATCH, undefined for DELETE
+          }))
+        }
+      ]
+    };
+
+    // Older React Native versions and React Native's type definitions lack AbortSignal.timeout(), so use a timer.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(`${BACKEND_URL}/api/data`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${await this.getAuthToken()}`
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      // Every non-2xx response from the write API has the shape { message }.
+      const { message } = await response.json().catch(() => ({ message: response.statusText }));
+      if (response.status === 401 || response.status === 403) {
+        throw new AuthenticationError(`Write API rejected the token (${response.status}): ${message}`);
+      }
+      throw new Error(`Write API request failed (${response.status}): ${message}`);
+    }
+
+    const { results } = (await response.json()) as { results: TransactionResult[] };
+    if (!Array.isArray(results) || results.length !== 1) {
+      throw new Error('Expected one result for one transaction');
+    }
+    return results[0];
+  }
+
+  /**
+   * Turns the RETRY_MAX_ATTEMPTS-th consecutive retryable error for the same transaction into a fatal error
+   * for onFatalTransaction(). The write API retries database errors that it doesn't recognize as permanent,
+   * so without a limit, one bad transaction could block the queue forever.
+   */
+  private applyRetryLimit(transaction: CrudTransaction, result: TransactionResult): TransactionResult {
+    if (result.status !== 'retryable_error') {
+      this.retryKey = null;
+      return result;
+    }
+    const key = transaction.transactionId ?? transaction.crud[0].clientId;
+    this.retryCount = key === this.retryKey ? this.retryCount + 1 : 1;
+    this.retryKey = key;
+    if (this.retryCount < RETRY_MAX_ATTEMPTS) {
+      return result;
+    }
+    this.retryCount = 0;
+    return {
+      status: 'fatal_error',
+      message: result.message,
+      requires_client_handling: true,
+      failed_operation: { error_code: 'RETRY_LIMIT_EXCEEDED', message: result.message }
+    };
   }
 }
+
+// Response types from the write API's OpenAPI spec:
+// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
+
+interface FatalResult {
+  status: 'fatal_error';
+  message?: string;
+  /** True: the write API leaves the decision to the client. False: the write API already handled the failure. */
+  requires_client_handling: boolean;
+  failed_operation: {
+    /** For example 'UNIQUE_VIOLATION', 'INVALID_DATA', 'UNAUTHORIZED', or an application-defined code. */
+    error_code: string;
+    message?: string;
+    details?: unknown;
+    operation_index?: number;
+  };
+}
+
+type TransactionResult =
+  | { status: 'success' | 'not_attempted' }
+  | { status: 'retryable_error'; message?: string; retry_after_ms?: number }
+  | FatalResult;
+
+/** Thrown when the write API rejects the token (401 or 403). */
+class AuthenticationError extends Error {}
 ```

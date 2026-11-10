@@ -5,7 +5,7 @@ description: "Optimize query performance in PowerSync client SDKs"
 
 PowerSync client SDKs use SQLite, and apply reasonable defaults to optimize performance:
 
-1. For all native targets, [write-ahead logging](https://www.sqlite.org/wal.html) (WAL) is enabled to support concurrent reads and writes. PowerSync also dispatches queries to multiple threads for parallelism. With the JavaScript web SDK, a WAL-like option is [available on Chromium browsers](/client-sdks/reference/javascript-web#2-opfs-based-alternatives).
+1. For all native targets, [write-ahead logging](https://www.sqlite.org/wal.html) (WAL) is enabled to support concurrent reads and writes. PowerSync also dispatches queries to multiple threads for parallelism. With the JavaScript web SDK, a WAL-like option is [available on Chromium browsers](/client-sdks/reference/javascript-web#3-opfs-based-alternatives).
 2. SDKs also configure connections for performance by enabling a large page cache of around 50MB and setting `pragma synchronous = normal` to avoid frequent fsync operations.
 
 ## Debugging Query Performance
@@ -132,10 +132,10 @@ Start with managed views. Change a table's type only if you hit a limit: its que
 | --- | --- | --- | --- |
 | Created and migrated by | PowerSync | PowerSync | You |
 | Queries read | JSON, through a view | SQLite columns | SQLite columns |
-| Schema changes | Near-instant | Take longer as the table grows | Migrations you write |
+| Schema changes | Near-instant | Dropping columns or switching between managed views and managed tables takes longer as the table grows | Migrations you write |
 
 - **Managed views:** Use these by default: schema changes are near-instant, because PowerSync only re-creates the views. The trade-off is slower queries that read many rows, such as aggregates and long lists.
-- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table whose queries read many rows, for example to filter, sort, aggregate or list them. The trade-off is that schema changes on a managed table take longer as the table grows.
+- **Managed tables (alpha):** Switch a table to a managed table if its queries are measurably too slow. This is typically a large table whose queries read many rows, for example to filter, sort, aggregate or list them. The trade-off is that dropping columns or switching formats between managed views and managed tables rewrites all rows. These [migrations](#migrations) can delay app startup on large tables.
 - **Raw tables:** Use [raw tables](/client-sdks/advanced/raw-tables) when you want full control over the SQLite table, for example to add foreign keys, custom triggers or expression indexes, or to use a library such as [Room](/client-sdks/orms/kotlin/room) that manages the schema. The trade-off is that you have to create and migrate the table yourself.
 
 ### Enabling Managed Tables
@@ -200,8 +200,13 @@ Before you switch a table, check how managed tables differ from managed views:
 
 ### Migrations
 
+<Note>
+  PowerSync currently has no API to report whether a managed-table migration is running or how far it has progressed. There is no API to defer these migrations while opening the database with the new schema. Account for the migration time in your app's database initialization flow, and test changes that rewrite rows before release, especially for large tables.
+</Note>
+
 PowerSync migrates managed tables for you, so you don't write migration code. It runs these migrations when your app opens the database with the new schema, before the database is ready for queries. Before you release an app update that changes a managed table, consider these points:
 
 - **Switching to or from a managed table:** Change the `direct` flag. PowerSync copies the table's rows into the new format on the device, without downloading them again. The copy takes longer as the table grows. In our tests, a table with 1 million rows took a few seconds.
-- **Adding or removing a column:** PowerSync runs the `ALTER TABLE` statements. These changes take longer as the table grows. In our tests on a table with 1 million rows, each change took up to about a second. On a managed view, the same changes are near-instant, because PowerSync only re-creates the view.
+- **Adding a column:** PowerSync runs `ALTER TABLE ADD COLUMN`. SQLite updates the table definition without rewriting existing rows, so the schema change takes approximately constant time regardless of the number of rows. Filling the new column with synced values is a separate step, described below.
+- **Dropping a column:** PowerSync runs `ALTER TABLE DROP COLUMN`, which rewrites every row to remove the column's data. The migration takes longer as the table grows. On tables with many millions of rows, avoid dropping columns unless you have tested the startup delay on representative devices and data. As a workaround, keep the unused column in the client-side schema to avoid this rewrite (this comes at the cost of retaining the column’s storage).
 - **New columns are empty until the next sync:** If an app update adds a column that is already synced, a managed view shows its values right away, even offline. A managed table shows `NULL` in that column until the next completed sync, so offline devices see `NULL` until they reconnect. PowerSync then fills the column from synced data already on the device, without downloading it again. Note that new columns are usually already synced when the app update ships, because our recommended order for [additive schema changes](/maintenance-ops/deploying-schema-changes) publishes the app last.

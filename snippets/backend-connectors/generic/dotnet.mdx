@@ -1,0 +1,81 @@
+```csharp PowerSyncConnector.cs
+using System;
+using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Threading.Tasks;
+using PowerSync.Common.Client;
+using PowerSync.Common.Client.Connection;
+using PowerSync.Common.DB.Crud;
+
+public class MyBackendConnector : IPowerSyncBackendConnector
+{
+    // The endpoint on your backend that applies uploaded writes to your source database.
+    // See https://docs.powersync.com/handling-writes/writing-client-changes
+    private const string BackendUploadUrl = "https://your-backend.example.com/api/upload";
+
+    private readonly HttpClient _httpClient = new();
+
+    public Task<PowerSyncCredentials?> FetchCredentials()
+    {
+        // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
+        // Supabase and Firebase tokens can be reused as they are:
+        // - https://docs.powersync.com/configuration/auth/supabase-auth
+        // - https://docs.powersync.com/configuration/auth/firebase-auth
+        return Task.FromResult<PowerSyncCredentials?>(new PowerSyncCredentials(
+            "[Your PowerSync instance URL or self-hosted endpoint]",
+            // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
+            "An authentication token"));
+    }
+
+    /// <summary>
+    /// Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
+    /// keepalives, and keeps calling it until the upload queue is empty. Throwing makes the SDK retry after a delay.
+    /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
+    /// </summary>
+    public async Task UploadData(IPowerSyncDatabase database)
+    {
+        // One local SQLite transaction per call keeps each upload atomic. To upload many small transactions in
+        // bulk, use `database.GetCrudBatch(limit)` instead; it has the same `Crud` entries and `Complete()`.
+        var transaction = await database.GetNextCrudTransaction();
+        if (transaction == null)
+        {
+            return;
+        }
+
+        // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction in
+        // one request keeps round trips down and lets your backend apply it atomically.
+        // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
+        var batch = transaction.Crud.Select(entry => new
+        {
+            op = entry.Op.ToString(), // PUT, PATCH or DELETE
+            table = entry.Table,
+            id = entry.Id,
+            data = entry.OpData // Changed columns for PUT and PATCH, null for DELETE
+        }).ToList();
+
+        var response = await _httpClient.PostAsJsonAsync(BackendUploadUrl, new { batch });
+        var status = (int)response.StatusCode;
+
+        // Your backend's status code decides what happens to the transaction.
+        // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
+        if (response.IsSuccessStatusCode)
+        {
+            // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and write
+            // conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
+            await transaction.Complete();
+            return;
+        }
+        if (status >= 400 && status < 500)
+        {
+            // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the transaction,
+            // otherwise everything behind it stays stuck.
+            Console.Error.WriteLine($"Backend rejected upload with {status}, discarding transaction");
+            await transaction.Complete();
+            return;
+        }
+        // 5xx or a network failure: temporary. Throwing keeps the transaction queued and the SDK retries it.
+        throw new HttpRequestException($"Upload failed with {status}");
+    }
+}
+```

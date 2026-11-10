@@ -1,0 +1,92 @@
+```rust src/connector.rs
+// src/connector.rs
+//
+// Uses the `reqwest` feature of the powersync crate, plus these crates:
+//   cargo add async-trait futures-lite serde_json reqwest --features reqwest/json
+use async_trait::async_trait;
+use futures_lite::StreamExt;
+use powersync::error::PowerSyncError;
+use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase};
+use serde_json::json;
+
+// The endpoint on your backend that applies uploaded writes to your source database.
+// See https://docs.powersync.com/handling-writes/writing-client-changes
+const BACKEND_UPLOAD_URL: &str = "https://your-backend.example.com/api/upload";
+
+pub struct MyBackendConnector {
+    pub db: PowerSyncDatabase,
+    pub http: reqwest::Client,
+}
+
+#[async_trait]
+impl BackendConnector for MyBackendConnector {
+    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+        // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
+        // Supabase and Firebase tokens can be reused as they are:
+        // - https://docs.powersync.com/configuration/auth/supabase-auth
+        // - https://docs.powersync.com/configuration/auth/firebase-auth
+        Ok(PowerSyncCredentials {
+            endpoint: "[Your PowerSync instance URL or self-hosted endpoint]".to_string(),
+            // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
+            token: "An authentication token".to_string(),
+        })
+    }
+
+    /// Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
+    /// keepalives, and keeps calling it until the upload queue is empty. Returning an error makes the SDK
+    /// retry after a delay.
+    /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
+    async fn upload_data(&self) -> Result<(), PowerSyncError> {
+        // The stream yields one local SQLite transaction at a time, which keeps each upload atomic.
+        let mut transactions = self.db.crud_transactions();
+        while let Some(tx) = transactions.try_next().await? {
+            // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction
+            // in one request keeps round trips down and lets your backend apply it atomically.
+            // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
+            let batch: Vec<serde_json::Value> = tx
+                .crud
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "op": &entry.update_type, // "PUT", "PATCH" or "DELETE"
+                        "table": &entry.table,
+                        "id": &entry.id,
+                        "data": &entry.data, // Changed columns for PUT and PATCH, null for DELETE
+                    })
+                })
+                .collect();
+
+            let response = self
+                .http
+                .post(BACKEND_UPLOAD_URL)
+                .json(&json!({ "batch": batch }))
+                .send()
+                .await?;
+            let status = response.status();
+
+            // Your backend's status code decides what happens to the transaction.
+            // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
+            if status.is_success() {
+                // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and
+                // write conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
+                tx.complete().await?;
+                continue;
+            }
+            if status.is_client_error() {
+                // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the
+                // transaction, otherwise everything behind it stays stuck.
+                eprintln!("Backend rejected upload with {status}, discarding transaction: {batch:?}");
+                tx.complete().await?;
+                continue;
+            }
+            // 5xx or a network failure: temporary. Returning an error keeps the transaction queued and the SDK
+            // retries it.
+            return Err(PowerSyncError::upload_error(std::io::Error::other(format!(
+                "Upload failed with {status}"
+            ))));
+        }
+
+        Ok(())
+    }
+}
+```

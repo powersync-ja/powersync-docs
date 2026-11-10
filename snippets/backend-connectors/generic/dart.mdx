@@ -1,0 +1,75 @@
+```dart lib/powersync.dart
+import 'dart:convert';
+
+import 'package:http/http.dart' as http; // Add the http package: https://pub.dev/packages/http
+import 'package:powersync/powersync.dart';
+
+// The endpoint on your backend that applies uploaded writes to your source database.
+// See https://docs.powersync.com/handling-writes/writing-client-changes
+final backendUploadUrl = Uri.parse('https://your-backend.example.com/api/upload');
+
+class MyBackendConnector extends PowerSyncBackendConnector {
+  @override
+  Future<PowerSyncCredentials?> fetchCredentials() async {
+    // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
+    // Supabase and Firebase tokens can be reused as they are:
+    // - https://docs.powersync.com/configuration/auth/supabase-auth
+    // - https://docs.powersync.com/configuration/auth/firebase-auth
+    return PowerSyncCredentials(
+      endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+      // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
+      token: 'An authentication token',
+    );
+  }
+
+  /// Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
+  /// keepalives, and keeps calling it until the upload queue is empty. Throwing makes the SDK retry after a delay.
+  /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
+  @override
+  Future<void> uploadData(PowerSyncDatabase database) async {
+    // One local SQLite transaction per call keeps each upload atomic. To upload many small transactions in
+    // bulk, use `database.getCrudBatch()` instead; it has the same `crud` entries and `complete()`.
+    final transaction = await database.getNextCrudTransaction();
+    if (transaction == null) {
+      return;
+    }
+
+    // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction in
+    // one request keeps round trips down and lets your backend apply it atomically.
+    // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
+    final batch = [
+      for (final op in transaction.crud)
+        {
+          'op': op.op.json, // PUT, PATCH or DELETE
+          'table': op.table,
+          'id': op.id,
+          'data': op.opData, // Changed columns for PUT and PATCH, null for DELETE
+        },
+    ];
+
+    final response = await http.post(
+      backendUploadUrl,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'batch': batch}),
+    );
+
+    // Your backend's status code decides what happens to the transaction.
+    // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and write
+      // conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
+      await transaction.complete();
+      return;
+    }
+    if (response.statusCode >= 400 && response.statusCode < 500) {
+      // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the transaction,
+      // otherwise everything behind it stays stuck.
+      print('Backend rejected upload with ${response.statusCode}, discarding transaction: $batch');
+      await transaction.complete();
+      return;
+    }
+    // 5xx or a network failure: temporary. Throwing keeps the transaction queued and the SDK retries it.
+    throw Exception('Upload failed with ${response.statusCode}');
+  }
+}
+```

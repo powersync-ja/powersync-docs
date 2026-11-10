@@ -1,0 +1,90 @@
+```kotlin PowerSync.kt
+// PowerSync.kt
+//
+// Uses the Ktor client and kotlinx.serialization JSON, which the PowerSync SDK already builds on. Add
+// them to your module if they are not there yet: https://ktor.io/docs/client-engines.html
+import com.powersync.PowerSyncDatabase
+import com.powersync.connectors.PowerSyncBackendConnector
+import com.powersync.connectors.PowerSyncCredentials
+import io.ktor.client.HttpClient
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+// The endpoint on your backend that applies uploaded writes to your source database.
+// See https://docs.powersync.com/handling-writes/writing-client-changes
+private const val BACKEND_UPLOAD_URL = "https://your-backend.example.com/api/upload"
+
+class MyBackendConnector(
+    private val httpClient: HttpClient = HttpClient(),
+) : PowerSyncBackendConnector() {
+    override suspend fun fetchCredentials(): PowerSyncCredentials? {
+        // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
+        // Supabase and Firebase tokens can be reused as they are:
+        // - https://docs.powersync.com/configuration/auth/supabase-auth
+        // - https://docs.powersync.com/configuration/auth/firebase-auth
+        return PowerSyncCredentials(
+            endpoint = "[Your PowerSync instance URL or self-hosted endpoint]",
+            // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
+            token = "An authentication token",
+        )
+    }
+
+    /**
+     * Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
+     * keepalives, and keeps calling it until the upload queue is empty. Throwing makes the SDK retry after a delay.
+     * See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
+     */
+    override suspend fun uploadData(database: PowerSyncDatabase) {
+        // One local SQLite transaction per call keeps each upload atomic. To upload many small transactions in
+        // bulk, use `database.getCrudBatch(limit)` instead; it has the same `crud` entries and `complete()`.
+        val transaction = database.getNextCrudTransaction() ?: return
+
+        // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction in
+        // one request keeps round trips down and lets your backend apply it atomically.
+        // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
+        val batch = buildJsonArray {
+            for (entry in transaction.crud) {
+                add(
+                    buildJsonObject {
+                        put("op", entry.op.toJson()) // PUT, PATCH or DELETE
+                        put("table", entry.table)
+                        put("id", entry.id)
+                        // Changed columns for PUT and PATCH, null for DELETE
+                        put("data", entry.opData?.jsonValues ?: JsonNull)
+                    },
+                )
+            }
+        }
+
+        val response = httpClient.post(BACKEND_UPLOAD_URL) {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("batch", batch) }.toString())
+        }
+        val status = response.status.value
+
+        // Your backend's status code decides what happens to the transaction.
+        // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
+        if (status in 200..299) {
+            // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and write
+            // conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
+            transaction.complete(null)
+            return
+        }
+        if (status in 400..499) {
+            // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the transaction,
+            // otherwise everything behind it stays stuck.
+            println("Backend rejected upload with $status, discarding transaction: $batch")
+            transaction.complete(null)
+            return
+        }
+        // 5xx or a network failure: temporary. Throwing keeps the transaction queued and the SDK retries it.
+        throw Exception("Upload failed with $status")
+    }
+}
+```

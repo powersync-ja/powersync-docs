@@ -1,0 +1,79 @@
+```swift PowerSyncConnector.swift
+import Foundation
+import PowerSync
+
+// The endpoint on your backend that applies uploaded writes to your source database.
+// See https://docs.powersync.com/handling-writes/writing-client-changes
+private let backendUploadUrl = URL(string: "https://your-backend.example.com/api/upload")!
+
+final class MyBackendConnector: PowerSyncBackendConnectorProtocol {
+    func fetchCredentials() async throws -> PowerSyncCredentials? {
+        // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
+        // Supabase and Firebase tokens can be reused as they are:
+        // - https://docs.powersync.com/configuration/auth/supabase-auth
+        // - https://docs.powersync.com/configuration/auth/firebase-auth
+        return PowerSyncCredentials(
+            endpoint: "[Your PowerSync instance URL or self-hosted endpoint]",
+            // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
+            token: "An authentication token"
+        )
+    }
+
+    /// Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
+    /// keepalives, and keeps calling it until the upload queue is empty. Throwing makes the SDK retry after a delay.
+    /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
+    func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+        // One local SQLite transaction per call keeps each upload atomic. To upload many small transactions in
+        // bulk, use `database.getCrudBatch(limit:)` instead; it has the same `crud` entries and `complete()`.
+        guard let transaction = try await database.getNextCrudTransaction() else {
+            return
+        }
+
+        // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction in
+        // one request keeps round trips down and lets your backend apply it atomically.
+        // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
+        let batch: [[String: Any]] = transaction.crud.map { entry in
+            var payload: [String: Any] = [
+                "op": entry.op.rawValue, // PUT, PATCH or DELETE
+                "table": entry.table,
+                "id": entry.id
+            ]
+            // Changed columns for PUT and PATCH, absent for DELETE
+            if let data = entry.opData {
+                var columns: [String: Any] = [:]
+                for (column, value) in data {
+                    columns[column] = value ?? NSNull()
+                }
+                payload["data"] = columns
+            }
+            return payload
+        }
+
+        var request = URLRequest(url: backendUploadUrl)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["batch": batch])
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+        // Your backend's status code decides what happens to the transaction.
+        // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
+        if (200..<300).contains(status) {
+            // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and write
+            // conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
+            try await transaction.complete()
+            return
+        }
+        if (400..<500).contains(status) {
+            // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the transaction,
+            // otherwise everything behind it stays stuck.
+            print("Backend rejected upload with \(status), discarding transaction: \(batch)")
+            try await transaction.complete()
+            return
+        }
+        // 5xx or a network failure: temporary. Throwing keeps the transaction queued and the SDK retries it.
+        throw URLError(.badServerResponse)
+    }
+}
+```

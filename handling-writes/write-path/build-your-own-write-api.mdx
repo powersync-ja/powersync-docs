@@ -30,6 +30,33 @@ Your API still has to meet the requirements in [Write Path Concepts](/handling-w
 
 For example backends in Django, Node.js, and other stacks, see [Example Projects](/intro/examples).
 
+{/* TODO(write-path): Update the Example Projects link when the example backends follow the reference API contract. */}
+
+## Best Practices
+
+Check your write API against this list before you deploy it. Except for the first item, these apply to any write API.
+
+- **Follow the reference API contract.** If your write API implements the [OpenAPI spec](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml), the reference connector and the [backend connector examples](/configuration/app-backend/backend-connector-examples#custom-backend) work without changes. If you design a different API, you write `uploadData()` yourself.
+- **Accept the JWT that your app sends to PowerSync.** Your backend connector then uses one token for sync and for uploads, and refreshes it in one place. Accept the audience that your PowerSync instance is configured for. See [Authenticating Writes](/handling-writes/write-path/concepts#authenticating-writes).
+- **Authorize every write.** PowerSync does not check writes, so a client can send any change to your write API. For each operation:
+  - Take the user ID from the token's `sub` claim, not from a column that the client sends.
+  - Accept only the tables and columns that clients may write. The client sends the table name, so never put an unchecked table name in SQL.
+  - For a `PATCH`, a `DELETE`, or a `PUT` that replaces a row, check that the user may change the existing row, not only the new values.
+- **Expect authorization to change while a device is offline.** Your write API checks a write when it arrives, which can be days after the user made it. If the user lost access in between, decide whether the write is a [rejected write](/handling-writes/write-path/concepts#rejected-writes) or a [blocked transaction](/handling-writes/write-path/concepts#blocked-transactions).
+- **Store writes before you respond.** Don't put writes in a queue to process later. Otherwise, the change disappears from the device until it reaches the source database and syncs. See [Applying Writes Before Responding](/handling-writes/write-path/concepts#applying-writes-before-responding).
+- **Apply each client transaction in one database transaction.** Then either all of its changes are stored or none are. Process transactions in the order that you receive them, and return one result per transaction in the same order. After a failure that stops the batch, return `not_attempted` for the remaining transactions, so that later writes don't overtake the failed one.
+- **Classify each failure.** The connector acts on the status of each result:
+  - Return `retryable_error` for failures that are likely to succeed later, such as a lost database connection or a deadlock. If you know how long to wait, add `retry_after_ms`.
+  - Return `fatal_error` for writes that can never succeed, such as constraint violations or invalid data. Return it in an HTTP 200 response. The connector retries every non-2xx response, so a 4xx or 5xx for a permanent failure blocks the queue.
+  - Set `requires_client_handling` to `true` when the user or an administrator can fix the cause, such as a missing permission. The connector then keeps the transaction in the queue.
+  - Return HTTP 401 or 403 only when the token is missing, invalid, or expired. After these responses, the connector fetches a new token.
+- **Store rejected writes in a dead-letter queue.** If you only log them, the user's change is lost. Store the transaction, the user ID, and the error, and alert when new entries arrive. If you apply an entry later, newer writes from the same client may already be applied. See [Rejected Writes](/handling-writes/write-path/concepts#rejected-writes).
+- **Make every write safe to repeat.** The connector can send a transaction again, for example when the response is lost after your write API committed it. Treat a `PUT` as an upsert, and treat a `PATCH` or `DELETE` of a missing row as a success. Deduplicate side effects such as notifications and webhooks.
+- **Accept writes from older app versions.** The upload queue is stored on the device, so writes made offline can arrive after you release a new app version or change your schema. Add tables and columns instead of renaming or removing the ones that older versions write to.
+- **Choose a conflict policy.** If your write API applies writes in the order they arrive, the last write to a column wins. If your app needs different behavior, see [Handling Update Conflicts](/handling-writes/handling-update-conflicts) and [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution).
+- **Validate values and size limits.** Check the type and range of each value in `op_data`, and return `fatal_error` for invalid data. If you set a request body size limit, make it larger than your largest transaction. A transaction that exceeds the limit fails on every retry and blocks the queue.
+- **Log enough to debug a stuck device.** For each failed operation, log the user ID, the table, the row ID, and the error code. Track how often your write API returns each error status. A blocked transaction is otherwise visible only on the device.
+
 ## Related Pages
 
 - [Reference Write Implementation](/handling-writes/write-path/reference-write-implementation): how uploads are applied, batching, and conflict behavior.

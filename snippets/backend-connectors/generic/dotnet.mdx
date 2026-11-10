@@ -1,8 +1,20 @@
 ```csharp PowerSyncConnector.cs
+// Uploads local writes to the PowerSync reference write API, one transaction per request.
+// Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
+// If your backend has a different API, change the request and response handling in PostTransaction() to match it,
+// or have a coding agent write UploadData() for your API:
+// https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
+// For several transactions per request and client-side backoff, see the full reference connector:
+// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using PowerSync.Common.Client;
 using PowerSync.Common.Client.Connection;
@@ -10,72 +22,237 @@ using PowerSync.Common.DB.Crud;
 
 public class MyBackendConnector : IPowerSyncBackendConnector
 {
-    // The endpoint on your backend that applies uploaded writes to your source database.
-    // See https://docs.powersync.com/handling-writes/writing-client-changes
-    private const string BackendUploadUrl = "https://your-backend.example.com/api/upload";
+    // Base URL of the write API. On a phone or emulator, `localhost` refers to the device itself.
+    private const string BackendUrl = "http://localhost:6060";
 
-    private readonly HttpClient _httpClient = new();
+    // Consecutive retryable errors for one transaction before it is passed to OnFatalTransaction().
+    private const int RetryMaxAttempts = 10;
 
-    public Task<PowerSyncCredentials?> FetchCredentials()
+    private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
-        // Supabase and Firebase tokens can be reused as they are:
-        // - https://docs.powersync.com/configuration/auth/supabase-auth
-        // - https://docs.powersync.com/configuration/auth/firebase-auth
-        return Task.FromResult<PowerSyncCredentials?>(new PowerSyncCredentials(
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    // Aborts a write API request after 30 seconds.
+    private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    private string? _authToken;
+    private long? _retryKey;
+    private int _retryCount;
+
+    public async Task<PowerSyncCredentials?> FetchCredentials()
+    {
+        return new PowerSyncCredentials(
             "[Your PowerSync instance URL or self-hosted endpoint]",
-            // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
-            "An authentication token"));
+            await GetAuthToken());
     }
 
     /// <summary>
-    /// Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
-    /// keepalives, and keeps calling it until the upload queue is empty. Throwing makes the SDK retry after a delay.
+    /// Uploads the oldest queued transaction. The SDK calls this after local writes, on (re)connect and on
+    /// keepalives, and keeps calling it until the upload queue is empty. Throwing keeps the transaction queued,
+    /// and the SDK retries after a delay.
     /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
     /// </summary>
     public async Task UploadData(IPowerSyncDatabase database)
     {
-        // One local SQLite transaction per call keeps each upload atomic. To upload many small transactions in
-        // bulk, use `database.GetCrudBatch(limit)` instead; it has the same `Crud` entries and `Complete()`.
         var transaction = await database.GetNextCrudTransaction();
         if (transaction == null)
         {
             return;
         }
 
-        // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction in
-        // one request keeps round trips down and lets your backend apply it atomically.
-        // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
-        var batch = transaction.Crud.Select(entry => new
+        TransactionResult result;
+        try
         {
-            op = entry.Op.ToString(), // PUT, PATCH or DELETE
-            table = entry.Table,
-            id = entry.Id,
-            data = entry.OpData // Changed columns for PUT and PATCH, null for DELETE
-        }).ToList();
-
-        var response = await _httpClient.PostAsJsonAsync(BackendUploadUrl, new { batch });
-        var status = (int)response.StatusCode;
-
-        // Your backend's status code decides what happens to the transaction.
-        // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
-        if (response.IsSuccessStatusCode)
-        {
-            // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and write
-            // conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
-            await transaction.Complete();
-            return;
+            result = await PostTransaction(transaction);
         }
-        if (status >= 400 && status < 500)
+        catch (AuthenticationException)
         {
-            // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the transaction,
-            // otherwise everything behind it stays stuck.
-            Console.Error.WriteLine($"Backend rejected upload with {status}, discarding transaction");
-            await transaction.Complete();
-            return;
+            // Fetch a new token before the next attempt. Like other transport errors, this doesn't count toward
+            // RetryMaxAttempts.
+            _authToken = null;
+            throw;
         }
-        // 5xx or a network failure: temporary. Throwing keeps the transaction queued and the SDK retries it.
-        throw new HttpRequestException($"Upload failed with {status}");
+
+        result = ApplyRetryLimit(transaction, result);
+
+        switch (result.Status)
+        {
+            case "success":
+                break;
+            case "retryable_error":
+                throw new Exception(result.Message ?? "Retryable error");
+            case "fatal_error":
+                if (result.RequiresClientHandling == true &&
+                    await OnFatalTransaction(transaction, result) == FatalDecision.Retain)
+                {
+                    throw new Exception($"Transaction retained after {result.FailedOperation?.ErrorCode}");
+                }
+                // A fatal error that the write API already handled (for example, with a dead-letter hook), or one
+                // that OnFatalTransaction() chose to discard.
+                break;
+            default:
+                throw new Exception($"Unexpected transaction result: {result.Status}");
+        }
+        await transaction.Complete();
+    }
+
+    /// <summary>
+    /// Called for fatal errors that the write API leaves to the client, and when a transaction reaches
+    /// RetryMaxAttempts. Retain keeps the transaction queued, which blocks later uploads, and the SDK calls this
+    /// again on its next attempt. Return Complete to discard the transaction, for example after telling the user.
+    /// See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
+    /// </summary>
+    protected virtual Task<FatalDecision> OnFatalTransaction(CrudTransaction transaction, TransactionResult result)
+    {
+        Console.Error.WriteLine($"Transaction needs client handling: {result.FailedOperation?.ErrorCode} {result.Message}");
+        return Task.FromResult(FatalDecision.Retain);
+    }
+
+    /// <summary>
+    /// Returns the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
+    /// The token is cached until the write API rejects it. If your auth provider's SDK refreshes sessions itself,
+    /// return FetchAuthToken() directly instead.
+    /// </summary>
+    private async Task<string> GetAuthToken()
+    {
+        return _authToken ??= await FetchAuthToken();
+    }
+
+    /// <summary>
+    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+    /// Supabase and Firebase tokens can be used as they are:
+    /// - https://docs.powersync.com/configuration/auth/supabase-auth
+    /// - https://docs.powersync.com/configuration/auth/firebase-auth
+    /// To use a development token with the write API, see
+    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
+    /// </summary>
+    private Task<string> FetchAuthToken()
+    {
+        return Task.FromResult("An authentication token");
+    }
+
+    /// <summary>
+    /// Sends one transaction to POST /api/data and returns its result. The request and response shapes are defined
+    /// by the write API's OpenAPI spec:
+    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
+    /// </summary>
+    private async Task<TransactionResult> PostTransaction(CrudTransaction transaction)
+    {
+        var body = new TransactionBatch([
+            new TransactionBody(
+                transaction.TransactionId,
+                transaction.Crud.Select(op => new CrudBody(
+                    op.Id,
+                    op.Op.ToString(), // PUT, PATCH or DELETE
+                    op.Table,
+                    op.TransactionId,
+                    op.OpData // Changed columns for PUT and PATCH, null for DELETE
+                )).ToList())
+        ]);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{BackendUrl}/api/data")
+        {
+            Content = JsonContent.Create(body, options: JsonOptions)
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetAuthToken());
+
+        using var response = await _httpClient.SendAsync(request);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            // Every non-2xx response from the write API has the shape { message }.
+            string? message = null;
+            try
+            {
+                message = (await response.Content.ReadFromJsonAsync<MessageResponse>())?.Message;
+            }
+            catch (JsonException)
+            {
+            }
+            message ??= response.ReasonPhrase;
+            var status = (int)response.StatusCode;
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                throw new AuthenticationException($"Write API rejected the token ({status}): {message}");
+            }
+            throw new HttpRequestException($"Write API request failed ({status}): {message}");
+        }
+
+        var results = (await response.Content.ReadFromJsonAsync<TransactionBatchResponse>())?.Results;
+        if (results is not { Count: 1 })
+        {
+            throw new Exception("Expected one result for one transaction");
+        }
+        return results[0];
+    }
+
+    /// <summary>
+    /// Turns the RetryMaxAttempts-th consecutive retryable error for the same transaction into a fatal error for
+    /// OnFatalTransaction(). The write API retries database errors that it doesn't recognize as permanent, so
+    /// without a limit, one bad transaction could block the queue forever.
+    /// </summary>
+    private TransactionResult ApplyRetryLimit(CrudTransaction transaction, TransactionResult result)
+    {
+        if (result.Status != "retryable_error")
+        {
+            _retryKey = null;
+            return result;
+        }
+        long key = transaction.TransactionId ?? transaction.Crud[0].ClientId;
+        _retryCount = key == _retryKey ? _retryCount + 1 : 1;
+        _retryKey = key;
+        if (_retryCount < RetryMaxAttempts)
+        {
+            return result;
+        }
+        _retryCount = 0;
+        return new TransactionResult(
+            "fatal_error",
+            result.Message,
+            RequiresClientHandling: true,
+            new FailedOperation("RETRY_LIMIT_EXCEEDED", result.Message));
     }
 }
+
+public enum FatalDecision { Retain, Complete }
+
+// Request and response types from the write API's OpenAPI spec.
+
+record TransactionBatch(
+    [property: JsonPropertyName("transactions")] List<TransactionBody> Transactions);
+
+record TransactionBody(
+    [property: JsonPropertyName("transaction_id")] long? TransactionId,
+    [property: JsonPropertyName("crud")] List<CrudBody> Crud);
+
+record CrudBody(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("op")] string Op,
+    [property: JsonPropertyName("table")] string Table,
+    [property: JsonPropertyName("transaction_id")] long? TransactionId,
+    [property: JsonPropertyName("op_data")] Dictionary<string, object>? OpData);
+
+record TransactionBatchResponse(
+    // One result per transaction sent.
+    [property: JsonPropertyName("results")] List<TransactionResult> Results);
+
+// Status is "success", "retryable_error", "fatal_error" or "not_attempted".
+// For a fatal error, RequiresClientHandling is true if the write API leaves the decision to the client, and false
+// if it already handled the failure.
+public record TransactionResult(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("message")] string? Message = null,
+    [property: JsonPropertyName("requires_client_handling")] bool? RequiresClientHandling = null,
+    [property: JsonPropertyName("failed_operation")] FailedOperation? FailedOperation = null);
+
+// ErrorCode is, for example, "UNIQUE_VIOLATION", "INVALID_DATA", "UNAUTHORIZED", or an application-defined code.
+public record FailedOperation(
+    [property: JsonPropertyName("error_code")] string ErrorCode,
+    [property: JsonPropertyName("message")] string? Message = null);
+
+record MessageResponse([property: JsonPropertyName("message")] string Message);
+
+// Thrown when the write API rejects the token (401 or 403).
+public class AuthenticationException(string message) : Exception(message);
 ```

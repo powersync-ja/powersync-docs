@@ -1,79 +1,245 @@
 ```swift PowerSyncConnector.swift
+// Uploads local writes to the PowerSync reference write API, one transaction per request.
+// Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
+// If your backend has a different API, change the request and response handling in postTransaction() to match it,
+// or have a coding agent write uploadData() for your API:
+// https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
+// For several transactions per request and client-side backoff, see the full reference connector:
+// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
 import Foundation
 import PowerSync
 
-// The endpoint on your backend that applies uploaded writes to your source database.
-// See https://docs.powersync.com/handling-writes/writing-client-changes
-private let backendUploadUrl = URL(string: "https://your-backend.example.com/api/upload")!
+/// Base URL of the write API. On a phone or simulator, `localhost` refers to the device itself.
+private let backendUrl = URL(string: "http://localhost:6060")!
 
-final class MyBackendConnector: PowerSyncBackendConnectorProtocol {
+/// Abort a write API request after this many seconds.
+private let requestTimeout: TimeInterval = 30
+
+/// Consecutive retryable errors for one transaction before it is passed to onFatalTransaction().
+private let retryMaxAttempts = 10
+
+/// An actor, because the SDK requires a Sendable connector and this one caches a token and a retry count.
+actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
+    private var authToken: String?
+    private var retryKey: Int64?
+    private var retryCount = 0
+
     func fetchCredentials() async throws -> PowerSyncCredentials? {
-        // Return a JWT that the PowerSync Service can verify. See https://docs.powersync.com/configuration/auth/overview
-        // Supabase and Firebase tokens can be reused as they are:
-        // - https://docs.powersync.com/configuration/auth/supabase-auth
-        // - https://docs.powersync.com/configuration/auth/firebase-auth
         return PowerSyncCredentials(
             endpoint: "[Your PowerSync instance URL or self-hosted endpoint]",
-            // A development token gets you running quickly: https://docs.powersync.com/configuration/auth/development-tokens
-            token: "An authentication token"
+            token: try await getAuthToken()
         )
     }
 
-    /// Uploads local writes to your backend. The SDK calls this after local writes, on (re)connect and on
-    /// keepalives, and keeps calling it until the upload queue is empty. Throwing makes the SDK retry after a delay.
+    /// Uploads the oldest queued transaction. The SDK calls this after local writes, on (re)connect and on
+    /// keepalives, and keeps calling it until the upload queue is empty. Throwing keeps the transaction queued,
+    /// and the SDK retries after a delay.
     /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
     func uploadData(database: PowerSyncDatabaseProtocol) async throws {
-        // One local SQLite transaction per call keeps each upload atomic. To upload many small transactions in
-        // bulk, use `database.getCrudBatch(limit:)` instead; it has the same `crud` entries and `complete()`.
         guard let transaction = try await database.getNextCrudTransaction() else {
             return
         }
 
-        // Each entry is a PUT (insert), PATCH (update) or DELETE of one row. Sending the whole transaction in
-        // one request keeps round trips down and lets your backend apply it atomically.
-        // See https://docs.powersync.com/handling-writes/writing-client-changes#write-operations-recorded-on-the-client
-        let batch: [[String: Any]] = transaction.crud.map { entry in
-            var payload: [String: Any] = [
-                "op": entry.op.rawValue, // PUT, PATCH or DELETE
-                "table": entry.table,
-                "id": entry.id
-            ]
-            // Changed columns for PUT and PATCH, absent for DELETE
-            if let data = entry.opData {
-                var columns: [String: Any] = [:]
-                for (column, value) in data {
-                    columns[column] = value ?? NSNull()
-                }
-                payload["data"] = columns
-            }
-            return payload
+        var result: TransactionResult
+        do {
+            result = try await postTransaction(transaction)
+        } catch let error as AuthenticationError {
+            // Fetch a new token before the next attempt. Like other transport errors, this doesn't count toward
+            // retryMaxAttempts.
+            authToken = nil
+            throw error
         }
 
-        var request = URLRequest(url: backendUploadUrl)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["batch": batch])
+        result = applyRetryLimit(transaction, result)
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        switch result.status {
+        case "success":
+            break
+        case "retryable_error":
+            throw UploadError(message: result.message ?? "Retryable error")
+        case "fatal_error":
+            if result.requiresClientHandling == true,
+               await onFatalTransaction(transaction, result) == .retain {
+                throw UploadError(message: "Transaction retained after \(result.failedOperation?.errorCode ?? "")")
+            }
+            // A fatal error that the write API already handled (for example, with a dead-letter hook), or one that
+            // onFatalTransaction() chose to discard.
+        default:
+            throw UploadError(message: "Unexpected transaction result: \(result.status)")
+        }
+        try await transaction.complete()
+    }
+
+    /// Called for fatal errors that the write API leaves to the client, and when a transaction reaches
+    /// retryMaxAttempts. `.retain` keeps the transaction queued, which blocks later uploads, and the SDK calls this
+    /// again on its next attempt. Return `.complete` to discard the transaction, for example after telling the user.
+    /// See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
+    func onFatalTransaction(_ transaction: CrudTransaction, _ result: TransactionResult) async -> FatalDecision {
+        print("Transaction needs client handling: \(result.failedOperation?.errorCode ?? "") \(result.message ?? "")")
+        return .retain
+    }
+
+    /// Returns the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
+    /// The token is cached until the write API rejects it. If your auth provider's SDK refreshes sessions itself,
+    /// return `fetchAuthToken()` directly instead.
+    private func getAuthToken() async throws -> String {
+        if let authToken {
+            return authToken
+        }
+        let token = try await fetchAuthToken()
+        authToken = token
+        return token
+    }
+
+    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+    /// Supabase and Firebase tokens can be used as they are:
+    /// - https://docs.powersync.com/configuration/auth/supabase-auth
+    /// - https://docs.powersync.com/configuration/auth/firebase-auth
+    /// To use a development token with the write API, see
+    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
+    private func fetchAuthToken() async throws -> String {
+        return "An authentication token"
+    }
+
+    /// Sends one transaction to POST /api/data and returns its result. The request and response shapes are defined
+    /// by the write API's OpenAPI spec:
+    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
+    private func postTransaction(_ transaction: CrudTransaction) async throws -> TransactionResult {
+        let body = TransactionBatch(transactions: [
+            TransactionBody(
+                transactionId: transaction.transactionId,
+                crud: transaction.crud.map { op in
+                    CrudBody(
+                        id: op.id,
+                        op: op.op.rawValue, // PUT, PATCH or DELETE
+                        table: op.table,
+                        transactionId: op.transactionId,
+                        opData: op.opDataTyped // Changed columns for PUT and PATCH, nil for DELETE
+                    )
+                }
+            ),
+        ])
+
+        var request = URLRequest(url: backendUrl.appendingPathComponent("api/data"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(try await getAuthToken())", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 
-        // Your backend's status code decides what happens to the transaction.
-        // See https://docs.powersync.com/handling-writes/handling-write-validation-errors
-        if (200..<300).contains(status) {
-            // 2xx: applied. Completing removes the transaction from the queue. Report validation errors and write
-            // conflicts with a 2xx too, in the response body or a synced table, so they never block the queue.
-            try await transaction.complete()
-            return
+        guard (200..<300).contains(status) else {
+            // Every non-2xx response from the write API has the shape { message }.
+            let message = (try? JSONDecoder().decode(MessageResponse.self, from: data))?.message
+                ?? HTTPURLResponse.localizedString(forStatusCode: status)
+            if status == 401 || status == 403 {
+                throw AuthenticationError(message: "Write API rejected the token (\(status)): \(message)")
+            }
+            throw UploadError(message: "Write API request failed (\(status)): \(message)")
         }
-        if (400..<500).contains(status) {
-            // 4xx: rejected for good. Retrying cannot succeed, so record the entries and complete the transaction,
-            // otherwise everything behind it stays stuck.
-            print("Backend rejected upload with \(status), discarding transaction: \(batch)")
-            try await transaction.complete()
-            return
+
+        let results = try JSONDecoder().decode(TransactionBatchResponse.self, from: data).results
+        guard results.count == 1 else {
+            throw UploadError(message: "Expected one result for one transaction")
         }
-        // 5xx or a network failure: temporary. Throwing keeps the transaction queued and the SDK retries it.
-        throw URLError(.badServerResponse)
+        return results[0]
     }
+
+    /// Turns the retryMaxAttempts-th consecutive retryable error for the same transaction into a fatal error for
+    /// onFatalTransaction(). The write API retries database errors that it doesn't recognize as permanent, so
+    /// without a limit, one bad transaction could block the queue forever.
+    private func applyRetryLimit(_ transaction: CrudTransaction, _ result: TransactionResult) -> TransactionResult {
+        guard result.status == "retryable_error" else {
+            retryKey = nil
+            return result
+        }
+        let key = transaction.transactionId ?? transaction.crud[0].clientId
+        retryCount = key == retryKey ? retryCount + 1 : 1
+        retryKey = key
+        if retryCount < retryMaxAttempts {
+            return result
+        }
+        retryCount = 0
+        return TransactionResult(
+            status: "fatal_error",
+            message: result.message,
+            requiresClientHandling: true,
+            failedOperation: FailedOperation(errorCode: "RETRY_LIMIT_EXCEEDED", message: result.message)
+        )
+    }
+}
+
+enum FatalDecision {
+    case retain, complete
+}
+
+// Request and response types from the write API's OpenAPI spec.
+
+private struct TransactionBatch: Encodable {
+    let transactions: [TransactionBody]
+}
+
+private struct TransactionBody: Encodable {
+    let transactionId: Int64?
+    let crud: [CrudBody]
+
+    enum CodingKeys: String, CodingKey {
+        case transactionId = "transaction_id", crud
+    }
+}
+
+private struct CrudBody: Encodable {
+    let id: String
+    let op: String
+    let table: String
+    let transactionId: Int64?
+    let opData: JsonParam?
+
+    enum CodingKeys: String, CodingKey {
+        case id, op, table, transactionId = "transaction_id", opData = "op_data"
+    }
+}
+
+private struct TransactionBatchResponse: Decodable {
+    /// One result per transaction sent.
+    let results: [TransactionResult]
+}
+
+/// `status` is "success", "retryable_error", "fatal_error" or "not_attempted".
+struct TransactionResult: Decodable, Sendable {
+    let status: String
+    let message: String?
+    /// For a fatal error. True: the write API leaves the decision to the client. False: it already handled the failure.
+    let requiresClientHandling: Bool?
+    let failedOperation: FailedOperation?
+
+    enum CodingKeys: String, CodingKey {
+        case status, message, requiresClientHandling = "requires_client_handling", failedOperation = "failed_operation"
+    }
+}
+
+struct FailedOperation: Decodable, Sendable {
+    /// For example "UNIQUE_VIOLATION", "INVALID_DATA", "UNAUTHORIZED", or an application-defined code.
+    let errorCode: String
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case errorCode = "error_code", message
+    }
+}
+
+private struct MessageResponse: Decodable {
+    let message: String
+}
+
+struct UploadError: Error {
+    let message: String
+}
+
+/// Thrown when the write API rejects the token (401 or 403).
+struct AuthenticationError: Error {
+    let message: String
 }
 ```

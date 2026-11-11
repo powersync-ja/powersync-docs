@@ -258,18 +258,9 @@ export const db = new PowerSyncDatabase({
 
 ## Storing OPFS Data in a Storage Bucket
 
-Since version 2.6.0, `@powersync/web` can store an OPFS database in a named [Storage Bucket](https://wicg.github.io/storage-buckets/) instead of the site's default bucket. Use the `storageBucket` option to avoid a [Chromium bug](https://issues.chromium.org/issues/575150688) that affects the default bucket when the site's data is deleted while your app is open.
+Since version 2.6.0, the `storageBucket` option stores an OPFS database in a named [Storage Bucket](https://wicg.github.io/storage-buckets/) instead of the site's default bucket. This avoids a [Chromium bug](https://issues.chromium.org/issues/575150688) in the default bucket. If the site's data is deleted while a tab has the database open, for example through Chrome's site settings or a `Clear-Site-Data: "storage"` header, the browser can later delete a database that another tab created, or make every OPFS call for the site fail with an `InvalidStateError` until the browser restarts.
 
-The bug affects tabs that have the database open when the site's data is deleted, such as when a user deletes it in Chrome's site settings or your app responds with a `Clear-Site-Data: "storage"` header. Those tabs keep file handles from before the deletion. When they later use or close those handles, for example when the user closes the tab, one of these problems can occur:
-
-- Every OPFS call for the site fails with `InvalidStateError: An operation that depends on state cached in an interface object was made but the state had changed since it was read from disk.` Your app can't open its database in any tab, and reloading doesn't help. Restarting the browser clears this state.
-- If another tab has already created a new database, the browser deletes that database without reporting an error to that tab.
-
-In a named bucket, handles from before the deletion fail without affecting other tabs, so neither problem occurs. The option doesn't protect data from deletion: the browser deletes a named bucket with the rest of the site's data, and the SDK creates the bucket again the next time it opens the database.
-
-The option works with every OPFS-based VFS, including `vfs: 'auto'`. With `IDBBatchAtomicVFS` or `InMemoryVfs`, the `PowerSyncDatabase` constructor throws a configuration error.
-
-The option requires the Storage Buckets API, which Chromium-based browsers such as Chrome and Edge support, but Firefox and Safari don't. Without the API, opening the database fails, so set the option only when the API exists:
+Consider this option if your app uses an OPFS-based VFS, including `vfs: 'auto'`, and supports Chromium-based browsers such as Chrome and Edge. Firefox and Safari don't support the Storage Buckets API, and opening the database fails without it, so set the option only when the API exists:
 
 ```js
 import { PowerSyncDatabase } from '@powersync/web';
@@ -284,9 +275,7 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
-The SDK opens the bucket by name only, so a bucket that the SDK creates uses the browser's default options. To set bucket options, call and await `navigator.storageBuckets.open()` with those options every time before you create the `PowerSyncDatabase`.
-
-If your app already stores data in the default bucket, adding this option works like switching VFS: the SDK starts with a new, empty database and doesn't move the old files. Before you add it, upload pending mutations and follow the other guidance for [switching VFS implementations](#switching-vfs-implementations).
+If your app already stores data in the default bucket, adding this option starts a new, empty database. Follow the guidance for [switching VFS implementations](#switching-vfs-implementations) before you add it.
 
 ## Managing OPFS Storage
 
@@ -323,4 +312,4 @@ async function listVfsEntries() {
 }
 ```
 
-These functions only access the default bucket. To delete a database that you store with `storageBucket`, close it and call `navigator.storageBuckets.delete()` with the bucket name. This deletes the bucket and every file in it.
+These functions only access the default bucket. If you use `storageBucket`, close the database and call `navigator.storageBuckets.delete()` with the bucket name to delete it.

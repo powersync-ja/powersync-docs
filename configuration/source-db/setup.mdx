@@ -356,7 +356,7 @@ To replicate data from MongoDB to PowerSync in a consistent manner, PowerSync us
 PowerSync supports three configuration options for post-images:
 
 1. **Off**: (`post_images: off`): Uses `fullDocument: 'updateLookup'` for backwards compatibility. This was the default for older instances. However, this may lead to consistency issues, so we strongly recommend enabling post-images instead.
-2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on collections as needed. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
+2. **Auto-Configure**: (`post_images: auto_configure`) The **default** for new instances: Automatically enables the `changeStreamPreAndPostImages` option on each replicated collection after the Service discovers it. Requires the permissions/privileges mentioned above. If a collection is removed from [Sync Streams](/sync/streams/overview), you need to manually disable `changeStreamPreAndPostImages` on that collection.
 3. **Read-only**: (`post_images: read_only`): Uses `fullDocument: 'required'` and requires `changeStreamPreAndPostImages: { enabled: true }` to be set on every collection referenced in your Sync Streams. Replication will error if this is not configured. This option is ideal when permissions are restricted.
 
 To manually configure collections for `read_only` mode, run this command on each collection:
@@ -387,6 +387,24 @@ Post-images can be configured for PowerSync instances as follows:
     Configure `post_images` in the `service.yaml` file.
   </Card>
 </CardGroup>
+
+With **Auto-Configure**, replication lag or Service downtime can delay discovery of a new collection. If documents in that collection are updated before the Service enables `changeStreamPreAndPostImages`, the post-images for those updates are missing. The Service then creates a new replication stream and snapshots all replicated collections again.
+
+To avoid this full reprocess, enable the option when you create a collection, before writing to it. With **Read-only**, you must do this for every new collection, because the Service does not enable the option itself. Run this command in `mongosh` against the source database:
+
+```javascript
+db.createCollection('todos', {
+  changeStreamPreAndPostImages: { enabled: true }
+});
+```
+
+Keep `changeStreamPreAndPostImages` enabled while a collection is replicated. Disabling it can interrupt replication and require a full reprocess.
+
+### Replication Pre-filtering
+
+Use replication pre-filtering when your instance needs only some of the documents in a collection, such as active records only. Excluded documents never enter PowerSync bucket storage, so the Service stores only the documents you need. With a suitable source index, pre-filtering also speeds up initial replication, because the Service reads only the matching documents from your source database.
+
+Pre-filtering is available on the [Team and Enterprise](https://www.powersync.com/pricing) plans. Pre-filtering also requires Post Images set to **Auto-Configure** or **Read-only**. For setup, see [MongoDB Replication Pre-filtering](/sync/advanced/mongodb-replication-pre-filtering).
 
 ### MongoDB Atlas Private Endpoints Using AWS PrivateLink
 

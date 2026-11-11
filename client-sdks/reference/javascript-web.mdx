@@ -102,7 +102,7 @@ The available column types are `text`, `integer`, and `real`. These should match
 
 **Example:**
 
-```js
+```typescript
 // AppSchema.ts
 import { column, Schema, Table } from '@powersync/web';
 
@@ -146,6 +146,8 @@ export type ListRecord = Database['lists'];
 
 Next, instantiate the PowerSync database. PowerSync streams changes from your backend source database into the client-side SQLite database, based on your Sync Streams. Your app reads from and writes to this local database whether the user is online or offline.
 
+The example selects `vfs: 'auto'` (`@powersync/web` version 2.7.0 and later), which is recommended for broad browser support. If you omit `vfs`, the SDK uses IndexedDB for backward compatibility. Review [VFS selection](/client-sdks/reference/javascript-web-storage#sqlite-virtual-file-systems) for Safari guidance, the in-memory fallback when the Origin Private File System (OPFS) is unavailable, and switching an existing database.
+
 **Example:**
 
 ```js
@@ -159,7 +161,7 @@ export const db = new PowerSyncDatabase({
   database: {
     // Filename for the SQLite database — it's important to only instantiate one instance per file.
     dbFilename: 'powersync.db',
-    // Use a suitable OPFS storage (recommended). The default is IndexedDB for backwards compatibility.
+    // Select storage based on browser capabilities.
     vfs: 'auto',
     // Optional. Directory where the database file is located.
     // dbLocation: 'path/to/directory'
@@ -381,6 +383,44 @@ Run the following command in your project folder:
 
 ## Developer Notes
 
+### Browser Storage and Multiple Tabs
+
+{/* Preserve the moved section anchors so existing links reach the guides below. */}
+
+<span id="sqlite-virtual-file-systems" />
+
+<span id="vfs-comparison" />
+
+<span id="automatic-vfs-selection" />
+
+<span id="simpleopfsvfs" />
+
+<span id="idbbatchatomicvfs-default" />
+
+<span id="opfscoopsyncvfs" />
+
+<span id="opfswriteaheadvfs" />
+
+<span id="accesshandlepoolvfs" />
+
+<span id="inmemoryvfs" />
+
+<span id="multiple-tab-support" />
+
+<span id="behavior-without-shared-workers" />
+
+<span id="multi-threaded-in-memory-sqlite-connection-pool" />
+
+<span id="managing-opfs-storage" />
+
+<span id="vfs--option-compatibility-matrix" />
+
+<span id="switching-vfs-implementations" />
+
+<span id="automatic-vfs-selection-recommended" />
+
+For storage recommendations, persistence, and browser compatibility, see [SQLite Virtual File Systems](/client-sdks/reference/javascript-web-storage#sqlite-virtual-file-systems). For how tabs share local data and sync connections, see [Multiple Tab Support](/client-sdks/reference/javascript-web-storage#multiple-tab-support).
+
 ### Connection Methods
 
 This SDK supports two methods for streaming sync commands:
@@ -395,292 +435,14 @@ This SDK supports two methods for streaming sync commands:
 By default, the `PowerSyncDatabase.connect()` method uses HTTP streaming. You can optionally specify the `connectionMethod` to override this:
 
 ```js
+import { SyncStreamConnectionMethod } from '@powersync/web';
+
 // HTTP Streaming (default)
-powerSync.connect(connector);
+db.connect(connector);
 
 // WebSocket
-powerSync.connect(connector, { connectionMethod: SyncStreamConnectionMethod.WEB_SOCKET });
+db.connect(connector, { connectionMethod: SyncStreamConnectionMethod.WEB_SOCKET });
 ```
-
-### SQLite Virtual File Systems
-
-This SDK supports multiple Virtual File Systems (VFS), each responsible for storing the local SQLite database. The VFS you choose determines where data persists, how multiple browser tabs interact with the database, and whether concurrent reads are possible.
-
-<Info>
-  The VFS options listed here are not compatible with each other. When switching between them, use a new database file name and note that existing data will be lost.
-</Info>
-
-#### 1. Automatic VFS Selection (Recommended)
-
-Starting from `@powersync/web` version `2.7.0`, configure `vfs: 'auto'` when creating databases to make PowerSync select a suitable VFS automatically.
-
-Currently, PowerSync tries to store data using the Origin Private File System (OPFS). When OPFS is unavailable (e.g. in private windows in Safari or Firefox), this falls back to an in-memory database. For OPFS storage, the [simple OPFS](#3-opfs-based-alternatives) implementation is used.
-
-If you need to support a wide range of browsers, using `vfs: 'auto'` is the recommended option.
-
-#### 2. IDBBatchAtomicVFS (Default)
-
-<Note>
-  This is the default VFS for backwards compatibility. Modern browsers also support OPFS, using `vfs: 'auto'` avoids asynchronous IndexedDB overhead and is a better option for most apps.
-</Note>
-
-A VFS using IndexedDB for storage. Multiple tabs are fully supported across most modern browsers, and no additional configuration is needed.
-
-#### 3. OPFS-Based Alternatives
-
-PowerSync supports four OPFS (Origin Private File System) implementations that are generally faster than IndexedDB:
-
-**OPFSCoopSyncVFS**
-
-Recommended for applications requiring multi-tab support, especially on Safari/iOS. This implementation provides multi-tab support across all major browsers and offers the most reliable compatibility with Safari and Safari iOS.
-
-Example configuration:
-
-```js
-import { PowerSyncDatabase, WASQLiteVFS } from '@powersync/web';
-
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: 'exampleVFS.db',
-    vfs: WASQLiteVFS.OPFSCoopSyncVFS
-  }
-});
-```
-
-**SimpleOpfsVFS**
-
-This is a simplified variant of `OPFSCoopSyncVFS`. It comes in three variants, out of which PowerSync automatically selects the best one based on available browser features:
-
-1. Shared workers (Firefox, Safari 27.3+): While relevant OPFS methods are only available in dedicated workers, shared workers can open their own dedicated workers on these browsers. This allows them to be shared across tabs.
-2. Concurrent file handles (Chromium-based browsers): Multiple tabs open the same underlying database file, and use navigator locks to avoid concurrent writes.
-3. Open coordination (older Safari versions): A tab keeps a database file open until it's idle and another tab is asking for it, at which point files are closed to allow progress in another tab.
-
-This VFS does not support `ATTACH` for additional databases. SQLite temporary data, such as materialized CTEs, always stays in memory.
-
-Example configuration:
-
-```js
-import { PowerSyncDatabase, WASQLiteVFS } from '@powersync/web';
-
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: 'exampleVFS.db',
-    vfs: WASQLiteVFS.SimpleOpfsVFS
-  }
-});
-```
-
-**AccessHandlePoolVFS**
-
-Use this for single-tab applications that want a straightforward OPFS setup with one worker and direct use of the OPFS Access Handle API. It is not designed for multiple tab use cases.
-
-Example configuration:
-
-```js
-import { PowerSyncDatabase, WASQLiteVFS } from '@powersync/web';
-
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: 'exampleVFS.db',
-    vfs: WASQLiteVFS.AccessHandlePoolVFS
-  }
-});
-```
-
-**OPFSWriteAheadVFS**
-
-Use this for read-heavy applications that benefit from parallel reads. This VFS uses SQLite's write-ahead log (WAL) mode and opens multiple connections so reads can run concurrently.
-
-This VFS is only supported on Chromium-based browsers (for example Chrome or Edge). Safari, Firefox, and related environments are not supported.
-
-The `additionalReaders` option (defaults to `1`) controls how many extra read-only database connections PowerSync opens alongside the primary connection. Increase it when you routinely run many read queries at once; each extra reader uses more memory. The `useWebWorker` flag must not be set to `false`, because this setup relies on web workers.
-
-Example configuration with 2 additional readers (3 total concurrent reads):
-
-```js
-import { PowerSyncDatabase, WASQLiteVFS } from '@powersync/web';
-
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: 'exampleVFS.db',
-    vfs: WASQLiteVFS.OPFSWriteAheadVFS,
-    additionalReaders: 2
-  }
-});
-```
-
-#### 4. In-Memory VFS
-
-Since version 1.39.0 of the `@powersync/web` package, you can use an in-memory database with `WASQLiteVFS.InMemoryVfs`. It runs queries faster than any other single-threaded VFS (both IndexedDB and OPFS, except the write-ahead VFS).
-
-No data is persisted: local writes are lost if they aren't uploaded before the tab is closed, and all data is resynced whenever a tab is opened. This makes it unsuitable for apps that need to work offline, but a good fit for:
-
-- Development, where starting from a fresh database on every load makes it easy to reproduce issues from a clean state.
-- Online-only apps with very frequent queries and small datasets.
-
-<Warning>
-  When using in-memory databases in production scenarios, consider watching `SELECT * FROM ps_crud LIMIT 1` to detect whether outstanding local mutations exist and indicate that state to the user. A `beforeunload` event listener can also be useful in this state to call `preventDefault()` on tab close events, causing browsers to ask for confirmation before closing the tab.
-</Warning>
-
-With Chrome and Firefox on desktop, this VFS uses a shared worker to enable multi-tab support by default, meaning that all tabs have access to the same data and will share a sync worker. This behavior can be enabled or disabled on all browsers by passing the [`enableMultiTabs` flag](#available-flags).
-
-If support for multi-tabs is not desired, consider giving each tab a uniquely-named PowerSync instance. The in-memory database would not be shared across tabs in either case, but only one PowerSync database with the same name can sync at a time. Unique names ensure databases across tabs are fully independent:
-
-```js
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: `memory-${crypto.randomUUID()}.db`,
-    vfs: WASQLiteVFS.InMemoryVfs,
-    enableMultiTabs: false
-  }
-});
-```
-
-#### VFS / Option Compatibility Matrix
-
-| VFS Type / Option | Multi-Tab (Standard) | Multi-Tab (Safari/iOS) | Concurrent Reads | Best For |
-| --- | --- | --- | --- | --- |
-| IDBBatchAtomicVFS | ✅ | ❌ | ❌ | Broadest compatibility, minimal setup |
-| OPFSCoopSyncVFS | ✅ | ✅ | ❌ | Multi-tab + Safari/iOS support |
-| SimpleOpfsVFS | ✅ | ✅ | ❌ | Automatic strategy selection, reasonable default |
-| AccessHandlePoolVFS | ❌ | ❌ | ❌ | Single-tab, single worker, access-handle OPFS |
-| OPFSWriteAheadVFS | ✅ | ❌ | ✅ | Chromium only; parallel reads via WAL + readers |
-| InMemoryVfs | ✅ | ❌ | ❌ | Development, small data sizes |
-| InMemoryWriteAheadLogPool | ❌ (isolated per tab) | ❌ (isolated per tab) | ✅ | Highly concurrent, non-persistent workloads; requires cross-origin isolation |
-
-<Note>
-  There are known issues with OPFS (all variants) in Safari's incognito mode.
-</Note>
-
-### Multi-Threaded In-Memory SQLite Connection Pool
-
-Since version 2.2.0, the `@powersync/web` package provides an experimental, per-tab in-memory SQLite connection pool for highly concurrent query workloads. It uses a design inspired from `OPFSWriteAheadVFS`, but relies on `SharedArrayBuffer` to coordinate an in-memory database instead of persisting to OPFS. It is available under a separate import and is thus configured via the `opened` option on `PowerSyncDatabase` instead of `database.vfs`.
-
-<Note>
-  This setup is experimental and might change in the future.
-</Note>
-
-The pool creates `numWorkers` SQLite connections in dedicated web workers. One worker is the designated writer, while the remaining workers are used as additional readers. The writer can also serve reads while it is idle.
-
-Read-only transactions can execute in parallel, including while the writer appends changes to a custom in-memory write-ahead overlay. The database and write-ahead-log buffers are backed by growable `SharedArrayBuffer` objects shared across the workers. This parallelism benefits workloads with overlapping queries. It does not inherently make an individual sequential query faster, and additional workers increase startup time and memory usage.
-
-Each pool instance is independent and belongs to one tab. Its data is not persisted or shared across tabs, and the application cannot assign it a database filename. Opening or refreshing a tab creates a fresh database that must be resynced. Any local writes that have not been uploaded are lost when the tab closes.
-
-This option requires cross-origin isolation and browser support for growable `SharedArrayBuffer`.
-
-This connection pool is primarily relevant when all of the following apply:
-
-1. You need highly concurrent, high-performance queries in your app.
-2. At the same time, the overall database size (or at least the actively synced part of the database) is relatively small, as it gets synced every time a tab is opened.
-3. You don't need persistence.
-4. You can enable [cross-origin isolation](https://web.dev/articles/cross-origin-isolation-guide) by using the appropriate headers. Without cross-origin isolation and shared array buffers, constructing the pool will throw.
-5. You don't need multiple tabs to share offline state.
-
-The pool is exposed through a separate package entry point so applications that do not use it do not include it in their main bundle:
-
-```js
-import { InMemoryWriteAheadLogPool } from '@powersync/web/extra/shared-memory-pool';
-import { PowerSyncDatabase } from '@powersync/web';
-
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  opened: new InMemoryWriteAheadLogPool({
-    numWorkers: 3 // Uses one writer, two additional workers for reads.
-  }),
-});
-```
-
-### Storing OPFS Databases in a Storage Bucket
-
-Since version 2.6.0 of `@powersync/web`, you can store an OPFS database in a named [Storage Bucket](https://wicg.github.io/storage-buckets/) with the `storageBucket` option. This avoids a [Chromium defect](https://issues.chromium.org/issues/575150688) in the default bucket: after a user deletes the site's data, the app can fail to open its database with an `InvalidStateError`, or one tab can delete another tab's database.
-
-The option requires an [OPFS-based VFS](#3-opfs-based-alternatives) and the Storage Buckets API, which Firefox and Safari don't support. Set it only when the API exists:
-
-```js
-import { PowerSyncDatabase, WASQLiteVFS } from '@powersync/web';
-
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: 'app.db',
-    vfs: WASQLiteVFS.OPFSCoopSyncVFS,
-    storageBucket: 'storageBuckets' in navigator ? 'app-db' : undefined
-  }
-});
-```
-
-To set bucket options such as `persisted`, call `navigator.storageBuckets.open()` with those options before you create the `PowerSyncDatabase`.
-
-If an existing app switches to a bucket, it starts with a new, empty database and syncs all data again. Changes in the old database's upload queue are not uploaded, so switch only after that queue is empty.
-
-### Managing OPFS Storage
-
-Unlike IndexedDB, OPFS storage cannot be managed through browser developer tools. The following utility functions can help you manage OPFS storage programmatically:
-
-```js
-// Clear all OPFS storage
-async function purgeVFS() {
-  await powerSync.disconnect();
-  await powerSync.close();
-
-  const root = await navigator.storage.getDirectory();
-  await new Promise(resolve => setTimeout(resolve, 1)); // Allow .db-wal to become deletable
-
-  for await (const [name, entry] of root.entries!()) {
-    try {
-      if (entry.kind === 'file') {
-        await root.removeEntry(name);
-      } else if (entry.kind === 'directory') {
-        await root.removeEntry(name, { recursive: true });
-      }
-    } catch (err) {
-      console.error(`Failed to delete ${entry.kind}: ${name}`, err);
-    }
-  }
-}
-
-// List OPFS entries
-async function listVfsEntries() {
-  const root = await navigator.storage.getDirectory();
-  for await (const [name, entry] of root.entries()) {
-    console.log(`${entry.kind}: ${name}`);
-  }
-}
-```
-
-### Multiple Tab Support
-
-<Warning>
-  - Full multi-tab support relies on shared web workers, which are disabled by default on Android, iOS, and Safari. On these platforms, the SDK falls back to a less reliable broadcast-based mechanism, as described below.
-  - For Safari, use the [`OPFSCoopSyncVFS`](/client-sdks/reference/javascript-web#sqlite-virtual-file-systems) virtual file system to ensure stable multi-tab functionality.
-</Warning>
-
-Using PowerSync between multiple tabs is supported on most desktop browsers. Multiple tab support relies on shared web workers for database and sync operations. When enabled, the SDK creates a shared web worker named `shared-powersync-[dbFileName]`.
-
-The shared sync worker connects to the PowerSync Service and applies changes to the database on behalf of all tabs. It calls the `fetchCredentials` and `uploadData` methods of the most recently opened tab. When that tab closes, the worker uses the previously opened tab instead. When using an IndexedDB-based VFS, the SDK can also open database connections in a shared worker so that writes made in one tab are instantly available in the others.
-
-Multi-tab support is enabled by default where available. You can disable it with the [`enableMultiTabs` flag](#available-flags):
-
-```js
-export const db = new PowerSyncDatabase({
-  schema: AppSchema,
-  database: {
-    dbFilename: 'my_app_db.sqlite',
-    enableMultiTabs: false
-  },
-});
-```
-
-#### Behavior Without Shared Workers
-
-When multi-tab support is disabled, whether explicitly or because the platform does not support it, each tab spawns a standard web worker for database operations. These workers can safely operate on the database concurrently. Only one tab connects and syncs at a time, and only that tab's `fetchCredentials` and `uploadData` methods are called.
-
-The SDK still tries to share state across tabs using broadcast channels (since version 2.1.0 of the SDK): update notifications for watched queries, the sync status (fields like `hasSynced` and download progress), and sync stream subscriptions made in any tab. This is less reliable than shared workers, so updates may not reach every tab.
 
 ### Using PowerSyncDatabase Flags
 
@@ -688,7 +450,7 @@ The `PowerSyncDatabase` constructor accepts the following flags. Use them to ena
 
 #### Configuring Options
 
-You can configure these options during the initialization of `PowerSyncDatabase` as top-level constructor properties.
+Set database options inside `database`. Set `broadcastLogs` at the top level of the `PowerSyncDatabase` constructor options:
 
 ```javascript
 import { PowerSyncDatabase } from '@powersync/web';
@@ -707,9 +469,9 @@ export const db = new PowerSyncDatabase({
 #### Available Flags
 
 <ParamField path="database.enableMultiTabs">
-  default: `true` (`false` on Android, iOS, and Safari)
+  default: `true` when shared workers are available, except on Android, iOS, and Safari
 
-  Enables support for multiple tabs using shared web workers. When enabled, multiple tabs share the same database and sync connection.
+  Controls whether tabs share one sync connection through a shared worker. Depending on the VFS, they may also share a database connection. Setting this option to `false` does not prevent a supported VFS from providing multi-tab database access. Requires browser support for shared workers.
 </ParamField>
 
 <ParamField path="broadcastLogs">
@@ -725,7 +487,7 @@ export const db = new PowerSyncDatabase({
 </ParamField>
 
 <ParamField path="database.ssrMode">
-  default: `false`
+  default: `false` in the browser; `true` when `window` is not defined
 
   Enables SSR mode. In this mode, only empty query results will be returned, and syncing with the backend is disabled.
 </ParamField>
@@ -733,16 +495,18 @@ export const db = new PowerSyncDatabase({
 <ParamField path="database.useWebWorker">
   default: `true`
 
-  Enables the use of web workers for database operations. Disabling this flag also disables multi-tab support.
+  Runs database operations in web workers. If you disable this option, also set `enableMultiTabs: false`.
 </ParamField>
 
 #### Flag Behavior
 
-**Example 1: Multi-Tab Support**
+**Example 1: Disable Shared-Worker Mode**
 
-By default, multi-tab support is enabled if supported by the browser. To explicitly disable this feature:
+To give each tab its own sync implementation instead of using a shared sync worker:
 
 ```javascript
+import { PowerSyncDatabase } from '@powersync/web';
+
 export const db = new PowerSyncDatabase({
   schema: AppSchema,
   database: {
@@ -752,13 +516,15 @@ export const db = new PowerSyncDatabase({
 });
 ```
 
-When disabled, each tab uses independent workers. The SDK tries to share sync status and update notifications for watched queries across tabs, but this is less reliable than shared workers. See [Behavior Without Shared Workers](#behavior-without-shared-workers).
+When disabled, each tab manages its own sync implementation, but only one tab syncs at a time for a given database name. See [Behavior Without Shared Workers](/client-sdks/reference/javascript-web-storage#behavior-without-shared-workers).
 
-**Example 2: Verbose Debugging with Broadcast Logs**
+**Example 2: Verbose Debugging**
 
 To enable detailed logging for debugging:
 
 ```javascript
+import { createConsoleLogger, LogLevels, PowerSyncDatabase } from '@powersync/web';
+
 export const db = new PowerSyncDatabase({
   schema: AppSchema,
   database: {
@@ -776,5 +542,6 @@ Logs include details of database and sync operations.
 
 #### Recommendations
 
-1. **Set `enableMultiTabs`** to `true` if your application shares data across multiple tabs.
-2. **Set `broadcastLogs`** to `true` during development to troubleshoot and monitor database and sync operations.
+1. Choose a [VFS that supports multi-tab database access](/client-sdks/reference/javascript-web-storage#sqlite-virtual-file-systems) if tabs must use the same local data.
+2. Leave `enableMultiTabs` at its default to use shared-worker mode where the SDK enables it. Setting it to `false` disables shared workers, not all multi-tab database access.
+3. Set `broadcastLogs` to `true` during development to troubleshoot and monitor database and sync operations.

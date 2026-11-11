@@ -22,6 +22,8 @@ Read `/home/user/powersync-docs/routines/prevent-docs-drift.md`, your clone of `
 
 ## Prevent docs drift
 
-Scans recent PRs across the SDK, service, and tooling repos twice a day and files `[Divergence]` issues here when the docs need to catch up. It only files issues — it never writes documentation or opens PRs. A human decides the scope, prepares the docs PR, and publishes it once the change has shipped in a release.
+Scans recent PRs across the SDK, service, and tooling repos twice a day and files `[Divergence]` issues here when the docs need to catch up. It only files issues and posts comments — it never writes documentation or opens PRs. A human decides the scope, prepares the docs PR, and publishes it once the change has shipped in a release.
+
+Before filing, it checks the open PRs in this repo. If a docs PR already addresses the change, either by linking the source PR or by updating the affected pages, the routine files no issue. If that docs PR misses some of the affected pages or new functionality, the routine lists them in a comment on the PR.
 
 Closing a `[Divergence]` issue is also a human decision. The routine reads a closed issue as "no" for that source PR and won't re-file it for 30 days.

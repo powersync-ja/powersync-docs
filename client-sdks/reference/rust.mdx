@@ -12,6 +12,8 @@ import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
 import RustSubscribeSyncStream from '/snippets/rust/subscribe-sync-stream.mdx';
 
@@ -216,11 +218,11 @@ Next, create a database:
 
 <LocalOnly />
 
-### 3. Stream Changes from PowerSync
+### 3. Connect to PowerSync
 
-The PowerSync client SDK connects to the PowerSync Service to download changes. To connect, it needs the Service endpoint and an `Authenticator` that provides an [authentication token](/configuration/auth/overview).
+<SyncChangesIntro />
 
-The authenticator must implement `resolve_credentials`, which returns the token. The SDK does not cache the returned token and can call `resolve_credentials` several times while connected, so a typical implementation returns a token cached in your app's state. Optionally, implement `invalidate_credentials` to clear that cache. The SDK calls it when the Service rejects the token with a 401 or when the token has expired or is about to expire. See [Authentication Setup](/configuration/auth/overview) for how to generate tokens.
+The authenticator implements `resolve_credentials`, which returns the token. For development, return a [development token](/configuration/auth/development-tokens). The SDK doesn't cache the token and can call `resolve_credentials` often, for example on every reconnect. When you get tokens from a backend, cache the token in your authenticator and clear the cache in `invalidate_credentials`, which the SDK calls when it needs a new token. See [When `resolveCredentials()` is Called](/configuration/app-backend/client-side-integration#when-resolvecredentials-is-called) for details.
 
 **Example:**
 
@@ -228,85 +230,38 @@ The authenticator must implement `resolve_credentials`, which returns the token.
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use powersync::{Authenticator, error::PowerSyncError, SyncOptions};
+use powersync::{Authenticator, error::PowerSyncError};
 
 struct MyAuthenticator;
 
 #[async_trait]
 impl Authenticator for MyAuthenticator {
     async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
-        // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly.
+        // Return a JWT for the PowerSync Service. To get started, use a development token:
+        // https://docs.powersync.com/configuration/auth/development-tokens
+        // For production, see https://docs.powersync.com/configuration/auth/overview
         // For an example implementation, see https://github.com/powersync-ja/powersync-native/blob/d2841961303c4478bece620a0c12f980a74188c5/examples/egui_todolist/src/database.rs#L129-L151
         Ok(Arc::new("An authentication token".to_string()))
     }
 
     fn invalidate_credentials(&self) {
-        // TODO: Once the authenticator acquires tokens from a backend or app state,
-        // resolve_credentials should cache those. invalidate_credentials is called when the SDK
-        // client runs into a 401, and should invalidate the cache.
+        // Clear your cached token here, so that the next resolve_credentials call gets a new one.
     }
 }
 ```
 
-With the authenticator implemented, you can initiate a connection to the PowerSync Service to download changes in real time:
+With the authenticator implemented, call `connect()` to download changes:
 
 ```Rust
+use powersync::SyncOptions;
+
 db.connect(SyncOptions::download_only(
-    // Replace with the instance URL and token shown in the dashboard
-    "https://<your instance id>.powersync.journeyapps.com",
+    "[Your PowerSync instance URL]",
     MyAuthenticator,
 )).await;
 ```
 
-### 4. Upload Local Mutations
-
-The SDK places every write to the SQLite database in an upload queue and calls the `MutationUploader` when the queue has writes to upload. Your backend then applies the changes to the source database. To pick how to upload writes, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
-
-`SyncOptions::download_only` does not upload local writes. If the app writes to the local database while connected in download-only mode, the sync status reports a download error because the SDK cannot apply downloaded data over pending local writes. Skip this step only if the app never writes to the local database.
-
-**Example:**
-
-```Rust
-use async_trait::async_trait;
-use futures_lite::StreamExt;
-use powersync::{MutationUploader, PowerSyncDatabase, error::PowerSyncError};
-
-struct MyMutationUploader {
-    db: PowerSyncDatabase,
-}
-
-#[async_trait]
-impl MutationUploader for MyMutationUploader {
-    async fn upload(&self) -> Result<(), PowerSyncError> {
-        // Send local changes to your backend service
-        // To pick how to upload writes, see https://docs.powersync.com/handling-writes/write-path/choosing-your-implementation
-        let mut local_writes = self.db.crud_transactions();
-        while let Some(tx) = local_writes.try_next().await? {
-            todo!("Inspect tx.crud for local writes that need to be uploaded to your backend");
-            tx.complete().await?;
-        }
-
-        Ok(())
-    }
-}
-```
-
-Finally, connect for both downloads and uploads:
-
-```Rust
-db.connect(SyncOptions::new(
-    // Replace with the instance URL and token shown in the dashboard
-    "https://<your instance id>.powersync.journeyapps.com",
-    MyAuthenticator,
-    MyMutationUploader { db: db.clone() }
-)).await;
-```
-
-<Tip>
-  If needed, you can also connect in upload-only mode with `SyncOptions::upload_only`. This doesn't require a PowerSync endpoint or authenticator.
-</Tip>
-
-### 5. Subscribe to Sync Streams
+### 4. Subscribe to Sync Streams
 
 <SubscribeSyncStreamsIntro />
 
@@ -351,7 +306,7 @@ The `watch_statement` method executes a read query whenever a change to a depend
 
 ### Mutations
 
-Triggers capture local writes automatically. To obtain a connection suitable for writes, call and await `PowerSyncDatabase::writer()`. Then call `execute` on the writer to run `INSERT`, `UPDATE`, or `DELETE` statements:
+Triggers record each mutation in the upload queue automatically. To obtain a connection suitable for writes, call and await `PowerSyncDatabase::writer()`. Then call `execute` on the writer to run `INSERT`, `UPDATE`, or `DELETE` statements:
 
 ```Rust
 async fn insert_customer(
@@ -369,6 +324,49 @@ async fn insert_customer(
 ```
 
 For transactions, use the [`transaction`](https://docs.rs/rusqlite/latest/rusqlite/struct.Connection.html#method.transaction) method from `rusqlite` on the writer.
+
+To upload mutations to your backend, add a mutation uploader. See [Upload Local Mutations](#upload-local-mutations).
+
+## Upload Local Mutations
+
+<UploadLocalMutationsIntro />
+
+**Example:**
+
+```Rust
+use async_trait::async_trait;
+use futures_lite::StreamExt;
+use powersync::{MutationUploader, PowerSyncDatabase, error::PowerSyncError};
+
+struct MyMutationUploader {
+    db: PowerSyncDatabase,
+}
+
+#[async_trait]
+impl MutationUploader for MyMutationUploader {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
+        // Send the queued mutations to your write API.
+        // To pick how to upload mutations, see https://docs.powersync.com/handling-writes/write-path/choosing-your-implementation
+        let mut transactions = self.db.crud_transactions();
+        while let Some(tx) = transactions.try_next().await? {
+            todo!("Send the mutations in tx.crud to your write API");
+            tx.complete().await?;
+        }
+
+        Ok(())
+    }
+}
+```
+
+Then connect for both downloads and uploads:
+
+```Rust
+db.connect(SyncOptions::new(
+    "[Your PowerSync instance URL]",
+    MyAuthenticator,
+    MyMutationUploader { db: db.clone() }
+)).await;
+```
 
 ## Waiting for the Latest Server Data
 

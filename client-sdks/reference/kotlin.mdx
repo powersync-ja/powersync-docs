@@ -12,6 +12,9 @@ import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import AuthenticatorIntro from '/snippets/authenticator-intro.mdx';
+import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
 import KotlinSubscribeSyncStream from '/snippets/kotlin/subscribe-sync-stream.mdx';
 
@@ -147,17 +150,6 @@ val database = PowerSyncDatabase(
 )
 ```
 
-c. Connect the `PowerSyncDatabase` to sync data with your backend:
-
-<LocalOnly />
-
-```kotlin
-// commonMain
-
-// Uses the backend connector that you create in the next step
-database.connect(MyConnector())
-```
-
 **Special case: Compose Multiplatform**
 
 The artifact `com.powersync:powersync-compose` provides a simpler API:
@@ -165,46 +157,58 @@ The artifact `com.powersync:powersync-compose` provides a simpler API:
 ```kotlin
 // commonMain
 val database = rememberPowerSyncDatabase(schema)
-remember {
-    database.connect(MyConnector())
-}
 ```
 
-### 3. Integrate with Your Backend
+<LocalOnly />
 
-The backend connector gives the SDK the credentials it needs to connect to your PowerSync instance and download data. It also uploads your app's local writes to your backend. The connector must implement two methods:
+### 3. Connect to PowerSync
 
-1. `PowerSyncBackendConnector.fetchCredentials` - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
-2. `PowerSyncBackendConnector.uploadData` - The SDK queues local writes and calls this method to send them to your write API, which applies them to the source database. If your app only reads synced data for now, you can implement this method later. To pick how to upload writes, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
+<SyncChangesIntro />
+
+<AuthenticatorIntro />
 
 **Example:**
 
 ```kotlin
-// PowerSync.kt
-import com.powersync.DatabaseDriverFactory
-import com.powersync.PowerSyncDatabase
+import com.powersync.connectors.Authenticator
 
-class MyConnector : PowerSyncBackendConnector() {
-    override suspend fun fetchCredentials(): PowerSyncCredentials {
-        // implement fetchCredentials to obtain the necessary credentials to connect to your backend
-        // See an example implementation in https://github.com/powersync-ja/powersync-kotlin/blob/main/integrations/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt
-
-        return PowerSyncCredentials(
-            endpoint = "[Your PowerSync instance URL or self-hosted endpoint]",
-            // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly
-            token = "An authentication token"
-        )
+class MyAuthenticator : Authenticator {
+    override suspend fun resolveCredentials(): String {
+        // Return a JWT for the PowerSync Service. To get started, use a development token:
+        // https://docs.powersync.com/configuration/auth/development-tokens
+        // For production, see https://docs.powersync.com/configuration/auth/overview
+        return "An authentication token"
     }
 
-    override suspend fun uploadData(database: PowerSyncDatabase) {
-        // Implement uploadData to send local changes to your backend service
-        // You can omit this method if you only want to sync data from the server to the client
-        // To pick how to upload writes, see https://docs.powersync.com/handling-writes/write-path/choosing-your-implementation
+    override fun invalidateCredentials() {
+        // Clear your cached token here, so that the next resolveCredentials() call gets a new one.
     }
 }
 ```
 
-If you use Supabase, you can use [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/integrations/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) as a starting point.
+If you use Supabase, see [SupabaseConnector.kt](https://github.com/powersync-ja/powersync-kotlin/blob/main/integrations/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt) for an example that gets the token from Supabase Auth.
+
+With the authenticator implemented, call `connect()` to download changes:
+
+```kotlin
+// commonMain
+
+database.connect(
+    endpoint = "[Your PowerSync instance URL]",
+    authenticator = MyAuthenticator(),
+)
+```
+
+`connect()` is a suspend function. In Compose Multiplatform, call it from a coroutine, for example in a `LaunchedEffect`:
+
+```kotlin
+LaunchedEffect(database) {
+    database.connect(
+        endpoint = "[Your PowerSync instance URL]",
+        authenticator = MyAuthenticator(),
+    )
+}
+```
 
 ### 4. Subscribe to Sync Streams
 
@@ -266,6 +270,8 @@ The `watch` method executes a read query whenever a change to a dependent table 
 
 The `execute` method executes a write query (INSERT, UPDATE, DELETE) and returns the results (if any).
 
+To upload mutations to your backend, add a mutation uploader. See [Upload Local Mutations](#upload-local-mutations).
+
 ```kotlin
 suspend fun insertCustomer(name: String, email: String) {
     database.writeTransaction { tx ->
@@ -302,6 +308,31 @@ suspend fun deleteCustomer(id: String? = null) {
 }
 ```
 
+## Upload Local Mutations
+
+<UploadLocalMutationsIntro />
+
+**Example:**
+
+```kotlin
+import com.powersync.PowerSyncDatabase
+
+suspend fun uploadData(database: PowerSyncDatabase) {
+    // Send the queued mutations to your write API, for example with database.getNextCrudTransaction().
+    // To pick how to upload mutations, see https://docs.powersync.com/handling-writes/write-path/choosing-your-implementation
+}
+```
+
+Then connect for both downloads and uploads:
+
+```kotlin
+database.connect(
+    endpoint = "[Your PowerSync instance URL]",
+    authenticator = MyAuthenticator(),
+    uploader = { uploadData(it) },
+)
+```
+
 ## Waiting for the Latest Server Data
 
 <CheckpointRequestsIntro />
@@ -310,9 +341,11 @@ suspend fun deleteCustomer(id: String? = null) {
 // Add at the top of each file, before package and imports:
 // @file:OptIn(com.powersync.ExperimentalCheckpointRequestsApi::class)
 
-// Opt in when connecting
+// Opt in when connecting (endpoint, MyAuthenticator and uploadData as in Getting Started)
 database.connect(
-    MyConnector(),
+    endpoint = endpoint,
+    authenticator = MyAuthenticator(),
+    uploader = { uploadData(it) },
     options = SyncOptions(checkpointMode = CheckpointMode.Requests()),
 )
 
@@ -372,7 +405,9 @@ import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.header
 
 db.connect(
-    connector,
+    endpoint = endpoint,
+    authenticator = MyAuthenticator(),
+    uploader = { uploadData(it) },
     options = SyncOptions(
         clientConfiguration = SyncClientConfiguration.ExtendedConfig {
             // For more options, see https://ktor.io/docs/client-create-and-configure.html#plugins
@@ -390,7 +425,9 @@ If you want to use a custom HTTP client engine instead, use `SyncClientConfigura
 import com.powersync.sync.configureSyncHttpClient
 
 db.connect(
-    connector,
+    endpoint = endpoint,
+    authenticator = MyAuthenticator(),
+    uploader = { uploadData(it) },
     options = SyncOptions(
         clientConfiguration = SyncClientConfiguration.ExistingClient(HttpClient(YourPreferredClientEngine) {
             // Important: This configures a minimal set of plugins required by the PowerSync sync client.

@@ -12,6 +12,9 @@ import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import AuthenticatorIntro from '/snippets/authenticator-intro.mdx';
+import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
 import FlutterSubscribeSyncStream from '/snippets/flutter/subscribe-sync-stream.mdx';
 
@@ -74,8 +77,9 @@ To start from a template, use the self-hosted Flutter and Supabase template: [fl
       ├── schema.dart
       └── todolist.dart
   ├── powersync/
-      ├── my_backend_connector.dart
-      └── powersync.dart
+      ├── my_authenticator.dart
+      ├── powersync.dart
+      └── upload_data.dart
   ├── widgets/
       ├── lists_widget.dart
       ├── todos_widget.dart
@@ -150,14 +154,42 @@ Future<void> openDatabase() async {
 }
 ```
 
-After you instantiate the PowerSync database, call the [connect()](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/connect.html) method to sync data with your backend. This method requires the backend connector that you create in the next step.
-
 <LocalOnly />
 
-```dart lib/main.dart highlight={26}
+### 3. Connect to PowerSync
+
+<SyncChangesIntro />
+
+<AuthenticatorIntro />
+
+**Example:**
+
+```dart lib/powersync/my_authenticator.dart
+import 'package:powersync/powersync.dart';
+
+class MyAuthenticator implements Authenticator {
+  @override
+  Future<String> resolveCredentials(Future<void> abortSignal) async {
+    // Return a JWT for the PowerSync Service. To get started, use a development token:
+    // https://docs.powersync.com/configuration/auth/development-tokens
+    // For production, see https://docs.powersync.com/configuration/auth/overview
+    return 'An authentication token';
+  }
+
+  @override
+  void invalidateCredentials() {
+    // Clear your cached token here, so that the next resolveCredentials() call gets a new one.
+  }
+}
+```
+
+With the authenticator implemented, call [connect()](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDatabase/connect.html) to download changes. For example, connect when your app starts:
+
+```dart lib/main.dart highlight={27-32}
 import 'package:flutter/material.dart';
 import 'package:powersync/powersync.dart';
 
+import 'powersync/my_authenticator.dart';
 import 'powersync/powersync.dart';
 
 Future<void> main() async {
@@ -180,7 +212,12 @@ class _DemoAppState extends State<DemoApp> {
     super.initState();
 
     // TODO: Observe a condition to connect / disconnect.
-    db.connect(connector: MyBackendConnector());
+    db.connect(
+      connector: ConnectRequest.downloadOnly(
+        endpoint: '[Your PowerSync instance URL]',
+        authenticator: MyAuthenticator(),
+      ),
+    );
   }
 
   @override
@@ -189,67 +226,6 @@ class _DemoAppState extends State<DemoApp> {
       title: 'Demo',
       // TODO: Implement your own UI here.
     );
-  }
-}
-```
-
-### 3. Integrate with Your Backend
-
-The backend connector gives the SDK the credentials it needs to connect to your PowerSync instance and download data. It also uploads your app's local writes to your backend. The connector must implement two methods:
-
-1. [PowerSyncBackendConnector.fetchCredentials](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncBackendConnector/fetchCredentials.html) - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
-2. [PowerSyncBackendConnector.uploadData](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncBackendConnector/uploadData.html) - The SDK queues local writes and calls this method to send them to your write API, which applies them to the source database. If your app only reads synced data for now, you can implement this method later. To pick how to upload writes, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
-
-**Example:**
-
-```dart lib/powersync/my_backend_connector.dart
-import 'package:powersync/powersync.dart';
-
-class MyBackendConnector extends PowerSyncBackendConnector {
-  PowerSyncDatabase db;
-
-  MyBackendConnector(this.db);
-  @override
-  Future<PowerSyncCredentials?> fetchCredentials() async {
-    // Implement fetchCredentials to obtain a JWT from your authentication service. 
-    // See https://docs.powersync.com/configuration/auth/overview
-    // See example implementation here: https://pub.dev/documentation/powersync/latest/powersync/DevConnector/fetchCredentials.html
-
-    return PowerSyncCredentials(
-      endpoint: 'https://xxxxxx.powersync.journeyapps.com',
-      // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly
-      token: 'An authentication token'
-    );
-  }
-
-  // Implement uploadData to send local changes to your backend service
-  // You can omit this method if you only want to sync data from the server to the client
-  // To pick how to upload writes, see https://docs.powersync.com/handling-writes/write-path/choosing-your-implementation
-  @override
-  Future<void> uploadData(PowerSyncDatabase database) async {
-    // This function is called whenever there is data to upload, whether the
-    // device is online or offline.
-    // If this call throws an error, it is retried periodically.
-
-    final transaction = await database.getNextCrudTransaction();
-    if (transaction == null) {
-      return;
-    }
-
-    // The data that needs to be changed in the remote db
-    for (var op in transaction.crud) {
-      switch (op.op) {
-        case UpdateType.put:
-          // TODO: Instruct your backend API to CREATE a record
-        case UpdateType.patch:
-          // TODO: Instruct your backend API to PATCH a record
-        case UpdateType.delete:
-        //TODO: Instruct your backend API to DELETE a record
-      }
-    }
-
-    // Completes the transaction and moves onto the next one
-    await transaction.complete();
   }
 }
 ```
@@ -342,6 +318,8 @@ The [watch](https://pub.dev/documentation/powersync/latest/powersync/PowerSyncDa
 
 The [execute](https://pub.dev/documentation/powersync/latest/sqlite_async/SqliteConnection/execute.html) method can be used for executing single SQLite write statements.
 
+To upload mutations to your backend, add a mutation uploader. See [Upload Local Mutations](#upload-local-mutations).
+
 ```dart lib/widgets/todos_widget.dart highlight={12-15}
 import 'package:flutter/material.dart';
 import '../powersync/powersync.dart';
@@ -366,14 +344,62 @@ class TodosWidget extends StatelessWidget {
 }
 ```
 
+## Upload Local Mutations
+
+<UploadLocalMutationsIntro />
+
+**Example:**
+
+```dart lib/powersync/upload_data.dart
+import 'package:powersync/powersync.dart';
+
+Future<void> uploadData(PowerSyncDatabase database) async {
+  final transaction = await database.getNextCrudTransaction();
+  if (transaction == null) {
+    return;
+  }
+
+  // The data that needs to be changed in the remote db
+  for (var op in transaction.crud) {
+    switch (op.op) {
+      case UpdateType.put:
+        // TODO: Instruct your write API to CREATE a record
+      case UpdateType.patch:
+        // TODO: Instruct your write API to PATCH a record
+      case UpdateType.delete:
+        // TODO: Instruct your write API to DELETE a record
+    }
+  }
+
+  // Completes the transaction and moves onto the next one
+  await transaction.complete();
+}
+```
+
+Then connect for both downloads and uploads:
+
+```dart
+db.connect(
+  connector: ConnectRequest(
+    endpoint: '[Your PowerSync instance URL]',
+    authenticator: MyAuthenticator(),
+    uploader: MutationUploader(uploadData),
+  ),
+);
+```
+
 ## Waiting for the Latest Server Data
 
 <CheckpointRequestsIntro />
 
 ```dart
-// Opt in when connecting
+// Opt in when connecting (endpoint, MyAuthenticator and uploadData as in Getting Started)
 await db.connect(
-  connector: MyBackendConnector(db),
+  connector: ConnectRequest(
+    endpoint: endpoint,
+    authenticator: MyAuthenticator(),
+    uploader: MutationUploader(uploadData),
+  ),
   options: SyncOptions(checkpointMode: CheckpointMode.requests()),
 );
 
@@ -417,7 +443,11 @@ final class _AddHeaderClient extends BaseClient {
 
 Future<void> connect(PowerSyncDatabase db) async {
   await db.connect(
-    connector: MyBackendConnector(db),
+    connector: ConnectRequest(
+      endpoint: endpoint,
+      authenticator: MyAuthenticator(),
+      uploader: MutationUploader(uploadData),
+    ),
     options: SyncOptions(
       httpClient: _AddHeaderClient.new
     ),

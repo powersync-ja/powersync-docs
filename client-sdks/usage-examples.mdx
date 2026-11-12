@@ -1804,12 +1804,62 @@ For this, use the `Authenticator` and `MutationUploader` types.
     Connecting in download or upload-only mode is not yet available for the .NET SDK.
   </Tab>
   <Tab title="Rust">
-    Since version 0.2.0, the Rust SDK no longer accepts a `BackendConnector`. Implementing `Authenticator` and `MutationUploader` is the only option.
+    You can implement `Authenticator` and `MutationUploader` independently.
 
-    **Learn more:**
+    ```Rust
+    // Requires PowerSync Rust SDK 0.2.0 or later
+    use std::sync::{Arc, Mutex};
+    
+    use async_trait::async_trait;
+    use futures_lite::StreamExt;
+    use powersync::{Authenticator, MutationUploader, PowerSyncDatabase, error::PowerSyncError};
+    
+    #[derive(Default)]
+    struct MyAuthenticator {
+        cached_token: Mutex<Option<Arc<String>>>,
+    }
+    
+    #[async_trait]
+    impl Authenticator for MyAuthenticator {
+        async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+            let cached = self.cached_token.lock().unwrap().clone();
+            if let Some(token) = cached {
+                return Ok(token);
+            }
+    
+            let token: Arc<String> = todo!("Fetch a token from your backend or re-use a token stored in your app's state.");
+            *self.cached_token.lock().unwrap() = Some(token.clone());
+            Ok(token)
+        }
+    
+        fn invalidate_credentials(&self) {
+            *self.cached_token.lock().unwrap() = None;
+        }
+    }
+    
+    struct MyMutationUploader {
+        db: PowerSyncDatabase,
+    }
+    
+    #[async_trait]
+    impl MutationUploader for MyMutationUploader {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
+            let mut transactions = self.db.crud_transactions();
+            while let Some(tx) = transactions.try_next().await? {
+                // TODO: Upload transaction to your backend
+                tx.complete().await?;
+            }
+    
+            Ok(())
+        }
+    }
+    ```
 
-    - [Stream Changes from PowerSync](/client-sdks/reference/rust#3-stream-changes-from-powersync)
-    - [Upload Local Mutations](/client-sdks/reference/rust#4-upload-local-mutations)
+    Next, use `SyncOptions` to connect in download-only, upload-only, or both modes:
+
+    - `db.connect(SyncOptions::download_only(endpoint, MyAuthenticator::default())).await` to connect in download-only mode. Pass the endpoint of the PowerSync Service to connect to. You don't need to provide the uploader for this.
+    - `db.connect(SyncOptions::upload_only(MyMutationUploader { db: db.clone() })).await` to connect in upload-only mode. This doesn't need a PowerSync Service endpoint or authenticator.
+    - `db.connect(SyncOptions::new(endpoint, MyAuthenticator::default(), MyMutationUploader { db: db.clone() })).await` to connect both for downloads and uploads.
   </Tab>
 </Tabs>
 

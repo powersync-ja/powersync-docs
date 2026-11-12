@@ -8,7 +8,7 @@ description: "Exclude MongoDB documents before the PowerSync Service stores and 
   **Availability**: MongoDB replication pre-filtering is available on the [Team and Enterprise plans](https://www.powersync.com/pricing) of PowerSync Cloud and in the [Enterprise Self-Hosted Edition](/intro/self-hosting#enterprise-self-hosted-edition).
 </Note>
 
-Replication pre-filtering limits which MongoDB documents enter PowerSync bucket storage. Use it when your instance needs only a subset of a collection, such as active records or records for a fixed set of stores. Pre-filtering can speed up initial replication: with suitable source indexes, the initial snapshot reads only matching documents.
+Replication pre-filtering limits which documents from your MongoDB source database enter PowerSync [bucket storage](/architecture/powersync-service#bucket-storage). Use it when your instance needs only a subset of a collection, such as documents for specified regions during a phased rollout. Pre-filtering can speed up initial replication: with suitable indexes in the source database, the initial snapshot reads only matching documents.
 
 Define filters in your Sync Config under `config.source_table_options`. The Service applies them during the initial snapshot and ongoing change-stream replication, before evaluating Sync Streams queries. A filter applies to the whole instance, independently of which client connects.
 
@@ -18,16 +18,16 @@ Define filters in your Sync Config under `config.source_table_options`. The Serv
 
 ## Prerequisites
 
-- PowerSync Service 1.28.0 or later.
+- PowerSync Service version 1.28.0 or later.
 - Sync Config edition 3 (`config.edition: 3`).
-- MongoDB 6.0 or later. Azure DocumentDB is not supported for pre-filtering.
+- MongoDB 7.0 or later as source database. Azure DocumentDB is not supported for pre-filtering.
 - [Post Images](/configuration/source-db/setup#post-images) set to **Auto-Configure** (`post_images: auto_configure`) or **Read-only** (`post_images: read_only`). Pre-filtering does not support `post_images: off`.
 - With **Auto-Configure**, grant the Service permission to enable `changeStreamPreAndPostImages`. With **Read-only**, enable it yourself on every replicated collection. See [MongoDB Permissions](/configuration/source-db/setup#mongodb-permissions).
-- Source indexes that support your filters. Create them before deploying the Sync Config, because the initial snapshot starts after deployment.
+- Indexes in your source database that support your filters. Create them before deploying the Sync Config, because the initial snapshot starts after deployment.
 
 ## Configure Pre-filtering
 
-This example replicates only todos with an explicit `archived: false` field. Each client receives only its own todos.
+This example replicates only `todos` with an explicit `archived: false` field. Each client receives only its own `todos`.
 
 <Steps>
   <Step title="Create a Source Index">
@@ -62,7 +62,7 @@ This example replicates only todos with an explicit `archived: false` field. Eac
     This filter excludes documents where `archived` is missing. Set `archived: false` explicitly on every document you want to replicate.
   </Step>
   <Step title="Deploy Your Sync Config">
-    Deploy the Sync Config as you normally would. For PowerSync Cloud, use the [Dashboard or CLI](/intro/setup-guide#deploy-your-configuration). For self-hosted instances, see [Update Sync Streams](/maintenance-ops/self-hosting/update-sync-rules). Adding, changing, or removing filters forces a full reprocess: the Service creates a new replication stream and snapshots all replicated collections. Allow for that source database work when planning the deployment.
+    Deploy the Sync Config as you normally would. For PowerSync Cloud, use the [Dashboard or CLI](/intro/setup-guide#deploy-your-configuration). For self-hosted instances, see [Update Sync Streams](/maintenance-ops/self-hosting/update-sync-rules). Adding, changing, or removing filters forces a full reprocess: the Service creates a new replication stream and snapshots all replicated collections. Allow for that work when planning the deployment.
 
     Validate the Sync Config before you deploy it. Use the **Validate** button in the Dashboard, `powersync validate` in the [CLI](/tools/cli), or the `/api/sync-rules/v1/validate` endpoint for self-hosted instances. If validation reports an inefficient snapshot index, create the recommended index before deployment. Index warnings are advisory and do not block deployment.
   </Step>
@@ -81,7 +81,7 @@ Filters use a restricted subset of MongoDB aggregation expressions. The supporte
 | Operator | Example | Meaning |
 | --- | --- | --- |
 | `$eq` | `$eq: ['$$doc.archived', false]` | The field equals the constant. |
-| `$in` | `$in: ['$$doc.store_id', ['store-a', 'store-b']]` | The field equals one of the constants. |
+| `$in` | `$in: ['$$doc.region_id', ['region-a', 'region-b']]` | The field equals one of the constants. |
 | `$and` | `$and: [<filter>, <filter>]` | Every filter matches. |
 | `$or` | `$or: [<filter>, <filter>]` | At least one filter matches. |
 
@@ -108,19 +108,19 @@ Pre-filters use MongoDB aggregation expressions. Their comparison behavior diffe
 
 `$eq` compares the field's whole value against a constant. `$in` compares that whole value against each constant in the supplied list. Neither operator searches for matching elements inside an array-valued source field:
 
-| Source Document | `$eq: ['$$doc.store_id', 'store-a']` | `$in: ['$$doc.store_id', ['store-a', 'store-b']]` |
+| Source Document | `$eq: ['$$doc.region_id', 'region-a']` | `$in: ['$$doc.region_id', ['region-a', 'region-b']]` |
 | --- | --- | --- |
-| `{ "store_id": "store-a" }` | Matches | Matches |
-| `{ "store_id": "store-b" }` | Does not match | Matches |
-| `{ "store_id": ["store-a", "store-b"] }` | Does not match | Does not match |
+| `{ "region_id": "region-a" }` | Matches | Matches |
+| `{ "region_id": "region-b" }` | Does not match | Matches |
+| `{ "region_id": ["region-a", "region-b"] }` | Does not match | Does not match |
 
-A native query such as `find({ store_id: 'store-a' })` can match the array in the last row. The pre-filter excludes that document because its `store_id` value is an array, not one of the scalar constants. See MongoDB's [aggregation `$in` reference](https://www.mongodb.com/docs/manual/reference/operator/aggregation/in/) for how it compares values.
+A native query such as `find({ region_id: 'region-a' })` can match the array in the last row. The pre-filter excludes that document because its `region_id` value is an array, not one of the scalar constants. See MongoDB's [aggregation `$in` reference](https://www.mongodb.com/docs/manual/reference/operator/aggregation/in/) for how it compares values.
 
 When a dotted path crosses an array of documents, MongoDB collects the nested field values into an array. For example, if a document contains `items: [{ sku: 'sku-a' }, { sku: 'sku-b' }]`, `$$doc.items.sku` evaluates to `['sku-a', 'sku-b']`. MongoDB does this automatically when it evaluates the path. A pre-filter compares that whole array against its constant, so `$eq: ['$$doc.items.sku', 'sku-a']` does not match. The supported pre-filter operators cannot express “any array element matches”; use a scalar source field for that condition.
 
 #### Numbers and Other Types
 
-MongoDB compares numbers by value across BSON numeric types. For example, `$eq: ['$$doc.quantity', 5]` matches a quantity stored as Int32, Int64, Double, or Decimal128 when its value is `5`. Using `{ $numberLong: '5' }` as the filter constant does not restrict matching to Int64 fields.
+MongoDB compares numbers by value across BSON numeric types. For example, `$eq: ['$$doc.quantity', 5]` matches a quantity stored as `Int32`, `Int64`, `Double`, or `Decimal128` when its value is `5`. Using `{ $numberLong: '5' }` as the filter constant does not restrict matching to `Int64` fields.
 
 Other types are not converted to numbers during comparison:
 
@@ -147,10 +147,10 @@ config:
   source_table_options:
     orders%:
       mongodb_filter_expression:
-        $in: ['$$doc.store_id', ['store-a', 'store-b']]
+        $in: ['$$doc.region_id', ['region-a', 'region-b']]
     orders_priority:
       mongodb_filter_expression:
-        $eq: ['$$doc.store_id', 'store-a']
+        $eq: ['$$doc.region_id', 'region-a']
     orders_archive:
       mongodb_filter_expression: disabled
 ```
@@ -165,11 +165,11 @@ These entries configure collections already selected by your Sync Streams querie
 
 The Service does not create indexes. Without a suitable index, MongoDB can still scan many or all source documents during the snapshot, even though excluded documents do not enter bucket storage.
 
-Create indexes on the filtered fields with `_id` as the final key. Use `collation: { locale: 'simple' }`, because filtered snapshots use this collation. For example, a filter on `store_id` can use:
+Create indexes on the filtered fields with `_id` as the final key. Use `collation: { locale: 'simple' }`, because filtered snapshots use this collation. For example, a filter on `region_id` can use:
 
 ```javascript
 db.orders.createIndex(
-  { store_id: 1, _id: 1 },
+  { region_id: 1, _id: 1 },
   { collation: { locale: 'simple' } }
 );
 ```

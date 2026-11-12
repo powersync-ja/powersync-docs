@@ -333,12 +333,33 @@ The read methods (`Get`, `GetOptional`, `GetAll`, and `Watch`) can return rows i
 - Specify a result type that implements `IFromRow<T>`, such as `db.GetAll<ListResult>(...)`. Write its static `FromRow` method to map each row to an instance.
 - Omit both to get `IQueryRow` values and read each column by name.
 
+The SDK does not map rows to objects automatically. This also applies to classes that define your schema with `[Column]` attributes. The following result type implements `IFromRow<T>`:
+
+```cs
+using PowerSync.Common.DB;
+
+public record ListResult(string Id, string Name, string OwnerId, string CreatedAt) : IFromRow<ListResult>
+{
+    public static ListResult FromRow(IQueryRow row) => new(
+        row.GetString("id"),
+        row.GetString("name"),
+        row.GetString("owner_id"),
+        row.GetString("created_at"));
+}
+```
+
+`IQueryRow` has a getter for each supported type, such as `GetString`, `GetLong`, `GetBool`, and `GetDateTime`. Column names are not case-sensitive. These getters throw an `InvalidOperationException` if the column value is `NULL`. For a nullable column, use the matching `OrNull` getter, such as `GetStringOrNull`.
+
+<Note>
+  The `IQueryRow` passed to a mapper function or to `FromRow` is valid only during that call. Copy the values that you need instead of storing the row. To keep rows, call the read method without a mapper or result type.
+</Note>
+
 ### Fetching a Single Item
 
 The `Get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `GetOptional` to return a single optional result (returns `null` if no result is found).
 
 ```cs
-// Find a list by ID. ListResult implements IFromRow<ListResult>.
+// Find a list by ID
 var list = await db.Get<ListResult>("SELECT * FROM lists WHERE id = ?", [listId]);
 ```
 
@@ -432,15 +453,65 @@ dotnet add package PowerSync.Common
 
 ### Upgrading to .NET SDK v1
 
-The .NET v1 SDK contains a number of improvements over the beta SDK, many of which necessitated breaking API changes. This page details what you will need to do to move from the .NET beta SDK (v0.X.X) to the full release (v1.X.X).
+Version 1 of the .NET SDK (v1.0.1 and later) has breaking API changes from the beta SDK (v0.x). This section describes the changes that you must make to upgrade.
 
-- The PowerSync MAUI SDK is **obsolete**. Use `PowerSync.Common` and `MDSQLiteAdapter/MDSQLiteAdapterOptions` instead.
-- The `PowerSyncDatabase` Get APIs (`Get`/`GetAll`/`GetOptional`) were reworked in [this PR](https://github.com/powersync-ja/powersync-dotnet/pull/107). The PR description contains a description of the changes, as well as example `mapper` and `IFromRow<T>` implementations.
-  - Change `PowerSyncDatabase` getter return types from `T[]` to `List<T>`.
-  - Remove any references to the `Dapper` package.
-  - The PowerSync .NET SDK no longer automatically maps rows to objects. Either define `mapper` functions for your classes or implement `IFromRow<T>`.
-- `PowerSyncDatabase.OnChange` now provides the underlying real table's name instead of the view name (`todo_lists` => `ps_data__todo_lists`). This mirrors other SDKs such as the PowerSync JS SDK.
-- Operation IDs (op IDs), write checkpoints, and checkpoint request IDs are now `long` values instead of `string` values. Update code that uses these APIs:
-  - `CrudBatch` and `CrudTransaction` objects returned by `GetCrudBatch()` and `GetNextCrudTransaction()` take an optional `long?` write checkpoint in their `Complete()` methods.
-  - `PowerSyncDatabase.HandleCrudCheckpoint()` takes an optional `long?` write checkpoint.
-  - `ICustomCheckpointRequestConnector.PostCheckpointRequest()` receives a `long` request ID and returns `Task<long>`.
+#### Target .NET 8 or Later
+
+The SDK no longer supports .NET Standard 2.0 or .NET 6. Desktop and console apps must target .NET 8 or later. MAUI apps must target .NET 9 or later.
+
+#### Replace the PowerSync.Maui Package
+
+The `PowerSync.Maui` package is deprecated. `PowerSync.Common` now includes the native libraries for Android, iOS, and Mac Catalyst.
+
+1. Remove the `PowerSync.Maui` package from your project.
+2. Replace the MAUI classes with their equivalents in the `PowerSync.Common.MDSQLite` namespace. Each equivalent takes the same options as the class it replaces:
+   - Replace `MAUISQLiteAdapter` with `MDSQLiteAdapter`, which takes `MDSQLiteAdapterOptions`.
+   - Replace `MAUISQLiteDBOpenFactory` with `MDSQLiteDBOpenFactory`, which takes `MDSQLiteOpenFactoryOptions`.
+
+   Alternatively, pass `SQLOpenOptions` as shown in [Instantiate the PowerSync Database](#2-instantiate-the-powersync-database).
+
+#### Update Queries
+
+`Get`, `GetOptional`, `GetAll`, and `Watch` no longer use Dapper, and the SDK no longer depends on the `Dapper` package. The SDK does not map rows to objects automatically, and untyped queries no longer return `dynamic` values.
+
+```cs
+// Before (v0.x): Dapper matched columns to properties by name
+ListResult[] lists = await db.GetAll<ListResult>("SELECT * FROM lists");
+
+dynamic list = await db.Get("SELECT name FROM lists WHERE id = ?", [listId]);
+Console.WriteLine(list.name);
+```
+
+```cs
+// After (v1): ListResult implements IFromRow<ListResult>
+List<ListResult> lists = await db.GetAll<ListResult>("SELECT * FROM lists");
+
+// Alternatively, pass a mapper function
+List<string> names = await db.GetAll(
+    "SELECT name FROM lists",
+    null,
+    row => row.GetString("name")
+);
+
+// Untyped queries return IQueryRow values
+IQueryRow list = await db.Get("SELECT name FROM lists WHERE id = ?", [listId]);
+Console.WriteLine(list.GetString("name"));
+```
+
+Make these changes to your queries:
+
+- For each result type, implement `IFromRow<T>` or pass a mapper function. See [Using PowerSync: CRUD Functions](#using-powersync-crud-functions) for an example. This also applies to schema classes that use `[Column]` attributes.
+- Change code that expects `T[]` from `GetAll<T>` or `Watch<T>`. These methods now return `List<T>`.
+- Replace `dynamic` results with `IQueryRow` getters. `GetAll` and `Watch` without a result type return a `QueryResult`. Its `Rows` property contains the `IQueryRow` values.
+
+#### Update Table Names from OnChange
+
+`PowerSyncDatabase.OnChange` now reports the name of the underlying table instead of the view name. For example, a change to the `todo_lists` table is reported as `ps_data__todo_lists`. Update code that compares the values in `ChangedTables` with view names.
+
+#### Use long Values for Operation IDs and Checkpoints
+
+Operation IDs, write checkpoints, and checkpoint request IDs are now `long` values instead of `string` values. Update code that uses these APIs:
+
+- `CrudBatch` and `CrudTransaction` objects returned by `GetCrudBatch()` and `GetNextCrudTransaction()` take an optional `long?` write checkpoint in their `Complete()` methods.
+- `PowerSyncDatabase.HandleCrudCheckpoint()` takes an optional `long?` write checkpoint.
+- `ICustomCheckpointRequestConnector.PostCheckpointRequest()` receives a `long` request ID and returns `Task<long>`.

@@ -1812,7 +1812,56 @@ For this, use the `Authenticator` and `MutationUploader` types.
     - `PowerSyncDatabaseProtocol.connect(endpoint:authenticator:mutationUploader:options:)` to connect both for downloads and uploads. This roughly matches what the SDK does when a `PowerSyncBackendConnector` is passed, except that it allows you to implement the authenticator and uploader independently.
   </Tab>
   <Tab title=".NET">
-    Connecting in download or upload-only mode is not yet available for the .NET SDK.
+    You can implement `IAuthenticator` and `IMutationUploader` independently:
+
+    ```csharp
+    // Requires PowerSync.Common SDK 1.0.1 or later
+    using PowerSync.Common.Client;
+    using PowerSync.Common.Client.Connection;
+    
+    class MyAuthenticator : IAuthenticator
+    {
+        private string? cachedToken;
+    
+        public async Task<string> ResolveCredentials()
+        {
+            if (cachedToken != null)
+            {
+                return cachedToken;
+            }
+    
+            // TODO: Fetch token from your backend or re-use a token stored in your app's state.
+            var token = await ...;
+            return cachedToken = token;
+        }
+    
+        public void InvalidateCredentials()
+        {
+            cachedToken = null;
+        }
+    }
+    
+    class MyMutationUploader : IMutationUploader
+    {
+        public async Task UploadMutations(IPowerSyncDatabase db)
+        {
+            var tx = await db.GetNextCrudTransaction();
+            if (tx == null)
+            {
+                return;
+            }
+    
+            // TODO: Upload transaction to your backend
+            await tx.Complete();
+        }
+    }
+    ```
+
+    Next, use one of the following `Connect` overloads to connect in download-only, upload-only, or full mode:
+
+    - `PowerSyncDatabase.Connect(endpoint, authenticator: new MyAuthenticator())` to connect in download-only mode. Pass the endpoint of the PowerSync service to connect to. You don’t need to provide the upload callback for this.
+    - `PowerSyncDatabase.Connect(uploader: new MyMutationUploader())` to connect in upload-only mode. This doesn’t need a PowerSync service endpoint or authenticator.
+    - `PowerSyncDatabase.Connect(endpoint, authenticator: new MyAuthenticator(), uploader: new MyMutationUploader())` to connect both for downloads and uploads. This roughly matches what the SDK does when a PowerSyncBackendConnector is passed, except that it allows you to implement the authenticator and uploader independently.
   </Tab>
   <Tab title="Rust">
     Since version 0.2.0, the Rust SDK no longer accepts a `BackendConnector`. Implementing `Authenticator` and `MutationUploader` is the only option.

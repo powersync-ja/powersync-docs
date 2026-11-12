@@ -2,10 +2,6 @@
 
 Thanks for contributing to our documentation!
 
-## License & Contributor License Agreement (CLA)
-
-The PowerSync docs, like [the Service](https://github.com/powersync-ja/powersync-service), are licensed under the Functional Source License (FSL). To contribute, you must accept our Contributor License Agreement (CLA). This is an automated process that occurs when you submit your first pull request (PR).
-
 ## How to Contribute
 
 1. **Fork and clone your repository:**
@@ -35,7 +31,6 @@ The PowerSync docs, like [the Service](https://github.com/powersync-ja/powersync
 6. **Submit a pull request:**
    - Push your changes to your fork.
    - Open a PR to `powersync-ja/powersync-docs:main`.
-   - Sign the CLA when prompted.
    - Ensure all checks pass (including broken link checks).
    - Request a review.
 

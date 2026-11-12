@@ -98,8 +98,8 @@ await database.Connect(
 ```
 
 ```rust Rust
-// Requires powersync 0.1.0 or later
-let mut options = SyncOptions::new(my_backend_connector);
+// Requires powersync 0.2.0 or later
+let mut options = SyncOptions::new(endpoint, authenticator, uploader);
 
 options.with_checkpoint_mode(CheckpointMode::Requests(Default::default()));
 database.connect(options).await;
@@ -186,9 +186,9 @@ async fn refresh_local_data(db: &PowerSyncDatabase) -> Result<(), CheckpointErro
 
 </CodeGroup>
 
-`requestCheckpoint()` requires that the database is connected or connecting. The device must be online for the request to reach the PowerSync Service. If it is offline or the sync client is reconnecting, the call waits and continues once the Service is reachable.
+`requestCheckpoint()` requires that the database is connected or connecting. The device must be online for the request to reach the PowerSync Service. If it is offline or the sync client is reconnecting, the call waits without a timeout and continues once the Service is reachable. Cancel the calling task if you need to stop waiting.
 
-Creating the request has no timeout of its own, so it can stay suspended while the sync client retries its connection. Cancel the calling task if you need to stop waiting.
+After the request reaches the Service, the request may time out depending on the SDK. If the request times out, `requestCheckpoint()` fails with an error. Call it again to retry.
 
 Aborting a `waitForSync` call or configuring a timeout does not remove the checkpoint. It only limits how long you wait for the checkpoint to sync and apply locally.
 
@@ -396,7 +396,7 @@ The upload response remains the authority on whether your backend accepted, chan
 ## Asynchronous Upload Backends
 
 <Note>
-  This feature is available for customers on [Team and Enterprise](https://www.powersync.com/pricing) plans.
+  **Availability**: Custom checkpoint requests are available on the [Team and Enterprise plans](https://www.powersync.com/pricing) of PowerSync Cloud and in the [Enterprise Self-Hosted Edition](/intro/self-hosting#enterprise-self-hosted-edition).
 </Note>
 
 The managed flow assumes that `uploadData()` returns only after your backend commits the uploaded changes to the source database. If your backend queues uploads for later processing, use custom checkpoint requests.
@@ -428,7 +428,8 @@ To make the PowerSync client SDK post checkpoint requests to your backend instea
 - For Kotlin, implement `CustomCheckpointRequestConnector`.
 - For Swift, make your connector conform to `CustomCheckpointRequestConnector`.
 - For .NET, implement `ICustomCheckpointRequestConnector`.
-- For Rust and Tauri, implement `BackendConnector::post_checkpoint_request`.
+- For Rust, implement `Authenticator::post_checkpoint_request` on your `Authenticator`.
+- For Tauri, implement `BackendConnector::post_checkpoint_request`.
 
 Forward the request to your application backend:
 
@@ -454,6 +455,7 @@ final class MyBackendConnector extends PowerSyncBackendConnector
   Future<String> postCheckpointRequest(
     String clientId,
     String requestId,
+    Future<void> abortSignal,
   ) async {
     final response = await myBackend.createCheckpointRequest(
       clientId,
@@ -510,8 +512,8 @@ class BackendConnector : ICustomCheckpointRequestConnector
 
 ```rust Rust
 #[async_trait]
-impl BackendConnector for TodoDatabase {
-    // ... also implement fetch_credentials and upload_data   
+impl Authenticator for TodoDatabase {
+    // ... also implement resolve_credentials
 
     fn post_checkpoint_request<'a>(
         &'a self,

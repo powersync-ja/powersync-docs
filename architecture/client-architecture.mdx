@@ -27,7 +27,7 @@ The app UI can also use [Live Queries / Watch Queries](/client-sdks/watch-querie
 
 When you implement the PowerSync Client SDK in your application, you need to define a [client-side schema](/intro/setup-guide#define-your-client-side-schema) with tables, columns and indexes that correspond to your [Sync Streams](/sync/streams/overview). You provide this schema when the PowerSync-managed SQLite database is [instantiated](/intro/setup-guide#instantiate-the-powersync-database).
 
-The tables defined in your client-side schema are usable in SQL queries as if they were actual SQLite tables, while in reality they are created as _SQLite views_ based on the schemaless JSON data being synced (see [PowerSync Protocol](/architecture/powersync-protocol)).
+By default, the tables defined in your client-side schema are usable in SQL queries as if they were actual SQLite tables, while in reality they are created as _SQLite views_ based on the schemaless JSON data being synced (see [PowerSync Protocol](/architecture/powersync-protocol)).
 
 The PowerSync Client SDK automatically maintains the following tables in the SQLite database:
 
@@ -36,6 +36,7 @@ The PowerSync Client SDK automatically maintains the following tables in the SQL
 | `ps_data__<table>` | This contains the data for each "table", in JSON format. Since JSON is being used, this table's schema does not change when columns are added, removed or changed in the Sync Streams and client-side schema. |
 | `ps_data_local__<table>` | Same as the previous point, but for [local-only](/client-sdks/advanced/local-only-usage) tables. |
 | `<table>` (`VIEW`) | These are views on the above `ps_data` tables, with each defined column in the client-side schema extracted from the JSON. For example, a `description` text column would be `CAST(data ->> '$.description' as TEXT)`. |
+| `<table>` (`TABLE`) | For [managed tables](/client-sdks/advanced/performance-optimization#managed-views-vs-managed-tables), PowerSync replaces the `ps_data__` storage table and view with a single table matching your schema. |
 | `ps_untyped` | Any synced table that is not defined in the client-side schema is placed here. If the table is added to the schema at a later point, the data is then migrated to `ps_data__<table>`. |
 | `ps_oplog` | This is the operation history data as received from the [PowerSync Service](/architecture/powersync-service), grouped per bucket. |
 | `ps_crud` | The client-side upload queue (see [Writing Data](#writing-data-via-sqlite-database-and-upload-queue) below) |
@@ -50,7 +51,7 @@ The copy of the row in `ps_oplog` may be newer than the one in `ps_data__<table>
 It is possible for different [buckets](/architecture/powersync-service#bucket-system) to include overlapping data (for example, if multiple buckets contain data from the same table). If rows with the same table and ID have been synced via multiple buckets, it may be present multiple times in `ps_oplog`, but only one will be preserved in the `ps_data__<table>` table (the one with the highest `op_id`).
 
 <Note>
-  **Raw Tables Instead of JSON-Backed SQLite Views**: If you run into limitations with the above JSON-based SQLite view system, check out the [Raw Tables feature](/client-sdks/advanced/raw-tables) which allows you to define and manage raw SQLite tables to work around some of the limitations of PowerSync's default JSON-backed SQLite views system.
+  **Alternatives to JSON-based views:** [Managed tables](/client-sdks/advanced/performance-optimization#managed-views-vs-managed-tables) (alpha) store data in SQLite columns for faster queries, and PowerSync still creates and migrates them. [Raw tables](/client-sdks/advanced/raw-tables) give you full control over the SQLite tables, for example to use foreign keys, but you have to create and migrate them yourself. To compare the options, see [Choosing a Table Type](/client-sdks/advanced/performance-optimization#choosing-a-table-type).
 </Note>
 
 ## Writing Data (via SQLite Database and Upload Queue)

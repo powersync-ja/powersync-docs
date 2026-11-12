@@ -48,9 +48,9 @@ The response `data` object contains:
 
 **`connections`** — whether PowerSync can reach the configured source database and any connection-level errors.
 
-**`active_sync_rules`** — the currently serving Sync Config (Sync Streams or legacy Sync Rules). Contains a `connections[]` array with details about each replication connection including slot name, WAL status, and tables being replicated. Also includes an `errors[]` array for warnings or errors.
+**`active_sync_rules`** — the currently serving Sync Config. Contains a `connections[]` array with details about each replication connection including slot name, WAL status, and tables being replicated. Also includes an `errors[]` array for warnings or errors.
 
-**`deploying_sync_rules`** — only present while a new Sync Config is being deployed and the initial replication is in progress. PowerSync runs this process in parallel so clients continue to be served by the existing active config. Once initial replication completes, this section disappears and `active_sync_rules` updates.
+**`deploying_sync_rules`**: the next Sync Config submitted for deployment. If valid, the Service runs its initial replication while any existing active config continues serving clients. Once initial replication completes, this section disappears and `active_sync_rules` updates. A configured Sync Config with fatal validation errors appears here without being processed. See [Errors and Warnings](#errors-and-warnings) for details.
 
 **`sync_config_source`**: where the Service gets its Sync Config. The value is `config` if the Sync Config is defined in the Service configuration, such as the `sync_config:` section of `service.yaml`. Otherwise, the value is `api`, and the Sync Config is deployed [via the API](/maintenance-ops/self-hosting/update-sync-rules#option-3-deploy-via-api).
 
@@ -66,6 +66,10 @@ Each connection in `active_sync_rules.connections[]` includes:
 | `max_slot_wal_keep_size` | The configured `max_slot_wal_keep_size` value on the source Postgres database. |
 
 ### Errors and Warnings
+
+Since Service version 1.28.0, the Service rejects configured Sync Configs with fatal parsing or validation errors before writing them to bucket storage. Validation includes checks that the source supports the features the config uses. This applies to configs supplied through a file, inline content, or a Base64 environment variable. With [`sync_config.exit_on_error: false`](/configuration/powersync-service/self-hosted-instances#sync_config), the errors appear in `deploying_sync_rules.errors[]` even though the rejected config is not replicated or served to clients. Any previous active config continues replicating and serving clients.
+
+Correct the configured Sync Config and restart the affected Service processes to reload and validate it. If you run separate API and replication processes, supply the same corrected config to both and restart both.
 
 Warnings and errors appear in the `errors[]` array at the Sync Config level (`active_sync_rules.errors[]` or `deploying_sync_rules.errors[]`). This includes:
 

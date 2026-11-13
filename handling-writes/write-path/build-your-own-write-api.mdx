@@ -1,0 +1,71 @@
+---
+title: "Build Your Own Write API"
+sidebarTitle: "Build Your Own Write API"
+description: "Build a write API in your own backend stack, using the reference write implementation's API contract and connector."
+---
+
+import BuildYourOwnBackendPrompt from '/snippets/write-path/build-your-own-backend-prompt.mdx';
+
+If you don't have a write API and your backend doesn't run on Node.js, you can build one in your own stack. Follow the API contract of the [reference write implementation](/handling-writes/write-path/reference-write-implementation), so that you can use its reference connector as your app's `uploadData()`.
+
+## Implement the Reference API Contract
+
+An [OpenAPI spec](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml) defines the API between the reference connector and the reference write API. To build the same write API in your stack:
+
+1. Implement `POST /api/data` as defined in the OpenAPI spec.
+2. Apply each transaction in its own database transaction, and return one result per transaction, in order.
+3. Use the reference connector as it is, or port it to your app's SDK.
+
+The error mappings in the reference repository's [`backend/shared/src/persistence`](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/backend/shared/src/persistence) folder show which database errors are retryable and which cause rejected writes.
+
+## Prompt for Your Coding Agent
+
+<BuildYourOwnBackendPrompt />
+
+<Note>
+  Coming soon: a step-by-step guide for building the write API in another stack.
+</Note>
+
+{/* TODO(write-path): Add the hand-written tutorial when it exists. */}
+
+## Designing a Different API
+
+You don't have to follow the reference contract. If you write your own `uploadData()`, your write API can use any style, such as REST, GraphQL, or gRPC. It can have one endpoint for all changes or one endpoint per table or operation. An endpoint that accepts a batch of changes needs fewer requests when your app makes many writes at once, such as during bulk imports.
+
+Your API still has to meet the requirements in [Write Path Concepts](/handling-writes/write-path/concepts). [Use Your Existing API](/handling-writes/write-path/existing-api) describes what `uploadData()` must do for an API that you design.
+
+For example backends in Django, Node.js, and other stacks, see [Example Projects](/intro/examples).
+
+{/* TODO(write-path): Update the Example Projects link when the example backends follow the reference API contract. */}
+
+## Best Practices
+
+Check your write API against this list before you deploy it. Except for the first item, these apply to any write API.
+
+- **Follow the reference API contract.** If your write API implements the [reference OpenAPI spec](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml), the [reference connector](/handling-writes/write-path/reference-write-implementation) works without changes. If your API contract differs from the reference, you write `uploadData()` yourself.
+  {/* TODO(write-path): After #766 merges, also link the Custom Backend examples: /configuration/app-backend/backend-connector-examples#custom-backend */}
+- **Accept the JWT that your app sends to PowerSync.** Your backend connector uses one token for sync and for uploads. Accept the audience that your PowerSync instance is configured for. See [Authenticating Writes](/handling-writes/write-path/concepts#authenticating-writes).
+- **Authorize every write.** PowerSync does not check writes, so a client can send any change to your write API. For each operation:
+  - Take the user ID from the token's `sub` claim, **NOT** from a column that the client sends.
+  - Accept only the tables and columns that clients may write. The client sends the table name, so never put an unchecked table name in SQL. Apply strict validation rules to table and column names to prevent injection attacks.
+  - For a `PATCH`, a `DELETE`, or a `PUT` that replaces a row, check that the user may change the existing row, not only the new values.
+- **Expect authorization to change while a device is offline.** Your write API checks a write when it arrives, which can be days after the user made it. If the user lost access, distinguish between a [rejected write](/handling-writes/write-path/concepts#rejected-writes) or a [blocked transaction](/handling-writes/write-path/concepts#blocked-transactions).
+- **Store writes before you respond.** Process writes synchronously. Don't put writes in a queue to process later. Otherwise, the change disappears from the device until it reaches the source database and syncs back to the device. See [Applying Writes Before Responding](/handling-writes/write-path/concepts#applying-writes-before-responding).
+- **Apply each client database transaction in one backend database transaction.** Either all of its changes are stored or none are. Process transactions in the order that you receive them, and return one result per transaction in the same order. After a failure that stops the batch, return `not_attempted` for the remaining transactions, so that later writes don't overtake the failed one.
+- **Classify each failure.** The connector acts on the `status` of each result. These status and field names come from the OpenAPI spec:
+  - Return `retryable_error` for failures that are likely to succeed later, such as a lost database connection or a deadlock. If you know how long to wait, add `retry_after_ms`.
+  - Return `fatal_error` for writes that can never succeed, such as constraint violations or invalid data. Return an HTTP 200 response, since the connector retries every non-2xx response.
+  - Set `requires_client_handling` to `true` when the user or an administrator can fix the cause, such as a missing permission. The connector then keeps the transaction in the queue.
+  - Return HTTP 401 or 403 only when the token is missing or invalid. On either of these responses, the connector fetches a new token.
+- **Store rejected writes in a dead-letter queue.** If you only log them, the user's change is lost. Store the transaction, the user ID, and the error, and alert when new entries arrive. If you apply an entry later, newer writes from the same client may already be applied. See [Rejected Writes](/handling-writes/write-path/concepts#rejected-writes).
+- **Make every write safe to repeat.** The connector can send a transaction again, for example when the response is lost after your write API committed it. Treat a `PUT` as an upsert, and treat a `PATCH` or `DELETE` of a missing row as a success. Beware of duplication of side effects such as notifications and webhooks.
+- **Accept writes from older app versions.** The upload queue is stored on the device, so writes made offline can arrive after you release a new app version or change your schema. Add tables and columns instead of renaming or removing the ones that older versions write to.
+- **Choose a conflict policy.** If your write API applies writes in the order they arrive, the last write to a column wins. If your app needs different behavior, see [Handling Update Conflicts](/handling-writes/handling-update-conflicts) and [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution).
+- **Validate values and size limits.** Check the type and range of each value in an operation's `op_data`, the request field that holds the SDK's `opData`, and return `fatal_error` for invalid data. If you set a request body size limit, make it larger than your largest transaction. A transaction that exceeds the limit fails on every retry and blocks the queue.
+- **Log enough to debug a stuck device.** For each failed operation, log the user ID, the table, the row ID, and the error code. Track how often your write API returns each error status. A blocked transaction is otherwise visible only on the device.
+
+## Related Pages
+
+- [Reference Write Implementation](/handling-writes/write-path/reference-write-implementation): how uploads are applied, batching, and conflict behavior.
+- [Write Path Concepts](/handling-writes/write-path/concepts): authentication and what happens when a write fails.
+- [Client-Side Integration](/configuration/app-backend/client-side-integration): the backend connector, and when the SDK calls `uploadData()`.

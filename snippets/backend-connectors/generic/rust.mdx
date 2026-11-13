@@ -1,0 +1,296 @@
+```rust src/connector.rs
+// Uploads local writes to the PowerSync reference write API, one transaction per request.
+// Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
+// If your backend has a different API, change the request and response handling in post_transaction() to match
+// it, or have a coding agent write the uploader for your API:
+// https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
+// For several transactions per request and client-side backoff, see the full reference connector:
+// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
+//
+// Uses the `reqwest` feature of the powersync crate, plus these crates:
+//   cargo add async-trait futures-lite serde_json serde --features serde/derive
+//   cargo add reqwest@0.13 --features json  # The same major version as the powersync crate uses
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures_lite::StreamExt;
+use powersync::error::PowerSyncError;
+use powersync::{Authenticator, CrudTransaction, MutationUploader, PowerSyncDatabase, SyncOptions, UpdateType};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+/// Base URL of the write API. On a phone or emulator, `localhost` refers to the device itself.
+const BACKEND_URL: &str = "http://localhost:6060";
+
+/// Abort a write API request after this long.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Consecutive retryable errors for one transaction before it is passed to on_fatal_transaction().
+const RETRY_MAX_ATTEMPTS: u32 = 10;
+
+/// Connects `db` for downloads and uploads.
+pub async fn connect(db: &PowerSyncDatabase) {
+    let authenticator = MyAuthenticator::default();
+    db.connect(SyncOptions::new(
+        "[Your PowerSync instance URL or self-hosted endpoint]",
+        authenticator.clone(),
+        MyMutationUploader::new(db.clone(), authenticator),
+    ))
+    .await;
+}
+
+/// Provides the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
+/// The token is cached until the PowerSync Service or the write API rejects it.
+#[derive(Clone, Default)]
+pub struct MyAuthenticator {
+    token: Arc<Mutex<Option<Arc<String>>>>,
+}
+
+impl MyAuthenticator {
+    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+    /// Supabase and Firebase tokens can be used as they are:
+    /// - https://docs.powersync.com/configuration/auth/supabase-auth
+    /// - https://docs.powersync.com/configuration/auth/firebase-auth
+    /// To use a development token with the write API, see
+    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
+    async fn fetch_auth_token(&self) -> Result<String, PowerSyncError> {
+        Ok("An authentication token".to_string())
+    }
+}
+
+#[async_trait]
+impl Authenticator for MyAuthenticator {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        if let Some(token) = self.token.lock().unwrap().clone() {
+            return Ok(token);
+        }
+        let token = Arc::new(self.fetch_auth_token().await?);
+        *self.token.lock().unwrap() = Some(token.clone());
+        Ok(token)
+    }
+
+    /// Called by the SDK when the PowerSync Service rejects the token, and by the uploader when the write API
+    /// rejects it. If your auth provider's SDK refreshes sessions itself, return its current token from
+    /// resolve_credentials() instead of caching it.
+    fn invalidate_credentials(&self) {
+        *self.token.lock().unwrap() = None;
+    }
+}
+
+pub struct MyMutationUploader {
+    db: PowerSyncDatabase,
+    authenticator: MyAuthenticator,
+    http: reqwest::Client,
+    /// The transaction ID and count of consecutive retryable errors, for RETRY_MAX_ATTEMPTS.
+    retries: Mutex<(Option<i64>, u32)>,
+}
+
+impl MyMutationUploader {
+    pub fn new(db: PowerSyncDatabase, authenticator: MyAuthenticator) -> Self {
+        Self {
+            db,
+            authenticator,
+            http: reqwest::Client::new(),
+            retries: Mutex::new((None, 0)),
+        }
+    }
+
+    /// Called for fatal errors that the write API leaves to the client, and when a transaction reaches
+    /// RETRY_MAX_ATTEMPTS. `Retain` keeps the transaction queued, which blocks later uploads, and the SDK calls
+    /// this again on its next attempt. Return `Complete` to discard the transaction, for example after telling the
+    /// user. See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
+    async fn on_fatal_transaction(&self, _transaction: &CrudTransaction<'_>, result: &TransactionResult) -> FatalDecision {
+        eprintln!("Transaction needs client handling: {:?} {:?}", result.error_code(), result.message);
+        FatalDecision::Retain
+    }
+
+    /// Sends one transaction to POST /api/data and returns its result. The request and response shapes are
+    /// defined by the write API's OpenAPI spec:
+    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
+    async fn post_transaction(&self, transaction: &CrudTransaction<'_>) -> Result<TransactionResult, PowerSyncError> {
+        let body = TransactionBatch {
+            transactions: vec![TransactionBody {
+                transaction_id: transaction.id,
+                crud: transaction
+                    .crud
+                    .iter()
+                    .map(|op| CrudBody {
+                        id: &op.id,
+                        op: &op.update_type, // "PUT", "PATCH" or "DELETE"
+                        table: &op.table,
+                        transaction_id: op.transaction_id,
+                        op_data: op.data.as_ref(), // Changed columns for PUT and PATCH, None for DELETE
+                    })
+                    .collect(),
+            }],
+        };
+
+        let token = self.authenticator.resolve_credentials().await?;
+        let response = self
+            .http
+            .post(format!("{BACKEND_URL}/api/data"))
+            .bearer_auth(token)
+            .json(&body)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            // Every non-2xx response from the write API has the shape { message }.
+            let message = response
+                .json::<MessageResponse>()
+                .await
+                .map(|body| body.message)
+                .unwrap_or_else(|_| status.to_string());
+            if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+                // Fetch a new token before the next attempt. Like other transport errors, this doesn't count
+                // toward RETRY_MAX_ATTEMPTS.
+                self.authenticator.invalidate_credentials();
+                return Err(upload_error(format!("Write API rejected the token ({status}): {message}")));
+            }
+            return Err(upload_error(format!("Write API request failed ({status}): {message}")));
+        }
+
+        let mut results = response.json::<TransactionBatchResponse>().await?.results;
+        if results.len() != 1 {
+            return Err(upload_error("Expected one result for one transaction".to_string()));
+        }
+        Ok(results.remove(0))
+    }
+
+    /// Turns the RETRY_MAX_ATTEMPTS-th consecutive retryable error for the same transaction into a fatal error
+    /// for on_fatal_transaction(). The write API retries database errors that it doesn't recognize as permanent,
+    /// so without a limit, one bad transaction could block the queue forever.
+    fn apply_retry_limit(&self, transaction: &CrudTransaction<'_>, result: TransactionResult) -> TransactionResult {
+        let mut retries = self.retries.lock().unwrap();
+        if result.status != "retryable_error" {
+            retries.0 = None;
+            return result;
+        }
+        let key = transaction.id.unwrap_or(transaction.crud[0].client_id);
+        retries.1 = if retries.0 == Some(key) { retries.1 + 1 } else { 1 };
+        retries.0 = Some(key);
+        if retries.1 < RETRY_MAX_ATTEMPTS {
+            return result;
+        }
+        retries.1 = 0;
+        TransactionResult {
+            status: "fatal_error".to_string(),
+            message: result.message.clone(),
+            requires_client_handling: Some(true),
+            failed_operation: Some(FailedOperation {
+                error_code: "RETRY_LIMIT_EXCEEDED".to_string(),
+                message: result.message,
+            }),
+        }
+    }
+}
+
+#[async_trait]
+impl MutationUploader for MyMutationUploader {
+    /// Uploads queued transactions, oldest first. The SDK calls this when the upload queue has writes.
+    /// Returning an error keeps the transaction queued, and the SDK retries after a delay.
+    /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
+    async fn upload(&self) -> Result<(), PowerSyncError> {
+        let mut transactions = self.db.crud_transactions();
+        while let Some(transaction) = transactions.try_next().await? {
+            let result = self.post_transaction(&transaction).await?;
+            let result = self.apply_retry_limit(&transaction, result);
+
+            match result.status.as_str() {
+                "success" => {}
+                "retryable_error" => {
+                    return Err(upload_error(result.message.unwrap_or_else(|| "Retryable error".to_string())));
+                }
+                "fatal_error" => {
+                    if result.requires_client_handling == Some(true)
+                        && self.on_fatal_transaction(&transaction, &result).await == FatalDecision::Retain
+                    {
+                        return Err(upload_error(format!(
+                            "Transaction retained after {:?}",
+                            result.error_code()
+                        )));
+                    }
+                    // A fatal error that the write API already handled (for example, with a dead-letter hook), or
+                    // one that on_fatal_transaction() chose to discard.
+                }
+                status => return Err(upload_error(format!("Unexpected transaction result: {status}"))),
+            }
+            transaction.complete().await?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(PartialEq)]
+pub enum FatalDecision {
+    Retain,
+    Complete,
+}
+
+fn upload_error(message: String) -> PowerSyncError {
+    PowerSyncError::upload_error(std::io::Error::other(message))
+}
+
+// Request and response types from the write API's OpenAPI spec.
+
+#[derive(Serialize)]
+struct TransactionBatch<'a> {
+    transactions: Vec<TransactionBody<'a>>,
+}
+
+#[derive(Serialize)]
+struct TransactionBody<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transaction_id: Option<i64>,
+    crud: Vec<CrudBody<'a>>,
+}
+
+#[derive(Serialize)]
+struct CrudBody<'a> {
+    id: &'a str,
+    op: &'a UpdateType,
+    table: &'a str,
+    transaction_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    op_data: Option<&'a Map<String, Value>>,
+}
+
+#[derive(Deserialize)]
+struct TransactionBatchResponse {
+    /// One result per transaction sent.
+    results: Vec<TransactionResult>,
+}
+
+/// `status` is "success", "retryable_error", "fatal_error" or "not_attempted".
+#[derive(Deserialize)]
+pub struct TransactionResult {
+    pub status: String,
+    pub message: Option<String>,
+    /// For a fatal error. True: the write API leaves the decision to the client. False: it already handled the
+    /// failure.
+    pub requires_client_handling: Option<bool>,
+    pub failed_operation: Option<FailedOperation>,
+}
+
+impl TransactionResult {
+    fn error_code(&self) -> Option<&str> {
+        self.failed_operation.as_ref().map(|op| op.error_code.as_str())
+    }
+}
+
+/// `error_code` is, for example, "UNIQUE_VIOLATION", "INVALID_DATA", "UNAUTHORIZED", or an application-defined
+/// code.
+#[derive(Deserialize)]
+pub struct FailedOperation {
+    pub error_code: String,
+    pub message: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MessageResponse {
+    message: String,
+}
+```

@@ -1,0 +1,51 @@
+---
+title: "Use Your Existing API"
+sidebarTitle: "Existing API"
+description: "Write an uploadData() function that sends changes from the upload queue to the API your app already uses for writes."
+---
+
+import ExistingApiPrompt from '/snippets/write-path/existing-api-prompt.mdx';
+
+Your existing API can serve as your write API. Your API may need small changes so that its responses tell `uploadData()` what to do with each change.
+
+## What `uploadData()` Must Do
+
+Your `uploadData()` function reads queued transactions from the database. Each change is a `PUT`, `PATCH`, or `DELETE` on one row of a table in your client-side schema. See [Write Operations](/handling-writes/write-path/concepts#write-operations).
+
+For each transaction, `uploadData()` must:
+
+1. Send each change to the matching endpoint of your API, authenticated the way your API expects. If your auth provider issues JWTs, this can be the token your app sends to PowerSync. See [Authenticating Writes](/handling-writes/write-path/concepts#authenticating-writes).
+2. Classify the result of each call as success, a [retryable error](/handling-writes/write-path/concepts#retryable-errors), or a [rejected write](/handling-writes/write-path/concepts#rejected-writes).
+3. Throw on a retryable error, such as a network error or a 5xx response. The SDK keeps the transaction and retries it later.
+4. Log a rejected write and continue. If your API returns 4xx for validation errors or conflicts, treat those responses as rejected writes. Throwing on them instead turns them into a [blocked transaction](/handling-writes/write-path/concepts#blocked-transactions). A 401 from an expired token is different: refresh the token and retry.
+5. Mark the transaction complete once every change in it was applied or rejected.
+
+If your code catches an error without throwing it and then completes the transaction, the SDK removes the failed changes from the queue too. Do this only after deciding to discard them.
+
+A retry sends the whole transaction again, including changes your API already applied. Make each call safe to repeat. A create or delete should not be rejected on retry solely because the earlier attempt succeeded.
+
+## What Your API Must Do
+
+- **Apply changes before responding.** Write to the source database while the request is open, instead of queueing the work for later. After an upload, the client waits for a checkpoint that includes its changes. If a change is not in the source database yet, it disappears from the device until it syncs back. See [Applying Writes Before Responding](/handling-writes/write-path/concepts#applying-writes-before-responding).
+- **Return 5xx only for temporary errors.** Use 5xx for problems that clear up, such as a database that is briefly unavailable. A 5xx for a write that can never succeed makes `uploadData()` retry it until someone fixes the cause.
+- **Report rejected writes.** For validation errors and conflicts, return 2xx with the reason in the response body. Alternatively, write the reason to a table that syncs back to the client. Your app can then show the error to the user. See [Rejected Writes](/handling-writes/write-path/concepts#rejected-writes).
+
+Any API style works, with one endpoint or several. One request per change is fine for typical volumes. If your app makes many writes at once, such as bulk imports, an endpoint that accepts a batch of changes needs fewer requests.
+
+## Convex
+
+If your source database is Convex, call your Convex mutations from `uploadData()`. Most Convex apps already have a mutation for each table they write to, so you don't need a separate write API.
+
+If your app authenticates to PowerSync with Convex Auth tokens, configure PowerSync to accept the `convex` JWT audience. When you self-host, set it in `client_auth.audience`. On PowerSync Cloud, add a custom audience in the instance settings. See [Custom Authentication](/configuration/auth/custom).
+
+For a working example, see the [PowerSync Convex To-Do List Demo](https://github.com/powersync-community/powersync-convex-todolist-demo).
+
+## Prompt for Your Coding Agent
+
+<ExistingApiPrompt />
+
+## Related Pages
+
+- [Write Path Concepts](/handling-writes/write-path/concepts): write operations, authentication, and what happens when a write fails.
+- [Client-Side Integration](/configuration/app-backend/client-side-integration): the backend connector, and when the SDK calls `uploadData()`.
+- [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution): strategies for handling conflicts in your write API.

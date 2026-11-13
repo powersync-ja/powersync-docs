@@ -1,0 +1,111 @@
+To have a coding agent build the write API in your backend, copy this prompt into it. The agent installs the PowerSync agent skills, reads the reference write implementation, explores your backend, and asks you about anything it can't find before it writes code. It then implements `POST /api/data` in your stack with the same behavior as the reference, so that the reference connector works against it unchanged.
+
+The prompt covers your backend only. It always asks you to confirm which writes each user may make before it writes code.
+
+```text Build with AI expandable icon=sparkles wrap
+You are building a PowerSync write API in this project's backend. It must implement the PowerSync reference write API contract and behave the same as the reference implementation, so that the reference client connector works against it unchanged. Translate the reference; don't redesign it.
+
+This prompt covers the backend only. Don't change app (client) code.
+
+## Start from the PowerSync agent skills and docs
+
+PowerSync publishes agent skills covering its SDKs, backend integration and debugging. Install them into this project before you explore, unless they are already here (look for a `powersync` skill wherever this project keeps skills):
+
+- skills.sh (Cursor, Codex, Copilot, Windsurf and others): `npx skills add powersync-ja/agent-skills`
+- Claude Code: `/plugin marketplace add powersync-ja/agent-skills`, then `/plugin install powersync-skills@powersync`
+- Gemini CLI: `gemini skills install https://github.com/powersync-ja/agent-skills.git --path skills/powersync`
+
+Where the skills and this prompt differ on write API specifics, follow this prompt and tell me what differed.
+
+Read the reference write implementation at https://github.com/powersync-ja/powersync-reference-write-implementation (branch `main`). Each source has a role:
+
+- **Contract (what to implement):** `backend/shared/powersync-reference-write-api.openapi.yaml`
+- **Behavior (what to translate):** `backend/shared/src/write/processor.ts`, `backend/shared/src/write/validate-batch.ts`, `backend/shared/src/errors.ts`, `backend/shared/src/persistence/identifiers.ts`, `backend/shared/src/mapping/`, and for this project's database, `backend/shared/src/persistence/<database>/` (the `*-errors.ts` and `*-persistence.ts` files)
+- **Intent (why it works this way):** `docs/error-handling.md`, `docs/schema-mapping.md`, `docs/conflict-resolution.md`, `docs/auth/authorization.md`, `docs/auth/setup.md`
+- **Tests (what to port):** `backend/shared/test/write-processor.test.ts`, `backend/standalone/test/fatal-routing.test.ts`, and `backend/shared/test/<database>-persistence.integration.test.ts`
+
+Docs: https://docs.powersync.com/handling-writes/write-path/build-your-own-write-api and https://docs.powersync.com/handling-writes/write-path/concepts
+
+## Before you write any code: interview me, don't guess
+
+Explore the repo first (see "Find the existing setup" below), then ask me everything you're still unsure about, in one batch. If an answer reveals a new unknown, ask another round. Only start writing code once nothing that affects correctness or security is still assumed.
+
+Always ask, even if you think you know the answer:
+
+1. **Authorization:** show me what you found (existing roles, ownership columns, permission checks) and propose which tables each user may write and which rows. Wait for my confirmation. Never ship a write API that allows every authenticated write unless I explicitly say so.
+2. **Writable tables:** propose an allowlist from the client-side schema. Writes to any other table are rejected.
+3. **Denied writes:** a denied write is reported as a client-directed `fatal_error` (`UNAUTHORIZED`). It stays in the app's upload queue and blocks every later write until the app's `onFatalTransaction()` releases it. Ask whether I want that default, or want denied writes dropped (backend-directed) instead.
+4. **ORM behavior:** if you use the project's database layer, ask whether its validations and hooks should run on PowerSync writes.
+
+Also ask about CORS if the backend serves web clients.
+
+## Find the existing setup
+
+1. **The backend:** language, framework, router, and how requests are authenticated. If this repo has no backend, stop and ask me whether to create a new service and in which stack. Don't scaffold one silently.
+2. **The source database** and how the backend accesses it. Use the project's database layer if it supports transactions and parameterized writes to arbitrary tables; otherwise use raw parameterized SQL inside a transaction.
+3. **The PowerSync auth config:** the JWKS URI or keys, audience, and issuer that the PowerSync instance trusts. For PowerSync Cloud, export it with the PowerSync CLI as described in `docs/auth/setup.md`. For self-hosted, read `client_auth` in the service config. Don't guess these values.
+4. **The client-side schema** (often in the app's repo) and the source tables it maps to.
+
+## Behavior to match exactly
+
+- Implement every route in the OpenAPI spec. Mount the write endpoint at exactly `/api/data` relative to the base URL the connector will use.
+- Validate the request against the spec: 1 to 50 transactions, otherwise `400` with `{ message }`.
+- Process transactions in order, each in its own database transaction. Return `200` with exactly one result per transaction, in request order: `success`, `retryable_error` (with optional `retry_after_ms`), `fatal_error` (with `requires_client_handling` and `failed_operation`), or `not_attempted`.
+- A retryable error, or a client-directed fatal error, stops the batch: every later transaction is `not_attempted`. A backend-directed fatal error stops the batch by default; match the reference's `BATCH_ON_FATAL_ERROR` setting (`stop` or `skip`).
+- Before running any write, validate each table name and `op_data` key against the identifier rule in `identifiers.ts`, and reject failures as `INVALID_DATA` with the operation index. Pass values only as query parameters.
+- Apply operations as the reference does: `PUT` upserts by `id` and overwrites only the provided columns, `PATCH` updates an existing row only and is a no-op if the row is missing, `DELETE` is a hard delete and a no-op if the row is missing. This gives the reference's conflict behavior (last write wins per column, delete beats `PATCH`, `PUT` recreates a deleted row). Don't add conflict detection.
+- Classify database errors with the reference error map for this database: transient connection and transport failures are retryable, while constraint, data, and schema errors are fatal with the reference error codes. Roll back on any failure.
+- Route fatal errors through a fatal-error handler with the reference's two methods: `requiresClientHandling()` (default: only `UNAUTHORIZED` is client-directed, unless I chose otherwise) and `onDeadLetter()` (default: log the full entry; delivery is best effort, as described in `docs/error-handling.md`).
+- Return `401` with `{ message }` for a missing or invalid token, and `500` with `{ message }` for unexpected errors. Never put row data or secrets in error messages.
+
+## Authentication
+
+The write API must accept the same JWT that the PowerSync instance accepts, so the app uses one token for sync and writes.
+
+- If the project's existing auth middleware verifies tokens from the same issuer and audience that PowerSync trusts, reuse it. Otherwise verify the JWT against the JWKS, checking signature, expiry, audience, and issuer.
+- Always check `iss` explicitly. PowerSync itself doesn't check it.
+- Reject anon keys, API keys, and service-role tokens. Only a signed-in user's token may write.
+- Pass the verified subject and claims to the authorizer.
+
+## Authorization
+
+Implement an authorizer called once per transaction, before persistence, as in `docs/auth/authorization.md`. It enforces the table allowlist and the rules I confirmed. Returning false rejects the whole transaction with `UNAUTHORIZED`.
+
+## Schema mapping
+
+- Every table clients write needs a column named `id` (`_id` in MongoDB) that is the primary key or unique, and holds the client's row ID.
+- If client table or column names differ from the source, write a mapper as in `docs/schema-mapping.md` and show it to me.
+- If a table is keyed differently (an integer serial, another column name, a composite key), stop and ask me. Don't invent a key strategy.
+
+## Database-specific notes
+
+- **Postgres, MySQL, SQL Server:** translate the matching `*-errors.ts` and `*-persistence.ts` closely, including which error codes are retryable.
+- **MongoDB:** transactions need a replica set. Check that the deployment has one before you write code. Translate the Mongo mapper: read each collection's `$jsonSchema` validator, validate writes against it, and convert client values (SQLite `0`/`1` to booleans, date strings or epoch numbers to `Date`, row IDs to the `_id` type). Required fields must be present on `PUT`.
+- **Any other database:** draft an error classification (which errors are transient, which are permanent, and their error codes) from the database's documentation, show it to me, and wait for my approval before using it.
+
+## Known failure modes to design against
+
+- **A permanent error reported as retryable blocks the queue forever.** The app retries it, and every later write waits behind it. When unsure whether an error is transient, ask me.
+- **A transient error reported as fatal loses data.** The app removes the transaction from its queue. Connection resets, timeouts, deadlocks, and serialization failures are retryable.
+- **Partial transactions corrupt data.** Never commit part of a transaction. Classify commit failures as the reference does, and log them: after a connection failure during commit, the database outcome is unknown.
+- **Uploads are retried.** A transaction can arrive twice. The upsert, no-op `PATCH`, and no-op `DELETE` semantics above make repeats safe; keep them.
+
+## Check that it works
+
+1. Port the test cases from the reference tests listed above into this project's test framework: ordering, `not_attempted` after a failure, rollback, fatal routing, identifier validation, and the error classification for this database. Run them.
+2. With curl: no token returns `401`, an empty `transactions` array returns `400`, and a valid batch of two transactions returns two `success` results with the rows in the database.
+
+## Production hardening to raise with me
+
+Raise these; don't build them unless I ask: a request body size limit, rate limiting per user, timeouts on database calls, structured logs without row data, durable dead-letter storage, and monitoring for transactions that the app retains and that block its queue.
+
+## Before you finish
+
+Tell me:
+
+- Which reference files you translated, and anywhere your behavior differs from the reference, with the reason.
+- How authentication works, and the authorization rules and table allowlist you implemented.
+- The error classification you used for this database.
+- The conflict behavior's limitations: arrival order decides the winner, and lost writes are not reported. Link https://docs.powersync.com/handling-writes/custom-conflict-resolution for alternatives.
+- Next step for the app: copy or port the reference connector (https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/example-client) and set its backend URL to this API. If the app is in this repo too, say so.
+```

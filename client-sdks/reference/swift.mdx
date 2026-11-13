@@ -12,6 +12,9 @@ import SdkClientSideSchema from '/snippets/sdk-client-side-schema.mdx';
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
+import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import AuthenticatorIntro from '/snippets/authenticator-intro.mdx';
+import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
 import SwiftSubscribeSyncStream from '/snippets/swift/subscribe-sync-stream.mdx';
 
@@ -127,47 +130,42 @@ let db = PowerSyncDatabase(
 )
 ```
 
-### 3. Integrate with Your Backend
+<LocalOnly />
 
-The backend connector gives the SDK the credentials it needs to connect to your PowerSync instance and download data. It also uploads your app's local writes to your backend. The connector must implement two methods:
+### 3. Connect to PowerSync
 
-1. `PowerSyncBackendConnectorProtocol.fetchCredentials` - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
-2. `PowerSyncBackendConnectorProtocol.uploadData` - The SDK queues local writes and calls this method to send them to your write API, which applies them to the source database. If your app only reads synced data for now, you can implement this method later. To pick how to upload writes, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
+<SyncChangesIntro />
+
+<AuthenticatorIntro />
 
 **Example:**
 
 ```swift
 import PowerSync
 
-final class MyConnector: PowerSyncBackendConnectorProtocol {
-    func fetchCredentials() async throws -> PowerSyncCredentials? {
-        // implement fetchCredentials to obtain the necessary credentials to connect to your backend
-        // See an example implementation in https://github.com/powersync-ja/powersync-swift/blob/main/Demo/PowerSyncExample/PowerSync/SupabaseConnector.swift
-        return PowerSyncCredentials(
-            endpoint: "Your PowerSync instance URL or self-hosted endpoint",
-            // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens)
-            // to get up and running quickly
-            token: "An authentication token"
-        )
+struct MyAuthenticator: Authenticator {
+    func resolveCredentials() async throws -> String {
+        // Return a JWT for the PowerSync Service. To get started, use a development token:
+        // https://docs.powersync.com/configuration/auth/development-tokens
+        // For production, see https://docs.powersync.com/configuration/auth/overview
+        return "An authentication token"
     }
 
-    func uploadData(database: PowerSyncDatabaseProtocol) async throws {
-        // Implement uploadData to send local changes to your backend service
-        // You can omit this method if you only want to sync data from the server to the client
-        // To pick how to upload writes, see https://docs.powersync.com/handling-writes/write-path/choosing-your-implementation
+    func invalidateCredentials() async {
+        // Clear your cached token here, so that the next resolveCredentials() call gets a new one.
     }
 }
 ```
 
-Connect the PowerSync database to sync data with your backend:
+With the authenticator implemented, call `connect()` to download changes:
 
 ```swift
-let connector = MyConnector()
-
-try await db.connect(connector: connector)
+try await db.connect(
+    endpoint: "[Your PowerSync instance URL]",
+    authenticator: MyAuthenticator(),
+    options: ConnectOptions()
+)
 ```
-
-<LocalOnly />
 
 ### 4. Subscribe to Sync Streams
 
@@ -243,18 +241,20 @@ The `watch` method executes a read query whenever a change to a dependent table 
 
 The `execute` method executes a write query (INSERT, UPDATE, DELETE) and returns the results (if any).
 
+To upload mutations to your backend, add a mutation uploader. See [Upload Local Mutations](#upload-local-mutations).
+
 ```swift
 func insertTodo(_ todo: NewTodo, _ listId: String) async throws {
     try await db.execute(
         sql: "INSERT INTO \(TODOS_TABLE) (id, created_at, created_by, description, list_id, completed) VALUES (uuid(), datetime(), ?, ?, ?, ?)",
-        parameters: [connector.currentUserID, todo.description, listId, todo.isComplete]
+        parameters: [currentUserID, todo.description, listId, todo.isComplete]
     )
 }
 
 func updateTodo(_ todo: Todo) async throws {
     try await db.execute(
         sql: "UPDATE \(TODOS_TABLE) SET description = ?, completed = ?, completed_at = datetime(), completed_by = ? WHERE id = ?",
-        parameters: [todo.description, todo.isComplete, connector.currentUserID, todo.id]
+        parameters: [todo.description, todo.isComplete, currentUserID, todo.id]
     )
 }
 
@@ -268,6 +268,36 @@ func deleteTodo(id: String) async throws {
 }
 ```
 
+## Upload Local Mutations
+
+<UploadLocalMutationsIntro />
+
+**Example:**
+
+```swift
+import PowerSync
+
+func uploadData(db: PowerSyncDatabaseProtocol) async throws {
+    guard let transaction = try await db.getNextCrudTransaction() else { return }
+
+    // Send the mutations to your write API
+    try await writeApi.uploadChanges(transaction.crud)
+
+    try await transaction.complete()
+}
+```
+
+Then connect for both downloads and uploads:
+
+```swift
+try await db.connect(
+    endpoint: "[Your PowerSync instance URL]",
+    authenticator: MyAuthenticator(),
+    mutationUploader: uploadData,
+    options: ConnectOptions()
+)
+```
+
 ## Waiting for the Latest Server Data
 
 <CheckpointRequestsIntro />
@@ -275,7 +305,7 @@ func deleteTodo(id: String) async throws {
 ```swift
 // Opt in when connecting
 try await db.connect(
-    connector: connector,
+    ...
     options: ConnectOptions(checkpointMode: .requests())
 )
 
@@ -321,7 +351,7 @@ config.httpAdditionalHeaders = ["x-my-custom-header": "example"]
 let session = URLSession(configuration: config)
 
 try await db.connect(
-    connector: connector,
+    ...
     options: ConnectOptions(
         clientConfiguration: SyncClientConfiguration(
             urlSession: session

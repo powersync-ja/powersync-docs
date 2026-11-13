@@ -777,10 +777,10 @@ Connect your client-side PowerSync database to the PowerSync Service instance yo
 <LocalOnly />
 
 <Note>
-  You don't have to worry about the _backend connector_ implementation details right now. You can leave the boilerplate as-is and come back to it later.
+  You can start by connecting and reading synced data. The upload methods in the examples below are placeholders: they mark local writes as uploaded without sending them anywhere, so a write you make reverts after the next sync. When you're ready to upload writes to your backend, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
 </Note>
 
-For development, you can use the development token you generated in the [Generate a Development Token](#5-generate-a-development-token) step above. For production, you'll implement proper JWT authentication as explained further below.
+For development, you can use the development token you generated in the [Generate a Development Token](#5-generate-a-development-token) step above. For production, implement JWT authentication as described in [Authentication Setup](/configuration/auth/overview).
 
 <CodeGroup>
 
@@ -859,7 +859,15 @@ export class Connector implements PowerSyncBackendConnector {
     }
 
     async uploadData(database) {
-      // upload to your backend API
+      const transaction = await database.getNextCrudTransaction();
+      if (!transaction) return;
+
+      for (const op of transaction.crud) {
+        const record = { ...op.opData, id: op.id };
+        // upload to your backend API
+      }
+
+      await transaction.complete();
     }
 }
 
@@ -1043,7 +1051,15 @@ public class MyConnector : IPowerSyncBackendConnector
 
     public async Task UploadData(IPowerSyncDatabase database)
     {
-        // upload to your backend API
+        var transaction = await database.GetNextCrudTransaction();
+        if (transaction == null) return;
+
+        foreach (var op in transaction.Crud)
+        {
+            // upload to your backend API
+        }
+
+        await transaction.Complete();
     }
 }
 
@@ -1095,7 +1111,7 @@ db.connect(SyncOptions::new(
 
 </CodeGroup>
 
-Once connected, you can read from and write to the client-side SQLite database. PowerSync automatically syncs changes from your source database down into the SQLite database. For client-side mutations to be uploaded back to your source database, you need to complete the backend integration as explained below.
+Once connected, you can read from and write to the client-side SQLite database. PowerSync automatically syncs changes from your source database down into the SQLite database.
 
 ### Read Data
 
@@ -1301,7 +1317,7 @@ async fn watch_todos(db: &PowerSyncDatabase, list_id: &str) -> Result<(), PowerS
 
 ### Write Data
 
-Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements. PowerSync automatically queues these mutations and uploads them to your backend via the `uploadData()` function, once you've fully implemented your _backend connector_ (as explained below).
+Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements. PowerSync automatically queues changes to synced tables. To upload those changes to your backend, implement `uploadData()` in your backend connector, using one of the setups in [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
 
 <CodeGroup>
 
@@ -1450,10 +1466,7 @@ async fn delete_todo(db: &PowerSyncDatabase, todo_id: &str) -> Result<(), PowerS
 For production deployments, you'll need to:
 
 1. [**Implement Authentication**](/configuration/auth/overview): Replace development tokens with proper JWT-based authentication. PowerSync supports various authentication providers including Supabase, Firebase Auth, Auth0, Clerk, and custom JWT implementations.
-2. **Configure & Integrate Your Backend Application**: Set up your backend to handle mutations uploaded from clients.
-   - [Server-Side Setup](/configuration/app-backend/setup)
-   - [Client-Side Integration](/configuration/app-backend/client-side-integration)
-   - [Write Path Overview](/handling-writes/write-path/overview): choose how your app's writes reach your source database.
+2. [**Set Up Uploads to Your Backend**](/handling-writes/write-path/choosing-your-implementation): Choose how your app's writes reach your source database.
 
 ### Additional Resources
 

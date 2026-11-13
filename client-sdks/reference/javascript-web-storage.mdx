@@ -8,7 +8,7 @@ sidebarTitle: "VFS and Multi-Tab Support"
 
 The SDK stores its local SQLite database through a virtual file system (VFS), the layer SQLite uses to read and write files. The VFS determines whether data persists, how tabs share data, and whether reads can run concurrently.
 
-For new apps that need to support a wide range of browsers, use [`vfs: 'auto'`](#automatic-vfs-selection-recommended). It selects [`SimpleOpfsVFS`](#simpleopfsvfs), which supports multiple tabs across major browsers, when the Origin Private File System (OPFS) is available. If OPFS is unavailable, or you disable web workers, it uses an in-memory database that does not persist data. If your app primarily targets Safari, use [`OPFSCoopSyncVFS`](#opfscoopsyncvfs) for now.
+For new apps, use [`vfs: 'auto'`](#automatic-vfs-selection-recommended). It selects [`SimpleOpfsVFS`](#simpleopfsvfs) when the Origin Private File System (OPFS) is available. If OPFS is unavailable, or you disable web workers, it uses an in-memory database that does not persist data. If your app has a significant number of Safari users, use [`OPFSCoopSyncVFS`](#opfscoopsyncvfs) until a known Safari issue is fixed.
 
 If you omit `vfs`, the SDK uses [`IDBBatchAtomicVFS`](#idbbatchatomicvfs-default) and stores data in IndexedDB. This remains the default for backward compatibility.
 
@@ -22,9 +22,9 @@ On smaller screens, scroll the table horizontally.
 
 | Option | Storage | Multi-Tab (Standard) | Multi-Tab (Safari/iOS) | Concurrent Reads | Recommendation |
 | --- | --- | --- | --- | --- | --- |
-| [SimpleOpfsVFS](#simpleopfsvfs) | OPFS | ✅ | ✅ | ❌ | Selected by `'auto'` for broad browser support; use `OPFSCoopSyncVFS` if Safari is your primary target |
+| [SimpleOpfsVFS](#simpleopfsvfs) | OPFS | ✅ | ✅ | ❌ | Selected by `'auto'`; for now, use `OPFSCoopSyncVFS` if your app has a significant number of Safari users |
 | [IDBBatchAtomicVFS](#idbbatchatomicvfs-default) | IndexedDB | ✅ | ❌ | ❌ | Default for backward compatibility; use when persistence is required without web workers |
-| [OPFSCoopSyncVFS](#opfscoopsyncvfs) | OPFS | ✅ | ✅ | ❌ | Use if Safari is your primary target |
+| [OPFSCoopSyncVFS](#opfscoopsyncvfs) | OPFS | ✅ | ✅ | ❌ | Use for now if your app has a significant number of Safari users |
 | [OPFSWriteAheadVFS](#opfswriteaheadvfs) | OPFS | ✅ | ❌ | ✅ | Apps that need concurrent reads and only target Chromium-based browsers |
 | [AccessHandlePoolVFS](#accesshandlepoolvfs) | OPFS | ❌ | ❌ | ❌ | Backward compatibility only; do not select for new apps |
 | [InMemoryVfs](#inmemoryvfs) | Memory | ✅ | ❌ | ❌ | Development or online-only apps with small datasets; avoids OPFS and IndexedDB overhead, without persistence |
@@ -50,7 +50,7 @@ All OPFS options require `useWebWorker: true` (which is the default). OPFS acces
 
 ### Automatic VFS Selection
 
-The `'auto'` option is available in `@powersync/web` version 2.7.0 and later. Use it for new apps that need broad browser support. It selects [`SimpleOpfsVFS`](#simpleopfsvfs) when OPFS is available and web workers are enabled. If your app primarily targets Safari, use [`OPFSCoopSyncVFS`](#opfscoopsyncvfs) for now.
+The `'auto'` option is available in `@powersync/web` version 2.7.0 and later. It's designed as the general-purpose option for new apps. It selects [`SimpleOpfsVFS`](#simpleopfsvfs) when OPFS is available and web workers are enabled. If your app has a significant number of Safari users, use [`OPFSCoopSyncVFS`](#opfscoopsyncvfs) until a known Safari issue is fixed.
 
 Switching from `SimpleOpfsVFS` to `'auto'` reuses the database if `'auto'` selects that VFS and you keep the file name and storage location unchanged. The SDK does not migrate data from other VFS implementations.
 
@@ -70,7 +70,7 @@ export const db = new PowerSyncDatabase({
 
 ### SimpleOpfsVFS
 
-`WASQLiteVFS.SimpleOpfsVFS` stores data in OPFS and supports multiple tabs across major browsers. The SDK selects a coordination strategy based on the browser's capabilities.
+`WASQLiteVFS.SimpleOpfsVFS` stores data in OPFS and selects how tabs coordinate database access based on the browser's capabilities.
 
 This VFS doesn't support `ATTACH` for additional databases, and SQLite temporary data, such as materialized CTEs, always stays in memory.
 
@@ -112,9 +112,9 @@ export const db = new PowerSyncDatabase({
 
 `WASQLiteVFS.OPFSCoopSyncVFS` stores data in OPFS and supports multiple tabs across major browsers, including Safari on iOS.
 
-{/* Temporary Safari guidance. Revisit when the SDK no longer relies on locks held by workers on Safari, for example once it enables shared workers on Safari by default. */}
+{/* Temporary Safari guidance. Revisit when the SDK no longer relies on locks held by workers on Safari. */}
 
-Use this VFS if your app primarily targets Safari. On Safari, the database can fail to open after a page reloads or navigates away, because Safari doesn't always release locks held by the previous page's workers. Both this VFS and `SimpleOpfsVFS` can run into this issue, but `SimpleOpfsVFS` is more likely to. For broad browser support, use [`vfs: 'auto'`](#automatic-vfs-selection-recommended).
+Use this VFS if your app has a significant number of Safari users. On Safari, the database can fail to open after a page reloads or navigates away, because of a [known issue](https://bugs.webkit.org/show_bug.cgi?id=316904). `SimpleOpfsVFS` is currently expected to run into this issue more often. We'll update this recommendation when the issue is fixed.
 
 To select this VFS explicitly:
 
@@ -195,7 +195,7 @@ The shared sync worker connects to the PowerSync Service and applies downloaded 
 
 <Warning>
   - The SDK disables shared-worker sync by default on Android, iOS, and Safari. See [Behavior Without Shared Workers](#behavior-without-shared-workers).
-  - If your app primarily targets Safari, use [`OPFSCoopSyncVFS`](#opfscoopsyncvfs) for multi-tab database access.
+  - If your app has a significant number of Safari users, use [`OPFSCoopSyncVFS`](#opfscoopsyncvfs) for now.
 </Warning>
 
 ### Behavior Without Shared Workers

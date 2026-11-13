@@ -8,17 +8,45 @@ You can implement various types of authentication when using PowerSync with Supa
 
 #### Standard [Supabase Auth](https://supabase.com/docs/guides/auth)
 
-These examples show how to implement [`fetchCredentials()` in your client-side _backend connector_](/configuration/app-backend/client-side-integration#backend-connector) to get the Supabase JWT from the Supabase Client Library:
+Your [authenticator](/configuration/app-backend/client-side-integration#authenticator) returns the access token of the user's current Supabase session, which you read from your Supabase client library. The Supabase client libraries store the session and refresh it, so your authenticator can return the current access token each time instead of caching it. See [When `resolveCredentials()` is Called](/configuration/app-backend/client-side-integration#when-resolvecredentials-is-called). For example, with supabase-js:
 
-- [JavaScript example](https://github.com/powersync-ja/powersync-js/blob/58fd05937ec9ac993622666742f53200ee694585/demos/react-supabase-todolist/src/library/powersync/SupabaseConnector.ts#L87)
-- [Dart/Flutter example](https://github.com/powersync-ja/powersync.dart/blob/9ef224175c8969f5602c140bcec6dd8296c31260/demos/supabase-todolist/lib/powersync.dart#L38)
-- [Kotlin example](https://github.com/powersync-ja/powersync-kotlin/blob/4f60e2089745dda21b0d486c70f47adbbe24d289/connectors/supabase/src/commonMain/kotlin/com/powersync/connector/supabase/SupabaseConnector.kt#L75)
+```typescript TypeScript highlight={8-10}
+import type { Authenticator } from '@powersync/web';
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+export class SupabaseAuthenticator implements Authenticator {
+  constructor(private supabase: SupabaseClient) {}
+
+  async resolveCredentials() {
+    const { data: { session }, error } = await this.supabase.auth.getSession();
+    if (!session || error) throw new Error('Not signed in to Supabase');
+    return session.access_token;
+  }
+}
+```
+
+The [Supabase demo apps](/integrations/supabase/guide#clone-the-demo-app) show how to read the session in the other SDKs. If your app uploads mutations through the [Supabase Edge Function](/handling-writes/write-path/supabase-edge-function), its connector sends the same access token with each write, as shown in that page's Connect Your App step.
 
 #### Anonymous Sign-Ins
 
-This examples shows use of Supabase's `signInAnonymously()` and then the implementation of [`fetchCredentials()`](/configuration/app-backend/client-side-integration#backend-connector) to get the JWT from the Supabase Client Library:
+If there is no Supabase session when your app starts, sign the user in with Supabase's `signInAnonymously()` before you connect. Your authenticator then returns the anonymous user's access token:
 
-- [JavaScript example](https://github.com/powersync-ja/powersync-js/blob/58fd05937ec9ac993622666742f53200ee694585/demos/react-multi-client/src/library/SupabaseConnector.ts#L47)
+```typescript TypeScript highlight={2-7}
+// Before you connect, sign in anonymously if there is no session
+const { data: { session }, error } = await supabase.auth.getSession();
+if (error) throw error;
+if (!session) {
+  const { error: signInError } = await supabase.auth.signInAnonymously();
+  if (signInError) throw signInError;
+}
+
+await db.connect({
+  powerSyncEndpoint: endpoint,
+  authenticator: new SupabaseAuthenticator(supabase)
+});
+```
+
+For a complete example, see the [React multi-client demo](https://github.com/powersync-ja/powersync-js/blob/main/demos/react-multi-client/src/library/SupabaseConnector.ts).
 
 #### Fully Custom Auth
 

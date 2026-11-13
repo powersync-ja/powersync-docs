@@ -43,9 +43,14 @@ Before creating a checkpoint request:
 <CodeGroup>
 
 ```typescript JavaScript/TypeScript
-// Requires @powersync/web 2.3.0, @powersync/react-native 2.2.0,
+// checkpointMode requires @powersync/web 2.3.0, @powersync/react-native 2.2.0,
 // @powersync/node 1.0.0, or @powersync/capacitor 0.9.0 or later
-await db.connect(connector, { checkpointMode: 'requests' });
+await db.connect({
+  powerSyncEndpoint: endpoint,
+  authenticator,
+  upload: uploadData,
+  checkpointMode: 'requests'
+});
 ```
 
 ```rust Tauri
@@ -61,30 +66,38 @@ database.connect(options).await;
 ```
 
 ```dart Dart
-// Requires powersync 2.4.0 or later
+// checkpointMode requires powersync 2.4.0 or later
 await db.connect(
-  connector: connector,
+  connector: ConnectRequest(
+    endpoint: endpoint,
+    authenticator: authenticator,
+    uploader: MutationUploader(uploadData),
+  ),
   options: SyncOptions(checkpointMode: CheckpointMode.requests()),
 );
 ```
 
 ```kotlin Kotlin
-// Requires PowerSync Kotlin SDK 1.15.0 or later
+// checkpointMode requires PowerSync Kotlin SDK 1.15.0 or later
 // Add at the top of each file, before package and imports:
 // @file:OptIn(com.powersync.ExperimentalCheckpointRequestsApi::class)
 
 database.connect(
-    connector,
+    endpoint,
+    authenticator,
+    uploader = { db -> uploadData(db) },
     options = SyncOptions(
         checkpointMode = CheckpointMode.Requests(),
-    )
+    ),
 )
 ```
 
 ```swift Swift
-// Requires PowerSync Swift SDK 1.16.0 or later
+// checkpointMode requires PowerSync Swift SDK 1.16.0 or later
 try await database.connect(
-    connector: connector,
+    endpoint: endpoint,
+    authenticator: authenticator,
+    mutationUploader: uploadData,
     options: ConnectOptions(checkpointMode: .requests())
 )
 ```
@@ -403,7 +416,7 @@ The managed flow assumes that `uploadData()` returns only after your backend com
 
 Follow [Setting Up Custom Checkpoint Requests](/handling-writes/custom-write-checkpoints#setting-up-custom-checkpoint-requests) for the source database, Sync Config, and backend changes. If older app versions still use legacy Custom Write Checkpoints, see [Migrating to Custom Checkpoint Requests](/handling-writes/custom-write-checkpoints#migrating-to-custom-checkpoint-requests).
 
-The difference on the client is that the PowerSync Client SDK generates the checkpoint request ID and sends it to your backend through `CustomCheckpointRequestConnector`.
+The difference on the client is that the client SDK generates the checkpoint request ID and sends it to your backend through `postCheckpointRequest()`.
 
 ### Checkpoint Request IDs
 
@@ -419,37 +432,36 @@ This comparison makes repeated and stale requests idempotent. It also handles se
 
 You can delete stored request records after an appropriate retention period. While a record exists, return its value during reconciliation so the SDK can resume from that value.
 
-### Connector Changes
+### Authenticator Changes
 
-To make the PowerSync client SDK post checkpoint requests to your backend instead of to the PowerSync Service, declare support for checkpoint requests on your backend connector:
+To make the client SDK post checkpoint requests to your backend instead of to the PowerSync Service, declare support for checkpoint requests on your authenticator:
 
-- For JavaScript, implement the optional `postCheckpointRequest` method.
+- For JavaScript, implement the optional `postCheckpointRequest()` method.
 - For Dart, mix in the `CustomCheckpointRequestConnector` class.
 - For Kotlin, implement `CustomCheckpointRequestConnector`.
-- For Swift, make your connector conform to `CustomCheckpointRequestConnector`.
-- For .NET, implement `ICustomCheckpointRequestConnector`.
+- For Swift, make your authenticator conform to `CustomCheckpointRequestConnector`.
+- For .NET, implement `ICustomCheckpointRequestConnector` on your backend connector. The .NET SDK doesn't support authenticators yet.
 - For Rust, implement `Authenticator::post_checkpoint_request` on your `Authenticator`.
-- For Tauri, implement `BackendConnector::post_checkpoint_request`.
+- For Tauri, implement `BackendConnector::post_checkpoint_request`. The Tauri plugin doesn't support authenticators yet.
 
 Forward the request to your application backend:
 
 <CodeGroup>
 
 ```typescript JavaScript/TypeScript
-class MyBackendConnector implements PowerSyncBackendConnector {
-  // ... also implement fetchCredentials and uploadData
+class MyAuthenticator implements Authenticator {
+  // ... also implement resolveCredentials
 
   async postCheckpointRequest(clientId: string, requestId: string): Promise<string> {
-    const response = await MyBackendConnector.createCheckpointRequest(clientId, requestId);
+    const response = await myBackend.createCheckpointRequest(clientId, requestId);
     return response.checkpointRequestId;
   }
 }
 ```
 
 ```dart Dart
-final class MyBackendConnector extends PowerSyncBackendConnector
-    with CustomCheckpointRequestConnector {
-  // ... also implement fetchCredentials and uploadData
+final class MyAuthenticator with CustomCheckpointRequestConnector {
+  // ... also implement resolveCredentials and invalidateCredentials
 
   @override
   Future<String> postCheckpointRequest(
@@ -467,9 +479,8 @@ final class MyBackendConnector extends PowerSyncBackendConnector
 ```
 
 ```kotlin Kotlin
-class MyBackendConnector: PowerSyncBackendConnector(), CustomCheckpointRequestConnector {
-    override suspend fun fetchCredentials(): PowerSyncCredentials? = TODO()
-    override suspend fun uploadData(database: PowerSyncDatabase) = TODO()
+class MyAuthenticator : CustomCheckpointRequestConnector {
+    override suspend fun resolveCredentials(): String = TODO()
 
     override suspend fun postCheckpointRequest(
         clientId: String,
@@ -482,7 +493,7 @@ class MyBackendConnector: PowerSyncBackendConnector(), CustomCheckpointRequestCo
 ```
 
 ```swift Swift
-extension BackendConnector: CustomCheckpointRequestConnector {
+extension MyAuthenticator: CustomCheckpointRequestConnector {
     func postCheckpointRequest(
         _ checkpointRequestId: Int64,
         clientId: String
@@ -536,7 +547,7 @@ impl Authenticator for TodoDatabase {
 
 </CodeGroup>
 
-The connector must use your application's own authentication for this call because `postCheckpointRequest()` does not receive the PowerSync sync token.
+`postCheckpointRequest()` doesn't receive the JWT that the SDK uses for the PowerSync Service. If your backend endpoint requires authentication, authenticate the request the same way your app authenticates its other requests to your backend.
 
 <Tip>
   Checkpoint IDs are positive integers between 1 and 2<sup>63</sup> - 1 (inclusive). For compatibility with JavaScript numbers, the JavaScript and Dart client SDKs represent requests as strings.

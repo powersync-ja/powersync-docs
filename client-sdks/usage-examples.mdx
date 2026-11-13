@@ -469,20 +469,20 @@ The insert examples use `uuid()`, a SQL function that PowerSync provides, to gen
 
 ## Send Changes in Local Data to Your Backend Service
 
-The client SDK calls your `uploadData()` function to send queued local changes to your write API. For the ways to set this up, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
+The client SDK calls your [mutation uploader](/configuration/app-backend/client-side-integration#mutation-uploader), `uploadData()` in these examples, to send queued mutations to your write API. For the ways to set this up, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
 
-The examples below take the oldest queued transaction, send all of its changes to your backend, and then mark the transaction as complete. Each change includes the operation (`PUT`, `PATCH`, or `DELETE`), the table, the row ID, and the changed data. `backendApi` stands for your own API client. If the upload fails with an error that a retry can fix, such as a network error, throw it. The SDK then keeps the changes in the queue and retries later. If your backend permanently rejects a change, mark the transaction complete anyway, so that it doesn't block later uploads. See [What Happens When a Write Fails](/handling-writes/write-path/concepts#what-happens-when-a-write-fails).
+The examples below take the oldest queued transaction, send all of its mutations to your write API, and then mark the transaction as complete. Each change includes the operation (`PUT`, `PATCH`, or `DELETE`), the table, the row ID, and the changed data. `writeApi` stands for your client for the write API. If the upload fails with an error that a retry can fix, such as a network error, throw it. The SDK then keeps the changes in the queue and retries later. If your backend permanently rejects a change, mark the transaction complete anyway, so that it doesn't block later uploads. See [What Happens When a Write Fails](/handling-writes/write-path/concepts#what-happens-when-a-write-fails).
 
 <Tabs>
   <Tab title="JavaScript Web">
     `getNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `complete()` only after your backend has applied or permanently rejected the changes.
 
     ```js
-    async function uploadData(database) {
+    async function uploadData({ database }) {
       const transaction = await database.getNextCrudTransaction();
       if (!transaction) return;
     
-      await backendApi.uploadChanges(transaction.crud);
+      await writeApi.uploadChanges(transaction.crud);
       await transaction.complete();
     }
     ```
@@ -496,11 +496,11 @@ The examples below take the oldest queued transaction, send all of its changes t
     `getNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `complete()` only after your backend has applied or permanently rejected the changes.
 
     ```js
-    async function uploadData(database) {
+    async function uploadData({ database }) {
       const transaction = await database.getNextCrudTransaction();
       if (!transaction) return;
     
-      await backendApi.uploadChanges(transaction.crud);
+      await writeApi.uploadChanges(transaction.crud);
       await transaction.complete();
     }
     ```
@@ -514,11 +514,11 @@ The examples below take the oldest queued transaction, send all of its changes t
     `getNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `complete()` only after your backend has applied or permanently rejected the changes.
 
     ```js
-    async function uploadData(database) {
+    async function uploadData({ database }) {
       const transaction = await database.getNextCrudTransaction();
       if (!transaction) return;
     
-      await backendApi.uploadChanges(transaction.crud);
+      await writeApi.uploadChanges(transaction.crud);
       await transaction.complete();
     }
     ```
@@ -532,11 +532,11 @@ The examples below take the oldest queued transaction, send all of its changes t
     `getNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `complete()` only after your backend has applied or permanently rejected the changes.
 
     ```js
-    async function uploadData(database) {
+    async function uploadData({ database }) {
       const transaction = await database.getNextCrudTransaction();
       if (!transaction) return;
     
-      await backendApi.uploadChanges(transaction.crud);
+      await writeApi.uploadChanges(transaction.crud);
       await transaction.complete();
     }
     ```
@@ -550,12 +550,11 @@ The examples below take the oldest queued transaction, send all of its changes t
     `getNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `complete()` only after your backend has applied or permanently rejected the changes.
 
     ```dart
-    @override
     Future<void> uploadData(PowerSyncDatabase database) async {
       final transaction = await database.getNextCrudTransaction();
       if (transaction == null) return;
     
-      await backendApi.uploadChanges(transaction.crud);
+      await writeApi.uploadChanges(transaction.crud);
       await transaction.complete();
     }
     ```
@@ -569,10 +568,10 @@ The examples below take the oldest queued transaction, send all of its changes t
     `getNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `complete()` only after your backend has applied or permanently rejected the changes. Its argument is an optional write checkpoint that most apps don't use, so pass `null`.
 
     ```kotlin
-    override suspend fun uploadData(database: PowerSyncDatabase) {
+    suspend fun uploadData(database: PowerSyncDatabase) {
         val transaction = database.getNextCrudTransaction() ?: return
     
-        backendApi.uploadChanges(transaction.crud)
+        writeApi.uploadChanges(transaction.crud)
         transaction.complete(null)
     }
     ```
@@ -589,7 +588,7 @@ The examples below take the oldest queued transaction, send all of its changes t
     func uploadData(database: any PowerSyncDatabaseProtocol) async throws {
         guard let transaction = try await database.getNextCrudTransaction() else { return }
     
-        try await backendApi.uploadChanges(transaction.crud)
+        try await writeApi.uploadChanges(transaction.crud)
         try await transaction.complete()
     }
     ```
@@ -608,7 +607,7 @@ The examples below take the oldest queued transaction, send all of its changes t
         var transaction = await database.GetNextCrudTransaction();
         if (transaction == null) return;
     
-        await backendApi.UploadChanges(transaction.Crud);
+        await writeApi.UploadChanges(transaction.Crud);
         await transaction.Complete();
     }
     ```
@@ -628,7 +627,7 @@ The examples below take the oldest queued transaction, send all of its changes t
     async fn upload(&self) -> Result<(), PowerSyncError> {
         let mut transactions = self.db.crud_transactions();
         while let Some(transaction) = transactions.try_next().await? {
-            self.backend_api.upload_changes(&transaction.crud).await?;
+            self.write_api.upload_changes(&transaction.crud).await?;
             transaction.complete().await?;
         }
         Ok(())
@@ -1629,41 +1628,24 @@ Several of these examples accept an optional priority. With a priority, they sho
 
 ## Connect for Downloads or Uploads Only
 
-When calling `connect()`, you can either:
+`connect()` takes an [authenticator](/configuration/app-backend/client-side-integration#authenticator) for downloads and a [mutation uploader](/configuration/app-backend/client-side-integration#mutation-uploader) for uploads. Pass both to connect for downloads and uploads, or pass only one of them to connect download-only or upload-only. [Client-Side Integration](/configuration/app-backend/client-side-integration) explains when to use each mode.
 
-1. Pass a `PowerSyncBackendConnector` instance, which is responsible for both authenticating and uploads.
-2. Implement the authenticating and uploading parts independently, which also allows connecting for downloads or uploads only.
-
-For this, use the `Authenticator` and `MutationUploader` types.
+In these examples, `endpoint` is the URL of your PowerSync Service instance.
 
 <Tabs>
   <Tab title="JavaScript">
-    You can implement `Authenticator` and an upload callback independently.
+    Implement the authenticator and the uploader independently:
 
     ```TypeScript
     // Requires @powersync/web 2.6.0, @powersync/react-native 2.4.0,
     // @powersync/node 1.3.0, or @powersync/capacitor 0.10.0 or later
-    import {
-      Authenticator,
-      ResolveCredentialsOptions,
-      UploadMutationsOptions
-    } from '@powersync/common';
+    import { Authenticator, UploadMutationsOptions } from '@powersync/common';
     
     class MyAuthenticator implements Authenticator {
-      #cachedToken: string | null = null;
-    
-      async resolveCredentials(options: ResolveCredentialsOptions): Promise<string> {
-        if (this.#cachedToken) {
-          return this.#cachedToken;
-        }
-    
+      async resolveCredentials(): Promise<string> {
         // TODO: Fetch token from your backend or re-use a token stored in your app's state.
         const response = await fetch('https://example.org/token');
-        return (this.#cachedToken = await response.text());
-      }
-    
-      invalidateCredentials(): void {
-        this.#cachedToken = null;
+        return await response.text();
       }
     }
     
@@ -1675,14 +1657,14 @@ For this, use the `Authenticator` and `MutationUploader` types.
     }
     ```
 
-    This then allows:
+    Then connect:
 
-    - Connecting for downloads only: `await db.connect({powerSyncEndpoint: endpoint, authenticator: new MyAuthenticator()})`, where `endpoint` is the PowerSync service to connect to (e.g. `https://<instance id>.powersync.journeyapps.com`)
-    - Connecting for uploads only: `await db.connect({ upload: uploadData })`. As this only involves your backend, no PowerSync service endpoint or authenticator is required.
-    - Connecting for both downloads and uploads: `db.connect({ powerSyncEndpoint: endpoint, authenticator: new MyAuthenticator(), upload: uploadData })`. This roughly matches a call to `connect()` with a `PowerSyncBackendConnector`, but allows implementing authentication and uploads independently.
+    - **Download-only:** `await db.connect({ powerSyncEndpoint: endpoint, authenticator: new MyAuthenticator() })`
+    - **Upload-only:** `await db.connect({ upload: uploadData })`
+    - **Downloads and uploads:** `await db.connect({ powerSyncEndpoint: endpoint, authenticator: new MyAuthenticator(), upload: uploadData })`
   </Tab>
   <Tab title="Dart/Flutter">
-    You can implement `Authenticator` and the upload callback independently:
+    Implement the authenticator and the uploader independently:
 
     ```Dart
     // Requires powersync 2.6.0 or later
@@ -1717,14 +1699,14 @@ For this, use the `Authenticator` and `MutationUploader` types.
     }
     ```
 
-    This then allows:
+    Then connect:
 
-    - Connecting for downloads only: `await db.connect(connector: .downloadOnly(endpoint: endpoint, authenticator: MyAuthenticator()))`, where `endpoint` is the PowerSync service to connect to (e.g. `https://<instance id>.powersync.journeyapps.com`)
-    - Connecting for uploads only: `db.connect(connector: .uploadOnly(MutationUploader(uploadData)))`. As this only involves your backend, no PowerSync service endpoint or authenticator is required.
-    - Connecting for both downloads and uploads: `db.connect(connector: .new(endpoint: endpoint, authenticator: MyAuthenticator(), uploader: MutationUploader(uploadData)))`. This roughly matches a call to `connect()` with a `PowerSyncBackendConnector`, but allows implementing authentication and uploads independently.
+    - **Download-only:** `await db.connect(connector: .downloadOnly(endpoint: endpoint, authenticator: MyAuthenticator()))`
+    - **Upload-only:** `await db.connect(connector: .uploadOnly(MutationUploader(uploadData)))`
+    - **Downloads and uploads:** `await db.connect(connector: .new(endpoint: endpoint, authenticator: MyAuthenticator(), uploader: MutationUploader(uploadData)))`
   </Tab>
   <Tab title="Kotlin">
-    You can implement `Authenticator` and an upload callback independently.
+    Implement the authenticator and the uploader independently:
 
     ```Kotlin
     // Requires PowerSync Kotlin SDK 1.16.0 or later
@@ -1755,14 +1737,14 @@ For this, use the `Authenticator` and `MutationUploader` types.
     }
     ```
 
-    Next, use `connect` overloads to connect in download or upload-only mode:
+    Then connect:
 
-    - `db.connect(endpoint, authenticator = MyAuthenticator())` to connect in download-only mode. Pass the endpoint of the PowerSync service to connect to. You don't need to provide the upload callback for this.
-    - `db.connect(uploader = ::uploadData)` to connect in upload-only mode. This doesn't need a PowerSync service endpoint or authenticator.
-    - `db.connect(endpoint, authenticator = MyAuthenticator(), uploader = ::uploadData)` to connect both for downloads and uploads. This roughly matches what the SDK does when a `PowerSyncBackendConnector` is passed, except that it allows you to implement the authenticator and uploader independently.
+    - **Download-only:** `db.connect(endpoint, authenticator = MyAuthenticator())`
+    - **Upload-only:** `db.connect(uploader = ::uploadData)`
+    - **Downloads and uploads:** `db.connect(endpoint, authenticator = MyAuthenticator(), uploader = ::uploadData)`
   </Tab>
   <Tab title="Swift">
-    You can implement `Authenticator` and an upload callback independently.
+    Implement the authenticator and the uploader independently:
 
     ```swift
     // Requires PowerSync Swift SDK 1.17.0 or later
@@ -1794,17 +1776,17 @@ For this, use the `Authenticator` and `MutationUploader` types.
     }
     ```
 
-    Next, use these `connect` overloads to connect in download-only, upload-only, or both modes:
+    Then connect with one of these `PowerSyncDatabaseProtocol.connect` overloads:
 
-    - `PowerSyncDatabaseProtocol.connect(endpoint:authenticator:options:)` to connect in download-only mode. Pass the endpoint of the PowerSync service to connect to. You don't need to provide the upload callback for this.
-    - `PowerSyncDatabaseProtocol.connect(mutationUploader:options:)` to connect in upload-only mode. This doesn't need a PowerSync service endpoint or authenticator.
-    - `PowerSyncDatabaseProtocol.connect(endpoint:authenticator:mutationUploader:options:)` to connect both for downloads and uploads. This roughly matches what the SDK does when a `PowerSyncBackendConnector` is passed, except that it allows you to implement the authenticator and uploader independently.
+    - **Download-only:** `connect(endpoint:authenticator:options:)`
+    - **Upload-only:** `connect(mutationUploader:options:)`
+    - **Downloads and uploads:** `connect(endpoint:authenticator:mutationUploader:options:)`
   </Tab>
   <Tab title=".NET">
     Connecting in download or upload-only mode is not yet available for the .NET SDK.
   </Tab>
   <Tab title="Rust">
-    You can implement `Authenticator` and `MutationUploader` independently.
+    Implement the authenticator and the uploader independently:
 
     ```Rust
     // Requires PowerSync Rust SDK 0.2.0 or later
@@ -1855,16 +1837,16 @@ For this, use the `Authenticator` and `MutationUploader` types.
     }
     ```
 
-    Next, use `SyncOptions` to connect in download-only, upload-only, or both modes:
+    Then connect with `SyncOptions`:
 
-    - `db.connect(SyncOptions::download_only(endpoint, MyAuthenticator::default())).await` to connect in download-only mode. Pass the endpoint of the PowerSync Service to connect to. You don't need to provide the uploader for this.
-    - `db.connect(SyncOptions::upload_only(MyMutationUploader { db: db.clone() })).await` to connect in upload-only mode. This doesn't need a PowerSync Service endpoint or authenticator.
-    - `db.connect(SyncOptions::new(endpoint, MyAuthenticator::default(), MyMutationUploader { db: db.clone() })).await` to connect both for downloads and uploads.
+    - **Download-only:** `db.connect(SyncOptions::download_only(endpoint, MyAuthenticator::default())).await`
+    - **Upload-only:** `db.connect(SyncOptions::upload_only(MyMutationUploader { db: db.clone() })).await`
+    - **Downloads and uploads:** `db.connect(SyncOptions::new(endpoint, MyAuthenticator::default(), MyMutationUploader { db: db.clone() })).await`
   </Tab>
 </Tabs>
 
 <Warning>
-  When switching from `PowerSyncBackendConnector` to `Authenticator`, note that the PowerSync SDK does not cache tokens from an `Authenticator`. This gives you more control over when exactly a new token should be fetched (and makes it easier to re-use a backend token your app might already have), but also means that `resolveCredentials` should not fetch a fresh token every time its called.
+  If you switch from a backend connector to an authenticator, cache the token in your authenticator and clear the cache in `invalidateCredentials()`. The SDK caches what `fetchCredentials()` returns, but <Tooltip tip="Only the JavaScript SDKs currently cache what resolveCredentials() returns.">usually</Tooltip> not what `resolveCredentials()` returns. It calls `resolveCredentials()` often, for example on every reconnect. See [When `resolveCredentials()` is Called](/configuration/app-backend/client-side-integration#when-resolvecredentials-is-called).
 </Warning>
 
-On the web, note that all tabs must agree on the connection mode. For example, it's not allowed to have one tab connect in download-only mode while another tab connects for uploads.
+On the web, all tabs must use the same connection mode. For example, one tab can't connect download-only while another tab connects for uploads.

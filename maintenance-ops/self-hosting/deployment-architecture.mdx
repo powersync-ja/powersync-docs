@@ -10,7 +10,7 @@ For a runnable development setup, use the [self-hosting examples](https://github
 
 For development and testing, use:
 
-1. One PowerSync container running API and replication: 1 vCPU, 512 MiB memory.
+1. One PowerSync container running in [unified mode](/configuration/powersync-service/self-hosted-instances#service-commands) (API and replication): 1 vCPU, 512 MiB memory.
 2. A MongoDB or Postgres [bucket storage](#storage-requirements) database. For MongoDB, use one node in replica set mode: 1 vCPU, 2 GiB memory (M10+ on Atlas).
 3. A load balancer for TLS.
 
@@ -18,41 +18,31 @@ This setup has no redundancy. If bucket storage data is lost, [re-replicate from
 
 ## Production
 
-Run API and replication in separate containers so you can scale them independently.
+Run [API and replication](/configuration/powersync-service/self-hosted-instances#service-commands) in separate containers so you can scale them independently.
 
 ### Storage Requirements
 
 You can use MongoDB or Postgres for bucket storage, independently of your source database:
 
-- [MongoDB](/configuration/powersync-service/self-hosted-instances#mongodb-storage) supports storage version 4 and optional S3 object storage. Use a three-node replica set for production.
-- [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses storage version 2 and does not support storage version 4 or S3 object storage.
+- [MongoDB](/configuration/powersync-service/self-hosted-instances#mongodb-storage) supports [storage version 4](/sync/advanced/compatibility#available-versions) and optional S3 object storage. Use a three-node replica set for production.
+- [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses [storage version 2](/sync/advanced/compatibility#available-versions). it does not support storage version 4 or S3 object storage.
 
 With [S3 object storage](/sync/advanced/storage-version-4#self-hosted-s3-setup), S3 stores larger blocks of sync data while MongoDB retains smaller blocks and metadata.
 
 ### Compute Sizing
 
-The tested configuration uses ARM64 compute, MongoDB bucket storage, and storage version 4 with S3, available since PowerSync Service v1.26.0. Use these CPU and memory settings as a starting point:
+The tested configuration uses ARM64 compute, MongoDB bucket storage, and [storage version 4](/sync/advanced/storage-version-4) with S3, available since PowerSync Service v1.26.0. Use these CPU and memory settings as a starting point:
 
 | Role | vCPU | Memory |
 | --- | --- | --- |
 | API | 1 | 2 GiB |
 | Replication | 2 | 4 GiB |
 
-### Connection Capacity and Scaling
-
-This configuration supports up to **1,000 concurrent connections per API process**. Larger datasets, more buckets per client, and simultaneous initial syncs can require fewer connections per process.
-
-After load testing, raise [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) from its default of `200` up to `1000`. The setting limits HTTP streams and WebSockets separately; monitor their combined count.
-
-Scale on both CPU utilization and connections per process. Idle connections can keep CPU low, while initial syncs can saturate CPU with fewer connections. Keep autoscaling targets below the connection limit to allow for bursts while new containers start.
-
-Add API containers before many clients run an initial sync at once or before deployments that make clients download their data again. Wait for the new containers to become healthy before those initial syncs or deployments begin. Adding containers does not immediately redistribute existing long-lived connections. Reduce capacity gradually after the download load subsides.
-
 ### Replication Container
 
-Run `start -r sync` to replicate source changes into bucket storage. 
+Run [`start -r sync`](/configuration/powersync-service/self-hosted-instances#service-commands) to replicate source changes into bucket storage.
 
-Only one process can replicate at a time. Running multiple replication containers provide failover, not more throughput.
+Only one process can replicate from the source database at a time. Running multiple replication containers provide failover, not more throughput.
 
 During rolling deploys or failover, [`PSYNC_S1003`](/debugging/error-codes#psync_s1xxx-replication-issues) is expected briefly while another process holds the replication lock.
 
@@ -62,13 +52,23 @@ Use [replication lag](/maintenance-ops/replication-lag), replication throughput,
 
 ### API Containers
 
-Run at least two API containers in production for availability. Scale horizontally by adding containers as client demand grows.
+Run at least two API containers in production for high availability. Scale horizontally by adding API containers as the concurrent client load grows.
 
-Run `start -r api` for client connections. Collect [metrics](/maintenance-ops/self-hosting/monitoring) separately from API and replication containers.
+Run [`start -r api`](/configuration/powersync-service/self-hosted-instances#service-commands) for client connections. Collect [metrics](/maintenance-ops/self-hosting/monitoring) separately from API and replication containers.
+
+The [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) config parameter determines the maximum number of concurrent client connections that each API process can handle. The default is `200` which we recommend as a baseline for production deployments.
+
+<Note>
+  Depending on the use case, handling up to 1,000 concurrent clients per API process is possible. [Contact us](/resources/contact-us) to discuss your specific requirements and we will recommend an optimal setup.
+</Note>
+
+Scale on both CPU utilization and connections per API process (i.e. add one API process for every 200 client connections). Idle connections can keep CPU low, while initial syncs can saturate CPU with fewer connections. Keep autoscaling targets below the [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) limit to allow for bursts while new containers start.
+
+Add API containers before many clients are expected to run an initial sync at once, or before deployments that make clients redownload all their data again. Wait for the new containers to become healthy before those initial syncs or deployments begin. Adding containers does not immediately redistribute existing long-lived connections. Reduce capacity gradually after the download load subsides.
 
 ### Compact Job
 
-Run `compact` as a separate scheduled job, hourly for storage version 4. Each run decides which buckets need chunk merging or full compaction, rather than fully compacting every bucket each hour.
+Run [`compact`](/configuration/powersync-service/self-hosted-instances#service-commands) as a separate scheduled job, hourly for [storage version 4](/sync/advanced/storage-version-4). Each run decides which buckets need chunk merging or full compaction, rather than fully compacting every bucket each hour.
 
 Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, CPU, and peak memory to size the job for your dataset. If jobs fail or overlap, check the compact job's CPU and memory usage and bucket storage performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
 

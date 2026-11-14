@@ -124,6 +124,57 @@ telemetry:
   disable_telemetry_sharing: !env PS_DISABLE_TELEMETRY::boolean
 ```
 
+## Service Commands
+
+Each container that uses the PowerSync Service Docker image runs one command. The command determines which part of the Service runs in that container. If you do not set a command, the image runs `start`.
+
+| Command | What It Runs |
+| --- | --- |
+| `start` or `start -r unified` | The API and replication in one process. This is the default runner type. |
+| `start -r api` | The API only. It serves client connections. |
+| `start -r sync` | Replication only. It replicates changes from the source database to bucket storage. |
+| `compact` | One [compact](/maintenance-ops/compacting-buckets) run. The process then exits. |
+| `migrate up` | Bucket storage schema migrations. The process then exits. |
+| `test-connection` | A connection test against the source database. The exit code is `0` if the connection succeeds and `1` if it fails. |
+
+The `-r` option, or `--runner-type`, sets the runner type for `start`. You can also set the runner type with the `PS_RUNNER_TYPE` environment variable. The `-r` option takes precedence over the environment variable.
+
+The `unified` and `sync` runner types apply storage migrations on startup, unless [`disable_auto_migration`](#migrations) is `true`. The `api` runner type never applies migrations. If you run API and replication in separate containers, the replication container or a separate `migrate up` job applies them.
+
+All commands read the config file in the ways that [Supplying the Config File](#supplying-the-config-file) describes.
+
+### Setting the Command
+
+The command is a list of arguments to the image's entrypoint. With `docker run`, put the arguments after the image name. On other platforms, set the arguments in the field that overrides the image's default command. Docker Compose and AWS ECS name this field `command`. Kubernetes names it `args`.
+
+<Warning>
+  In Kubernetes, the `command` field replaces the image's entrypoint instead of its arguments. If you put `["start", "-r", "api"]` in `command`, the container does not start the Service. Use `args`.
+</Warning>
+
+<CodeGroup>
+
+```bash docker run
+docker run journeyapps/powersync-service:latest start -r api
+```
+
+```yaml docker-compose.yaml
+services:
+  powersync-api:
+    image: journeyapps/powersync-service:latest
+    command: ["start", "-r", "api"]
+```
+
+```yaml Kubernetes
+containers:
+  - name: powersync-api
+    image: journeyapps/powersync-service:latest
+    args: ["start", "-r", "api"]
+```
+
+</CodeGroup>
+
+See [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for when to run API and replication in separate containers.
+
 ## Configuration Reference
 
 The config file supports the following top-level keys, documented in the sections below:
@@ -868,7 +919,7 @@ Configures how health check status is exposed. See [Health Checks](/maintenance-
 The `migrations` section controls whether the Service updates its bucket storage database schema automatically when a new version starts up. Most deployments can keep the default automatic behavior.
 
 <ResponseField name="disable_auto_migration" type="boolean" default="false">
-  When `true`, disables automatic storage database schema migrations on startup. Migrations can then be triggered externally by altering the container `command`.
+  When `true`, disables automatic storage database schema migrations on startup. Run migrations yourself with the [`migrate up` command](#service-commands).
 </ResponseField>
 
 ### `system`

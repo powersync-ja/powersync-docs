@@ -31,8 +31,134 @@ ports:
   - 9090:9090
 ```
 
-Once enabled, restart the service and the metrics endpoint will return Prometheus-formatted metrics, as described in the [What is Collected](/maintenance-ops/self-hosting/usage-reporting#what-is-collected) section of the [Usage Reporting](/maintenance-ops/self-hosting/usage-reporting) docs.
+Once enabled, restart the service and the metrics endpoint will return the Prometheus-formatted [metrics](#metrics) below.
 
 <Note>
   If you're running multiple containers (e.g. splitting up replication containers and API containers) you need to scrape the metrics separately for each container.
+</Note>
+
+## Metrics
+
+API containers report sync metrics and replication containers report replication and storage metrics, with all metrics available from containers that run both roles.
+
+### Sync Metrics
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `powersync_data_synced_bytes_total` | counter | Uncompressed size of data synced to clients. |
+| `powersync_data_sent_bytes_total` | counter | Size of data sent to clients, after compression when it is enabled. |
+| `powersync_operations_synced_total` | counter | Number of operations synced to clients. |
+| `powersync_concurrent_connections` | gauge | Number of sync connections that are currently open. |
+| `powersync_sync_connections_total` | counter | Number of sync connections that closed or were rejected, labeled by outcome and cause. See [details](#powersync_sync_connections_total). Available since Service version 1.28.0. |
+
+### Replication Metrics
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `powersync_data_replicated_bytes_total` | counter | Uncompressed size of data replicated from the source database. |
+| `powersync_rows_replicated_total` | counter | Number of rows replicated from the source database. |
+| `powersync_transactions_replicated_total` | counter | Number of source database transactions replicated. |
+| `powersync_chunks_replicated_total` | counter | Number of replication batches processed from Postgres or MongoDB source databases. |
+| `powersync_replication_lag_seconds` | gauge | Estimated [replication lag](/maintenance-ops/replication-lag) between the source database and the Service, in seconds. |
+
+### Storage Metrics
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `powersync_replication_storage_size_bytes` | gauge | Size of the current copy of source data in bucket storage. |
+| `powersync_operation_storage_size_bytes` | gauge | Size of the operations history for buckets in bucket storage. |
+| `powersync_parameter_storage_size_bytes` | gauge | Size of the data for parameter lookups in bucket storage. |
+| `powersync_object_storage_size_bytes` | gauge | Size of the files in [S3 object storage](/sync/advanced/storage-version-4#s3-object-storage) that bucket storage references. Available since Service version 1.26.0. |
+| `powersync_attributed_source_records_bytes` | gauge | `powersync_replication_storage_size_bytes` per Sync Config. |
+| `powersync_attributed_bucket_data_bytes` | gauge | `powersync_operation_storage_size_bytes` per Sync Config. |
+| `powersync_attributed_parameter_indexes_bytes` | gauge | `powersync_parameter_storage_size_bytes` per Sync Config. |
+| `powersync_attributed_object_storage_bytes` | gauge | `powersync_object_storage_size_bytes` per Sync Config. |
+
+The `attributed` gauges have `sync_config_id` and `sync_config_state` labels. They are available since Service version 1.26.0 and only report values with MongoDB bucket storage.
+
+## Sync Connection Monitoring
+
+### `powersync_sync_connections_total`
+
+Allows you to monitor sync connection errors and rejected attempts, identify recurring error codes or rejection reasons.
+
+Available since Service version 1.28.0.
+
+#### Fields
+
+Each series has an `outcome`, `close_reason`, `error_code` and `transport` (`http_stream` or `rsocket`) labels.
+
+<Accordion title="Outcomes, Close Reasons, and Error Codes">
+  ##### Outcome `ok`
+
+  Closed without a stream error.
+
+  - Close reasons: `client_closed`, `service_closed`, `process_shutdown`, or `unknown`
+  - Includes token expiry, Sync Config switches, and client-side failures. Does not confirm successful sync.
+  - Error code is omitted.
+
+  ##### Outcome `error`
+
+  Closed with a stream error.
+
+  - Close reason: `stream_error`
+  - Error code: PowerSync error code or `other`
+
+  ##### Outcome `rejected`
+
+  Connection attempt rejected.
+
+  | close_reason | error_code |
+  | --- | --- |
+  | `service_unavailable` | `PSYNC_S2003` |
+  | `no_sync_config` | `PSYNC_S2302` |
+  | `storage_error` | PowerSync error code or `other` |
+  | `sync_config_error` | PowerSync error code or `other` |
+  | `concurrency_limit` | RSocket: `PSYNC_S2304`, HTTP: `other` |
+
+  `storage_error` and `sync_config_error` are failures to load or parse the active Sync Config.
+
+  See [Error Codes](/debugging/error-codes) for the meaning of each `PSYNC_` code.
+</Accordion>
+
+#### Use Case Examples
+
+Below are some queries to help you troubleshoot sync connection issues.
+
+##### Did Connection Failures Increase After a Deployment?
+
+Graph this query across the deployment window to check for increased errors or rejections:
+
+```promql
+sum by (outcome, transport) (rate(powersync_sync_connections_total[5m]))
+```
+
+##### Which Errors Are Interrupting Sync?
+
+If sync is interrupted, check which stream errors occurred in the last hour:
+
+```promql
+sum by (error_code, transport) (
+  increase(powersync_sync_connections_total{outcome="error"}[1h])
+) > 0
+```
+
+##### Why Can't Clients Establish a Sync Connection?
+
+If clients cannot start syncing, check for rejected attempts in the last hour:
+
+```promql
+sum by (close_reason, transport) (
+  increase(powersync_sync_connections_total{outcome="rejected"}[1h])
+) > 0
+```
+
+Use the rejection reason to check the active Sync Config, connection limit, or Service logs.
+
+<Note>
+  `powersync_concurrent_connections` remains the gauge for streams that are currently open.
+
+  Requests that fail authentication or validation are not counted.
+
+  Series are not initialized to zero, so `rate()` and `increase()` can miss the first error or rejection.
 </Note>

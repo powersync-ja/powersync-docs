@@ -29,6 +29,33 @@ Read the message to see which limit you reached, since the fix is different for 
 
 To further diagnose and resolve this error, see [Reducing Bucket Count](/sync/advanced/reducing-bucket-count). For how buckets are generated and counted in the first place, see [Bucket Count](/sync/streams/bucket-count).
 
+### `InvalidStateError` in Chromium After Site Data Is Deleted
+
+This client-side error comes from a [Chromium bug](https://issues.chromium.org/issues/575150688) in the Origin Private File System (OPFS). It can affect JavaScript Web SDK apps that use an [OPFS-based VFS](/client-sdks/reference/javascript-web-storage#vfs-comparison), including `vfs: 'auto'`. If the site's data is deleted while a tab has the database open, for example through Chrome's site settings or a `Clear-Site-Data: "storage"` header, every OPFS call for the site can fail until the browser restarts:
+
+```text
+InvalidStateError: An operation that depends on state cached in an interface object was made but the state had changed since it was read from disk.
+```
+
+The same bug can also delete a database that another tab created after the deletion, without reporting an error.
+
+If your app runs into this issue, store the database in a named [Storage Bucket](https://wicg.github.io/storage-buckets/) with the `storageBucket` option, available since `@powersync/web` version 2.6.0. The bug only affects the site's default bucket. Firefox and Safari don't support the Storage Buckets API, and opening the database fails without it, so set the option only when the API exists:
+
+```js
+import { PowerSyncDatabase } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'app.db',
+    vfs: 'auto',
+    storageBucket: 'storageBuckets' in navigator ? 'app-db' : undefined
+  }
+});
+```
+
+If your app already stores data in the default bucket, adding this option starts a new, empty database. Follow the guidance for [switching VFS implementations](/client-sdks/reference/javascript-web-storage#switching-vfs-implementations) before you add it.
+
 ## Tools
 
 Troubleshooting techniques depend on the type of issue:
@@ -65,6 +92,17 @@ If for example, a change appears to be missing on the client, you can check if t
 For usage details, refer to the respective [client SDK docs](/client-sdks/overview).
 
 The JavaScript SDKs ([React Native](/client-sdks/reference/react-native-and-expo), [web](/client-sdks/reference/javascript-web)) also log the contents of bucket changes to `console.debug` if verbose logging is enabled. This should log which `PUT`/`PATCH`/`DELETE` operations have been applied from the server.
+
+### Checkpoint Requests
+
+If data is missing or outdated on a device, first check whether the device is still catching up with the server. Create a [checkpoint request](/client-sdks/checkpoint-requests) and call its `waitForSync()` method. The wait completes once the device has synced all changes committed before the Service handled the request. This covers only data included in the user's Sync Streams.
+
+Run one from your app code, or use the **Sync now** action in [PowerSync DevTools](/tools/devtools/using-devtools). Both require your app to [connect with checkpoint requests enabled](/client-sdks/checkpoint-requests#prerequisites).
+
+The result tells you where to look next:
+
+- **The wait completes, but the data is still missing:** Check that the data was committed to the source database before you created the request, and that the user's Sync Streams include it. To see what the device has synced, use [PowerSync DevTools](/tools/devtools-overview) or the [Sync Diagnostics Client](#sync-diagnostics-client).
+- **The wait fails or does not complete:** The wait has not confirmed catch-up. If it failed, check whether it was canceled or timed out. Check `SyncStatus` for connection, upload, or download errors, then check [replication lag](/maintenance-ops/replication-lag) and [instance logs](#instance-logs).
 
 ### Inspect Local SQLite Database
 
@@ -127,7 +165,7 @@ Sync & API logs in the [PowerSync Dashboard](https://dashboard.powersync.com/) r
 
 #### Common Causes of Latency
 
-- **Large initial sync**: if your Sync Streams/Rules result in a large dataset, the first sync after connecting will be slow. Inspect bucket sizes and sync state with the [Sync Diagnostics Client](/tools/diagnostics-client).
+- **Large initial sync**: if your Sync Streams result in a large dataset, the first sync after connecting will be slow. Inspect bucket sizes and sync state with the [Sync Diagnostics Client](/tools/diagnostics-client).
 - **Upload queue blocking downloads**: by default, uploads are processed before downloads, so a backlogged upload queue delays receiving new data. Buckets and streams at [priority 0](/sync/streams/prioritized-sync) are not blocked by uploads, but come with the trade-off of potential sync inconsistencies.
 - **Replication lag on the source database**: high write volume, long-running transactions, bulk updates, or backfills can cause replication to fall behind faster than the service can drain it. See [Replication Lag](/maintenance-ops/replication-lag) for source-specific causes and fixes.
 - **Too many buckets per user**: incremental sync overhead scales roughly linearly with the number of buckets per user. See [Too Many Buckets](#psync_s2305-too-many-buckets-/-parameter-query-results) above.

@@ -25,7 +25,7 @@ Run [API and replication](/configuration/powersync-service/self-hosted-instances
 You can use MongoDB or Postgres for bucket storage, independently of your source database:
 
 - [MongoDB](/configuration/powersync-service/self-hosted-instances#mongodb-storage) supports [storage version 4](/sync/advanced/compatibility#available-versions) and optional S3 object storage. Use a three-node replica set for production.
-- [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses [storage version 2](/sync/advanced/compatibility#available-versions). it does not support storage version 4 or S3 object storage.
+- [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses [storage version 2](/sync/advanced/compatibility#available-versions). It does not support storage version 4 or S3 object storage.
 
 With [S3 object storage](/sync/advanced/storage-version-4#self-hosted-s3-setup), S3 stores larger blocks of sync data while MongoDB retains smaller blocks and metadata.
 
@@ -42,7 +42,7 @@ The tested configuration uses ARM64 compute, MongoDB bucket storage, and [storag
 
 Run [`start -r sync`](/configuration/powersync-service/self-hosted-instances#service-commands) to replicate source changes into bucket storage.
 
-Only one process can replicate from the source database at a time. Running multiple replication containers provide failover, not more throughput.
+Only one process can replicate from the source database at a time. Running multiple replication containers provide failover, not more throughput. It is recommended to run 2 replication processes for failover.
 
 During rolling deploys or failover, [`PSYNC_S1003`](/debugging/error-codes#psync_s1xxx-replication-issues) is expected briefly while another process holds the replication lock.
 
@@ -68,13 +68,13 @@ Add API containers before many clients are expected to run an initial sync at on
 
 ### Compact Job
 
-Run [`compact`](/configuration/powersync-service/self-hosted-instances#service-commands) as a separate scheduled job, hourly for [storage version 4](/sync/advanced/storage-version-4). Each run decides which buckets need chunk merging or full compaction, rather than fully compacting every bucket each hour.
+Run [`compact`](/configuration/powersync-service/self-hosted-instances#service-commands) as a separate scheduled job, [hourly](/maintenance-ops/compacting-buckets#self-hosted-powersync) for [storage version 4](/sync/advanced/storage-version-4).
 
 Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, CPU, and peak memory to size the job for your dataset. If jobs fail or overlap, check the compact job's CPU and memory usage and bucket storage performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
 
 ### Memory Configuration
 
-On PowerSync Service v1.26.1, start with `NODE_OPTIONS=--max-old-space-size-percentage=80` for API, replication, and compact containers. This caps the V8 old-generation heap, not total process memory. Monitor total container memory under load and lower the percentage if needed to leave room for non-heap allocations.
+Set the environment variable `NODE_OPTIONS=--max-old-space-size-percentage=80` for the API, replication, and compact containers. This allocates 80% of the container’s assigned memory to the Node.js heap. This avoids manually retuning when scaling resources up or down.
 
 ### Load Balancer
 
@@ -104,7 +104,9 @@ Configure load-balancer health checks to poll `/probes/liveness`. See [Health Ch
 
 ### Migrations
 
-Replication containers run storage migrations on startup. [Unified](/configuration/powersync-service/self-hosted-instances#service-commands) containers, which run both API and replication, also run them. API containers do not run migrations. During an update, start the new replication container before you start the new API containers, so that the storage schema is current when the API containers start.
+Occasionally, new versions of the PowerSync Service image may require migrations on the underlying storage database. This is also specifically required the first time the service starts up on a new storage database.
+
+Replication containers run storage migrations on startup. [Unified](/configuration/powersync-service/self-hosted-instances#service-commands) containers, which run both API and replication, also run them. API containers do not run migrations.
 
 Large migrations can delay startup during an update. To run migrations as a separate job before replacing the containers, disable automatic migrations:
 

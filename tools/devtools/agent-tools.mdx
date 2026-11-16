@@ -1,0 +1,176 @@
+---
+title: "PowerSync DevTools Agent Tools"
+description: "Give a coding agent access to your app's live PowerSync client: query the local database, read the sync status, and run sync actions."
+sidebarTitle: "Agent Tools"
+---
+
+PowerSync DevTools gives coding agents, such as Claude Code or Codex, tools to query your app's local database, read its sync status, and run sync actions, such as reconnect or clear the local data. The tools are the same on each platform, but the way an agent connects to them depends on your platform.
+
+<Note>
+  These tools work with your running app. To let an agent search the PowerSync documentation, use the [docs MCP server](/tools/ai-tools#mcp-server) instead.
+</Note>
+
+## Connect a Coding Agent
+
+| Platform | How an agent connects |
+| --- | --- |
+| Vite, Nuxt DevTools 4, Capacitor, and Node.js | The [MCP endpoint](#mcp-endpoint). |
+| React Native | The [Rozenite agent CLI](#react-native). |
+| Dart and Flutter | The MCP server built in to the Dart SDK, which has its own tools. Read [this resource](https://github.com/powersync-ja/agent-skills/blob/main/skills/powersync/references/sdks/powersync-dart-debugging.md). |
+
+<Warning>
+  Nuxt DevTools 3 does not have an MCP endpoint. To use the agent tools in a Nuxt app, use [Nuxt DevTools 4](/tools/devtools/nuxt).
+</Warning>
+
+## Tools
+
+These tools are available on the MCP endpoint and in React Native. The [MCP endpoint](#pass-tool-arguments) and the [Rozenite agent CLI](#react-native) pass the inputs in different ways.
+
+| Tool | Inputs | Returns |
+| --- | --- | --- |
+| `query` | `sql`, and `params` (optional) | `{ columns, rows }`. Each row is an array in column order. |
+| `schema` | None | The schema, as the PowerSync SQLite core receives it. |
+| `info` | None | The endpoint, the token, the client ID, the connection method, and the core version. |
+| `status` | None | The last sync status that the client reported. |
+| `upload-queue` | None | The number and size of the local changes that wait to upload. |
+| `action` | `action`, and `args` (optional) | Runs one of these actions: `reconnect`, `disconnect`, `clearData`, `requestCheckpoint`, `subscribeStream`, `unsubscribeStream`. |
+
+For `subscribeStream` and `unsubscribeStream`, `args` is `{ name, params?, ttl?, priority? }`.
+
+<Warning>
+  `query` can change data. A write to one of your schema tables goes into the upload queue, and your connector uploads it like a write from your app. `action` with `clearData` deletes the local data, including the local changes in the upload queue, and downloads the data again. `info` returns the current JWT. Give these tools only to agents that you trust.
+</Warning>
+
+## MCP Endpoint
+
+Vite, Nuxt DevTools 4, Capacitor, and Node.js serve the tools as MCP (Model Context Protocol) tools.
+
+| Host | Endpoint |
+| --- | --- |
+| Vite and Capacitor | `http://localhost:5173/__devtools/__mcp` (use your dev server port) |
+| Nuxt DevTools 4 | `http://localhost:3000/__devtools/__mcp` (use your dev server port) |
+| Node.js | `<url>/__mcp`, where `url` is the value that `enablePowerSyncDiagnostics()` returns |
+
+On the web, the tools get the database from an open app tab. Keep your app open in a browser that Vite DevTools trusts, or the tools return an error. For a Capacitor app, keep the app running with live reload on a trusted simulator or emulator.
+
+For a Node.js app, set a fixed `port` in `enablePowerSyncDiagnostics()` so that the endpoint stays the same when your app restarts.
+
+### Add the Endpoint to Your Agent
+
+The endpoint accepts only requests that have a loopback `Origin` header, such as `http://localhost:5173`. Some MCP clients do not send this header, so add it to the client configuration.
+
+For example, to add the Vite endpoint to Claude Code:
+
+```bash
+claude mcp add --transport http powersync-devtools http://localhost:5173/__devtools/__mcp --header "Origin: http://localhost:5173"
+```
+
+If your MCP client cannot send the header, set `allowedOrigins: false`. Read [Origin and Authorization](#origin-and-authorization).
+
+<Tip>
+  Coding agents such as Claude Code can add the server themselves. Start your dev server, open your app, and give the agent a prompt like this one:
+
+  ```text
+  Connect to the PowerSync DevTools MCP server of my running app.
+  The endpoint is http://localhost:5173/__devtools/__mcp. It uses the Streamable HTTP transport.
+  Every request must send the header "Origin: http://localhost:5173".
+  Add the server, then call powersync_sources and powersync_status and tell me the sync state.
+  ```
+
+  Change the URL and the port to match your host. Some agents must restart before they can use a new MCP server.
+</Tip>
+
+### Pass Tool Arguments
+
+On the MCP endpoint, each tool name has the `powersync_` prefix, such as `powersync_query`. The endpoint also has a `powersync_sources` tool, which returns the attached databases with their ID and SDK.
+
+The tools take positional arguments named `arg0` and `arg1`. The last argument of most tools is the database ID. Pass `null` to use the first attached database, or call `powersync_sources` to list the IDs.
+
+| Tool | Arguments |
+| --- | --- |
+| `powersync_sources` | None |
+| `powersync_query` | `arg0`: `{ sql, params? }`<br />`arg1`: database ID or `null` |
+| `powersync_schema`, `powersync_info`, `powersync_status`, `powersync_upload-queue` | `arg0`: database ID or `null` |
+| `powersync_action` | `arg0`: `{ action, args? }`<br />`arg1`: database ID or `null` |
+
+### Origin and Authorization
+
+To change how the endpoint checks requests, use the `mcp` setting:
+
+| Value | Result |
+| --- | --- |
+| `'auto'` | The default. The endpoint accepts requests with a loopback `Origin` header. |
+| `{ allowedOrigins: false }` | The endpoint also accepts requests without an `Origin` header. Use this only when the server listens on `localhost`. |
+| `{ authorization: '<token>' }` | Requests must also send `Authorization: Bearer <token>`. Read the token from an environment variable. |
+| `false` | Turns off the endpoint. |
+
+Set it in your host:
+
+<Tabs>
+  <Tab title="devtools option (Vite 8.3+)">
+    ```typescript
+    export default defineConfig({
+      devtools: { apply: 'serve', mcp: { allowedOrigins: false } },
+      plugins: [powersyncDevtools()]
+    });
+    ```
+  </Tab>
+  <Tab title="DevTools() plugin (Vite 7+)">
+    ```typescript
+    export default defineConfig({
+      plugins: [...(await DevTools({ mcp: { allowedOrigins: false } })), powersyncDevtools()]
+    });
+    ```
+  </Tab>
+  <Tab title="Nuxt DevTools 4">
+    ```typescript
+    export default defineNuxtConfig({
+      vite: {
+        devtools: { mcp: { allowedOrigins: false } }
+      }
+    });
+    ```
+  </Tab>
+  <Tab title="Node.js">
+    ```typescript
+    const devtools = await enablePowerSyncDiagnostics(db, { mcp: { allowedOrigins: false } });
+    ```
+  </Tab>
+</Tabs>
+
+### Test the Endpoint
+
+Use `curl` to check that the endpoint works. This example counts the operations in the local oplog:
+
+```bash
+curl -X POST http://localhost:5173/__devtools/__mcp \
+  -H 'Origin: http://localhost:5173' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"powersync_query","arguments":{"arg0":{"sql":"SELECT count(*) AS operations FROM ps_oplog"},"arg1":null}}}'
+```
+
+If the response is `403 Forbidden`, the request has no loopback `Origin` header.
+
+## React Native
+
+In React Native apps, the `usePowerSyncDevTools()` hook registers the tools for the [Rozenite agent CLI](https://www.rozenite.dev/docs/agent/overview). The tools are in the `powersync/diagnostics` domain, for example `npx rozenite agent powersync/diagnostics status`.
+
+To use the tools, [set up PowerSync DevTools for React Native](/tools/devtools/react-native), and keep the app running with Metro started with `WITH_ROZENITE=true`. The agent runs the commands from your app's folder.
+
+<Tip>
+  Give your coding agent a prompt like this one:
+
+  ```text
+  My React Native app runs PowerSync DevTools as a Rozenite plugin, and Metro runs with WITH_ROZENITE=true.
+  Inspect the app's PowerSync client with the Rozenite agent CLI. Run all commands from the app folder.
+  1. Run `npx rozenite skills show core` and `npx rozenite skills show cli` to learn how the CLI works.
+  2. Run `npx rozenite agent powersync/diagnostics` to list the PowerSync tools. Add `--help` after a tool name to see its arguments.
+  3. Call the `status` and `upload-queue` tools, and tell me the sync state.
+  4. When you finish, run `npx rozenite agent session stop`.
+  ```
+
+  The agent session holds the app's only debugger connection. Step 4 releases it.
+</Tip>
+
+The CLI passes the inputs as named flags, such as `--sql`. The tools have no database ID and there is no `sources` tool, because the tools use the database that you pass to the hook.

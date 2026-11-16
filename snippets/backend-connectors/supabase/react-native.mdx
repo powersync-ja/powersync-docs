@@ -1,5 +1,6 @@
 ```typescript PowerSyncConnector.ts
-import { UpdateType, type CommonPowerSyncDatabase, type CrudEntry, type PowerSyncBackendConnector, type PowerSyncCredentials } from '@powersync/react-native';
+// Requires @powersync/react-native 2.4.0 or later.
+import { UpdateType, type Authenticator, type CrudEntry, type MutationUploader } from '@powersync/react-native';
 
 import { SupabaseClient, createClient } from '@supabase/supabase-js';
 import { AppConfig } from './AppConfig';
@@ -18,9 +19,12 @@ const FATAL_RESPONSE_CODES = [
   new RegExp('^42501$')
 ];
 
-export class SupabaseConnector implements PowerSyncBackendConnector {
+// The connector is the Authenticator for sync and provides the upload callback. Connect with:
+//   await db.connect({ powerSyncEndpoint: AppConfig.powersyncUrl, authenticator: connector, upload: connector.upload });
+export class SupabaseConnector implements Authenticator {
   client: SupabaseClient;
   storage: SupabaseStorageAdapter;
+  private cachedToken: string | null = null;
 
   constructor(protected system: System) {
     this.client = createClient(AppConfig.supabaseUrl, AppConfig.supabaseAnonKey, {
@@ -41,6 +45,7 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
     if (error) {
       throw error;
     }
+    this.cachedToken = null; // A new session has a new token.
   }
 
   async userId() {
@@ -51,7 +56,16 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
     return session?.user.id;
   }
 
-  async fetchCredentials() {
+  /**
+   * Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+   * After invalidateCredentials() clears it, getSession() returns a valid session, because supabase-js refreshes
+   * the session when it expires within 90 seconds.
+   */
+  async resolveCredentials(): Promise<string> {
+    if (this.cachedToken) {
+      return this.cachedToken;
+    }
+
     const {
       data: { session },
       error
@@ -63,13 +77,17 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
 
     console.debug('session expires at', session.expires_at);
 
-    return {
-      endpoint: AppConfig.powersyncUrl,
-      token: session.access_token ?? ''
-    } satisfies PowerSyncCredentials;
+    this.cachedToken = session.access_token;
+    return this.cachedToken;
   }
 
-  async uploadData(database: CommonPowerSyncDatabase): Promise<void> {
+  /** Called by the SDK before the token expires and when the PowerSync Service rejects it. */
+  invalidateCredentials(): void {
+    this.cachedToken = null;
+  }
+
+  /** Uploads the oldest queued transaction. Throwing keeps it queued, and the SDK retries after a delay. */
+  readonly upload: MutationUploader = async ({ database }) => {
     const transaction = await database.getNextCrudTransaction();
 
     if (!transaction) {
@@ -91,7 +109,7 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
             result = await table.upsert(record);
             break;
           case UpdateType.PATCH:
-            result = await table.update(op.opData).eq('id', op.id);
+            result = await table.update(op.opData ?? {}).eq('id', op.id);
             break;
           case UpdateType.DELETE:
             result = await table.delete().eq('id', op.id);
@@ -125,6 +143,6 @@ export class SupabaseConnector implements PowerSyncBackendConnector {
         throw ex;
       }
     }
-  }
+  };
 }
 ```

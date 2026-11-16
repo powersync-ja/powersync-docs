@@ -1,8 +1,9 @@
 ```javascript PowerSyncConnector.js
 // Uploads local writes to the PowerSync reference write API, one transaction per request.
+// Requires @powersync/web 2.6.0 or later.
 // Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in postTransaction() to match it,
-// or have a coding agent write uploadData() for your API:
+// or have a coding agent write the upload callback for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
 // For several transactions per request and client-side backoff, see the full reference connector:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
@@ -16,18 +17,62 @@ const REQUEST_TIMEOUT_MS = 30000;
 // Consecutive retryable errors for one transaction before it is passed to onFatalTransaction().
 const RETRY_MAX_ATTEMPTS = 10;
 
-export class MyBackendConnector {
+/** Connects `db` for downloads and uploads. */
+export async function connect(db) {
+  const authenticator = new MyAuthenticator();
+  await db.connect({
+    powerSyncEndpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+    authenticator,
+    upload: new MyBackendConnector({ authenticator }).upload
+  });
+}
+
+/**
+ * Provides the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
+ * The token is cached until it is about to expire, or the PowerSync Service or the write API rejects it.
+ */
+export class MyAuthenticator {
   constructor() {
-    this.authToken = null;
-    this.retryKey = null;
-    this.retryCount = 0;
+    this.token = null;
   }
 
-  async fetchCredentials() {
-    return {
-      endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
-      token: await this.getAuthToken()
-    };
+  async resolveCredentials() {
+    if (!this.token) {
+      this.token = await this.fetchAuthToken();
+    }
+    return this.token;
+  }
+
+  /**
+   * Called by the SDK before the token expires and when the PowerSync Service rejects it, and by the connector
+   * when the write API rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
+   * itself: the SDK isn't guaranteed to cache tokens.
+   */
+  invalidateCredentials() {
+    this.token = null;
+  }
+
+  /**
+   * Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+   * Supabase and Firebase tokens can be used as they are:
+   * - https://docs.powersync.com/configuration/auth/supabase-auth
+   * - https://docs.powersync.com/configuration/auth/firebase-auth
+   * To use a development token with the write API, see
+   * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
+   */
+  async fetchAuthToken() {
+    return 'An authentication token';
+  }
+}
+
+export class MyBackendConnector {
+  /** @param authenticator Supplies the token for write API requests. */
+  constructor({ authenticator }) {
+    this.authenticator = authenticator;
+    this.retryKey = null;
+    this.retryCount = 0;
+    // connect() calls upload() without the connector, so bind it.
+    this.upload = this.upload.bind(this);
   }
 
   /**
@@ -36,7 +81,7 @@ export class MyBackendConnector {
    * and the SDK retries after a delay.
    * See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
    */
-  async uploadData(database) {
+  async upload({ database }) {
     const transaction = await database.getNextCrudTransaction();
     if (!transaction) {
       return;
@@ -47,8 +92,8 @@ export class MyBackendConnector {
       result = await this.postTransaction(transaction);
     } catch (error) {
       // Network errors, timeouts and non-2xx responses. These don't count toward RETRY_MAX_ATTEMPTS.
-      if (error instanceof AuthenticationError) {
-        this.authToken = null; // Fetch a new token before the next attempt.
+      if (error instanceof AuthenticationError && this.authenticator.invalidateCredentials) {
+        this.authenticator.invalidateCredentials(); // Fetch a new token before the next attempt.
       }
       throw error;
     }
@@ -83,30 +128,6 @@ export class MyBackendConnector {
   }
 
   /**
-   * Returns the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
-   * The token is cached until the write API rejects it. If your auth provider's SDK refreshes sessions itself,
-   * return `this.fetchAuthToken()` directly instead.
-   */
-  async getAuthToken() {
-    if (!this.authToken) {
-      this.authToken = await this.fetchAuthToken();
-    }
-    return this.authToken;
-  }
-
-  /**
-   * Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-   * Supabase and Firebase tokens can be used as they are:
-   * - https://docs.powersync.com/configuration/auth/supabase-auth
-   * - https://docs.powersync.com/configuration/auth/firebase-auth
-   * To use a development token with the write API, see
-   * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-   */
-  async fetchAuthToken() {
-    return 'An authentication token';
-  }
-
-  /**
    * Sends one transaction to POST /api/data and returns its result. The request and response shapes are defined
    * by the write API's OpenAPI spec:
    * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
@@ -131,7 +152,7 @@ export class MyBackendConnector {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + (await this.getAuthToken())
+        Authorization: 'Bearer ' + (await this.authenticator.resolveCredentials({}))
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)

@@ -1,6 +1,6 @@
 # @powersync/docs-content
 
-Connector snippets, agent prompts, and diagrams from the PowerSync docs, for the PowerSync Dashboard.
+Connector snippets, agent prompts, and diagrams from the PowerSync docs, for use outside the docs site, such as in the PowerSync Dashboard.
 
 The docs are the source of truth. The build reads:
 
@@ -31,7 +31,7 @@ Removing or renaming an ID, or changing the placeholder, is a breaking change.
 pnpm --filter @powersync/docs-content build
 ```
 
-To try it in the Dashboard, run `pnpm link <path-to-this-directory>` there, and rebuild after each change.
+To try it in another project, run `pnpm link <path-to-this-directory>` there, and rebuild after each change.
 
 ## Releasing
 

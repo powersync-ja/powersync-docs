@@ -24,7 +24,7 @@ Skills, reviewer prompts, and generic Mintlify guidance do not override those st
 
 - `docs.json`: navigation, theme, and redirects. Read before changing documentation.
 - `*.mdx`: pages; `snippets/`: reusable components; `images/` and `logo/`: assets.
-- `packages/docs-content/`: npm package for the PowerSync Dashboard, built from `snippets/backend-connectors/`, `snippets/write-path/*-prompt.mdx`, and `images/handling-writes/`. See [its README](packages/docs-content/README.md).
+- `packages/docs-content/`: npm package of docs content for use outside the docs site, built from `snippets/backend-connectors/`, `snippets/write-path/*-prompt.mdx`, and `images/handling-writes/`. See [its README](packages/docs-content/README.md).
 - `.vale.ini` and `.github/vale/`: prose lint rules and accepted vocabulary.
 - `routines/`: versioned copies of cloud prompts; editing these files does not update a live routine.
 

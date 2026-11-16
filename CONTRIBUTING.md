@@ -43,6 +43,8 @@ The PowerSync docs, like [the Service](https://github.com/powersync-ja/powersync
 
 Once your PR is approved and merged to `main`, your changes will be automatically published to https://docs.powersync.com.
 
+Files in `snippets/backend-connectors/`, `snippets/write-path/*-prompt.mdx`, and `images/handling-writes/` also feed the [`@powersync/docs-content`](/packages/docs-content/README.md) package used by the PowerSync Dashboard. Maintainers release it separately.
+
 ## Getting Help
 
 If you have questions or need help:

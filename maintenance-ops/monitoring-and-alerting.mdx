@@ -249,11 +249,11 @@ rid:<request-id>
 
 Use the [Session Lifecycle](/debugging/log-reference#session-lifecycle) and [Session Fields](/debugging/log-reference#session-fields) reference to interpret the results.
 
-On the Team and Enterprise plans, [User Lookup](#user-lookup) finds a user's connections without these searches.
+On the Team and Enterprise plans, [User Lookup](#user-lookup) finds a user's Sync Sessions without these searches.
 
 ### User Lookup
 
-Use **User Lookup** to investigate one user's sync connections, for example when a user reports missing data. It reads the Sync & API logs and lists the connections that the user made in the selected time range.
+Use **User Lookup** to investigate one user's Sync Sessions, for example when a user reports missing data. A Sync Session lasts from when a client connects until it disconnects. User Lookup reads the Sync & API logs and lists the Sync Sessions that the user started in the selected time range.
 
 1. In the **Logs** view, select **User Lookup** in the side menu.
 2. Enter the user ID. This is the `sub` claim in the user's token.
@@ -261,13 +261,27 @@ Use **User Lookup** to investigate one user's sync connections, for example when
 
 You can also open User Lookup from a log entry. If the **Metadata** display option is on, open the menu of a `user_id` pill and choose **Look Up User**.
 
-<Frame caption="User Lookup showing all of a user's connections in one timeline">
-  ![User Lookup with a user's sync connections listed and the All Connections timeline](/images/resources/user-lookup.png)
+<Frame caption="User Lookup showing all of a user's Sync Sessions in one timeline">
+  ![User Lookup with a user's Sync Sessions listed and the All Session Events timeline](/images/resources/user-lookup.png)
 </Frame>
 
-Select a connection to see when it started and ended, what it synced, and a timeline of its events. Click **View in Logs** to see all of its log entries.
+Select a Sync Session to see when it started and ended, what it synced, and a timeline of its events. Click **View in Logs** to see all of its log entries.
 
-The user's connection status comes from the last 24 hours of logs, not from the selected time range. **Connected** means that a sync connection is open. It does not mean that the client has downloaded all of its data.
+#### What the Logs Show
+
+User Lookup reads the PowerSync Service's logs, so it shows the Sync Sessions the Service accepted and the data it sent. It cannot show whether a device applied that data, or whether its uploads are pending or failing. Check those on the device with the [SyncStatus API](/debugging/troubleshooting#syncstatus-api) or [client-side logging](/debugging/troubleshooting#client-side-logging).
+
+| Term | Meaning |
+| --- | --- |
+| Connected | The Service has an open Sync Session for the user, based on the last 24 hours of logs whatever time range is selected. This does not confirm that the device is online. The Service notices a lost connection only when keepalives stop or a write fails, which takes up to 90 seconds over WebSocket and several minutes over HTTP. If the Service stops abruptly it logs no end, and the Sync Session shows as connected until the client connects again or a day has passed. |
+| Download Status | Whether the Service has finished sending each connected client its latest checkpoint. Changes the Service has not yet replicated from your source database are not included. |
+| Last Checkpoint Sent | When the Service last finished sending a client a complete checkpoint, including checkpoints with no new data. A client applies a checkpoint only once its upload queue is empty and the checksums match, so the SDK's `lastSyncedAt` on the device can be earlier. |
+| Last Upload | When a client last asked for a [write checkpoint](/architecture/powersync-protocol#write-checkpoints). The client SDKs ask for one after they upload every queued change through your backend connector. The logs do not show pending or failed uploads, or whether your backend saved the changes. Clients that use [Checkpoint Requests](/client-sdks/checkpoint-requests) log `Requested checkpoint for` instead, and User Lookup does not count those as uploads. |
+| Operations Synced and Data Synced | What the Service sent, measured before compression. Data Synced also counts protocol messages such as keepalives. A checkpoint that finished in the selected time range counts in full, even if sending started earlier. |
+| Open at Range End | No end was logged before the selected time range ended. |
+| No End Logged | No end was logged, but the client connected again later, or the Sync Session started more than a day before the selected time range ended. Tokens last at most a day by default, which means it has most likely ended. Supabase Auth tokens can last up to a week, and with those it may still be open. |
+
+Connections that the Service rejected, for example because of an invalid token, do not start a Sync Session and are not listed. Search the Sync & API logs for their errors.
 
 ### Sync As This User
 
@@ -278,7 +292,7 @@ Use **Sync As This User** to reproduce what a user synced. It opens [Sync Test](
 3. Check the values in the dialog. If a value is wrong or missing, change it or add it. Sync logs keep only the first 20 connection parameters and shorten values longer than 100 characters, and the dialog notes the values that the logs could not fill in. To use the values from another recent Sync Session of the user, select them under the field.
 4. Click **Sync As This User** to open Sync Test and connect.
 
-In [User Lookup](#user-lookup), **Sync As This User** starts from the user's most recent connection in the selected time range.
+In [User Lookup](#user-lookup), **Sync As This User** starts from the user's most recent Sync Session in the selected time range.
 
 The button shows only if you can use Sync Test. See the [Sync Test requirements](/tools/sync-test#requirements).
 

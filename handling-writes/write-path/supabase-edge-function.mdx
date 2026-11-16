@@ -78,36 +78,38 @@ The function runs each write as the signed-in user. Inside each transaction, it 
     Copy the reference connector into your app, as described in the reference write implementation's [Connect Your App step](/handling-writes/write-path/reference-write-implementation#connect-your-app). Then make these changes:
 
     1. Set the connector's write API URL to `https://<project-ref>.supabase.co/functions/v1/powersync-write`. Your PowerSync instance URL doesn't change.
-    2. Pass your app's supabase-js client to the connector, and replace `fetchCredentials()` and `getAuthToken()` with the code below. This code reads the session on every call.
-    3. Remove `fetchAuthToken()`, the `_authToken` field, its initialization in the constructor, and the `AuthenticationError` check in `onTransportError()` that resets it. supabase-js refreshes the session itself. The connector clears its cache only after a write request fails authentication, so while the cache is in place, sync keeps sending an expired token.
+    2. Use an `Authenticator` that reads the access token from your app's supabase-js client, and pass it to both `connect()` and the connector. Cache the token and clear the cache in `invalidateCredentials()`, as in the code below. The SDK calls `invalidateCredentials()` 30 seconds before the token expires, and the connector calls it when the write API rejects the token. The next `getSession()` call then returns a valid session: in current supabase-js versions, it refreshes the session when it expires within 90 seconds.
 
     ```typescript
-    constructor(private readonly supabase: SupabaseClient) {
-      // existing setup
-    }
+    import type { SupabaseClient } from '@supabase/supabase-js';
+    import type { Authenticator } from '@powersync/web';
+    import { PowersyncConnector } from './PowersyncConnector';
     
-    async fetchCredentials() {
-      const session = await this.getSession();
-      return {
-        endpoint: this.config.powersyncUrl,
-        token: session.access_token,
-        expiresAt: session.expires_at ? new Date(session.expires_at * 1000) : undefined
-      };
-    }
+    declare const supabase: SupabaseClient; // Your app's supabase-js client
     
-    private async getSession() {
-      const { data: { session }, error } = await this.supabase.auth.getSession();
-      if (!session || error) throw new Error('Not signed in to Supabase');
-      return session;
-    }
+    let cachedToken: string | null = null;
     
-    // Write requests call this to get their token.
-    private async getAuthToken(): Promise<string> {
-      return (await this.getSession()).access_token;
-    }
+    const authenticator: Authenticator = {
+      async resolveCredentials() {
+        if (!cachedToken) {
+          const { data: { session }, error } = await supabase.auth.getSession();
+          if (!session || error) throw new Error('Not signed in to Supabase');
+          cachedToken = session.access_token;
+        }
+        return cachedToken;
+      },
+      invalidateCredentials() {
+        cachedToken = null;
+      }
+    };
+    
+    const connector = new PowersyncConnector({ authenticator });
+    await db.connect({
+      powerSyncEndpoint: 'https://<instance-id>.powersync.journeyapps.com',
+      authenticator,
+      upload: connector.upload
+    });
     ```
-
-    This code is for the modular connector. In the single-file connector, use `POWERSYNC_URL` instead of `this.config.powersyncUrl`.
 
     The function accepts only a signed-in user's access token. It rejects API keys, anon tokens, and service-role tokens.
   </Step>

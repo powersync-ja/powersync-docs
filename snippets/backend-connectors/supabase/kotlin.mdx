@@ -1,10 +1,11 @@
 ```kotlin PowerSync.kt
+// Requires PowerSync Kotlin SDK 1.16.0 or later.
 package com.powersync.connector.supabase
 
 import co.touchlab.kermit.Logger
 import com.powersync.PowerSyncDatabase
-import com.powersync.connectors.PowerSyncBackendConnector
-import com.powersync.connectors.PowerSyncCredentials
+import com.powersync.connectors.Authenticator
+import com.powersync.connectors.MutationUploader
 import com.powersync.db.crud.CrudEntry
 import com.powersync.db.crud.CrudTransaction
 import com.powersync.db.crud.UpdateType
@@ -29,7 +30,12 @@ import io.ktor.utils.io.InternalAPI
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.minutes
 import kotlin.toString
+
+// The connector is the Authenticator for sync and the MutationUploader for uploads. Connect with:
+//   db.connect(connector.powerSyncEndpoint, authenticator = connector, uploader = connector)
 
 /**
  * Get a Supabase token to authenticate against the PowerSync instance.
@@ -39,9 +45,11 @@ public open class SupabaseConnector(
     public val supabaseClient: SupabaseClient,
     public val powerSyncEndpoint: String,
     private val storageBucket: String? = null,
-) : PowerSyncBackendConnector() {
+) : Authenticator,
+    MutationUploader {
     private val json = Json { coerceInputValues = true }
     private var errorCode: String? = null
+    private var cachedToken: String? = null
 
     public companion object PostgresFatalCodes {
         // Using Regex patterns for Postgres error codes
@@ -124,6 +132,7 @@ public open class SupabaseConnector(
                 this.email = email
                 this.password = password
             }
+            cachedToken = null // A new session has a new token.
         }
     }
 
@@ -136,12 +145,14 @@ public open class SupabaseConnector(
                 this.email = email
                 this.password = password
             }
+            cachedToken = null // A new session has a new token.
         }
     }
 
     public suspend fun signOut() {
         runWrapped {
             supabaseClient.auth.signOut()
+            cachedToken = null
         }
     }
 
@@ -152,33 +163,50 @@ public open class SupabaseConnector(
     public suspend fun loginAnonymously() {
         runWrapped {
             supabaseClient.auth.signInAnonymously()
+            cachedToken = null // A new session has a new token.
         }
     }
 
     /**
-     * Get credentials for PowerSync.
+     * Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+     *
+     * After [invalidateCredentials] clears the cache, this returns a valid token. The Supabase client refreshes
+     * the session in the background, but [io.github.jan.supabase.auth.Auth.currentSessionOrNull] only returns the
+     * stored session and never refreshes it. If that background refresh hasn't run, for example because the app was
+     * suspended or offline, the stored token can be expired, so it is refreshed here first.
      */
-    override suspend fun fetchCredentials(): PowerSyncCredentials =
+    override suspend fun resolveCredentials(): String =
         runWrapped {
+            cachedToken?.let { return@runWrapped it }
+
             check(supabaseClient.auth.sessionStatus.value is SessionStatus.Authenticated) { "Supabase client is not authenticated" }
 
             // Use Supabase token for PowerSync
-            val session =
+            var session =
                 supabaseClient.auth.currentSessionOrNull()
                     ?: error("Could not fetch Supabase credentials")
 
+            if (session.expiresAt <= Clock.System.now() + 1.minutes) {
+                supabaseClient.auth.refreshCurrentSession()
+                session = supabaseClient.auth.currentSessionOrNull()
+                    ?: error("Could not fetch Supabase credentials")
+            }
+
             check(session.user != null) { "No user data" }
 
-            PowerSyncCredentials(
-                endpoint = powerSyncEndpoint,
-                token = session.accessToken, // Use the access token to authenticate against PowerSync
-            )
+            // Use the access token to authenticate against PowerSync
+            session.accessToken.also { cachedToken = it }
         }
+
+    /** Called by the SDK before the token expires and when the PowerSync Service rejects it. */
+    override fun invalidateCredentials() {
+        cachedToken = null
+    }
 
     /**
      * Uses the PostgREST APIs to upload a given [entry] to the backend database.
      *
-     * This method should report errors during the upload as an exception that would be caught by [uploadData].
+     * This method should report errors during the upload as an exception that would be caught by [uploadMutations].
      */
     public open suspend fun uploadCrudEntry(entry: CrudEntry) {
         val table = supabaseClient.from(entry.table)
@@ -253,9 +281,9 @@ public open class SupabaseConnector(
      * This function is called whenever there is data to upload, whether the device is online or offline.
      * If this call throws an error, it is retried periodically.
      */
-    override suspend fun uploadData(database: PowerSyncDatabase) {
+    override suspend fun uploadMutations(onDatabase: PowerSyncDatabase) {
         return runWrapped {
-            val transaction = database.getNextCrudTransaction() ?: return@runWrapped
+            val transaction = onDatabase.getNextCrudTransaction() ?: return@runWrapped
 
             var lastEntry: CrudEntry? = null
             try {

@@ -4,7 +4,7 @@ sidebarTitle: "Client-Side Integration"
 description: "Connect your client app to PowerSync with an authenticator for downloads and a mutation uploader for uploads to your backend."
 ---
 
-After you've [instantiated](/intro/setup-guide#instantiate-the-powersync-database) the client-side PowerSync database, you call `connect()` on it. The client SDK then downloads data from the [PowerSync Service](/architecture/powersync-service) into the client-side SQLite database, and uploads local mutations to your backend. For this, it uses two parts that you implement:
+After you've [instantiated](/intro/setup-guide#instantiate-the-powersync-database) the client-side PowerSync database, you call `connect()` on it. The client SDK then downloads data from the [PowerSync Service](/architecture/powersync-service) into the client-side SQLite database, and uploads local mutations to your backend. To do both, the SDK uses two parts that you implement:
 
 | Part | Used for | Description |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ When you're getting started, we recommend that you focus on the read path first:
 - **Downloads and uploads:** Pass the instance URL, the authenticator and the uploader.
 - **Upload-only:** Pass only the uploader. The SDK uploads mutations to your backend and doesn't connect to the PowerSync Service.
 
-Each `connect()` call replaces the previous one. For example, connecting download-only and then upload-only leaves the database in upload-only mode. For the code in each SDK, see [Connect for Downloads or Uploads Only](/client-sdks/usage-examples#connect-for-downloads-or-uploads-only).
+For the code in each SDK, see [Connect for Downloads or Uploads Only](/client-sdks/usage-examples#connect-for-downloads-or-uploads-only).
 
 <Note>
   The authenticator and mutation uploader require `@powersync/web` 2.6.0, `@powersync/react-native` 2.4.0, `@powersync/node` 1.3.0, `@powersync/capacitor` 0.10.0, Dart/Flutter 2.6.0, Kotlin 1.16.0, Swift 1.17.0 or Rust 0.2.0, or later. The .NET SDK and the Tauri plugin don't support them yet. Until they do, use a [backend connector](#backend-connector) with those SDKs.
@@ -35,15 +35,9 @@ See [Authentication Setup](/configuration/auth/overview) for more details on JWT
 
 ### When `resolveCredentials()` is Called
 
-Cache the token in your authenticator: return the cached token from `resolveCredentials()`, and clear the cache in `invalidateCredentials()`. Don't rely on the SDK to cache the token, because it can call `resolveCredentials()` often, for example on every reconnect. If your authentication library already caches its token, you can return that token instead.
+Cache the token in your authenticator: return the cached token from `resolveCredentials()`, and clear the cache in `invalidateCredentials()`. Don't rely on the SDK to cache the token, because it can call `resolveCredentials()` often, for example on every reconnect. If your authentication library already caches its token, you can return that token instead. For an example in each SDK, see [Cache the Token in Your Authenticator](/client-sdks/usage-examples#cache-the-token-in-your-authenticator).
 
-When the SDK needs a new token, it calls `invalidateCredentials()` and then `resolveCredentials()`. This happens when:
-
-1. **The token is about to expire:** The PowerSync Service sends periodic keepalive messages that include the remaining lifetime of the current JWT. When the token has **30 seconds or less** remaining, the SDK gets a new token in the background and reconnects with it.
-2. **The token has expired:** If the token expires, for example while the device is offline, the SDK gets a new token when it reconnects.
-3. **The Service rejects the token:** If the PowerSync Service responds with a `401` status, the SDK gets a new token on the next connection attempt.
-
-For a JWT with a 1-hour expiry, the SDK typically needs a new token **about once per hour**.
+When the SDK needs a new token, it calls `invalidateCredentials()` and then `resolveCredentials()`. The SDK needs a new token when the current token has 30 seconds or less remaining, when the token has expired (for example while the device was offline), or when the PowerSync Service rejects the token with a `401` status.
 
 ### Recommended JWT Expiry Duration
 
@@ -56,10 +50,6 @@ The SDK gets new tokens regardless of the TTL, as long as `resolveCredentials()`
 
 Avoid JWTs with a TTL shorter than 30 seconds. The SDK gets a new token when 30 seconds or less remain, so a shorter TTL skips that step and always goes through the expired-token reconnection.
 
-### Token Expiry While Offline
-
-If the JWT expires while the device is offline, the SDK gets a new token from `resolveCredentials()` when connectivity is restored.
-
 The JWT only authenticates the client SDK's connection to the PowerSync Service. When it expires, your app's own sign-in session (for example with Supabase Auth or Firebase Auth) is not affected. That session has its own lifecycle and refresh mechanism.
 
 ## Mutation Uploader
@@ -68,7 +58,7 @@ The client SDK records every mutation in an _upload queue_ and calls your mutati
 
 ### When `uploadData()` is Called
 
-The client SDK calls `uploadData()` automatically - you never call it directly. It is invoked in the following scenarios:
+The client SDK calls `uploadData()` automatically. You never call it directly. The SDK calls it in these cases:
 
 1. **After your app writes** - Any `INSERT`, `UPDATE`, or `DELETE` on a PowerSync table adds an entry to the internal upload queue (the `ps_crud` table). The SDK monitors this table for changes and triggers `uploadData()` shortly after. See [How Local Writes Are Detected](#how-local-writes-are-detected) below for details on the underlying mechanism.
 2. **On initial connection / reconnection** - When `connect()` establishes (or re-establishes) a sync stream and the first message is received from the PowerSync Service, the SDK triggers `uploadData()` to flush any writes that were made while offline or disconnected.

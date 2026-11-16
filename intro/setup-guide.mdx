@@ -6,6 +6,7 @@ description: "Step-by-step guide to adding PowerSync to your app, from connectin
 
 import LocalOnly from '/snippets/local-only-escape.mdx';
 import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import AuthenticatorIntro from '/snippets/authenticator-intro.mdx';
 import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 import ReactNativeInstallation from '/snippets/react-native/installation.mdx';
 import JavaScriptWebInstallation from '/snippets/javascript-web/installation.mdx';
@@ -776,7 +777,9 @@ import SdkInstantiateDbExamples from '/snippets/sdk-instantiate-db-examples.mdx'
 
 <SyncChangesIntro />
 
-Pass the URL of the instance you created in [step 2](#2-set-up-powersync-service-instance). For development, the authenticator can return the development token you generated in [step 5](#5-generate-a-development-token).
+<AuthenticatorIntro />
+
+Use the URL of the instance you created in [step 2](#2-set-up-powersync-service-instance) and the development token you generated in [step 5](#5-generate-a-development-token).
 
 <LocalOnly />
 
@@ -790,6 +793,11 @@ class MyAuthenticator implements Authenticator {
   async resolveCredentials() {
     // For development: return your development token
     return 'your-development-token-here';
+  }
+
+  invalidateCredentials() {
+    // For production, clear your cached token here. See
+    // https://docs.powersync.com/client-sdks/usage-examples#cache-the-token-in-your-authenticator
   }
 }
 
@@ -809,6 +817,11 @@ class MyAuthenticator implements Authenticator {
     // For development: return your development token
     return 'your-development-token-here';
   }
+
+  invalidateCredentials() {
+    // For production, clear your cached token here. See
+    // https://docs.powersync.com/client-sdks/usage-examples#cache-the-token-in-your-authenticator
+  }
 }
 
 // Connect the database to the PowerSync Service
@@ -827,6 +840,11 @@ class MyAuthenticator implements Authenticator {
     // For development: return your development token
     return 'your-development-token-here';
   }
+
+  invalidateCredentials() {
+    // For production, clear your cached token here. See
+    // https://docs.powersync.com/client-sdks/usage-examples#cache-the-token-in-your-authenticator
+  }
 }
 
 // Connect the database to the PowerSync Service
@@ -839,6 +857,8 @@ await db.connect({
 ```rust Tauri (Rust)
 // For Tauri, connecting to PowerSync must be done in Rust so that sync state
 // is shared across all windows. Calling connect() from JavaScript will throw.
+//
+// The Tauri plugin doesn't support authenticators yet, so it uses a backend connector.
 //
 // 1. Define your backend connector in Rust:
 
@@ -864,7 +884,8 @@ impl BackendConnector for MyBackendConnector {
     async fn upload_data(&self) -> Result<(), PowerSyncError> {
         let mut local_writes = self.db.crud_transactions();
         while let Some(tx) = local_writes.try_next().await? {
-            // upload to your backend API
+            // Placeholder: send the mutations in tx.crud to your write API here,
+            // before you complete the transaction. See the Write Data step.
             tx.complete().await?;
         }
         Ok(())
@@ -902,7 +923,10 @@ class MyAuthenticator implements Authenticator {
   }
 
   @override
-  void invalidateCredentials() {}
+  void invalidateCredentials() {
+    // For production, clear your cached token here. See
+    // https://docs.powersync.com/client-sdks/usage-examples#cache-the-token-in-your-authenticator
+  }
 }
 
 // Connect the database to the PowerSync Service
@@ -922,6 +946,11 @@ class MyAuthenticator : Authenticator {
     // For development: return your development token
     return "your-development-token-here"
   }
+
+  override fun invalidateCredentials() {
+    // For production, clear your cached token here. See
+    // https://docs.powersync.com/client-sdks/usage-examples#cache-the-token-in-your-authenticator
+  }
 }
 
 // Connect the database to the PowerSync Service
@@ -938,6 +967,11 @@ struct MyAuthenticator: Authenticator {
   func resolveCredentials() async throws -> String {
     // For development: return your development token
     return "your-development-token-here"
+  }
+
+  func invalidateCredentials() async {
+    // For production, clear your cached token here. See
+    // https://docs.powersync.com/client-sdks/usage-examples#cache-the-token-in-your-authenticator
   }
 }
 
@@ -960,6 +994,7 @@ using PowerSync.Common.Client;
 using PowerSync.Common.Client.Connection;
 using PowerSync.Common.DB.Crud;
 
+// The .NET SDK doesn't support authenticators yet, so it uses a backend connector.
 public class MyConnector : IPowerSyncBackendConnector
 {
     public MyConnector()
@@ -980,10 +1015,8 @@ public class MyConnector : IPowerSyncBackendConnector
         var transaction = await database.GetNextCrudTransaction();
         if (transaction == null) return;
 
-        foreach (var op in transaction.Crud)
-        {
-            // upload to your backend API
-        }
+        // Placeholder: send the mutations in transaction.Crud to your write API here,
+        // before you complete the transaction. See the Write Data step.
 
         await transaction.Complete();
     }
@@ -1006,6 +1039,11 @@ impl Authenticator for MyAuthenticator {
     async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
         // For development: return your development token
         Ok(Arc::new("your-development-token-here".to_string()))
+    }
+
+    fn invalidate_credentials(&self) {
+        // For production, clear your cached token here. See
+        // https://docs.powersync.com/client-sdks/usage-examples#cache-the-token-in-your-authenticator
     }
 }
 
@@ -1391,6 +1429,12 @@ await db.connect({
 });
 ```
 
+```rust Tauri (Rust)
+// The Tauri plugin uploads mutations with the upload_data() method of the backend
+// connector from the Connect step. Replace the placeholder in that method
+// with a call to your write API.
+```
+
 ```dart Dart/Flutter
 Future<void> uploadData(PowerSyncDatabase database) async {
   final transaction = await database.getNextCrudTransaction();
@@ -1431,8 +1475,8 @@ database.connect(
 ```
 
 ```swift Swift
-func uploadData(db: PowerSyncDatabaseProtocol) async throws {
-  guard let transaction = try await db.getNextCrudTransaction() else { return }
+func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+  guard let transaction = try await database.getNextCrudTransaction() else { return }
 
   // Send the mutations to your write API
   try await writeApi.uploadChanges(transaction.crud)
@@ -1450,8 +1494,9 @@ try await db.connect(
 ```
 
 ```csharp .NET
-// The .NET SDK uploads mutations with the UploadData() method
-// of the backend connector from the previous step.
+// The .NET SDK uploads mutations with the UploadData() method of the backend
+// connector from the Connect step. Replace the placeholder in that method
+// with a call to your write API.
 ```
 
 ```rust Rust

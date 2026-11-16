@@ -1,10 +1,11 @@
 ```typescript PowerSyncConnector.ts
-import type { AbstractPowerSyncDatabase, CrudTransaction, PowerSyncBackendConnector } from '@powersync/web';
+import type { Authenticator, CommonPowerSyncDatabase, CrudTransaction, MutationUploader } from '@powersync/web';
 
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
+// Requires @powersync/web 2.6.0 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in postTransaction() to match it,
-// or have a coding agent write uploadData() for your API:
+// or have a coding agent write the upload callback for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
 // For several transactions per request and client-side backoff, see the full reference connector:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
@@ -15,14 +16,56 @@ const BACKEND_URL = 'http://localhost:6060';
 /** Abort a write endpoint request after this many milliseconds. */
 const REQUEST_TIMEOUT_MS = 30_000;
 
-export class MyBackendConnector implements PowerSyncBackendConnector {
-  private authToken: string | null = null;
+/** Connects `db` for downloads and uploads. */
+export async function connect(db: CommonPowerSyncDatabase) {
+  const authenticator = new MyAuthenticator();
+  await db.connect({
+    powerSyncEndpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
+    authenticator,
+    upload: new MyBackendConnector({ authenticator }).upload
+  });
+}
 
-  async fetchCredentials() {
-    return {
-      endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
-      token: await this.getAuthToken()
-    };
+/**
+ * Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
+ * The token is cached until it is about to expire, or the PowerSync Service or the write endpoint rejects it.
+ */
+export class MyAuthenticator implements Authenticator {
+  private token: string | null = null;
+
+  async resolveCredentials(): Promise<string> {
+    this.token ??= await this.fetchAuthToken();
+    return this.token;
+  }
+
+  /**
+   * Called by the SDK before the token expires and when the PowerSync Service rejects it, and by the connector
+   * when the write endpoint rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
+   * itself: the SDK isn't guaranteed to cache tokens.
+   */
+  invalidateCredentials(): void {
+    this.token = null;
+  }
+
+  /**
+   * Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+   * Supabase and Firebase tokens can be used as they are:
+   * - https://docs.powersync.com/configuration/auth/supabase-auth
+   * - https://docs.powersync.com/configuration/auth/firebase-auth
+   * To use a development token with the write endpoint, see
+   * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
+   */
+  private async fetchAuthToken(): Promise<string> {
+    return 'An authentication token';
+  }
+}
+
+export class MyBackendConnector {
+  private readonly authenticator: Authenticator;
+
+  /** @param authenticator Supplies the token for write endpoint requests. */
+  constructor({ authenticator }: { authenticator: Authenticator }) {
+    this.authenticator = authenticator;
   }
 
   /**
@@ -31,7 +74,7 @@ export class MyBackendConnector implements PowerSyncBackendConnector {
    * and the SDK retries after a delay.
    * See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
    */
-  async uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
+  readonly upload: MutationUploader = async ({ database }) => {
     const transaction = await database.getNextCrudTransaction();
     if (!transaction) {
       return;
@@ -43,7 +86,7 @@ export class MyBackendConnector implements PowerSyncBackendConnector {
     } catch (error) {
       // Network errors, timeouts and non-2xx responses.
       if (error instanceof AuthenticationError) {
-        this.authToken = null; // Fetch a new token before the next attempt.
+        this.authenticator.invalidateCredentials?.(); // Fetch a new token before the next attempt.
       }
       throw error;
     }
@@ -62,7 +105,7 @@ export class MyBackendConnector implements PowerSyncBackendConnector {
     // Success, a fatal error that the write endpoint already handled (for example, with a dead-letter hook),
     // or a fatal error that onFatalTransaction() chose to discard.
     await transaction.complete();
-  }
+  };
 
   /**
    * Called for fatal errors that the write endpoint leaves to the client. 'retain' keeps the transaction queued,
@@ -76,30 +119,6 @@ export class MyBackendConnector implements PowerSyncBackendConnector {
   ): Promise<'retain' | 'complete'> {
     console.error('Transaction needs client handling:', result.failed_operation.error_code, result.message);
     return 'retain';
-  }
-
-  /**
-   * Returns the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
-   * The token is cached until the write endpoint rejects it. If your auth provider's SDK refreshes sessions itself,
-   * return `this.fetchAuthToken()` directly instead.
-   */
-  private async getAuthToken(): Promise<string> {
-    if (!this.authToken) {
-      this.authToken = await this.fetchAuthToken();
-    }
-    return this.authToken;
-  }
-
-  /**
-   * Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-   * Supabase and Firebase tokens can be used as they are:
-   * - https://docs.powersync.com/configuration/auth/supabase-auth
-   * - https://docs.powersync.com/configuration/auth/firebase-auth
-   * To use a development token with the write endpoint, see
-   * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-   */
-  private async fetchAuthToken(): Promise<string> {
-    return 'An authentication token';
   }
 
   /** Sends one transaction to POST /api/data and returns its result. */
@@ -123,7 +142,7 @@ export class MyBackendConnector implements PowerSyncBackendConnector {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${await this.getAuthToken()}`
+        Authorization: `Bearer ${await this.authenticator.resolveCredentials({})}`
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)

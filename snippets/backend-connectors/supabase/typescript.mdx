@@ -1,12 +1,6 @@
 ```typescript PowerSyncConnector.ts
-import {
-  BaseObserver,
-  UpdateType,
-  type CommonPowerSyncDatabase,
-  type CrudEntry,
-  type PowerSyncBackendConnector,
-  type PowerSyncCredentials
-} from '@powersync/web';
+// Requires @powersync/web 2.6.0 or later.
+import { BaseObserver, UpdateType, type Authenticator, type CrudEntry, type MutationUploader } from '@powersync/web';
 
 import { Session, SupabaseClient, createClient } from '@supabase/supabase-js';
 
@@ -33,13 +27,17 @@ export type SupabaseConnectorListener = {
   sessionStarted: (session: Session) => void;
 };
 
-export class SupabaseConnector extends BaseObserver<SupabaseConnectorListener> implements PowerSyncBackendConnector {
+// The connector is the Authenticator for sync and provides the upload callback. Connect with:
+//   await db.connect({ powerSyncEndpoint: connector.config.powersyncUrl, authenticator: connector, upload: connector.upload });
+export class SupabaseConnector extends BaseObserver<SupabaseConnectorListener> implements Authenticator {
   readonly client: SupabaseClient;
   readonly config: SupabaseConfig;
 
   ready: boolean;
 
   currentSession: Session | null;
+
+  private cachedToken: string | null = null;
 
   constructor() {
     super();
@@ -86,7 +84,16 @@ export class SupabaseConnector extends BaseObserver<SupabaseConnectorListener> i
     this.updateSession(session);
   }
 
-  async fetchCredentials() {
+  /**
+   * Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+   * After invalidateCredentials() clears it, getSession() returns a valid session, because supabase-js refreshes
+   * the session when it expires within 90 seconds.
+   */
+  async resolveCredentials(): Promise<string> {
+    if (this.cachedToken) {
+      return this.cachedToken;
+    }
+
     const {
       data: { session },
       error
@@ -98,13 +105,17 @@ export class SupabaseConnector extends BaseObserver<SupabaseConnectorListener> i
 
     console.debug('session expires at', session.expires_at);
 
-    return {
-      endpoint: this.config.powersyncUrl,
-      token: session.access_token ?? ''
-    } satisfies PowerSyncCredentials;
+    this.cachedToken = session.access_token;
+    return this.cachedToken;
   }
 
-  async uploadData(database: CommonPowerSyncDatabase): Promise<void> {
+  /** Called by the SDK before the token expires and when the PowerSync Service rejects it. */
+  invalidateCredentials(): void {
+    this.cachedToken = null;
+  }
+
+  /** Uploads the oldest queued transaction. Throwing keeps it queued, and the SDK retries after a delay. */
+  readonly upload: MutationUploader = async ({ database }) => {
     const transaction = await database.getNextCrudTransaction();
 
     if (!transaction) {
@@ -125,7 +136,7 @@ export class SupabaseConnector extends BaseObserver<SupabaseConnectorListener> i
             result = await table.upsert(record);
             break;
           case UpdateType.PATCH:
-            result = await table.update(op.opData).eq('id', op.id);
+            result = await table.update(op.opData ?? {}).eq('id', op.id);
             break;
           case UpdateType.DELETE:
             result = await table.delete().eq('id', op.id);
@@ -159,10 +170,11 @@ export class SupabaseConnector extends BaseObserver<SupabaseConnectorListener> i
         throw ex;
       }
     }
-  }
+  };
 
   updateSession(session: Session | null) {
     this.currentSession = session;
+    this.cachedToken = null; // A new session has a new token.
     if (!session) {
       return;
     }

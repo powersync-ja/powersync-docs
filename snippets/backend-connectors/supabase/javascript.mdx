@@ -1,4 +1,5 @@
 ```javascript PowerSyncConnector.js
+// Requires @powersync/web 2.6.0 or later.
 import { BaseObserver, UpdateType } from '@powersync/web';
 
 import { createClient } from '@supabase/supabase-js';
@@ -15,9 +16,14 @@ const FATAL_RESPONSE_CODES = [
   new RegExp('^42501$')
 ];
 
+// The connector is the Authenticator for sync and provides the upload callback. Connect with:
+//   await db.connect({ powerSyncEndpoint: connector.config.powersyncUrl, authenticator: connector, upload: connector.upload });
 export class SupabaseConnector extends BaseObserver {
   constructor() {
     super();
+    this.cachedToken = null;
+    // connect() calls upload() without the connector, so bind it.
+    this.upload = this.upload.bind(this);
     this.config = {
       supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
       powersyncUrl: import.meta.env.VITE_POWERSYNC_URL,
@@ -61,7 +67,16 @@ export class SupabaseConnector extends BaseObserver {
     this.updateSession(session);
   }
 
-  async fetchCredentials() {
+  /**
+   * Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+   * After invalidateCredentials() clears it, getSession() returns a valid session, because supabase-js refreshes
+   * the session when it expires within 90 seconds.
+   */
+  async resolveCredentials() {
+    if (this.cachedToken) {
+      return this.cachedToken;
+    }
+
     const {
       data: { session },
       error
@@ -73,13 +88,17 @@ export class SupabaseConnector extends BaseObserver {
 
     console.debug('session expires at', session.expires_at);
 
-    return {
-      endpoint: this.config.powersyncUrl,
-      token: session.access_token ?? ''
-    };
+    this.cachedToken = session.access_token;
+    return this.cachedToken;
   }
 
-  async uploadData(database) {
+  /** Called by the SDK before the token expires and when the PowerSync Service rejects it. */
+  invalidateCredentials() {
+    this.cachedToken = null;
+  }
+
+  /** Uploads the oldest queued transaction. Throwing keeps it queued, and the SDK retries after a delay. */
+  async upload({ database }) {
     const transaction = await database.getNextCrudTransaction();
 
     if (!transaction) {
@@ -139,6 +158,7 @@ export class SupabaseConnector extends BaseObserver {
 
   updateSession(session) {
     this.currentSession = session;
+    this.cachedToken = null; // A new session has a new token.
     if (!session) {
       return;
     }

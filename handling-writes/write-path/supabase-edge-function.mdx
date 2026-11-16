@@ -60,20 +60,17 @@ The function runs each write as the signed-in user. Inside each transaction, it 
   <Step title="Connect Your App">
     <span id="connect-your-app" />
 
-    Copy the reference connector for your SDK into your app and pass it to `connect()`, as described in the reference write implementation's [Connect Your App step](/handling-writes/write-path/reference-write-implementation#connect-your-app). Then make these changes to your copy:
+    Copy the reference connector for your SDK into your app and connect with it, as described in the reference write implementation's [Connect Your App step](/handling-writes/write-path/reference-write-implementation#connect-your-app). Then make these changes to your copy:
 
     1. Set the write endpoint URL to `https://<project-ref>.supabase.co/functions/v1/powersync-write`. Your PowerSync instance URL doesn't change.
-    2. Replace `fetchAuthToken()` with code that returns the access token of the current Supabase session. The `fetchCredentials()` in the [Supabase example](/configuration/app-backend/backend-connector-examples#supabase) for your SDK shows how to read it.
-    3. Stop caching the token: return `fetchAuthToken()` directly from `getAuthToken()`, as the comments in the example describe. The Supabase client SDK refreshes the session itself. The connector clears its cache only after a write request fails authentication, so while the cache is in place, sync keeps sending an expired token.
+    2. Replace `fetchAuthToken()` with code that returns the access token of the current Supabase session. The [Supabase example](/configuration/app-backend/backend-connector-examples#supabase) for your SDK shows how to read it.
+
+    Keep the token cache in the `Authenticator`. The SDK calls `invalidateCredentials()` before the token expires, and the connector calls it when the write endpoint rejects the token. The next `getSession()` call then returns a valid session: in current supabase-js versions, it refreshes the session when it expires within 90 seconds. The .NET example caches the token in the connector instead, so in that example, return `FetchAuthToken()` directly from `GetAuthToken()`, as the comments in the example describe.
 
     For example, with supabase-js:
 
     ```typescript
-    // Inside your copy of MyBackendConnector. `supabase` is your app's Supabase client.
-    private async getAuthToken(): Promise<string> {
-      return this.fetchAuthToken();
-    }
-    
+    // Inside your copy of MyAuthenticator. `supabase` is your app's Supabase client.
     private async fetchAuthToken(): Promise<string> {
       const { data: { session }, error } = await supabase.auth.getSession();
       if (!session || error) throw new Error('Not signed in to Supabase');

@@ -29,6 +29,33 @@ Read the message to see which limit you reached, since the fix is different for 
 
 To further diagnose and resolve this error, see [Reducing Bucket Count](/sync/advanced/reducing-bucket-count). For how buckets are generated and counted in the first place, see [Bucket Count](/sync/streams/bucket-count).
 
+### `InvalidStateError` in Chromium After Site Data Is Deleted
+
+This client-side error comes from a [Chromium bug](https://issues.chromium.org/issues/575150688) in the Origin Private File System (OPFS). It can affect JavaScript Web SDK apps that use an [OPFS-based VFS](/client-sdks/reference/javascript-web-storage#vfs-comparison), including `vfs: 'auto'`. If the site's data is deleted while a tab has the database open, for example through Chrome's site settings or a `Clear-Site-Data: "storage"` header, every OPFS call for the site can fail until the browser restarts:
+
+```text
+InvalidStateError: An operation that depends on state cached in an interface object was made but the state had changed since it was read from disk.
+```
+
+The same bug can also delete a database that another tab created after the deletion, without reporting an error.
+
+If your app runs into this issue, store the database in a named [Storage Bucket](https://wicg.github.io/storage-buckets/) with the `storageBucket` option, available since `@powersync/web` version 2.6.0. The bug only affects the site's default bucket. Firefox and Safari don't support the Storage Buckets API, and opening the database fails without it, so set the option only when the API exists:
+
+```js
+import { PowerSyncDatabase } from '@powersync/web';
+
+export const db = new PowerSyncDatabase({
+  schema: AppSchema,
+  database: {
+    dbFilename: 'app.db',
+    vfs: 'auto',
+    storageBucket: 'storageBuckets' in navigator ? 'app-db' : undefined
+  }
+});
+```
+
+If your app already stores data in the default bucket, adding this option starts a new, empty database. Follow the guidance for [switching VFS implementations](/client-sdks/reference/javascript-web-storage#switching-vfs-implementations) before you add it.
+
 ## Tools
 
 Troubleshooting techniques depend on the type of issue:

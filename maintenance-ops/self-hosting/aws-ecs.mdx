@@ -602,11 +602,11 @@ aws ecs create-cluster \
 
 ### Register Task Definition
 
-The task definitions below allocate **2 vCPU and 4GB memory** per container. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture) for scaling guidance (recommended baseline: 1 vCPU, 2GB memory). Note that [AWS Fargate enforces specific CPU/memory combinations](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#task_size) — for example, 2 vCPU (2048 CPU units) requires at least 4GB (4096 MiB) memory.
+In the High Availability Setup below, the API task definition allocates **1 vCPU and 2GB memory**, and the replication task definition allocates **2 vCPU and 4GB memory**. The Basic Setup allocates 1 vCPU and 2GB memory. You can adjust resources based on your workload — see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture#compute-sizing) for sizing guidance. Note that [AWS Fargate enforces specific CPU/memory combinations](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#task_size) — for example, 2 vCPU (2048 CPU units) requires at least 4GB (4096 MiB) memory.
 
 <Tabs>
   <Tab title="High Availability Setup">
-    For production deployments, run separate replication and API processes to enable zero-downtime rolling updates. This allows independent scaling of API containers.
+    For production deployments, run separate [replication and API processes](/configuration/powersync-service/self-hosted-instances#service-commands) to enable zero-downtime rolling updates. This allows independent scaling of API containers.
 
     **Create Replication Task Definition**
 
@@ -720,8 +720,8 @@ The task definitions below allocate **2 vCPU and 4GB memory** per container. You
       "family": "powersync-api",
       "networkMode": "awsvpc",
       "requiresCompatibilities": ["FARGATE"],
-      "cpu": "2048",
-      "memory": "4096",
+      "cpu": "1024",
+      "memory": "2048",
       "executionRoleArn": "$TASK_EXECUTION_ROLE_ARN",
       "taskRoleArn": "$TASK_ROLE_ARN",
       "containerDefinitions": [
@@ -979,9 +979,9 @@ Create the ECS service to run PowerSync tasks
 
 For production deployments, consider adding the following enhancements:
 
-### Daily Compact Job (Recommended)
+### Compact Job (Recommended)
 
-PowerSync requires [daily compaction](/maintenance-ops/compacting-buckets) to optimize bucket storage. Schedule it as an ECS task with EventBridge:
+[Compaction](/maintenance-ops/compacting-buckets) to optimize bucket storage is recommended daily for [storage version 2](/sync/advanced/compatibility#available-versions), and hourly for [storage version 4](/sync/advanced/storage-version-4). Schedule it as an ECS task with EventBridge:
 
 <Accordion title="Compact Job Configuration">
   Generate the compact task definition:
@@ -1023,7 +1023,7 @@ PowerSync requires [daily compaction](/maintenance-ops/compacting-buckets) to op
   EOF
   ```
 
-  Create IAM role for EventBridge and schedule with EventBridge (daily at 2 AM UTC):
+  Create IAM role for EventBridge and schedule with EventBridge:
 
   ```bash
   # Register compact task
@@ -1061,12 +1061,13 @@ PowerSync requires [daily compaction](/maintenance-ops/compacting-buckets) to op
   
   # Create schedule rule
   aws events put-rule \
-    --name powersync-compact-daily \
-    --schedule-expression "cron(0 2 * * ? *)"
+    --name powersync-compact \
+    --schedule-expression "cron(0 2 * * ? *)" # daily 2am UTC
+    # use cron(0 * * * ? *) for hourly
   
   # Add target
   aws events put-targets \
-    --rule powersync-compact-daily \
+    --rule powersync-compact \
     --targets '[{
       "Id": "powersync-compact",
       "Arn": "arn:aws:ecs:'$AWS_REGION':'$AWS_ACCOUNT_ID':cluster/powersync-cluster",
@@ -1089,7 +1090,7 @@ PowerSync requires [daily compaction](/maintenance-ops/compacting-buckets) to op
 
 ### Auto Scaling (High-Availability Setup)
 
-PowerSync API containers are limited to 200 concurrent connections each, with a recommended target of **100 connections or less per container** (see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture)). Because PowerSync sync connections are long-lived (hours or days), CPU utilization alone may not reflect the actual connection load — a container can be near its connection limit while CPU remains relatively low. For this reason, we recommend scaling on **both CPU utilization and concurrent connections**.
+PowerSync API containers default to a maximum of 200 concurrent connections each – see [Deployment Architecture](/maintenance-ops/self-hosting/deployment-architecture#api-containers). Because PowerSync sync connections are long-lived (hours or days), CPU utilization alone may not reflect the actual connection load — a container can be near its connection limit while CPU remains relatively low. For this reason, we recommend scaling on **both CPU utilization and concurrent connections**.
 
 <Warning>
   **ALB metrics are not suitable for PowerSync scaling.** Metrics like `ALBRequestCountPerTarget` track request rate (requests per second), but PowerSync sync connections are long-lived HTTP streams or WebSockets — a single request stays open for hours or days. Similarly, `ActiveConnectionCount` tracks total connections across the entire ALB, not per target. Use the `powersync_concurrent_connections` Prometheus metric instead.
@@ -1124,7 +1125,7 @@ aws application-autoscaling register-scalable-target \
 ```
 
 <Info>
-  **Choosing your minimum capacity:** A minimum of 2 works well for most workloads, letting auto-scaling adjust capacity as needed. However, if your traffic is very spiky (e.g., many users connecting simultaneously at a predictable time), you may want a higher `min-capacity` to avoid waiting for new tasks to start. New Fargate tasks take 1-3 minutes to launch and pass health checks, so a larger baseline reduces the risk of connection overload during sudden spikes. As a guideline, each API task handles up to 200 concurrent connections (target ~100 for headroom).
+  **Choosing your minimum capacity:** A minimum of 2 works well for most workloads, letting auto-scaling adjust capacity as needed. However, if your traffic is very spiky (e.g., many users connecting simultaneously at a predictable time), you may want a higher `min-capacity` to avoid waiting for new tasks to start. New Fargate tasks take 1-3 minutes to launch and pass health checks, so a larger baseline reduces the risk of connection overload during sudden spikes. As mentioned above, with the default configuration, each API task handles up to 200 concurrent connections, and we recommend targeting fewer than that for headroom, e.g. ~100.
 </Info>
 
 #### Scaling Policy 1: CPU Utilization
@@ -1177,7 +1178,7 @@ aws application-autoscaling put-scaling-policy \
 
 | Parameter | Value | Rationale |
 | --- | --- | --- |
-| `TargetValue` (connections) | 80 | 40% of the 200 max connection limit per container. This matches PowerSync Cloud's scaling strategy and provides headroom before the hard limit. |
+| `TargetValue` (connections) | 80 | 40% of the default [200 connection limit](#auto-scaling-high-availability-setup) per container. This matches PowerSync Cloud's scaling strategy and provides headroom before the hard limit. |
 | `TargetValue` (CPU) | 70.0 | Scale before CPU saturation impacts sync stream performance. |
 | `ScaleOutCooldown` | 120s | New Fargate tasks take 1–3 minutes to start, pass health checks, and begin accepting connections. A shorter cooldown risks triggering multiple scale-out events before the first new task is ready. |
 | `ScaleInCooldown` | 300s | Prevents rapid scale-in oscillations. When a task is removed, its clients reconnect to remaining tasks, causing a temporary connection spike. The cooldown allows this spike to settle. |

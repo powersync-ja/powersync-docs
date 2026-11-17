@@ -15,7 +15,8 @@ import KotlinInstallation from '/snippets/kotlin/installation.mdx';
 import SwiftInstallation from '/snippets/swift/installation.mdx';
 import DotnetInstallation from '/snippets/dotnet/installation.mdx';
 import RustInstallation from '/snippets/rust/installation.mdx';
-import DevTokenSelfHostedSteps from '/snippets/dev-token-self-hosted-steps.mdx';
+import DevTokenSelfHostedConfig from '/snippets/dev-token-self-hosted-config.mdx';
+import DevTokenSelfHostedGenerate from '/snippets/dev-token-self-hosted-generate.mdx';
 import CreateCloudInstanceCli from '/snippets/create-cloud-instance-cli.mdx';
 
 PowerSync keeps a client-side SQLite database in sync with your backend database. Changes appear across users and devices in real time, user interactions feel instant, and your app continues to work even when offline.
@@ -611,62 +612,40 @@ streams:
   Table/collection names in your configuration must match the table names defined in your client-side schema (defined in a later step below).
 </Note>
 
-## 5. Generate a Development Token
+## 5. Enable Development Tokens
 
-For quick development and testing, you can generate a temporary development token instead of implementing full authentication.
-
-You'll use this token for two purposes:
-
-- **Testing with the _Sync Diagnostics Client_** (in the next step) to verify your setup and Sync Streams, if you self-host
-- **Connecting your app** (in a later step) to test the client SDK integration
+Development tokens are temporary tokens that let you test sync and connect your app before you set up authentication. Enable them on your instance now, you'll need this in one of the next steps.
 
 <Tabs>
   <Tab title="Dashboard (Cloud)">
     1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance
     2. Go to the **Client Auth** view
     3. Check the **Development tokens** setting and save your changes
-    4. Click the **Connect** button in the top bar
-    5. Enter a token subject: Since you're starting with simple streams or buckets that sync all data to all users (as recommended in the previous step), you can put something like `test-user` as the token subject (which would normally be the user ID you want to test with).
-    6. Click **Generate token** and copy the token
-
-    <Note>
-      Development tokens expire after 12 hours.
-    </Note>
   </Tab>
   <Tab title="CLI (Cloud)">
-    Generate a development token with:
-
-    ```bash
-    powersync generate token --subject=test-user
-    ```
-
-    Replace `test-user` with a user ID of your choice (this would normally be the user ID you want to test with).
-
-    Requires `allow_temporary_tokens` to be enabled on the instance. Add it to `powersync/service.yaml` if you haven't already, then redeploy:
+    Add `allow_temporary_tokens` to `powersync/service.yaml`:
 
     ```yaml
     client_auth:
       allow_temporary_tokens: true
     ```
 
+    Then deploy the change:
+
     ```bash
     powersync deploy
     ```
-
-    <Note>
-      Development tokens expire after 12 hours.
-    </Note>
   </Tab>
   <Tab title="Self-Hosted">
-    Follow the steps below. Steps 1 and 2 configure signing keys and your PowerSync config; in Step 3 you can use the **CLI (recommended)** or the test-client to generate the token.
+    Configure signing keys so that your PowerSync Service accepts the development tokens you generate:
 
-    <DevTokenSelfHostedSteps />
+    <DevTokenSelfHostedConfig />
   </Tab>
 </Tabs>
 
 ## 6. [Optional] Test Sync
 
-Before implementing the PowerSync Client SDK in your app, you can validate that syncing is working correctly. If you're on PowerSync Cloud, use [Sync Test](/tools/powersync-dashboard#sync-test) in the PowerSync Dashboard. If you self-host, use our [Sync Diagnostics Client](https://diagnostics-app.powersync.com) with the development token you generated in the [previous step](#5-generate-a-development-token).
+Before implementing the PowerSync Client SDK in your app, you can validate that syncing is working correctly. If you're on PowerSync Cloud, use [Sync Test](/tools/powersync-dashboard#sync-test) in the PowerSync Dashboard. If you self-host, generate a development token and use our [Sync Diagnostics Client](https://diagnostics-app.powersync.com).
 
 <Tabs>
   <Tab title="PowerSync Cloud">
@@ -675,13 +654,18 @@ Before implementing the PowerSync Client SDK in your app, you can validate that 
     3. Enter a user ID
     4. Click **Connect**
 
-    Sync Test connects a client in your browser as that user and shows [PowerSync DevTools](/tools/devtools-overview) for it. It needs the development tokens setting from the previous step.
+    Sync Test connects a client in your browser as that user and shows [PowerSync DevTools](/tools/devtools-overview) for it. It generates a development token for the user, so you do not need to generate one yourself.
   </Tab>
   <Tab title="Self-Hosted">
-    1. Go to [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com)
-    2. Enter your development token at **PowerSync Token** (from the [Generate a Development Token](#5-generate-a-development-token) step above)
-    3. Enter your PowerSync Service endpoint at **PowerSync Endpoint** (the URL where your self-hosted service is running, e.g. `http://localhost:8080` if running locally)
-    4. Click **Proceed**
+    1. Apply your config changes (e.g. restart your PowerSync Service or run `powersync docker reset` if running locally with Docker), then generate a development token with the [PowerSync CLI](/tools/cli):
+       ```bash
+       powersync generate token --subject=test-user
+       ```
+       Your Sync Streams from [step 4](#4-define-sync-streams) sync the same data to all users, so any user ID works. To generate the token with the test-client instead, see [Development Tokens](/configuration/auth/development-tokens).
+    2. Go to [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com)
+    3. Enter your development token at **PowerSync Token**
+    4. Enter your PowerSync Service endpoint at **PowerSync Endpoint** (the URL where your self-hosted service is running, e.g. `http://localhost:8080` if running locally)
+    5. Click **Proceed**
 
     <Note>
       The Sync Diagnostics Client can also be run as a local standalone web app. See the [README](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app#readme) for instructions.
@@ -780,7 +764,39 @@ Connect your client-side PowerSync database to the PowerSync Service instance yo
   You don't have to worry about the _backend connector_ implementation details right now. You can leave the boilerplate as-is and come back to it later.
 </Note>
 
-For development, you can use the development token you generated in the [Generate a Development Token](#5-generate-a-development-token) step above. For production, you'll implement proper JWT authentication as explained further below.
+For development, you can use a development token. For production, you'll implement proper JWT authentication as explained further below.
+
+First, generate a development token:
+
+<Tabs>
+  <Tab title="Dashboard (Cloud)">
+    1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), click the **Connect** button in the top bar
+    2. Enter a user ID as the token subject. Your Sync Streams from [step 4](#4-define-sync-streams) sync the same data to all users, so any value works, such as `test-user`.
+    3. Click **Generate token** and copy the token
+
+    <Note>
+      Development tokens expire after 12 hours.
+    </Note>
+  </Tab>
+  <Tab title="CLI (Cloud)">
+    ```bash
+    powersync generate token --subject=test-user
+    ```
+
+    Replace `test-user` with a user ID. Your Sync Streams from [step 4](#4-define-sync-streams) sync the same data to all users, so any value works.
+
+    <Note>
+      Development tokens expire after 12 hours.
+    </Note>
+  </Tab>
+  <Tab title="Self-Hosted">
+    If you generated a token in [step 6](#6-optional-test-sync) and it hasn't expired, use that token. Otherwise, generate one:
+
+    <DevTokenSelfHostedGenerate />
+  </Tab>
+</Tabs>
+
+Then define a backend connector that returns the token, and call `connect()`:
 
 <CodeGroup>
 

@@ -1,0 +1,138 @@
+---
+title: "Self-Hosted Dashboard"
+description: "Run the PowerSync Dashboard as a Docker container to check the health of a self-hosted PowerSync Service instance and manage its Sync Config."
+sidebarTitle: "Dashboard"
+---
+
+import SelfHostedDashboardCompose from '/snippets/self-hosted-dashboard-compose.mdx';
+
+The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service instance. It runs as a container next to the Service and connects to the Service API with an API token.
+
+## What It Provides
+
+- **Health:** Errors and warnings that the Service reports, the source database connection status, the active and deploying Sync Config versions, and replication lag. Replication lag is shown for Postgres and MySQL source databases.
+- **Sync Config editor:** Edit, validate, and compare a draft with the deployed Sync Config, then deploy it. Autocomplete uses your source database schema. Drafts are stored in your browser, so other browsers don't see them.
+- **Client SDK Setup:** Generated schema and connector files for your client framework.
+- **Settings:** Reprocess, which rebuilds the sync buckets from the source database under the active Sync Config. Clients then re-sync their data from the rebuilt buckets.
+
+{/* TODO: Add a screenshot of the Health page in a <Frame> with a caption. */}
+
+## Requirements
+
+- **PowerSync Service v1.27.1 or later.** The dashboard reads the Service version and the source of its Sync Config from the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics). Earlier versions don't report these values, so the dashboard shows "Unsupported Service Version" instead of its pages.
+- **Network access to the Service API.** The dashboard container must be able to reach the Service's port, such as `http://powersync:8080` on a shared Docker network.
+- **An API token.** Give the dashboard its own entry in the Service's [`api.tokens`](/configuration/powersync-service/self-hosted-instances#api), so you can rotate it without affecting CLI or CI tokens. To rotate the token, update it in the Service and the dashboard, then restart both.
+
+## Run the Dashboard
+
+<Steps>
+  <Step title="Create a Token">
+    Generate a random token and save it in a file named `powersync_admin_token`. Keep this file out of version control.
+
+    ```bash
+    openssl rand -hex 32 > powersync_admin_token
+    ```
+  </Step>
+  <Step title="Add the Token to the Service">
+    Add the token to `api.tokens` in your `service.yaml`:
+
+    ```yaml service.yaml
+    api:
+      tokens:
+        - !env PS_DASHBOARD_TOKEN
+    ```
+
+    Set the `PS_DASHBOARD_TOKEN` environment variable on the Service container to the token:
+
+    - With `docker run`, add `-e PS_DASHBOARD_TOKEN="$(cat powersync_admin_token)"` to the Service's command.
+    - With Docker Compose, add `PS_DASHBOARD_TOKEN: ${PS_DASHBOARD_TOKEN}` to the `environment` of the `powersync` service, and set `PS_DASHBOARD_TOKEN` to the token in the project's `.env` file.
+
+    Restart the Service. The Service reads its tokens only when it starts.
+  </Step>
+  <Step title="Start the Dashboard">
+    Run the dashboard on the same Docker network as the Service:
+
+    <Tabs>
+      <Tab title="docker run">
+        ```bash
+        docker run -d --name powersync-dashboard \
+          --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+          --network powersync-network \
+          -p 127.0.0.1:8090:8080 \
+          -e POWERSYNC_ADMIN_URL=http://powersync:8080 \
+          -e POWERSYNC_CLIENT_URL=http://localhost:8080 \
+          -e POWERSYNC_ADMIN_TOKEN_FILE=/run/secrets/powersync_admin_token \
+          -v "$PWD/powersync_admin_token:/run/secrets/powersync_admin_token:ro" \
+          powersync/powersync-dashboard:0.1
+        ```
+
+        `--network` must be a network that the Service container is on. Docker's default `bridge` network doesn't resolve container names. For a Docker Compose project, the network is usually `<project>_default`. Run `docker network ls` to list networks.
+      </Tab>
+      <Tab title="Docker Compose">
+        Add a `dashboard` service and a `secrets` entry to the Docker Compose file that runs the Service:
+
+        <SelfHostedDashboardCompose />
+      </Tab>
+    </Tabs>
+
+    The container runs as an unprivileged user (UID 101) and writes only to `/tmp`, so it supports a read-only root filesystem. The token file must be readable by this user.
+
+    In Kubernetes, set `readOnlyRootFilesystem: true`, mount an `emptyDir` volume at `/tmp`, and use the Service's fully qualified name in `POWERSYNC_ADMIN_URL`, such as `http://powersync.<namespace>.svc.cluster.local:8080`.
+  </Step>
+  <Step title="Open the Dashboard">
+    Go to `http://localhost:8090`. The dashboard starts even if the Service is not available yet, and it connects when the Service responds.
+  </Step>
+</Steps>
+
+## Access Control
+
+<Warning>
+  The dashboard has no sign-in. Anyone who can open it can deploy Sync Config through the Service API and start a reprocess. Do not expose it to the public internet. Make it available only on a private network, through a VPN, or behind an authenticating gateway such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/). The gateway must pass requests to `/api` through to the dashboard without changes.
+</Warning>
+
+## Configuration
+
+Configure the container with these environment variables:
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `POWERSYNC_ADMIN_URL` | Yes | URL of the Service API as the dashboard container reaches it, such as `http://powersync:8080`. |
+| `POWERSYNC_CLIENT_URL` | Yes | Public URL that client SDKs connect to. Client SDK Setup uses it in the generated connector, and the header shows its host as the instance name. |
+| `POWERSYNC_ADMIN_TOKEN_FILE` | One of these two | Path to a file that contains the dashboard's API token. Recommended. |
+| `POWERSYNC_ADMIN_TOKEN` | One of these two | The API token itself. If `POWERSYNC_ADMIN_TOKEN_FILE` is also set, the dashboard ignores this variable and logs a warning. |
+| `POWERSYNC_ADMIN_CA_FILE` | No | CA bundle used to verify the certificate of an `https` Service URL. Defaults to the system bundle. |
+| `POWERSYNC_SKIP_SERVICE_VERSION_CHECK` | No | Set to `true` to run against a Service earlier than v1.27.1, such as a development build. This combination is not tested, and some features may not work. Defaults to `false`. |
+
+Both URLs must use `http://` or `https://` and can include a port and path. They can't include credentials, a query string, or a fragment.
+
+## Image Versions
+
+The image is published to Docker Hub as `powersync/powersync-dashboard` for `linux/amd64` and `linux/arm64`. There is no `latest` tag:
+
+- `X.Y.Z`, such as `0.1.0`, is a fixed release.
+- `X.Y`, such as `0.1`, moves to the newest patch release of that minor version.
+
+A dashboard release that raises the minimum Service version is always a new minor version. If you pin `X.Y`, patch updates don't require a newer Service.
+
+{/* TODO: Link the GitHub releases of powersync-ja/powersync-dashboard-self-hosted once the repository is public. Each release states its minimum Service version. */}
+
+## Sync Config Management
+
+What the Sync Config editor lets you do depends on where the Service gets its Sync Config:
+
+| Sync Config Source | Editor Behavior |
+| --- | --- |
+| `sync_config` in `service.yaml` | The editor shows a "Config-managed" note and replaces **Deploy** with **Copy YAML** and **Download YAML**. |
+| Deployed via the API | **Deploy** validates the draft and deploys it. |
+| Not reported | **Deploy** is disabled. You can still copy or download the YAML. |
+
+If `sync_config` is set in `service.yaml`, the Service rejects deploys through its API. To apply a draft, paste its YAML into the Sync Config file that `sync_config` points to, or into its inline `content`. Then restart the Service.
+
+The Service reports its Sync Config source in v1.27.1 and later, so the "Not reported" case happens only if the version check is skipped.
+
+For all the ways to update Sync Config, see [Update Sync Config](/maintenance-ops/self-hosting/update-sync-rules).
+
+## Troubleshooting
+
+- **The container exits at startup:** Run `docker logs powersync-dashboard` to see which setting to fix.
+- **"Can't Reach the PowerSync Service":** The dashboard container can't connect to `POWERSYNC_ADMIN_URL`. Check that the container is on the Service's Docker network. If the network and URL are correct, check the dashboard container's log.

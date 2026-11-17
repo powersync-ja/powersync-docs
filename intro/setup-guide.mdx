@@ -843,37 +843,21 @@ await db.connect({
 // For Tauri, connecting to PowerSync must be done in Rust so that sync state
 // is shared across all windows. Calling connect() from JavaScript will throw.
 //
-// The Tauri plugin doesn't support authenticators yet, so it uses a backend connector.
-//
-// 1. Define your backend connector in Rust:
+// 1. Define your authenticator in Rust:
 
 use async_trait::async_trait;
 use tauri_plugin_powersync::PowerSyncExt;
-use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase, SyncOptions};
+use powersync::{Authenticator, SyncOptions};
 use powersync::error::PowerSyncError;
+use std::sync::Arc;
 
-struct MyBackendConnector {
-    db: PowerSyncDatabase,
-}
+struct MyAuthenticator;
 
 #[async_trait]
-impl BackendConnector for MyBackendConnector {
-    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        // for development: use development token
-        Ok(PowerSyncCredentials {
-            endpoint: "https://your-instance.powersync.com".to_string(),
-            token: "your-development-token-here".to_string(),
-        })
-    }
-
-    async fn upload_data(&self) -> Result<(), PowerSyncError> {
-        let mut local_writes = self.db.crud_transactions();
-        while let Some(tx) = local_writes.try_next().await? {
-            // Placeholder: send the mutations in tx.crud to your write API here,
-            // before you complete the transaction. See the Write Data step.
-            tx.complete().await?;
-        }
-        Ok(())
+impl Authenticator for MyAuthenticator {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        // For development: return your development token
+        Ok(Arc::new("your-development-token-here".to_string()))
     }
 }
 
@@ -884,8 +868,12 @@ async fn connect<R: tauri::Runtime>(
     handle: usize,
 ) -> tauri_plugin_powersync::Result<()> {
     let database = app.powersync().database_from_javascript_handle(handle)?;
-    let options = SyncOptions::new(MyBackendConnector { db: database.clone() });
-    database.connect(options).await;
+    database
+        .connect(SyncOptions::download_only(
+            "https://your-instance.powersync.com",
+            MyAuthenticator,
+        ))
+        .await;
     Ok(())
 }
 
@@ -1397,9 +1385,33 @@ await db.connect({
 ```
 
 ```rust Tauri (Rust)
-// The Tauri plugin uploads mutations with the upload_data() method of the backend
-// connector from the Connect step. Replace the placeholder in that method
-// with a call to your write API.
+use futures_lite::StreamExt;
+use powersync::{MutationUploader, PowerSyncDatabase};
+
+struct MyMutationUploader {
+    db: PowerSyncDatabase,
+}
+
+#[async_trait]
+impl MutationUploader for MyMutationUploader {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
+        let mut transactions = self.db.crud_transactions();
+        while let Some(tx) = transactions.try_next().await? {
+            todo!("Send the mutations in tx.crud to your write API");
+            tx.complete().await?;
+        }
+        Ok(())
+    }
+}
+
+// In your connect command, connect with the authenticator and the uploader
+database
+    .connect(SyncOptions::new(
+        "https://your-instance.powersync.com",
+        MyAuthenticator,
+        MyMutationUploader { db: database.clone() },
+    ))
+    .await;
 ```
 
 ```dart Dart/Flutter

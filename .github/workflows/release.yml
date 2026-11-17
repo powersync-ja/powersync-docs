@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch: # For dev publishing
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -38,8 +39,18 @@ jobs:
       # When that PR is merged, there are none left and this publishes to npm.
       - name: Create Release Pull Request or Publish to npm
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        if: ${{ github.event_name == 'push' }}
         with:
           version: pnpm changeset:version
           publish: pnpm release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Run manually on any branch to publish a 0.0.0-dev-<timestamp> snapshot under the dev tag.
+      - name: Dev publish
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          pnpm --filter @powersync/docs-content build
+          pnpm changeset version --snapshot dev
+          pnpm install --no-frozen-lockfile
+          pnpm changeset publish --tag dev --no-git-tag

@@ -21,11 +21,11 @@ None of this is wrong: together these describe a fully-featured sync engine for 
 
 This page explains what each term means and why your offline app needs it.
 
-For each term, this page shows what (if anything) changes when you use [PowerSync](https://www.powersync.com/): in some cases PowerSync does it for you, in some cases PowerSync makes it easier and in some cases there's very little difference.
+For each term, this page also shows what (if anything) changes when you use [PowerSync](https://www.powersync.com/): in some cases PowerSync handles it for you, in some cases PowerSync makes it easier and in some cases there's very little difference.
 
 ## Local-First Database
 
-This is a database on the device that the app reads and writes to instead of the API. Having it means that the UI never waits for a server round trip and keeps working offline.
+This is a database on the device that the app reads and writes to instead of an API. Having it means that the UI never waits for a server round trip and keeps working offline.
 
 Everything else in the architecture depends on this database.
 
@@ -127,7 +127,7 @@ This is also where your business rules and authorization go. Writes pass through
 
 To get the full UX benefit of this architecture, you must show the result of a user's action immediately, before the server has confirmed it. The user taps "complete" and the item is ticked straight away, instead of waiting while watching a spinner (or worse, a frozen UI).
 
-Offline there is no server to wait for, so optimistic UI is the only option. A related property is _read-your-writes_: once you've written something to the local DB, every later read shows it, including after a sync.
+While offline there is no server to wait for, so optimistic UI is the only option. A related property is _read-your-writes_: once you've written something to the local DB, every later read shows it, including after a sync.
 
 ### Implementation
 
@@ -136,7 +136,7 @@ Apply the change to local state first, record it in the outbox, and roll it back
 To build a consistent UI that isn't confusing to users, you need to make sure to:
 
 - Read from the same local store everywhere, so every screen shows the pending change, not just the screen where it was made.
-- Prevent an incoming sync from overwriting a pending change with older data. Otherwise data will flip back and forth while the state stabilises.
+- Prevent an incoming sync from overwriting a pending change with older data. Otherwise data will flip back and forth while the state stabilizes.
 - Decide what the user sees when the server rejects a write: revert silently or show a failure they can retry.
 - Show pending state where it's important (e.g. "not yet synced" on a payment), so users know what the server hasn't confirmed.
 
@@ -237,7 +237,7 @@ Alternatively, record deletes in a separate deletion table, e.g. `deleted_rows (
 
 ### With PowerSync
 
-You don't need tombstones for synced data. Because PowerSync reads deletes from the replication stream, you can use ordinary hard deletes in your source database. The service turns them into remove operations for each affected client, and deletes made on the device go through the upload queue as `DELETE` operations. PowerSync keeps track of this internally, so no `deleted_at` column is needed for sync.
+You don't need tombstones for synced data. Because PowerSync reads deletes from the replication stream, you can use ordinary hard deletes in your source database. The Service turns them into remove operations for each affected client, and deletes made on the device go through the upload queue as `DELETE` operations. PowerSync keeps track of this internally, so no `deleted_at` column is needed for sync.
 
 One exception: if a late or replayed `PUT` must not bring back a deleted row (see [idempotency key](#idempotency-key)), your backend still needs to keep a record of deleted IDs.
 
@@ -260,7 +260,7 @@ LWW sounds trivial, but you have to answer a few questions first:
 
 You don't need to worry about clocks or resolve conflicts on the client. Writes go through your backend, which is the single authority, so "last" means _last received by the server_. With a simple backend, [the result is per-field LWW](/handling-writes/handling-update-conflicts), because `PATCH` operations only carry the columns that changed. The client waits until the server has acknowledged its writes, then takes the server's state.
 
-You will still need to write the backend code to handle conflict resolution, unless you use the PowerSync [reference write implementation](/handling-writes/write-path/reference-write-implementation), which has a default conflict resolution strategy built in (field-level LWW). You need to change that where your domain needs it: reject updates to a completed order, say, or [use custom conflict resolution](/handling-writes/custom-conflict-resolution).
+You will still need to write the backend code to handle conflict resolution, unless you use the PowerSync [reference write implementation](/handling-writes/write-path/reference-write-implementation), which has a default conflict resolution strategy built in (field-level LWW). You need to change that where your domain needs it: reject updates to a completed order, say, or [use custom conflict resolution for more complex use cases](/handling-writes/custom-conflict-resolution).
 
 For true merging of concurrent edits (usually on larger text fields), see [CRDTs](#crdts-conflict-free-replicated-data-types) below.
 
@@ -337,7 +337,7 @@ Here's a summary of the terms on this page:
 | Exactly-once delivery | Easier: at-least-once upload + idempotent backend |
 | Event sourcing | Probably not needed |
 
-None of these is particularly complicated to build, but together they add complexity and maintenance burden to your app.
+None of these are particularly complicated to build, but together they add complexity and maintenance burden to your app.
 
 By using a sync engine like PowerSync, you get:
 

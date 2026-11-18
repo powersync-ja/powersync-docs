@@ -504,6 +504,38 @@ Make these changes to your queries:
 - Change code that expects `T[]` from `GetAll<T>` or `Watch<T>`. These methods now return `List<T>`.
 - Replace `dynamic` results with `IQueryRow` getters. `GetAll` and `Watch` without a result type return a `QueryResult`. Its `Rows` property contains the `IQueryRow` values.
 
+#### Generate Row Mappers
+
+If you have many result types, the [`PowerSync.Common.SourceGenerators`](https://github.com/powersync-ja/powersync-dotnet/tree/main/PowerSync/PowerSync.Common.SourceGenerators) package can generate their `IFromRow<T>` implementations at compile time. This package is in [alpha](/resources/feature-status) and is not ready for production use.
+
+```bash
+dotnet add package PowerSync.Common.SourceGenerators --prerelease
+```
+
+Mark a `partial` class, struct, or record with `[GenerateSqlMapper]`:
+
+```cs
+using PowerSync.Common.DB;
+using PowerSync.Common.DB.Schema.Attributes;
+
+[GenerateSqlMapper]
+public partial class TodoItem
+{
+    [Column("id")]
+    public string Id { get; set; } = "";
+
+    [Column("description")]
+    public string Description { get; set; } = "";
+
+    [Column("completed_at")]
+    public DateTime? CompletedAt { get; set; }
+}
+
+List<TodoItem> todos = await db.GetAll<TodoItem>("SELECT * FROM todos");
+```
+
+Each property reads the column named by its `[Column]` attribute. Without the attribute, the property reads the column with the same name, ignoring case. The generator does not convert between naming styles, so `CompletedAt` needs `[Column("completed_at")]` to read the `completed_at` column. For the full mapping rules and supported types, see the [package README](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common.SourceGenerators/README.md).
+
 #### Update Table Names from OnChange
 
 `PowerSyncDatabase.OnChange` now reports the name of the underlying table instead of the view name. For example, a change to the `todo_lists` table is reported as `ps_data__todo_lists`. Update code that compares the values in `ChangedTables` with view names.

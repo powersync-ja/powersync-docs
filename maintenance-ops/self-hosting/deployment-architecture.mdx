@@ -127,24 +127,34 @@ Recover PowerSync's sync data by re-replicating from the source database. Allow 
 
 ## High Availability and Disaster Recovery
 
-The [production setup](#production) covers the failure of a single container or node. To keep syncing during a regional outage, run a second PowerSync instance in a different region as a standby. For example, if your primary instance runs in `us-east-1`, run the standby in `us-west-2`.
+The [production setup](#production) covers the failure of a single container or node. A **standby instance** covers failures that affect the whole instance, such as the loss of bucket storage, a failed Sync Config deployment, or a regional outage. A standby instance is a second PowerSync instance that replicates from the same source database and that you can switch clients to.
 
 ### Standby Instance
 
-Deploy the complete stack to the second region: replication containers, API containers, the compact job, a load balancer, and a bucket storage database.
+Deploy the same components as the primary instance: replication containers, API containers, the compact job, a load balancer, and a bucket storage database.
 
-- **Use the same source database.** Both instances replicate from it independently. This setup does not protect the source database. For a replicated Postgres source database, see the high availability section in [Schemas and Connections](/sync/advanced/schemas-and-connections).
-- **Use separate bucket storage.** Each instance needs its own bucket storage database in its own region and, if enabled, its own [S3 bucket or prefix](/sync/advanced/storage-version-4#self-hosted-s3-setup). Two instances cannot share bucket storage, and storage in the failed region is unavailable during the outage.
-- **Keep the standby running.** A running standby stays up to date with the source database, so clients can connect to it as soon as you switch. A standby that starts during the outage must complete its initial replication first.
-- **Keep Sync Config and authentication consistent.** Deploy the same [Sync Config](/sync/streams/overview) to both instances. Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens that your backend issues: use the same keys and the same [`audience`](/configuration/auth/custom) values on both. If your tokens use an instance URL as the audience, add both instance URLs to `audience` on each instance.
+- **Use the same source database.** Both instances replicate from it independently.
+- **Use separate bucket storage.** Each instance needs its own bucket storage database and, if enabled, its own [S3 bucket or prefix](/sync/advanced/storage-version-4#self-hosted-s3-setup). Two instances cannot share bucket storage.
+- **Keep the standby running.** A running standby stays up to date with the source database, so clients can connect to it as soon as you switch. A standby that starts after the primary fails must complete its initial replication first.
+- **Run the same Sync Config.** When you change your [Sync Config](/sync/streams/overview), deploy it to one instance and confirm that the instance replicates and syncs correctly before you deploy it to the other. If the deployment fails, clients can use the instance that still runs the previous version.
+- **Accept the same tokens.** Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens that your backend issues: use the same keys and the same [`audience`](/configuration/auth/custom#self-hosted-configuration) values on both. If your tokens use an instance URL as the audience, add both instance URLs to `audience` on each instance.
 
 For a Postgres source database, each instance uses its own [replication slots](/configuration/source-db/postgres-maintenance#maximum-replication-slots). Set a different [`slot_name_prefix`](/configuration/powersync-service/self-hosted-instances#param-slot-name-prefix) for each instance so that you can identify which instance a slot belongs to.
+
+### Standby Region
+
+Where you run the standby determines which failures it covers:
+
+- **Same region as the primary.** The standby covers failures of the primary instance, such as the loss of its bucket storage or a failed Sync Config deployment.
+- **Different region.** The standby also covers an outage of the primary's region. For example, if your primary instance runs in `us-east-1`, run the standby in `us-west-2`, with its bucket storage in the same region as the standby.
+
+A standby in a different region keeps clients syncing during a regional outage only if the source database and your backend API also remain available. The standby replicates from the source database, and clients upload their writes through your backend. For a replicated Postgres source database, see [High Availability / Replicated Databases](/sync/advanced/schemas-and-connections#high-availability-/-replicated-databases-postgres).
 
 ### Switching Clients to the Standby
 
 Return the PowerSync endpoint from your backend API instead of hardcoding it in the app. Your [`fetchCredentials()`](/configuration/app-backend/client-side-integration) implementation can get the endpoint in the same API call that returns the token. To switch clients to the standby, change the endpoint that your API returns.
 
-Host this API so that it remains available when the primary region fails.
+Host this API so that it remains available when the primary instance or its region fails.
 
 The client SDK caches credentials and [fetches new ones](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) when the token expires or the app restarts. A client that is already running therefore keeps trying the failed endpoint until its token expires. Use a short token lifetime, such as 5 to 15 minutes, to reduce this delay.
 
@@ -164,11 +174,11 @@ The client keeps its local data during the switch:
 
 Every client downloads all of its data from the standby at about the same time, which puts initial-sync load on the standby's API containers and bucket storage. [Add API containers](#api-containers) to the standby before you switch.
 
-### After the Outage
+### After the Primary Recovers
 
-For a Postgres source database, the replication slots of the stopped instance continue to retain WAL on the source database. Restore the instance so that it can catch up, or [drop its replication slots](/maintenance-ops/production-readiness-guide#managing-replication-slots).
+For a Postgres source database, the replication slots of a stopped instance continue to retain WAL on the source database. Restore the instance so that it can catch up, or [drop its replication slots](/maintenance-ops/production-readiness-guide#managing-replication-slots).
 
-Switching back to the original region makes every client sync all of its data again. Switch back only if you need to, and add API containers in that region first to handle a surge of concurrent client reconnections.
+Switching back to the primary makes every client perform an initial sync again. Switch back only if you need to, and add API containers to the primary first to handle a surge of concurrent client reconnections.
 
 ## Self-Hosted Architecture Diagram
 

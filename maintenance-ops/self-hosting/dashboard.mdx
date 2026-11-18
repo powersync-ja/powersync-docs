@@ -23,7 +23,7 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 
 - **PowerSync Service v1.27.1 or later.** The dashboard reads the Service version and the source of its Sync Config from the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics). Earlier versions don't report these values, so the dashboard shows "Unsupported Service Version" instead of its pages.
 - **Network access to the Service API.** The dashboard container must be able to reach the Service's port, such as `http://powersync:8080` on a shared Docker network.
-- **An API token.** Give the dashboard its own entry in the Service's [`api.tokens`](/configuration/powersync-service/self-hosted-instances#api), so you can rotate it without affecting CLI or CI tokens. To rotate the token, update the Service and dashboard settings, then recreate both containers to load the new token.
+- **An API token.** Give the dashboard its own entry in the Service's [`api.tokens`](/configuration/powersync-service/self-hosted-instances#api), so you can rotate it without affecting CLI or CI tokens.
 
 ## Access Control
 
@@ -35,14 +35,27 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 
 <Steps>
   <Step title="Create a Token">
-    Generate a random token and save it in a file named `powersync_admin_token`. Keep this file out of version control.
+    <Tabs>
+      <Tab title="Docker Compose">
+        Generate a token and save it as `PS_DASHBOARD_TOKEN` in the `.env` file next to `docker-compose.yaml`.
 
-    ```bash
-    openssl rand -hex 32 > powersync_admin_token
-    ```
+        If `.env` already has a `PS_DASHBOARD_TOKEN` entry, use that value. Otherwise, run this command from the directory with `docker-compose.yaml`.
+
+        ```bash
+        token=$(openssl rand -hex 32) && printf '\nPS_DASHBOARD_TOKEN=%s\n' "$token" >> .env
+        ```
+      </Tab>
+      <Tab title="docker run">
+        Generate a token and save it in `powersync_admin_token`. Keep this file out of version control.
+
+        ```bash
+        openssl rand -hex 32 > powersync_admin_token
+        ```
+      </Tab>
+    </Tabs>
   </Step>
   <Step title="Add the Token to the Service">
-    In `service.yaml`, add a new entry to `api.tokens`. Keep any existing entries.
+    In `service.yaml`, add a reference to the dashboard token under `api.tokens`. Keep any existing entries.
 
     ```yaml service.yaml
     api:
@@ -50,16 +63,26 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
         - !env PS_DASHBOARD_TOKEN
     ```
 
-    Set the `PS_DASHBOARD_TOKEN` environment variable on the Service container to the token:
-
-    - With `docker run`, recreate the Service container using your existing command with `-e PS_DASHBOARD_TOKEN="$(cat powersync_admin_token)"` added before the image name.
-    - With Docker Compose, add `PS_DASHBOARD_TOKEN: ${PS_DASHBOARD_TOKEN}` to the `environment` of the `powersync` service, and set `PS_DASHBOARD_TOKEN` to the token in the project's `.env` file.
+    The Service reads the token value from `PS_DASHBOARD_TOKEN` when it starts.
   </Step>
   <Step title="Start the Dashboard">
     Run the dashboard on the same Docker network as the Service. If your apps connect to a different URL than `http://localhost:8080`, set `POWERSYNC_CLIENT_URL` to the Service URL they use.
 
     <Tabs>
+      <Tab title="Docker Compose">
+        Add the environment entry to your existing `powersync` service and add `dashboard` under `services`. Compose passes the same token to both containers.
+
+        <SelfHostedDashboardCompose />
+
+        Run this command to apply the Service configuration and start the dashboard:
+
+        ```bash
+        docker compose up -d powersync dashboard
+        ```
+      </Tab>
       <Tab title="docker run">
+        Recreate the Service container using your existing command with `-e PS_DASHBOARD_TOKEN="$(cat powersync_admin_token)"` before the image name. Then start the dashboard:
+
         ```bash
         docker run -d --name powersync-dashboard \
           --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
@@ -74,20 +97,9 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 
         `--network` must be a network that the Service container is on. Docker's default `bridge` network doesn't resolve container names. For a Docker Compose project, the network is usually `<project>_default`. Run `docker network ls` to list networks.
       </Tab>
-      <Tab title="Docker Compose">
-        Add `dashboard` under `services` and `powersync_admin_token` under the top-level `secrets` in the Docker Compose file that runs the Service.
-
-        <SelfHostedDashboardCompose />
-
-        Run this command to recreate the Service container with the token and start the dashboard:
-
-        ```bash
-        docker compose up -d powersync dashboard
-        ```
-      </Tab>
     </Tabs>
 
-    The container runs as an unprivileged user (UID 101) and writes only to `/tmp`, so it supports a read-only root filesystem. The token file must be readable by this user.
+    The container runs as an unprivileged user (UID 101) and writes only to `/tmp`, so it supports a read-only root filesystem. If you mount a token file, make it readable by this user.
 
     In Kubernetes, set `readOnlyRootFilesystem: true`, mount an `emptyDir` volume at `/tmp`, and use the Service's fully qualified name in `POWERSYNC_ADMIN_URL`, such as `http://powersync.<namespace>.svc.cluster.local:8080`.
   </Step>
@@ -98,7 +110,7 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 
 ## Configuration
 
-Set `POWERSYNC_ADMIN_TOKEN_FILE` (recommended) or `POWERSYNC_ADMIN_TOKEN`. If you set both, the dashboard uses the file.
+Set `POWERSYNC_ADMIN_TOKEN_FILE` or `POWERSYNC_ADMIN_TOKEN`. If you set both, the dashboard uses the file. Use `POWERSYNC_ADMIN_TOKEN_FILE` to supply the token through a mounted secret.
 
 | Variable | Required | Description |
 | --- | --- | --- |

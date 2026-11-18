@@ -152,11 +152,26 @@ A standby in a different region keeps clients syncing during a regional outage o
 
 ### Switching Clients to the Standby
 
-Return the PowerSync endpoint from your backend API instead of hardcoding it in the app. Your [`fetchCredentials()`](/configuration/app-backend/client-side-integration) implementation can get the endpoint in the same API call that returns the token. To switch clients to the standby, change the endpoint that your API returns.
+Do not hardcode the URL of the primary instance in the app. Use one of these two options so that you can switch clients without releasing a new app version.
 
-Host this API so that it remains available when the primary instance or its region fails.
+#### Return the Endpoint From Your Backend
+
+Your [`fetchCredentials()`](/configuration/app-backend/client-side-integration) implementation returns the PowerSync endpoint together with the token. Get the endpoint from your backend API in that function. To switch clients to the standby, change the endpoint that your API returns.
+
+- If `fetchCredentials()` already calls your backend for a token, return the endpoint in the same response.
+- If `fetchCredentials()` returns a JWT from client-side state, for example a token from your authentication provider, it makes no backend call. Add a call that gets the endpoint.
 
 The client SDK caches credentials and [fetches new ones](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) when the token expires or the app restarts. A client that is already running therefore keeps trying the failed endpoint until its token expires. Use a short token lifetime, such as 5 to 15 minutes, to reduce this delay.
+
+#### Reroute With an API Gateway
+
+Give clients one stable URL that points to an API gateway or reverse proxy, and configure the gateway to forward connections to the primary instance. To switch clients to the standby, change the gateway's target. The app needs no endpoint lookup, and `fetchCredentials()` always returns the same URL.
+
+The client SDK retries a failed connection against the same URL, so a client reaches the standby on its next connection attempt and does not wait for its token to expire. A client with an open connection to a primary that still runs stays on the primary until that connection closes.
+
+The gateway must meet the same requirements as the [load balancer](#load-balancer): it must support long-lived streaming connections and must not buffer responses.
+
+With either option, host the backend API or gateway so that it remains available when the primary instance or its region fails.
 
 Do not load-balance clients between the two instances. A client that alternates between instances downloads all of its data again on every switch. See [Mapping Users to PowerSync Endpoints](/maintenance-ops/self-hosting/multiple-instances#mapping-users-to-powersync-endpoints).
 
@@ -171,6 +186,10 @@ The client keeps its local data during the switch:
 - The app can read and write the local database for the whole process.
 - Pending writes stay in the upload queue. The client uploads them through your backend, which does not depend on the PowerSync instance.
 - New changes from the source database appear after the sync completes.
+
+<Note>
+  On its first connection after the switch, a client can log a checksum error such as `Could not apply checkpoint, Checksums didn't match`. The client's local sync state comes from the previous instance and does not match the new instance. The client SDK then retries and downloads its data from the new instance. No action is needed.
+</Note>
 
 Every client downloads all of its data from the standby at about the same time, which puts initial-sync load on the standby's API containers and bucket storage. [Add API containers](#api-containers) to the standby before you switch.
 

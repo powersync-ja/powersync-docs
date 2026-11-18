@@ -108,14 +108,18 @@ async function uploadData(db) {
 
   // Send the whole client transaction to your API in one request.
   await api.post('/sync/upload', {
-    client: await db.getClientId(), // stable per-install UUID
-    ops: tx.crud.map(op => ({
-      id: op.clientId,      // incrementing op ID; (client, id) is a unique dedupe key
-      type: op.op,          // PUT | PATCH | DELETE
-      table: op.table,
-      row_id: op.id,
-      data: op.opData,
-    })),
+    transactions: [
+      {
+        transaction_id: tx.transactionId,
+        crud: tx.crud.map(op => ({
+          id: op.id, // row ID: a UUID generated on the device
+          op: op.op, // 'PUT', 'PATCH' or 'DELETE'
+          table: op.table,
+          transaction_id: op.transactionId,
+          op_data: op.opData, // changed columns for PUT and PATCH, undefined for DELETE
+        })),
+      },
+    ],
   });
 
   // Only now is it removed from the queue. If anything above throws, it is retried.
@@ -170,10 +174,7 @@ COMMIT;
 
 ### With PowerSync
 
-You don't need to generate keys on the client:
-
-- **Client-generated IDs.** Rows are created on the device with a UUID primary key, so a replayed `PUT` targets the same row and doesn't create a new one.
-- **An operation ID.** Every queued operation carries an incrementing ID, and each install has a stable client ID. Together they form a unique key you can use to deduplicate.
+You don't need to generate separate idempotency keys on the client. Rows are created on the device with a UUID primary key, so a replayed `PUT` targets the same row and doesn't create a new one.
 
 The upload queue retries automatically, so you still need to design your backend to [handle the same operation more than once](/handling-writes/handling-update-conflicts). PowerSync sends row-level `PUT`, `PATCH` and `DELETE` operations, so most of them are naturally idempotent and need no explicit dedupe table:
 
@@ -192,7 +193,7 @@ DELETE FROM todos WHERE id = $1;
 
 The upsert has one catch. If another client deleted the row in the meantime, a late or replayed `PUT` brings it back. If deletes should be final in your domain, check for a deleted ID before you insert (see [deletion tables](#tombstones-soft-deletes)).
 
-Writes that aren't naturally idempotent, like "charge the card" or "increment stock", still need the `processed_ops` check above, keyed either on the operation ID or a business key.
+Writes that aren't naturally idempotent, like "charge the card" or "increment stock", still need the `processed_ops` check above, keyed on a business key, such as the UUID of the payment row.
 
 ## Delta Sync (Incremental Pull)
 

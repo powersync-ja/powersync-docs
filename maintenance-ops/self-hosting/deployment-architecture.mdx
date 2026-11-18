@@ -127,7 +127,7 @@ Recover PowerSync's sync data by re-replicating from the source database. Allow 
 
 ## High Availability and Disaster Recovery
 
-The [production setup](#production) covers the failure of a single container or node. A **standby instance** covers failures that affect the whole instance, such as the loss of bucket storage, a failed Sync Config deployment, or a regional outage. A standby instance is a second PowerSync instance that replicates from the same source database and that you can switch clients to.
+The [production setup](#production) covers the failure of a single container or node. A **standby instance** covers failures that affect the whole instance, such as the loss of bucket storage, a Sync Config deployment that syncs the wrong data, or a regional outage. A standby instance is a second PowerSync instance that replicates from the same source database and that you can switch clients to.
 
 ### Standby Instance
 
@@ -136,7 +136,7 @@ Deploy the same components as the primary instance: replication containers, API 
 - **Use the same source database.** Both instances replicate from it independently.
 - **Use separate bucket storage.** Each instance needs its own bucket storage database and, if enabled, its own [S3 bucket or prefix](/sync/advanced/storage-version-4#self-hosted-s3-setup). Two instances cannot share bucket storage.
 - **Keep the standby running.** A running standby stays up to date with the source database, so clients can connect to it as soon as you switch. A standby that starts after the primary fails must complete its initial replication first.
-- **Run the same Sync Config.** When you change your [Sync Config](/sync/streams/overview), deploy it to one instance and confirm that the instance replicates and syncs correctly before you deploy it to the other. If the deployment fails, clients can use the instance that still runs the previous version.
+- **Run the same Sync Config.** Deploy [Sync Config](/sync/streams/overview) changes to one instance at a time. See [Sync Config Deployments](#sync-config-deployments).
 - **Accept the same tokens.** Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens that your backend issues: use the same keys and the same [`audience`](/configuration/auth/custom#self-hosted-configuration) values on both. If your tokens use an instance URL as the audience, add both instance URLs to `audience` on each instance.
 
 For a Postgres source database, each instance uses its own [replication slots](/configuration/source-db/postgres-maintenance#maximum-replication-slots). Set a different [`slot_name_prefix`](/configuration/powersync-service/self-hosted-instances#param-slot-name-prefix) for each instance so that you can identify which instance a slot belongs to.
@@ -145,10 +145,21 @@ For a Postgres source database, each instance uses its own [replication slots](/
 
 Where you run the standby determines which failures it covers:
 
-- **Same region as the primary.** The standby covers failures of the primary instance, such as the loss of its bucket storage or a failed Sync Config deployment.
+- **Same region as the primary.** The standby covers failures of the primary instance, such as the loss of its bucket storage or a Sync Config deployment that syncs the wrong data.
 - **Different region.** The standby also covers an outage of the primary's region. For example, if your primary instance runs in `us-east-1`, run the standby in `us-west-2`, with its bucket storage in the same region as the standby.
 
 A standby in a different region keeps clients syncing during a regional outage only if the source database and your backend API also remain available. The standby replicates from the source database, and clients upload their writes through your backend. For a replicated Postgres source database, see [High Availability / Replicated Databases](/sync/advanced/schemas-and-connections#high-availability-/-replicated-databases-postgres).
+
+### Sync Config Deployments
+
+A single instance already protects clients while a [Sync Config deployment](/maintenance-ops/self-hosting/update-sync-rules) is in progress. The Service replicates the new Sync Config alongside the active one. Clients continue to sync with the active Sync Config until the new one completes [initial replication](/architecture/powersync-service#initial-replication-vs-incremental-replication), and then the Service makes the new one active.
+
+How the standby helps therefore depends on how the deployment goes wrong:
+
+- **Replication of the new Sync Config fails.** The new Sync Config never becomes active, so the instance continues to serve clients with the previous version. You do not need to switch clients. Correct the Sync Config and deploy it again.
+- **The new Sync Config becomes active but syncs the wrong data.** For example, a query syncs more rows than you intended, or leaves out rows that clients need. If you deploy the previous version to the same instance, it becomes active only after the instance replicates it again. A standby that still runs the previous version lets you revert sooner: switch clients to it.
+
+To keep this option, deploy a Sync Config change to one instance first. Confirm that the instance replicates and syncs correctly before you deploy the change to the other instance.
 
 ### Switching Clients to the Standby
 

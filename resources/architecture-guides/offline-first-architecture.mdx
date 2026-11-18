@@ -1,7 +1,7 @@
 ---
 title: "Demystifying Offline-First Architecture Jargon"
 sidebarTitle: "Offline-First Fundamentals"
-description: "What outbox, idempotency key, delta sync, tombstones, last-write-wins and other offline-first terms mean, and what changes when you use PowerSync."
+description: "What outbox, idempotency key, delta sync, tombstones, last-write-wins and other offline-first terms mean, and how that compares to using PowerSync."
 ---
 
 Your app needs to keep working when the network isn't available, so you read a few blog posts and asked an AI assistant.
@@ -17,11 +17,11 @@ Now you have a recipe full of jargon:
 
 You may also have been advised to add [event sourcing](#event-sourcing) and aim for [exactly-once delivery](#exactly-once-delivery).
 
-None of this is wrong: together these describe a fully-featured sync engine for an offline app. But there are a lot of new terms and concepts, and it's easy to get some of them subtly wrong.
+None of this is wrong: together these describe a fully-featured sync engine for an offline-first app. But there are a lot of new terms and concepts, and it's easy to get some of them subtly wrong.
 
-This page explains what each term means and why your offline app needs it.
+This page explains what each term means and why your offline-first app needs it.
 
-For each term, this page also shows what (if anything) changes when you use [PowerSync](https://www.powersync.com/): in some cases PowerSync handles it for you, in some cases PowerSync makes it easier and in some cases there's very little difference.
+For each term, this page also shows what (if anything) changes when you use [PowerSync](https://powersync.com/): in some cases PowerSync handles the complexity for you, in some cases PowerSync makes it easier, and in some cases there's very little difference.
 
 ## Local-First Database
 
@@ -29,17 +29,17 @@ This is a database on the device that the app reads and writes to instead of an 
 
 Everything else in the architecture depends on this database.
 
-### Implementation
+### Typical Implementation
 
-Pick an embedded database (usually SQLite or IndexedDB) and send every read and write in the app to it.
+Pick an embedded database (usually SQLite, or IndexedDB for web runtimes) and send every read and write in the app to it.
 
-There is a common shortcut which is to call the API and fall back to a local cache only if the request fails. This results in two code paths to maintain. The offline one only runs when the network is down, so make sure it's thoroughly tested before it's needed.
+There is a common shortcut which is to call the API and fall back to a local cache only if the request fails. This results in two code paths to maintain. The offline one only runs when the network is down, so you would have to make sure it's thoroughly tested before it's needed.
 
 Add reactivity too: the UI has to update when data changes underneath it, whether from the user or from sync.
 
 ### With PowerSync
 
-Your app gets a SQLite database that is managed by the PowerSync SDK, so you don't need to build or manage the local database.
+Your app gets a SQLite database that is managed by the PowerSync client SDK, so you don't need to build or manage the local database.
 
 Your app always reads from and writes to this database, whether it's online or offline, so there's only one code path.
 
@@ -47,13 +47,13 @@ You still need to define the [client-side schema](/intro/setup-guide#define-your
 
 ## Outbox Pattern
 
-The outbox is a durable queue of pending writes.
+The "outbox" is a durable queue of pending writes.
 
-It is how writes survive the device going offline: Instead of calling the API directly, the app writes each change locally and appends it to the outbox.
+It is how writes survive the device going offline: Instead of calling an API directly for persistence, the app writes each change locally and appends it to the outbox.
 
 A background process drains the outbox to the server and removes each entry once the server confirms it.
 
-### Implementation
+### Typical Implementation
 
 Create an outbox table next to your data and write to it in the same local transaction as the change it records, so that you never have a change without an outbox entry or vice versa.
 
@@ -96,9 +96,9 @@ Make sure you handle the edge cases:
 
 You don't need to build the outbox. PowerSync's [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) _is_ the outbox. Every `INSERT`, `UPDATE` and `DELETE` on the local database is recorded as a `PUT`, `PATCH` or `DELETE` operation in the same transaction, in a blocking FIFO queue. The SDK drains it, retries on failure, and only removes entries once your code confirms they have been handled.
 
-While the queue has writes in it, the client doesn't advance to a new server checkpoint, so newer server state never overwrites local changes that haven't been uploaded yet.
+While the queue has mutations in it, the client doesn't advance to a new server checkpoint, so newer server state never overwrites local mutations that haven't been uploaded yet.
 
-You still need to write the function that sends operations to your backend for processing:
+You still need to write the function that sends mutations to your backend for processing:
 
 ```ts
 // Called by the SDK whenever there is something in the upload queue.
@@ -135,7 +135,7 @@ To get the full UX benefit of this architecture, you must show the result of a u
 
 While offline there is no server to wait for, so optimistic UI is the only option. A related property is _read-your-writes_: once you've written something to the local DB, every later read shows it, including after a sync.
 
-### Implementation
+### Typical Implementation
 
 Apply the change to local state first, record it in the outbox, and roll it back if the server rejects it.
 
@@ -158,7 +158,7 @@ This is a unique ID attached to a write, which allows the server to recognise a 
 
 By design the outbox retries on failures, and the retry can't tell the difference between "the request failed" and "the request succeeded but the response was dropped". Without an idempotency key, a bad connection will result in the app creating duplicate entries.
 
-### Implementation
+### Typical Implementation
 
 Generate IDs on the device (UUIDs) so that retrying a CREATE will target the same row. Give each outbox entry a unique ID. On the server, either make the operation naturally idempotent, or record the IDs you've processed and check them in the same transaction as the write:
 
@@ -199,7 +199,7 @@ Writes that aren't naturally idempotent, like "charge the card" or "increment st
 
 This is a way for the client to download only the changes since its last sync, not everything. Full refetches don't scale: they are slow and they burn power and data on every sync.
 
-### Implementation
+### Typical Implementation
 
 Add an `updated_at` column to every table, keep it current with a trigger, and add an endpoint that returns rows changed since the client's cursor:
 
@@ -226,7 +226,7 @@ You still need to define what data each user receives with [Sync Streams](/sync/
 
 With cursor-based delta sync, a deleted row stops appearing, and clients never find out it's gone. A tombstone is a marker that says "this row was deleted". It is kept so clients that were offline can learn about the deletion.
 
-### Implementation
+### Typical Implementation
 
 Replace `DELETE` with `UPDATE … SET deleted_at = now()` (which also bumps `updated_at`, so it shows up in the delta). Then:
 
@@ -250,7 +250,7 @@ You may still need soft deletes for _product_ reasons, like undo, a trash folder
 
 This is a conflict rule: when two devices change the same data while out of touch, the change that arrives last wins. Offline means concurrent edits, so you need _some_ rule, and LWW is the simplest one.
 
-### Implementation
+### Typical Implementation
 
 LWW sounds trivial, but you have to answer a few questions first:
 
@@ -271,7 +271,7 @@ For true merging of concurrent edits (usually on larger text fields), see [CRDTs
 
 With CRDTs, concurrent edits always merge to the same result, whatever order they arrive in. Where last-write-wins throws one edit away, a CRDT keeps both. That matters for collaborative text, where two people typing in the same paragraph offline should both keep their words.
 
-### Implementation
+### Typical Implementation
 
 Use a library like Yjs or Automerge. You still need to:
 
@@ -292,7 +292,7 @@ You need to wire the library to PowerSync: write updates to the table, apply inc
 
 This is the guarantee that each write is applied exactly once: never lost, never duplicated. It's what everyone wants and what networks don't provide.
 
-### Implementation
+### Typical Implementation
 
 You can't get it from the network directly. In practice, "exactly once" means two things combined:
 
@@ -313,7 +313,7 @@ This is a way of storing every change as an immutable event in an append-only lo
 
 Event sourcing brings its own costs: replay, snapshots, schema evolution of old events, and projection rebuilds. Take those on only if the domain calls for it.
 
-### Implementation
+### Typical Implementation
 
 Create an events table on the client and the server. Devices append events locally and upload them through an outbox. The server orders them and sends them back down, and each client replays them through reducers ("projections") to rebuild its tables. Plan from the start for snapshots so replay stays fast, for changing the format of old events, and for rebuilding projections when the reducer logic changes.
 

@@ -11,7 +11,7 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 ## What It Provides
 
 - **Health:** Errors and warnings that the Service reports, the source database connection status, the active and deploying Sync Config versions, and replication lag. Replication lag is shown for Postgres and MySQL source databases.
-- **Sync Config editor:** Edit, validate, and compare a draft with the deployed Sync Config, then deploy it. Autocomplete uses your source database schema. Drafts are stored in your browser, so other browsers don't see them.
+- **Sync Config editor:** Edit, validate, and compare a draft with the deployed Sync Config. Use [Sync Config Management](#sync-config-management) to find out whether to deploy from the editor or export the YAML. Autocomplete uses your source database schema. Drafts stay in your browser.
 - **Client SDK Setup:** Generated schema and connector files for your client framework.
 - **Settings:** Reprocess, which rebuilds the sync buckets from the source database under the active Sync Config. Clients then re-sync their data from the rebuilt buckets.
 
@@ -23,7 +23,13 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 
 - **PowerSync Service v1.27.1 or later.** The dashboard reads the Service version and the source of its Sync Config from the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics). Earlier versions don't report these values, so the dashboard shows "Unsupported Service Version" instead of its pages.
 - **Network access to the Service API.** The dashboard container must be able to reach the Service's port, such as `http://powersync:8080` on a shared Docker network.
-- **An API token.** Give the dashboard its own entry in the Service's [`api.tokens`](/configuration/powersync-service/self-hosted-instances#api), so you can rotate it without affecting CLI or CI tokens. To rotate the token, update it in the Service and the dashboard, then restart both.
+- **An API token.** Give the dashboard its own entry in the Service's [`api.tokens`](/configuration/powersync-service/self-hosted-instances#api), so you can rotate it without affecting CLI or CI tokens. To rotate the token, update the Service and dashboard settings, then recreate both containers to load the new token.
+
+## Access Control
+
+<Warning>
+  The dashboard has no sign-in. Anyone who can reach it can start a reprocess and, when the Service allows API deployments, deploy Sync Config. For local access, keep the loopback binding (`127.0.0.1`) in the examples. For remote access, use a private network, a VPN, or an authenticating gateway such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/). If you use a gateway, configure it to authenticate requests to `/api` before forwarding them unchanged to the dashboard.
+</Warning>
 
 ## Run the Dashboard
 
@@ -36,7 +42,7 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
     ```
   </Step>
   <Step title="Add the Token to the Service">
-    Add the token to `api.tokens` in your `service.yaml`:
+    In `service.yaml`, add a new entry to `api.tokens`. Keep any existing entries.
 
     ```yaml service.yaml
     api:
@@ -46,13 +52,11 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 
     Set the `PS_DASHBOARD_TOKEN` environment variable on the Service container to the token:
 
-    - With `docker run`, add `-e PS_DASHBOARD_TOKEN="$(cat powersync_admin_token)"` to the Service's command.
+    - With `docker run`, recreate the Service container using your existing command with `-e PS_DASHBOARD_TOKEN="$(cat powersync_admin_token)"` added before the image name.
     - With Docker Compose, add `PS_DASHBOARD_TOKEN: ${PS_DASHBOARD_TOKEN}` to the `environment` of the `powersync` service, and set `PS_DASHBOARD_TOKEN` to the token in the project's `.env` file.
-
-    Restart the Service. The Service reads its tokens only when it starts.
   </Step>
   <Step title="Start the Dashboard">
-    Run the dashboard on the same Docker network as the Service:
+    Run the dashboard on the same Docker network as the Service. If your apps connect to a different URL than `http://localhost:8080`, set `POWERSYNC_CLIENT_URL` to the Service URL they use.
 
     <Tabs>
       <Tab title="docker run">
@@ -71,9 +75,15 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
         `--network` must be a network that the Service container is on. Docker's default `bridge` network doesn't resolve container names. For a Docker Compose project, the network is usually `<project>_default`. Run `docker network ls` to list networks.
       </Tab>
       <Tab title="Docker Compose">
-        Add a `dashboard` service and a `secrets` entry to the Docker Compose file that runs the Service:
+        Add `dashboard` under `services` and `powersync_admin_token` under the top-level `secrets` in the Docker Compose file that runs the Service.
 
         <SelfHostedDashboardCompose />
+
+        Run this command to recreate the Service container with the token and start the dashboard:
+
+        ```bash
+        docker compose up -d powersync dashboard
+        ```
       </Tab>
     </Tabs>
 
@@ -86,26 +96,18 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
   </Step>
 </Steps>
 
-## Access Control
-
-<Warning>
-  The dashboard has no sign-in. Anyone who can open it can deploy Sync Config through the Service API and start a reprocess. Do not expose it to the public internet. Make it available only on a private network, through a VPN, or behind an authenticating gateway such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/). The gateway must pass requests to `/api` through to the dashboard without changes.
-</Warning>
-
 ## Configuration
 
-Configure the container with these environment variables:
+Set `POWERSYNC_ADMIN_TOKEN_FILE` (recommended) or `POWERSYNC_ADMIN_TOKEN`. If you set both, the dashboard uses the file.
 
 | Variable | Required | Description |
 | --- | --- | --- |
 | `POWERSYNC_ADMIN_URL` | Yes | URL of the Service API as the dashboard container reaches it, such as `http://powersync:8080`. |
-| `POWERSYNC_CLIENT_URL` | Yes | Public URL that client SDKs connect to. Client SDK Setup uses it in the generated connector, and the header shows its host as the instance name. |
-| `POWERSYNC_ADMIN_TOKEN_FILE` | One of these two | Path to a file that contains the dashboard's API token. Recommended. |
-| `POWERSYNC_ADMIN_TOKEN` | One of these two | The API token itself. If `POWERSYNC_ADMIN_TOKEN_FILE` is also set, the dashboard ignores this variable and logs a warning. |
+| `POWERSYNC_CLIENT_URL` | Yes | The PowerSync Service URL your apps connect to. The dashboard includes it in generated connectors. |
+| `POWERSYNC_ADMIN_TOKEN_FILE` | One of the token variables | Path to the file that contains the dashboard's API token. |
+| `POWERSYNC_ADMIN_TOKEN` | One of the token variables | The dashboard's API token. |
 | `POWERSYNC_ADMIN_CA_FILE` | No | CA bundle used to verify the certificate of an `https` Service URL. Defaults to the system bundle. |
 | `POWERSYNC_SKIP_SERVICE_VERSION_CHECK` | No | Set to `true` to run against a Service earlier than v1.27.1, such as a development build. This combination is not tested, and some features may not work. Defaults to `false`. |
-
-Both URLs must use `http://` or `https://` and can include a port and path. They can't include credentials, a query string, or a fragment.
 
 ## Image Versions
 
@@ -120,21 +122,16 @@ A dashboard release that raises the minimum Service version is always a new mino
 
 ## Sync Config Management
 
-What the Sync Config editor lets you do depends on where the Service gets its Sync Config:
+How you apply a draft depends on whether `service.yaml` defines `sync_config`.
 
-| Sync Config Source | Editor Behavior |
-| --- | --- |
-| `sync_config` in `service.yaml` | The editor shows a "Config-managed" note and replaces **Deploy** with **Copy YAML** and **Download YAML**. |
-| Deployed via the API | **Deploy** validates the draft and deploys it. |
-| Not reported | **Deploy** is disabled. You can still copy or download the YAML. |
+- **`sync_config` is set.** Copy or download the draft YAML. Update the file at `sync_config.path` or the inline YAML at `sync_config.content`, then restart the Service.
+- **`sync_config` is absent.** Select **Deploy** to validate and deploy the draft through the Service API. You can do this for the first deployment and for updates.
 
-If `sync_config` is set in `service.yaml`, the Service rejects deploys through its API. To apply a draft, paste its YAML into the Sync Config file that `sync_config` points to, or into its inline `content`. Then restart the Service.
-
-The Service reports its Sync Config source in v1.27.1 and later, so the "Not reported" case happens only if the version check is skipped.
+If you skip the version check and the Service omits its Sync Config source, copy or download the draft YAML and apply it separately.
 
 For all the ways to update Sync Config, see [Update Sync Config](/maintenance-ops/self-hosting/update-sync-rules).
 
 ## Troubleshooting
 
-- **The container exits at startup:** Run `docker logs powersync-dashboard` to see which setting to fix.
+- **The container exits at startup.** Check which setting caused the error with `docker logs powersync-dashboard` for `docker run` or `docker compose logs dashboard` for Docker Compose.
 - **"Can't Reach the PowerSync Service":** The dashboard container can't connect to `POWERSYNC_ADMIN_URL`. Check that the container is on the Service's Docker network. If the network and URL are correct, check the dashboard container's log.

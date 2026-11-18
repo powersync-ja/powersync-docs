@@ -1,0 +1,315 @@
+---
+title: "Demystifying Offline-First Architecture: Outbox, Idempotency, Tombstones and More"
+sidebarTitle: "Offline-First Architecture Terms"
+description: "What outbox, idempotency key, delta sync, tombstones, last-write-wins and other offline-first terms mean, and what changes when you use PowerSync."
+---
+
+Your app needs to keep working when the network isn't available.
+
+You have read a few blog posts and asked an AI assistant, and you got a recipe full of jargon: put a local database on the device, write changes to an **outbox**, give every write an **idempotency key**, pull **deltas** from the server, mark deletes with **tombstones**, and settle conflicts with **last-write-wins**. You may have been advised to add **event sourcing** and aim for **exactly-once** delivery.
+
+None of this is wrong: together they describe a sync engine. But there are a lot of new terms and concepts, and it's easy to get some of them subtly wrong.
+
+This page explains what each term means and why your offline app needs it. We'll describe what (if anything) changes when you use [PowerSync](https://www.powersync.com/): in some cases PowerSync does it for you, in some cases PowerSync makes it easier and in some cases there's very little difference.
+
+## Local-first database
+
+This is a database on the device that the app reads and writes to instead of the API. Having it means that the UI never waits for a server round trip and keeps working offline.
+
+Everything else in the architecture depends on this database.
+
+### Implementation
+
+Pick an embedded database (usually SQLite) and route every read and write in the app through it. The common shortcut, calling the API and falling back to a local cache when the request fails, gives you two code paths. The offline one only runs when the network is down, so make sure it's thoroughly tested before it's needed. Add reactivity too: the UI has to update when data changes underneath it, whether from the user or from sync.
+
+### With PowerSync
+
+You don't need to build or manage the local database. Every client gets a managed SQLite database. Your app always reads from and writes to SQLite, online or offline, using [live queries](/client-sdks/watch-queries) so the UI updates when synced data arrives. There's one code path.
+
+You need to define the [client-side schema](/intro/setup-guide#define-your-client-side-schema) for the tables you sync.
+
+## Outbox pattern
+
+This is a durable queue of pending writes. Instead of calling the API directly, the app writes each change locally and appends it to the outbox. A background process drains the outbox to the server and removes each entry once the server confirms it. It's how writes survive the device going offline.
+
+### Implementation
+
+Create an outbox table next to your data and write to it in the same local transaction as the change it records, so you never have a change without an outbox entry or vice versa.
+
+Then add a worker that drains it in order:
+
+```ts
+// outbox: seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT, table_name TEXT, row_id TEXT, payload TEXT
+
+// Every local write
+await db.transaction(async tx => {
+  await tx.execute('UPDATE todos SET completed = 1 WHERE id = ?', [id]);
+  await tx.execute(
+    'INSERT INTO outbox (op_id, table_name, row_id, payload) VALUES (?, ?, ?, ?)',
+    [uuid(), 'todos', id, JSON.stringify({ completed: 1 })]);
+});
+
+// Background worker: on app start, on reconnect, after each write
+async function drainOutbox() {
+  while (true) {
+    const next = await db.get('SELECT * FROM outbox ORDER BY seq LIMIT 1');
+    if (!next) return;
+    try {
+      await api.post('/sync', next);          // must be idempotent, see below
+      await db.execute('DELETE FROM outbox WHERE seq = ?', [next.seq]);
+    } catch (e) {
+      if (isPermanent(e)) return quarantine(next); // don't block the queue forever
+      return scheduleRetry(backoff());              // stop, keep order, try later
+    }
+  }
+}
+```
+
+Make sure you handle the edge cases:
+
+1. Only one worker runs at a time
+2. Decide which errors are permanent and drop those or send them to a dead-letter queue
+3. Don't let the next sync overwrite local changes that haven't been uploaded yet.
+
+### With PowerSync
+
+You don't need to build the outbox. PowerSync's [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) _is_ the outbox. Every `INSERT`, `UPDATE` and `DELETE` on the local database is recorded as a `PUT`, `PATCH` or `DELETE` operation in the same transaction, in a blocking FIFO queue. The SDK drains it, retries on failure, and only removes entries once your code says they are done. While the queue has writes in it, the client doesn't advance to a new server checkpoint, so newer server state never overwrites local changes that haven't been uploaded yet.
+
+You need to write the function that sends a batch to your backend:
+
+```ts
+// Called by the SDK whenever there is something in the upload queue.
+async function uploadData(db) {
+  const tx = await db.getNextCrudTransaction();
+  if (!tx) return;
+
+  // Send the whole client transaction to your API in one request.
+  await api.post('/sync/upload', {
+    client: await db.getClientId(), // stable per-install UUID
+    ops: tx.crud.map(op => ({
+      id: op.clientId,      // incrementing op ID; (client, id) is a unique dedupe key
+      type: op.op,          // PUT | PATCH | DELETE
+      table: op.table,
+      row_id: op.id,
+      data: op.opData,
+    })),
+  });
+
+  // Only now is it removed from the queue. If anything above throws, it is retried.
+  await tx.complete();
+}
+```
+
+This is also where your business rules and authorization go. Writes pass through your own API, not straight into your backend database, so you can add domain-specific conflict handling and checks as needed.
+
+## Optimistic UI (read-your-writes)
+
+Show the result of a user's action immediately, before the server has confirmed it. The user taps "complete" and the item is ticked straight away, instead of waiting behind a spinner.
+
+Offline there is no server to wait for, so optimistic UI is the only option. A related property is _read-your-writes_: once you've written something, every later read shows it, including after a sync.
+
+### Implementation
+
+Apply the change to local state first, record it in the outbox, and roll it back if the server rejects it. Get these right:
+
+- Read from the same local store everywhere, so every screen shows the pending change, not just the one that made it.
+- Don't let an incoming sync overwrite a pending change with older server data. Otherwise the tick disappears and comes back once the upload lands.
+- Decide what the user sees when the server rejects a write: revert silently, show an error, or keep a "failed" state they can retry.
+- Show pending state where it matters (e.g. "not yet synced" on a payment), so users know what the server hasn't confirmed.
+
+### With PowerSync
+
+You don't need to build optimistic state or merge it with server data. Writes go straight into the local SQLite database, and [live queries](/client-sdks/watch-queries) update the UI instantly when changes arrive in the local DB. While writes are waiting in the upload queue, the client doesn't advance to a newer checkpoint, so pending changes are never overwritten by stale server data. Once the server has processed the writes, the client takes the server's state. If your backend [rejected or changed a write](/handling-writes/handling-write-validation-errors), the synced result replaces the local change.
+
+You need to decide how your backend handles a write it rejects, and how the app tells the user. A silent revert can be confusing, so for writes the user cares about, return an error from your API and surface it in the app. To show that changes are waiting to sync, use the [sync status](/client-sdks/usage-examples#accessing-powersync-connection-status-information) (`uploading`) for a connection indicator, or the upload queue count (`getUploadQueueStats()` in the JS SDK) for a "3 changes not yet synced" badge. For per-record state, like "this payment hasn't been confirmed yet", add your own status column.
+
+## Idempotency key
+
+This is a unique ID attached to a write so the server can recognise a repeat. If the same request arrives twice, the server applies it once and returns the same result. By design the outbox retries on failures. A retry can't tell the difference between "the request failed" and "the request succeeded but the response was dropped". Without an idempotency key, a bad connection results in the app creating duplicate entries.
+
+### Implementation
+
+Generate IDs on the device (UUIDs) so that retrying a CREATE targets the same row. Give each outbox entry its own ID. On the server, either make the operation naturally idempotent, or record the IDs you've processed and check them in the same transaction as the write:
+
+```sql
+BEGIN;
+INSERT INTO processed_ops (op_id) VALUES ($1)
+  ON CONFLICT DO NOTHING;
+-- In app code: if 0 rows were inserted, this op was seen before.
+-- Commit and return OK (or the stored result) without applying it again.
+-- Otherwise apply the write here, in the same transaction.
+COMMIT;
+```
+
+### With PowerSync
+
+You don't need to generate keys on the client:
+
+- **Client-generated IDs.** Rows are created on the device with a UUID primary key, so a replayed `PUT` targets the same row and doesn't create a new one.
+- **An operation ID.** Every queued operation carries an incrementing ID, and each install has a stable client ID. Together they form a unique key you can use to deduplicate.
+
+The upload queue retries, so you still need to design your backend to [handle the same operation more than once](/handling-writes/handling-update-conflicts). PowerSync sends row-level `PUT`, `PATCH` and `DELETE` operations, so most of them are naturally idempotent and need no dedupe table:
+
+```sql
+-- PUT: insert, or overwrite with the same values on a replay
+INSERT INTO todos (id, list_id, description, completed)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (id) DO UPDATE
+  SET list_id = EXCLUDED.list_id,
+      description = EXCLUDED.description,
+      completed = EXCLUDED.completed;
+
+-- DELETE: deleting a row that is already gone is a no-op
+DELETE FROM todos WHERE id = $1;
+```
+
+The upsert has one catch. If another client deleted the row in the meantime, a late or replayed `PUT` brings it back. If deletes should be final in your domain, check for a deleted ID before you insert, e.g. against a table of deleted IDs.
+
+Writes that aren't naturally idempotent, like "charge the card" or "increment stock", still need the `processed_ops` check above, keyed either on the operation ID or a business key.
+
+## Delta sync (incremental pull)
+
+This is a way for the client to download only the changes since its last sync, not everything. Full refetches don't scale: they burn battery and data on every sync.
+
+### Implementation
+
+Add an `updated_at` column to every table, keep it current with a trigger, and add an endpoint that returns rows changed since the client's cursor:
+
+```sql
+SELECT * FROM todos
+WHERE owner_id = $1 AND updated_at > $2   -- $2 = client's last cursor
+ORDER BY updated_at;
+```
+
+This is where most hand-built sync gets subtly wrong. To get it right:
+
+- Use a commit-ordered position (e.g. the Postgres LSN, or `xmin` with snapshot checks), not timestamps or serial IDs. Both are assigned before commit, so a long transaction can commit with a value older than the cursor a client has already moved past, and those rows are never sent.
+- Record deletes so they can be sent too. A deleted row isn't returned by the query (see tombstones below).
+- Track who can see what, and tell the device to drop rows when a user loses access (e.g. removed from a team).
+- Pull related tables together, so the client never shows an order without its line items.
+
+### With PowerSync
+
+You don't need to build delta sync, add `updated_at` columns, or track cursors. The PowerSync Service reads your database's replication stream (e.g. Postgres logical replication), so it sees every committed change, including deletes. Clients receive only changes since their last [checkpoint](/architecture/consistency). The client applies a checkpoint only once it has all of it, so it never shows half of a server transaction. When a user's access changes, rows they should no longer have are removed from the device.
+
+You need to define which rows each user receives with [Sync Streams](/sync/streams/overview).
+
+## Tombstones (soft deletes)
+
+With cursor-based delta sync, a deleted row simply stops appearing, and clients never find out it's gone. A tombstone is a marker that says "this row was deleted". It is kept so clients that were offline can learn about the deletion.
+
+### Implementation
+
+Replace `DELETE` with `UPDATE … SET deleted_at = now()` (which also bumps `updated_at`, so it shows up in the delta). Then:
+
+- every query in the app and the API gets `WHERE deleted_at IS NULL`
+- unique constraints have to ignore deleted rows
+- the client deletes its local copy when it sees a tombstone
+- a cleanup job purges old tombstones, but only once every client has seen them
+- any device offline for longer than your retention window is forced to do a full resync
+
+### With PowerSync
+
+You don't need tombstones for synced data. Because PowerSync reads deletes from the replication stream, you can use ordinary hard deletes in your source database. The service turns them into remove operations for each affected client, and deletes made on the device go through the upload queue as `DELETE` operations. PowerSync keeps the bookkeeping internally, so no `deleted_at` column is needed for sync. Over time, [compacting](/maintenance-ops/compacting-buckets) cleans up that history.
+
+You may still need soft deletes for _product_ reasons, like undo, a trash folder, or audit history. That's a business decision, not a sync requirement.
+
+## Last-write-wins (LWW)
+
+This is a conflict rule: when two devices change the same data while out of touch, the change that arrives last wins. Offline means concurrent edits, so you need _some_ rule, and LWW is the simplest one.
+
+### Implementation
+
+LWW sounds trivial, but you have to answer a few questions first:
+
+- **Whose clock decides "last"?** Use the server's receive time or a hybrid logical clock. Don't use device clocks: they drift and the user can change them.
+- **Whole rows or single fields?** Use per-field LWW, so one user changing the title doesn't wipe out another user's status change. That means the client sends only the fields that changed.
+- **Deletes against edits.** If one device deletes a row while another edits it, decide which wins, and make sure a late edit doesn't bring the row back.
+- **The local side.** When the client merges server data into local data, apply the same rules, so the two never disagree.
+
+### With PowerSync
+
+You don't need to worry about clocks or resolve conflicts on the client. Writes go through your backend, which is the single authority, so "last" means _last received by the server_. With a simple backend, [the result is per-field LWW](/handling-writes/handling-update-conflicts), because `PATCH` operations only carry the columns that changed. The client waits until the server has acknowledged its writes, then takes the server's state.
+
+In the simplest backend, deletes win and the last update received for each field wins. You need to change that where your domain needs it: reject updates to a completed order, say, or [use custom conflict resolution](/handling-writes/custom-conflict-resolution). For true merging of concurrent edits, see [CRDTs](#crdts-conflict-free-replicated-data-types) below.
+
+## CRDTs (conflict-free replicated data types)
+
+With CRDTs, concurrent edits always merge to the same result, whatever order they arrive in. Where last-write-wins throws one edit away, a CRDT keeps both. That matters for collaborative text, where two people typing in the same paragraph offline should both keep their words. Yjs and Automerge are commonly used libraries.
+
+### Implementation
+
+Use a library rather than writing your own CRDT. You still need to:
+
+- Store the document state and updates locally, so edits survive restarts and work offline.
+- Send updates to other clients and the server, and receive theirs. The library merges them, but the transport, storage and retries are yours.
+- Compact the update history from time to time, since it grows with every keystroke.
+- Decide on authorization. A CRDT will merge any valid update, so the server has to check who is allowed to send one.
+
+Use a CRDT only for the data that needs it. Most app data (orders, settings, statuses) works fine with last-write-wins, which is far simpler to query and validate.
+
+### With PowerSync
+
+You don't need a separate sync channel for CRDT data. PowerSync [can be the provider for CRDT data](/client-sdks/advanced/crdts): store Yjs updates as rows in a table, and PowerSync handles local storage, offline writes, upload and sync to other clients, alongside the rest of your data. See the [Yjs collaboration demo](https://github.com/powersync-ja/powersync-js/tree/main/demos/yjs-react-supabase-text-collab).
+
+You need to wire the library to PowerSync: write updates to the table, apply incoming rows to the document, and compact old updates on the backend.
+
+## Exactly-once delivery
+
+This is the guarantee that each write is applied exactly once: never lost, never duplicated. It's what everyone wants and what networks don't provide.
+
+### Implementation
+
+You can't get it from the network directly. In practice, "exactly once" means two things combined:
+
+- **at-least-once delivery:** a durable outbox that keeps retrying until the server confirms
+- **deduplication:** an idempotent server that applies a repeated write only once
+
+Together they give _effectively-once_. Preserve order too: if a create and an update to the same row arrive in the wrong order, the result is wrong even with no duplicates.
+
+### With PowerSync
+
+You don't need to build at-least-once delivery or ordering. The upload queue never drops a write, and keeps it until your `uploadData()` marks it complete. The queue is FIFO, and each client transaction is uploaded as a unit.
+
+You need to make your backend **idempotent** (see [above](#idempotency-key)), and the result is effectively-once.
+
+## Event sourcing
+
+This is a way of storing every change as an immutable event in an append-only log, and deriving current state by replaying the events. An event log is a natural way to sync: devices append events, exchange them, and replay. It also gives you audit history for free.
+
+### Implementation
+
+Create an events table on the client and the server. Devices append events locally and upload them through an outbox. The server orders them and sends them back down, and each client replays them through reducers ("projections") to rebuild its tables. Plan from the start for snapshots so replay stays fast, for changing the format of old events, and for rebuilding projections when the reducer logic changes.
+
+### With PowerSync
+
+You don't need event sourcing to get offline sync. PowerSync syncs ordinary tables, and you write normal SQL on both ends. Event sourcing brings its own costs: replay, snapshots, schema evolution of old events, and projection rebuilds. Take those on only if the domain calls for it.
+
+Your business domain may still require or recommend an append-only table. For example, ledgers and stock movements are the classic use case for append-only operations. In the case of stock, two devices recording "+3" and "−1" must both count. In this case, PowerSync syncs the append-only table and you derive totals with SQL. The [offline POS guide](/resources/architecture-guides/offline-first-pos) shows this pattern for stock counts.
+
+## Putting it together
+
+Here's an overview of the terms we've covered:
+
+| Term | With PowerSync |
+| --- | --- |
+| Local database | Handled for you |
+| Outbox | Handled for you: the upload queue |
+| Optimistic UI | Handled for you: local writes + live queries |
+| Idempotency key | Easier: the key is provided, your backend uses it |
+| Delta / incremental sync | Handled for you |
+| Tombstones | Handled for you, for synced data |
+| Last-write-wins | Easier: the default, and you can change it |
+| CRDTs | Easier: PowerSync syncs the updates |
+| Exactly-once delivery | Easier: at-least-once upload + idempotent backend |
+| Event sourcing | Probably not needed |
+
+None of these is particularly complicated to build, but together they can add complexity and maintenance burden to your app.
+
+By using a sync engine like PowerSync, you get:
+
+- **Built in:** the local SQLite database, the outbox (upload queue), delta sync, delete propagation, consistent checkpoints, and retries.
+- **Yours to write:** `uploadData()`, an idempotent backend endpoint, and any conflict rules beyond last-write-wins.
+- **Usually unnecessary:** `deleted_at` columns for sync, `updated_at` cursors, client-side conflict resolution, and event sourcing.
+
+To try it, start with the [setup guide](/intro/setup-guide).

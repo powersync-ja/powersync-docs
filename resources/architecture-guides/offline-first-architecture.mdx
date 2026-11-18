@@ -1,5 +1,5 @@
 ---
-title: "Demystifying Offline-First Architecture: Outbox, Idempotency, Tombstones and More"
+title: "Demystifying Offline-First Architecture Jargon"
 sidebarTitle: "Offline-First Architecture Terms"
 description: "What outbox, idempotency key, delta sync, tombstones, last-write-wins and other offline-first terms mean, and what changes when you use PowerSync."
 ---
@@ -21,9 +21,9 @@ None of this is wrong: together these describe a fully-featured sync engine for 
 
 This page explains what each term means and why your offline app needs it.
 
-We'll describe what (if anything) changes when you use [PowerSync](https://www.powersync.com/): in some cases PowerSync does it for you, in some cases PowerSync makes it easier and in some cases there's very little difference.
+For each term, this page shows what (if anything) changes when you use [PowerSync](https://www.powersync.com/): in some cases PowerSync does it for you, in some cases PowerSync makes it easier and in some cases there's very little difference.
 
-## Local-first database
+## Local-First Database
 
 This is a database on the device that the app reads and writes to instead of the API. Having it means that the UI never waits for a server round trip and keeps working offline.
 
@@ -45,7 +45,7 @@ Your app always reads from and writes to this database, whether it's online or o
 
 You still need to define the [client-side schema](/intro/setup-guide#define-your-client-side-schema) for the tables you sync, hook up the live queries to your UI and persist writes to the local SQLite DB.
 
-## Outbox pattern
+## Outbox Pattern
 
 The outbox is a durable queue of pending writes. Instead of calling the API directly, the app writes each change locally and appends it to the outbox.
 
@@ -123,7 +123,7 @@ async function uploadData(db) {
 
 This is also where your business rules and authorization go. Writes pass through your own API, not straight into your backend database, so you can add domain-specific conflict handling and checks as needed.
 
-## Optimistic UI (read-your-writes)
+## Optimistic UI (Read-Your-Writes)
 
 To get the full UX benefit of this architecture, you must show the result of a user's action immediately, before the server has confirmed it. The user taps "complete" and the item is ticked straight away, instead of waiting while watching a spinner (or worse, a frozen UI).
 
@@ -146,7 +146,7 @@ You don't need to maintain the state or merge it with server data. Writes go str
 
 You still need to decide how your backend handles a rejected write, and how the app notifies the user, since a silent revert can be confusing. To show that changes are waiting to sync, use the [sync status](/client-sdks/usage-examples#accessing-powersync-connection-status-information) (`uploading`) for a connection indicator, or the upload queue count (`getUploadQueueStats()` in the JS SDK) for a "3 changes not yet synced" badge. To show a per-record state, like "this payment hasn't been confirmed yet", you will need to manage your own status column.
 
-## Idempotency key
+## Idempotency Key
 
 This is a unique ID attached to a write, which allows the server to recognise a repeat or retry. If the same request arrives twice, the server applies it only once and returns the same result to both requests.
 
@@ -192,7 +192,7 @@ The upsert has one catch. If another client deleted the row in the meantime, a l
 
 Writes that aren't naturally idempotent, like "charge the card" or "increment stock", still need the `processed_ops` check above, keyed either on the operation ID or a business key.
 
-## Delta sync (incremental pull)
+## Delta Sync (Incremental Pull)
 
 This is a way for the client to download only the changes since its last sync, not everything. Full refetches don't scale: they are slow and they burn power and data on every sync.
 
@@ -219,9 +219,9 @@ You don't need to build delta sync. The PowerSync Service reads your database's 
 
 You still need to define what data each user receives with [Sync Streams](/sync/streams/overview).
 
-## Tombstones (soft deletes)
+## Tombstones (Soft Deletes)
 
-With cursor-based delta sync, a deleted row simply stops appearing, and clients never find out it's gone. A tombstone is a marker that says "this row was deleted". It is kept so clients that were offline can learn about the deletion.
+With cursor-based delta sync, a deleted row stops appearing, and clients never find out it's gone. A tombstone is a marker that says "this row was deleted". It is kept so clients that were offline can learn about the deletion.
 
 ### Implementation
 
@@ -243,7 +243,7 @@ One exception: if a late or replayed `PUT` must not bring back a deleted row (se
 
 You may still need soft deletes for _product_ reasons, like undo, a trash folder, or audit history. But now that's a business decision, not a sync requirement.
 
-## Last-write-wins (LWW)
+## Last-Write-Wins (LWW)
 
 This is a conflict rule: when two devices change the same data while out of touch, the change that arrives last wins. Offline means concurrent edits, so you need _some_ rule, and LWW is the simplest one.
 
@@ -264,7 +264,7 @@ You will still need to write the backend code to handle conflict resolution, unl
 
 For true merging of concurrent edits (usually on larger text fields), see [CRDTs](#crdts-conflict-free-replicated-data-types) below.
 
-## CRDTs (conflict-free replicated data types)
+## CRDTs (Conflict-Free Replicated Data Types)
 
 With CRDTs, concurrent edits always merge to the same result, whatever order they arrive in. Where last-write-wins throws one edit away, a CRDT keeps both. That matters for collaborative text, where two people typing in the same paragraph offline should both keep their words.
 
@@ -285,7 +285,7 @@ You don't need a separate sync channel for CRDT data. PowerSync [can be the prov
 
 You need to wire the library to PowerSync: write updates to the table, apply incoming rows to the document, and compact old updates on the backend.
 
-## Exactly-once delivery
+## Exactly-Once Delivery
 
 This is the guarantee that each write is applied exactly once: never lost, never duplicated. It's what everyone wants and what networks don't provide.
 
@@ -304,7 +304,7 @@ You don't need to build at-least-once delivery or ordering. The upload queue nev
 
 You need to make your backend **idempotent** (see [above](#idempotency-key)), and the result is effectively-once.
 
-## Event sourcing
+## Event Sourcing
 
 This is a way of storing every change as an immutable event in an append-only log, and deriving current state by replaying the events. An event log is a natural way to sync: devices append events, exchange them, and replay. It also gives you audit history for free.
 
@@ -320,9 +320,9 @@ You don't need event sourcing to get offline sync. PowerSync syncs ordinary tabl
 
 Your business domain may still require or recommend an append-only table. For example, ledgers and stock movements are the classic use case for append-only operations. In the case of stock, two devices recording "+3" and "−1" must both count. In this case, PowerSync syncs the append-only table and you derive totals with SQL. The [offline POS guide](/resources/architecture-guides/offline-first-pos) shows this pattern for stock counts.
 
-## Putting it together
+## Putting It Together
 
-Here's an overview of the terms we've covered:
+Here's a summary of the terms on this page:
 
 | Term | With PowerSync |
 | --- | --- |

@@ -15,14 +15,9 @@ private let backendUrl = URL(string: "http://localhost:6060")!
 /// Abort a write endpoint request after this many seconds.
 private let requestTimeout: TimeInterval = 30
 
-/// Consecutive retryable errors for one transaction before it is passed to onFatalTransaction().
-private let retryMaxAttempts = 10
-
-/// An actor, because the SDK requires a Sendable connector and this one caches a token and a retry count.
+/// An actor, because the SDK requires a Sendable connector and this one caches a token.
 actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
     private var authToken: String?
-    private var retryKey: Int64?
-    private var retryCount = 0
 
     func fetchCredentials() async throws -> PowerSyncCredentials? {
         return PowerSyncCredentials(
@@ -40,17 +35,14 @@ actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
             return
         }
 
-        var result: TransactionResult
+        let result: TransactionResult
         do {
             result = try await postTransaction(transaction)
         } catch let error as AuthenticationError {
-            // Fetch a new token before the next attempt. Like other transport errors, this doesn't count toward
-            // retryMaxAttempts.
+            // Fetch a new token before the next attempt.
             authToken = nil
             throw error
         }
-
-        result = applyRetryLimit(transaction, result)
 
         switch result.status {
         case "success":
@@ -70,9 +62,9 @@ actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
         try await transaction.complete()
     }
 
-    /// Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
-    /// retryMaxAttempts. `.retain` keeps the transaction queued, which blocks later uploads, and the SDK calls this
-    /// again on its next attempt. Return `.complete` to discard the transaction, for example after telling the user.
+    /// Called for fatal errors that the write endpoint leaves to the client. `.retain` keeps the transaction queued,
+    /// which blocks later uploads, and the SDK calls this again on its next attempt. Return `.complete` to discard
+    /// the transaction, for example after telling the user.
     /// See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
     func onFatalTransaction(_ transaction: CrudTransaction, _ result: TransactionResult) async -> FatalDecision {
         print("Transaction needs client handling: \(result.failedOperation?.errorCode ?? "") \(result.message ?? "")")
@@ -145,29 +137,6 @@ actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
             throw UploadError(message: "Expected one result for one transaction")
         }
         return results[0]
-    }
-
-    /// Turns the retryMaxAttempts-th consecutive retryable error for the same transaction into a fatal error for
-    /// onFatalTransaction(). The write endpoint retries database errors that it doesn't recognize as permanent, so
-    /// without a limit, one bad transaction could block the queue forever.
-    private func applyRetryLimit(_ transaction: CrudTransaction, _ result: TransactionResult) -> TransactionResult {
-        guard result.status == "retryable_error" else {
-            retryKey = nil
-            return result
-        }
-        let key = transaction.transactionId ?? transaction.crud[0].clientId
-        retryCount = key == retryKey ? retryCount + 1 : 1
-        retryKey = key
-        if retryCount < retryMaxAttempts {
-            return result
-        }
-        retryCount = 0
-        return TransactionResult(
-            status: "fatal_error",
-            message: result.message,
-            requiresClientHandling: true,
-            failedOperation: FailedOperation(errorCode: "RETRY_LIMIT_EXCEEDED", message: result.message)
-        )
     }
 }
 

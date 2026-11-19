@@ -13,14 +13,9 @@ const BACKEND_URL = 'http://localhost:6060';
 // Abort a write endpoint request after this many milliseconds.
 const REQUEST_TIMEOUT_MS = 30000;
 
-// Consecutive retryable errors for one transaction before it is passed to onFatalTransaction().
-const RETRY_MAX_ATTEMPTS = 10;
-
 export class MyBackendConnector {
   constructor() {
     this.authToken = null;
-    this.retryKey = null;
-    this.retryCount = 0;
   }
 
   async fetchCredentials() {
@@ -46,14 +41,12 @@ export class MyBackendConnector {
     try {
       result = await this.postTransaction(transaction);
     } catch (error) {
-      // Network errors, timeouts and non-2xx responses. These don't count toward RETRY_MAX_ATTEMPTS.
+      // Network errors, timeouts and non-2xx responses.
       if (error instanceof AuthenticationError) {
         this.authToken = null; // Fetch a new token before the next attempt.
       }
       throw error;
     }
-
-    result = this.applyRetryLimit(transaction, result);
 
     if (result.status === 'retryable_error') {
       throw new Error(result.message || 'Retryable error');
@@ -72,9 +65,9 @@ export class MyBackendConnector {
   }
 
   /**
-   * Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
-   * RETRY_MAX_ATTEMPTS. 'retain' keeps the transaction queued, which blocks later uploads, and the SDK calls this
-   * again on its next attempt. Return 'complete' to discard the transaction, for example after telling the user.
+   * Called for fatal errors that the write endpoint leaves to the client. 'retain' keeps the transaction queued,
+   * which blocks later uploads, and the SDK calls this again on its next attempt. Return 'complete' to discard
+   * the transaction, for example after telling the user.
    * See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
    */
   async onFatalTransaction(transaction, result) {
@@ -153,31 +146,6 @@ export class MyBackendConnector {
       throw new Error('Expected one result for one transaction');
     }
     return results[0];
-  }
-
-  /**
-   * Turns the RETRY_MAX_ATTEMPTS-th consecutive retryable error for the same transaction into a fatal error
-   * for onFatalTransaction(). The write endpoint retries database errors that it doesn't recognize as permanent,
-   * so without a limit, one bad transaction could block the queue forever.
-   */
-  applyRetryLimit(transaction, result) {
-    if (result.status !== 'retryable_error') {
-      this.retryKey = null;
-      return result;
-    }
-    const key = transaction.transactionId != null ? transaction.transactionId : transaction.crud[0].clientId;
-    this.retryCount = key === this.retryKey ? this.retryCount + 1 : 1;
-    this.retryKey = key;
-    if (this.retryCount < RETRY_MAX_ATTEMPTS) {
-      return result;
-    }
-    this.retryCount = 0;
-    return {
-      status: 'fatal_error',
-      message: result.message,
-      requires_client_handling: true,
-      failed_operation: { error_code: 'RETRY_LIMIT_EXCEEDED', message: result.message }
-    };
   }
 }
 

@@ -33,7 +33,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
 
 /** Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself. */
 private const val BACKEND_URL = "http://localhost:6060"
@@ -41,15 +40,10 @@ private const val BACKEND_URL = "http://localhost:6060"
 /** Abort a write endpoint request after this many milliseconds. */
 private const val REQUEST_TIMEOUT_MS = 30_000L
 
-/** Consecutive retryable errors for one transaction before it is passed to onFatalTransaction(). */
-private const val RETRY_MAX_ATTEMPTS = 10
-
 open class MyBackendConnector(
     private val httpClient: HttpClient = HttpClient(),
 ) : PowerSyncBackendConnector() {
     private var authToken: String? = null
-    private var retryKey: Any? = null
-    private var retryCount = 0
 
     override suspend fun fetchCredentials(): PowerSyncCredentials? {
         return PowerSyncCredentials(
@@ -70,11 +64,10 @@ open class MyBackendConnector(
         val result = try {
             postTransaction(transaction)
         } catch (e: AuthenticationException) {
-            // Fetch a new token before the next attempt. Like other transport errors, this doesn't count toward
-            // RETRY_MAX_ATTEMPTS.
+            // Fetch a new token before the next attempt.
             authToken = null
             throw e
-        }.let { applyRetryLimit(transaction, it) }
+        }
 
         when (val status = result.status) {
             "success" -> {}
@@ -93,9 +86,9 @@ open class MyBackendConnector(
     }
 
     /**
-     * Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
-     * RETRY_MAX_ATTEMPTS. RETAIN keeps the transaction queued, which blocks later uploads, and the SDK calls this
-     * again on its next attempt. Return COMPLETE to discard the transaction, for example after telling the user.
+     * Called for fatal errors that the write endpoint leaves to the client. RETAIN keeps the transaction queued,
+     * which blocks later uploads, and the SDK calls this again on its next attempt. Return COMPLETE to discard
+     * the transaction, for example after telling the user.
      * See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
      */
     protected open suspend fun onFatalTransaction(transaction: CrudTransaction, result: JsonObject): FatalDecision {
@@ -178,34 +171,6 @@ open class MyBackendConnector(
             throw Exception("Expected one result for one transaction")
         }
         return results[0].jsonObject
-    }
-
-    /**
-     * Turns the RETRY_MAX_ATTEMPTS-th consecutive retryable error for the same transaction into a fatal error for
-     * onFatalTransaction(). The write endpoint retries database errors that it doesn't recognize as permanent, so
-     * without a limit, one bad transaction could block the queue forever.
-     */
-    private fun applyRetryLimit(transaction: CrudTransaction, result: JsonObject): JsonObject {
-        if (result.status != "retryable_error") {
-            retryKey = null
-            return result
-        }
-        val key: Any = transaction.transactionId ?: transaction.crud.first().clientId
-        retryCount = if (key == retryKey) retryCount + 1 else 1
-        retryKey = key
-        if (retryCount < RETRY_MAX_ATTEMPTS) {
-            return result
-        }
-        retryCount = 0
-        return buildJsonObject {
-            put("status", "fatal_error")
-            put("message", result.message)
-            put("requires_client_handling", true)
-            putJsonObject("failed_operation") {
-                put("error_code", "RETRY_LIMIT_EXCEEDED")
-                put("message", result.message)
-            }
-        }
     }
 }
 

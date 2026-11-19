@@ -17,13 +17,8 @@ const backendUrl = 'http://localhost:6060';
 /// Abort a write endpoint request after this long.
 const requestTimeout = Duration(seconds: 30);
 
-/// Consecutive retryable errors for one transaction before it is passed to onFatalTransaction().
-const retryMaxAttempts = 10;
-
 class MyBackendConnector extends PowerSyncBackendConnector {
   String? _authToken;
-  Object? _retryKey;
-  int _retryCount = 0;
 
   @override
   Future<PowerSyncCredentials?> fetchCredentials() async {
@@ -44,17 +39,14 @@ class MyBackendConnector extends PowerSyncBackendConnector {
       return;
     }
 
-    Map<String, dynamic> result;
+    final Map<String, dynamic> result;
     try {
       result = await _postTransaction(transaction);
     } on AuthenticationException {
-      // Fetch a new token before the next attempt. Like other transport errors, this doesn't count toward
-      // retryMaxAttempts.
+      // Fetch a new token before the next attempt.
       _authToken = null;
       rethrow;
     }
-
-    result = _applyRetryLimit(transaction, result);
 
     switch (result['status']) {
       case 'success':
@@ -75,10 +67,9 @@ class MyBackendConnector extends PowerSyncBackendConnector {
     await transaction.complete();
   }
 
-  /// Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
-  /// retryMaxAttempts. [FatalDecision.retain] keeps the transaction queued, which blocks later uploads, and the
-  /// SDK calls this again on its next attempt. Return [FatalDecision.complete] to discard the transaction, for
-  /// example after telling the user.
+  /// Called for fatal errors that the write endpoint leaves to the client. [FatalDecision.retain] keeps the
+  /// transaction queued, which blocks later uploads, and the SDK calls this again on its next attempt. Return
+  /// [FatalDecision.complete] to discard the transaction, for example after telling the user.
   /// See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
   Future<FatalDecision> onFatalTransaction(CrudTransaction transaction, Map<String, dynamic> result) async {
     print('Transaction needs client handling: ${result['failed_operation']['error_code']} ${result['message']}');
@@ -156,29 +147,6 @@ class MyBackendConnector extends PowerSyncBackendConnector {
       throw Exception('Expected one result for one transaction');
     }
     return Map<String, dynamic>.from(results.first as Map);
-  }
-
-  /// Turns the retryMaxAttempts-th consecutive retryable error for the same transaction into a fatal error for
-  /// onFatalTransaction(). The write endpoint retries database errors that it doesn't recognize as permanent, so
-  /// without a limit, one bad transaction could block the queue forever.
-  Map<String, dynamic> _applyRetryLimit(CrudTransaction transaction, Map<String, dynamic> result) {
-    if (result['status'] != 'retryable_error') {
-      _retryKey = null;
-      return result;
-    }
-    final key = transaction.transactionId ?? transaction.crud.first.clientId;
-    _retryCount = key == _retryKey ? _retryCount + 1 : 1;
-    _retryKey = key;
-    if (_retryCount < retryMaxAttempts) {
-      return result;
-    }
-    _retryCount = 0;
-    return {
-      'status': 'fatal_error',
-      'message': result['message'],
-      'requires_client_handling': true,
-      'failed_operation': {'error_code': 'RETRY_LIMIT_EXCEEDED', 'message': result['message']},
-    };
   }
 }
 

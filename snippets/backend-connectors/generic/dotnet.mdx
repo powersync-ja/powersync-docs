@@ -25,9 +25,6 @@ public class MyBackendConnector : IPowerSyncBackendConnector
     // Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself.
     private const string BackendUrl = "http://localhost:6060";
 
-    // Consecutive retryable errors for one transaction before it is passed to OnFatalTransaction().
-    private const int RetryMaxAttempts = 10;
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
@@ -37,8 +34,6 @@ public class MyBackendConnector : IPowerSyncBackendConnector
     private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
 
     private string? _authToken;
-    private long? _retryKey;
-    private int _retryCount;
 
     public async Task<PowerSyncCredentials?> FetchCredentials()
     {
@@ -68,13 +63,10 @@ public class MyBackendConnector : IPowerSyncBackendConnector
         }
         catch (AuthenticationException)
         {
-            // Fetch a new token before the next attempt. Like other transport errors, this doesn't count toward
-            // RetryMaxAttempts.
+            // Fetch a new token before the next attempt.
             _authToken = null;
             throw;
         }
-
-        result = ApplyRetryLimit(transaction, result);
 
         switch (result.Status)
         {
@@ -98,9 +90,9 @@ public class MyBackendConnector : IPowerSyncBackendConnector
     }
 
     /// <summary>
-    /// Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
-    /// RetryMaxAttempts. Retain keeps the transaction queued, which blocks later uploads, and the SDK calls this
-    /// again on its next attempt. Return Complete to discard the transaction, for example after telling the user.
+    /// Called for fatal errors that the write endpoint leaves to the client. Retain keeps the transaction queued,
+    /// which blocks later uploads, and the SDK calls this again on its next attempt. Return Complete to discard
+    /// the transaction, for example after telling the user.
     /// See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
     /// </summary>
     protected virtual Task<FatalDecision> OnFatalTransaction(CrudTransaction transaction, TransactionResult result)
@@ -185,33 +177,6 @@ public class MyBackendConnector : IPowerSyncBackendConnector
             throw new Exception("Expected one result for one transaction");
         }
         return results[0];
-    }
-
-    /// <summary>
-    /// Turns the RetryMaxAttempts-th consecutive retryable error for the same transaction into a fatal error for
-    /// OnFatalTransaction(). The write endpoint retries database errors that it doesn't recognize as permanent, so
-    /// without a limit, one bad transaction could block the queue forever.
-    /// </summary>
-    private TransactionResult ApplyRetryLimit(CrudTransaction transaction, TransactionResult result)
-    {
-        if (result.Status != "retryable_error")
-        {
-            _retryKey = null;
-            return result;
-        }
-        long key = transaction.TransactionId ?? transaction.Crud[0].ClientId;
-        _retryCount = key == _retryKey ? _retryCount + 1 : 1;
-        _retryKey = key;
-        if (_retryCount < RetryMaxAttempts)
-        {
-            return result;
-        }
-        _retryCount = 0;
-        return new TransactionResult(
-            "fatal_error",
-            result.Message,
-            RequiresClientHandling: true,
-            new FailedOperation("RETRY_LIMIT_EXCEEDED", result.Message));
     }
 }
 

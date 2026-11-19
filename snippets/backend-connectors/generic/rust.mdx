@@ -26,9 +26,6 @@ const BACKEND_URL: &str = "http://localhost:6060";
 /// Abort a write endpoint request after this long.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Consecutive retryable errors for one transaction before it is passed to on_fatal_transaction().
-const RETRY_MAX_ATTEMPTS: u32 = 10;
-
 /// Connects `db` for downloads and uploads.
 pub async fn connect(db: &PowerSyncDatabase) {
     let authenticator = MyAuthenticator::default();
@@ -82,8 +79,6 @@ pub struct MyMutationUploader {
     db: PowerSyncDatabase,
     authenticator: MyAuthenticator,
     http: reqwest::Client,
-    /// The transaction ID and count of consecutive retryable errors, for RETRY_MAX_ATTEMPTS.
-    retries: Mutex<(Option<i64>, u32)>,
 }
 
 impl MyMutationUploader {
@@ -92,14 +87,13 @@ impl MyMutationUploader {
             db,
             authenticator,
             http: reqwest::Client::new(),
-            retries: Mutex::new((None, 0)),
         }
     }
 
-    /// Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
-    /// RETRY_MAX_ATTEMPTS. `Retain` keeps the transaction queued, which blocks later uploads, and the SDK calls
-    /// this again on its next attempt. Return `Complete` to discard the transaction, for example after telling the
-    /// user. See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
+    /// Called for fatal errors that the write endpoint leaves to the client. `Retain` keeps the transaction queued,
+    /// which blocks later uploads, and the SDK calls this again on its next attempt. Return `Complete` to discard
+    /// the transaction, for example after telling the user.
+    /// See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
     async fn on_fatal_transaction(&self, _transaction: &CrudTransaction<'_>, result: &TransactionResult) -> FatalDecision {
         eprintln!("Transaction needs client handling: {:?} {:?}", result.error_code(), result.message);
         FatalDecision::Retain
@@ -145,8 +139,7 @@ impl MyMutationUploader {
                 .map(|body| body.message)
                 .unwrap_or_else(|_| status.to_string());
             if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-                // Fetch a new token before the next attempt. Like other transport errors, this doesn't count
-                // toward RETRY_MAX_ATTEMPTS.
+                // Fetch a new token before the next attempt.
                 self.authenticator.invalidate_credentials();
                 return Err(upload_error(format!("Write endpoint rejected the token ({status}): {message}")));
             }
@@ -159,33 +152,6 @@ impl MyMutationUploader {
         }
         Ok(results.remove(0))
     }
-
-    /// Turns the RETRY_MAX_ATTEMPTS-th consecutive retryable error for the same transaction into a fatal error
-    /// for on_fatal_transaction(). The write endpoint retries database errors that it doesn't recognize as permanent,
-    /// so without a limit, one bad transaction could block the queue forever.
-    fn apply_retry_limit(&self, transaction: &CrudTransaction<'_>, result: TransactionResult) -> TransactionResult {
-        let mut retries = self.retries.lock().unwrap();
-        if result.status != "retryable_error" {
-            retries.0 = None;
-            return result;
-        }
-        let key = transaction.id.unwrap_or(transaction.crud[0].client_id);
-        retries.1 = if retries.0 == Some(key) { retries.1 + 1 } else { 1 };
-        retries.0 = Some(key);
-        if retries.1 < RETRY_MAX_ATTEMPTS {
-            return result;
-        }
-        retries.1 = 0;
-        TransactionResult {
-            status: "fatal_error".to_string(),
-            message: result.message.clone(),
-            requires_client_handling: Some(true),
-            failed_operation: Some(FailedOperation {
-                error_code: "RETRY_LIMIT_EXCEEDED".to_string(),
-                message: result.message,
-            }),
-        }
-    }
 }
 
 #[async_trait]
@@ -197,7 +163,6 @@ impl MutationUploader for MyMutationUploader {
         let mut transactions = self.db.crud_transactions();
         while let Some(transaction) = transactions.try_next().await? {
             let result = self.post_transaction(&transaction).await?;
-            let result = self.apply_retry_limit(&transaction, result);
 
             match result.status.as_str() {
                 "success" => {}

@@ -4,6 +4,8 @@ sidebarTitle: "Supabase (Edge Function)"
 description: "Deploy the reference write endpoint as a Supabase Edge Function, so that each uploaded transaction is applied atomically and your RLS policies authorize every write."
 ---
 
+import SupabaseGrantsAndRls from '/snippets/write-path/supabase-grants-and-rls.mdx';
+
 This route uses the [reference write implementation](/handling-writes/write-path/reference-write-implementation). You deploy its write endpoint as a Supabase Edge Function, and your app sends writes to the function with the reference connector. Compared with the [PostgREST route](/handling-writes/write-path/supabase-postgrest), you deploy and maintain one function, and in return each transaction is applied in one database transaction.
 
 The function runs each write as the signed-in user. Inside each transaction, it switches to the `authenticated` role and sets the user's token claims. Policies that use `auth.uid()` therefore work the same way as for requests from the Supabase client SDKs.
@@ -24,26 +26,7 @@ The function runs each write as the signed-in user. Inside each transaction, it 
 
 <Steps>
   <Step title="Add Grants and RLS Policies">
-    Grant the `authenticated` role access to every table that your app writes to, enable RLS on each one, and add a policy for each operation that your app uploads:
-
-    - A `PUT` is an upsert, so it needs `INSERT` and `UPDATE` policies, and the existing row must be visible to the user.
-    - A `PATCH` needs an `UPDATE` policy, and a `DELETE` needs a `DELETE` policy.
-
-    Use `WITH CHECK` so that users can't assign rows to someone else. For example:
-
-    ```sql
-    grant select, insert, update, delete on public.lists to authenticated;
-    alter table public.lists enable row level security;
-    
-    create policy "Owners manage their lists" on public.lists
-      for all to authenticated
-      using (owner_id = (select auth.uid()))
-      with check (owner_id = (select auth.uid()));
-    ```
-
-    <Warning>
-      If `authenticated` has grants on a table that has RLS disabled, any signed-in user can write any row in it. Check every table in the schemas that your app writes to, not only the tables that you sync.
-    </Warning>
+    <SupabaseGrantsAndRls />
   </Step>
   <Step title="Deploy the Function">
     Clone [powersync-reference-write-implementation](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main). From its `backend` folder, link your project and deploy the function:

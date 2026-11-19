@@ -1,102 +1,98 @@
 ---
 title: "Deployment Architecture"
-description: "Infrastructure and sizing recommendations for self-hosted PowerSync in staging and production."
+description: "Infrastructure and sizing recommendations for self-hosted PowerSync."
 sidebarTitle: "Deployment Architecture"
 ---
 
 ## Minimal Setup
 
-A minimal "development" setup (e.g. for a staging or a QA environment) is:
+For a runnable development setup, use the [self-hosting examples](https://github.com/powersync-ja/self-host-demo), which include Docker Compose files and configuration.
 
-1. A single PowerSync "compute" container (API + replication) with 512MB memory, 1 vCPU.
-2. A single MongoDB node in replica set mode, 2GB memory, 1 vCPU. M10+ when using Atlas.
-3. Load balancer for TLS.
+For development and testing, use:
 
-This setup has no redundancy. If the replica set fails, you may need to recreate it from scratch which will re-sync all clients.
+1. One PowerSync container running in [unified mode](/configuration/powersync-service/self-hosted-instances#service-commands) (API and replication): 1 vCPU, 512 MiB memory.
+2. A MongoDB or Postgres [bucket storage](#storage-requirements) database. For MongoDB, use one node in replica set mode: 1 vCPU, 2 GiB memory (M10+ on Atlas).
+3. A load balancer for TLS.
+
+This setup has no redundancy. If bucket storage data is lost, [re-replicate from the source database](#backups). All clients must then download their data again.
 
 ## Production
 
-For production, we recommend running a high-availability setup with the following baseline requirements:
+Run [API and replication](/configuration/powersync-service/self-hosted-instances#service-commands) in separate containers so you can scale them independently.
 
-1. 1x PowerSync replication container, 1GB memory, 1 vCPU
-2. 2+ PowerSync API containers, 1GB memory each, 1vCPU each.
-3. A 3-node MongoDB replica set, 2+GB memory each. Refer to the MongoDB documentation for deployment requirements. M10+ when using Atlas.
-4. A load balancer with redundancy.
-5. Run a daily compact job.
+### Storage Requirements
 
-For further robustness, in cases where you have larger rows and higher load, we recommend increasing the memory and CPU requirements to 2GB memory and 2 vCPU. This applies to both the replication and API containers.
+You can use MongoDB or Postgres for bucket storage, independently of your source database:
 
-When scaling up, add 1x PowerSync API container per 100 connections. The MongoDB replica set should be scaled based on CPU and memory usage.
+- [MongoDB](/configuration/powersync-service/self-hosted-instances#mongodb-storage) supports [storage version 4](/sync/advanced/compatibility#available-versions) and optional S3 object storage. Use a three-node replica set for production.
+- [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses [storage version 2](/sync/advanced/compatibility#available-versions). It does not support storage version 4 or S3 object storage.
+
+With [S3 object storage](/sync/advanced/storage-version-4#self-hosted-s3-setup), S3 stores larger blocks of sync data while MongoDB retains smaller blocks and metadata.
+
+### Compute Sizing
+
+Use these CPU and memory settings as a starting point. These may be scaled up or down depending on your specific load patterns.
+
+| Role | vCPU | Memory |
+| --- | --- | --- |
+| API | 1 | 2 GiB |
+| Replication | 2 | 4 GiB |
 
 ### Replication Container
 
-The replication container handles replicating from the source database to PowerSync's bucket storage.
+Run [`start -r sync`](/configuration/powersync-service/self-hosted-instances#service-commands) to replicate source changes into bucket storage.
 
-The replication process is run using the docker command `start -r sync`, for example `docker run powersync start -r sync`.
+Only one process can replicate from the source database at a time. Running multiple replication containers provides failover, not more throughput. It is recommended to run 2 replication processes for failover purposes.
 
-Only one process can replicate at a time. If multiple are running concurrently, you may see an error `[PSYNC_S1003] Replication stream is locked by another process, standing by.` If you use rolling deploys, it is normal to see this error for a short duration while multiple processes are running.
+During rolling deploys or failover, [`PSYNC_S1003`](/debugging/error-codes#psync_s1xxx-replication-issues) is expected briefly while another process holds the replication lock.
 
-Memory and CPU usage of the replication container is primarily driven by write load on the source database. A good starting point is 1GB memory and 1 vCPU for the container, but this may be scaled down depending on the load patterns.
+Size replication for source database write volume, row size, and buckets per row. A row in ten buckets creates more replication work than a row in one bucket. Initial replication and catch-up after a large batch update can need more capacity than steady-state replication.
 
-Set the environment variable `NODE_OPTIONS=--max-old-space-size-percentage=80` to allocate 80% of the container's assigned memory to the Node.js heap. This avoids manually retuning when scaling resources up or down.
+Use [replication lag](/maintenance-ops/replication-lag), replication throughput, CPU, memory, and database metrics to assess capacity.
 
 ### API Containers
 
-The API container handles streaming sync connections, as well as any other API calls.
+Run at least two API containers in production for high availability. Scale horizontally by adding API containers as the concurrent client load grows.
 
-The API process is run using the docker command `start -r api`, for example `docker run powersync start -r api`.
+Run [`start -r api`](/configuration/powersync-service/self-hosted-instances#service-commands) for client connections. Collect [metrics](/maintenance-ops/self-hosting/monitoring) separately from API and replication containers.
 
-Each API container is limited to 200 concurrent connections, but we recommend targeting 100 concurrent connections or less per container. This may change as we implement additional performance optimizations.
+The [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) config parameter determines the maximum number of concurrent client connections that each API process can handle. The default is `200`. We recommend keeping autoscaling targets below the `max_concurrent_connections` limit (e.g. ~100 concurrent connections per API process) to allow for headroom.
 
-Memory and CPU usage of API containers are driven by:
+<Note>
+  Depending on the use case, handling up to 1,000 concurrent clients per API process is possible. [Contact us](/resources/contact-us) to discuss your specific requirements and we will recommend an optimal setup.
+</Note>
 
-1. Number of concurrent connections.
-2. Number of buckets per connection.
-3. Amount of data synced to each connection.
+Scale on both CPU utilization and concurrent connections per API process. Idle connections can keep CPU low, while initial syncs can saturate CPU with fewer connections.
 
-A good starting point is 1GB memory and 1 vCPU per container, but this may be scaled up or down depending on the specific load patterns.
-
-Set the environment variable `NODE_OPTIONS=--max-old-space-size-percentage=80` to allocate 80% of the container's assigned memory to the Node.js heap. This avoids manually retuning when scaling resources up or down.
+Add API containers before many clients are expected to run an initial sync at once, or before deployments that make clients download all their data again. Wait for the new containers to become healthy before those initial syncs or deployments begin. Adding containers does not immediately redistribute existing long-lived connections. Reduce capacity gradually after the download load subsides.
 
 ### Compact Job
 
-We recommend running a compact job daily as a cron job, or after any large maintenance jobs. For details, see the documentation on [Compacting Buckets](/maintenance-ops/compacting-buckets).
+Run [`compact`](/configuration/powersync-service/self-hosted-instances#service-commands) as a separate scheduled job, [hourly for storage version 4](/maintenance-ops/compacting-buckets#self-hosted-powersync) or daily for [storage version 2](/sync/advanced/compatibility#available-versions).
 
-Run the compact job using the docker command `compact`, for example `docker run powersync compact`.
+Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, CPU, and peak memory to size the job for your dataset. If jobs fail or overlap, check the compact job's CPU and memory usage and bucket storage performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
 
-The compact job uses up to 1GB memory for compacting, if available. Set the environment variable `NODE_OPTIONS=--max-old-space-size-percentage=80` to allocate 80% of the container's assigned memory to the Node.js heap. This avoids manually retuning when scaling resources up or down.
+### Memory Configuration
+
+Set the environment variable `NODE_OPTIONS=--max-old-space-size-percentage=80` for the API, replication, and compact containers. This allocates 80% of the container’s assigned memory to the Node.js heap. This avoids manually retuning when scaling resources up or down.
 
 ### Load Balancer
 
-A load balancer is required in front of the API containers to provide TLS support and load balancing. Most cloud providers have built-in options for load balancing, such as ALB on AWS.
+Use a redundant load balancer to terminate TLS and distribute connections across API containers. Host the API on a dedicated subdomain.
 
-It is currently required to host the API container on a dedicated subdomain - we do not support running it on the same subdomain as another service.
+For HTTP streaming with [nginx](https://nginx.org/en/), add this proxy block to your TLS server configuration. Replace `powersync:8080` with your PowerSync API hostname and port. Disabling response buffering lets sync data reach clients as it arrives.
 
-For self-hosting, [nginx](https://nginx.org/en/) is always a good option. A basic nginx configuration could look like this:
-
-```yaml
-server {
-    listen 443 ssl;
-    server_name powersync.example.org;
-
-    # SSL configuration here
-
-    # Reverse proxy settings
-    location / {
-        proxy_pass http://powersync_server_ip:powersync_port;  # Replace with your powersync details
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-        # Disable proxy response buffering.
-        # This is not relevant for websocket connections, but is important when using
-        # HTTP streaming connections (configured in the PowerSync Client SDK).
-        proxy_buffering off;
-    }
+```nginx
+location / {
+    proxy_pass http://powersync:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_buffering off;
 }
 ```
 
-When using nginx as a Kubernetes ingress, set the proxy buffering option as an annotation on the ingress:
+For nginx Kubernetes ingress, use this annotation:
 
 ```yaml
 nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -104,41 +100,123 @@ nginx.ingress.kubernetes.io/proxy-buffering: "off"
 
 ### Health Checks
 
-If the load balancer supports health checks, it may be configured to poll the API container at `/probes/liveness`. This endpoint is expected to have a 200 response when the container is healthy. See [Health Checks](/maintenance-ops/self-hosting/healthchecks) for details.
+Configure load-balancer health checks to poll `/probes/liveness`. See [Health Checks](/maintenance-ops/self-hosting/healthchecks).
 
 ### Migrations
 
 Occasionally, new versions of the PowerSync Service image may require migrations on the underlying storage database. This is also specifically required the first time the service starts up on a new storage database.
 
-By default, migrations are run as part of the replication and API containers. In some cases, a migration may add significant delay to the container startup.
+Replication containers run storage migrations on startup. [Unified](/configuration/powersync-service/self-hosted-instances#service-commands) containers, which run both API and replication, also run them. API containers do not run migrations.
 
-To avoid this startup delay, the migrations may be run as a separate job on each update, before replacing the rest of the containers. To run the migrations, run the docker command `migrate up`, for example `docker run powersync migrate up`.
+Large migrations can delay startup during an update. To run migrations as a separate job before replacing the containers, disable automatic migrations:
 
-In this case, disable automatic migrations in the config:
-
-```yaml
-# service.yaml
-
+```yaml service.yaml
 migrations:
-    # Setting this to false (default) enables automatic migrations on startup.
-    # When set to true, migrations must be triggered manually by modifying the container `command`.
-    disable_auto_migration: true
+  disable_auto_migration: true
 ```
 
-Note that if you disable automatic migrations, and do not run the migration job manually, the service may run with an outdated storage schema version. This may lead to unexpected and potentially difficult-to-debug errors in the service.
+Then run [`migrate up`](/configuration/powersync-service/self-hosted-instances#service-commands) as a separate job before each deployment, including the first.
 
 ## Backups
 
-We recommend using Git to back up your configuration files.
+Keep non-secret configuration in version control and credentials in a secrets manager.
 
 None of the containers use any local storage, so no backups are required there.
 
-The bucket storage database may be backed up using the recommendations for the storage database system. This is not a strong requirement, since this data can be recovered by re-replicating from the source database.
+Recover PowerSync's sync data by re-replicating from the source database. Allow for the time and capacity needed for full replication and for clients to download their data again.
+
+## High Availability and Disaster Recovery
+
+The [production setup](#production) covers the failure of a single container or node. A **standby instance** covers failures that affect the whole instance, such as the loss of bucket storage, a Sync Config deployment that syncs the wrong data, or a regional outage. A standby instance is a second PowerSync instance that replicates from the same source database and that you can switch clients to.
+
+### Standby Instance
+
+Deploy the same components as the primary instance: replication containers, API containers, the compact job, a load balancer, and a bucket storage database.
+
+- **Use the same source database.** Both instances replicate from it independently.
+- **Use separate bucket storage.** Each instance needs its own bucket storage database and, if enabled, its own [S3 bucket or prefix](/sync/advanced/storage-version-4#self-hosted-s3-setup). Two instances cannot share bucket storage.
+- **Keep the standby running.** A running standby stays up to date with the source database, so clients can connect to it as soon as you switch. A standby that starts after the primary fails must complete its initial replication first.
+- **Run the same Sync Config.** Deploy [Sync Config](/sync/streams/overview) changes to one instance at a time. See [Sync Config Deployments](#sync-config-deployments).
+- **Accept the same tokens.** Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens that your backend issues: use the same keys and the same [`audience`](/configuration/auth/custom#self-hosted-configuration) values on both. If your tokens use an instance URL as the audience, add both instance URLs to `audience` on each instance.
+
+For a Postgres source database, each instance uses its own [replication slots](/configuration/source-db/postgres-maintenance#maximum-replication-slots). Set a different [`slot_name_prefix`](/configuration/powersync-service/self-hosted-instances#param-slot-name-prefix) for each instance so that you can identify which instance a slot belongs to.
+
+### Standby Region
+
+Where you run the standby determines which failures it covers:
+
+- **Same region as the primary.** The standby covers failures of the primary instance, such as the loss of its bucket storage or a Sync Config deployment that syncs the wrong data.
+- **Different region.** The standby also covers an outage of the primary's region. For example, if your primary instance runs in `us-east-1`, run the standby in `us-west-2`, with its bucket storage in the same region as the standby.
+
+A standby in a different region keeps clients syncing during a regional outage only if the source database and your backend API also remain available. The standby replicates from the source database, and clients upload their writes through your backend. For a replicated Postgres source database, see [High Availability / Replicated Databases](/sync/advanced/schemas-and-connections#high-availability-/-replicated-databases-postgres).
+
+### Sync Config Deployments
+
+A single instance already protects clients while a [Sync Config deployment](/maintenance-ops/self-hosting/update-sync-rules) is in progress. The Service replicates the new Sync Config alongside the active one. Clients continue to sync with the active Sync Config until the new one completes [initial replication](/architecture/powersync-service#initial-replication-vs-incremental-replication), and then the Service makes the new one active.
+
+How the standby helps therefore depends on how the deployment goes wrong:
+
+- **Replication of the new Sync Config fails.** The new Sync Config never becomes active, so the instance continues to serve clients with the previous version. You do not need to switch clients. Correct the Sync Config and deploy it again.
+- **The new Sync Config becomes active but syncs the wrong data.** For example, a query syncs more rows than you intended, or leaves out rows that clients need. If you deploy the previous version to the same instance, it becomes active only after the instance replicates it again. A standby that still runs the previous version lets you revert sooner: switch clients to it.
+
+To keep this option, deploy a Sync Config change to one instance first. Confirm that the instance replicates and syncs correctly before you deploy the change to the other instance.
+
+### Switching Clients to the Standby
+
+Do not hardcode the URL of the primary instance in the app. Use one of these two options so that you can switch clients without releasing a new app version.
+
+#### Return the Endpoint From Your Backend
+
+Your [`fetchCredentials()`](/configuration/app-backend/client-side-integration) implementation returns the PowerSync endpoint together with the token. Get the endpoint from your backend API in that function. To switch clients to the standby, change the endpoint that your API returns.
+
+- If `fetchCredentials()` already calls your backend for a token, return the endpoint in the same response.
+- If `fetchCredentials()` returns a JWT from client-side state, for example a token from your authentication provider, it makes no backend call. Add a call that gets the endpoint.
+
+The client SDK caches credentials and [fetches new ones](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) when the token expires or the app restarts. A client that is already running therefore keeps trying the failed endpoint until its token expires. Use a short token lifetime, such as 5 to 15 minutes, to reduce this delay.
+
+#### Reroute With an API Gateway
+
+Give clients one stable URL that points to an API gateway, and configure the gateway to forward connections to the primary instance. To switch clients to the standby, change the gateway's target. The app needs no endpoint lookup, and `fetchCredentials()` always returns the same URL.
+
+The client SDK retries a failed connection against the same URL, so a client reaches the standby on its next connection attempt and does not wait for its token to expire. A client with an open connection to a primary that still runs stays on the primary until that connection closes.
+
+The gateway must meet the same requirements as the [load balancer](#load-balancer): it must support long-lived streaming connections and must not buffer responses.
+
+With either option, host the backend API or gateway so that it remains available when the primary instance or its region fails.
+
+Do not load-balance clients between the two instances. A client that alternates between instances downloads all of its data again on every switch. See [Mapping Users to PowerSync Endpoints](/maintenance-ops/self-hosting/multiple-instances#mapping-users-to-powersync-endpoints).
+
+### What Clients Experience
+
+<Note>
+  After the switch, each client performs an initial sync again from the standby.
+</Note>
+
+The client keeps its local data during the switch:
+
+- The app can read and write the local database for the whole process.
+- Pending writes stay in the upload queue. The client uploads them through your backend, which does not depend on the PowerSync instance.
+- New changes from the source database appear after the sync completes.
+
+<Note>
+  On its first connection after the switch, a client can log a checksum error such as `Could not apply checkpoint, Checksums didn't match`. The client's local sync state comes from the previous instance and does not match the new instance. The client SDK then retries and downloads its data from the new instance. No action is needed.
+</Note>
+
+Every client downloads all of its data from the standby at about the same time, which puts initial-sync load on the standby's API containers and bucket storage. [Add API containers](#api-containers) to the standby before you switch.
+
+### After the Primary Recovers
+
+For a Postgres source database, the replication slots of a stopped instance continue to retain WAL on the source database. Restore the instance so that it can catch up, or [drop its replication slots](/maintenance-ops/production-readiness-guide#managing-replication-slots).
+
+Switching back to the primary makes every client perform an initial sync again. Switch back only if you need to, and add API containers to the primary first to handle a surge of concurrent client reconnections.
 
 ## Self-Hosted Architecture Diagram
+
+The diagram omits S3 object storage.
 
 <Frame caption="PowerSync Deployment Architecture">
   <img
     src="/images/architecture/powersync-architecture-diagram-self-host.png"
+    alt="Source database changes flow through replication and bucket storage to API containers, a TLS load balancer, and clients. Client writes go through the app backend."
   />
 </Frame>

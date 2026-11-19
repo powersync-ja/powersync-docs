@@ -7,7 +7,7 @@ description: "Run PowerSync's open-source write endpoint against your source dat
 If you don't have a write endpoint yet, you can run the reference write implementation instead of building one. It has two parts:
 
 - The **reference write endpoint**: a Node.js (Express) server that receives uploaded transactions and applies them to your source database. It supports Postgres, MongoDB, MySQL, and SQL Server.
-- The **reference connector**: a TypeScript backend connector with an `uploadData()` that calls the reference write endpoint. You copy it into your app. For other SDKs, the [Backend Connector Examples](/configuration/app-backend/backend-connector-examples#custom-backend) port its upload behavior.
+- The **reference connector**: a backend connector with an `uploadData()` that calls the reference write endpoint. There is one for each SDK in [Backend Connector Examples](/configuration/app-backend/backend-connector-examples#custom-backend). You copy it into your app.
 
 An [OpenAPI spec](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml) defines the API between the two parts. If your backend runs on another stack, see [Build Your Own Write Endpoint](/handling-writes/write-path/build-your-own-write-endpoint).
 
@@ -76,35 +76,17 @@ If your source database is Supabase and you rely on RLS policies to authorize wr
   <Step title="Connect Your App">
     <span id="connect-your-app" />
 
-    Copy the reference connector from the repository's [`example-client`](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/example-client) folder into your app. If your app already has a `fetchCredentials()`, keep it, and copy only `uploadData()` and the code it uses.
+    Copy the reference connector for your SDK, the [Custom Backend example](/configuration/app-backend/backend-connector-examples#custom-backend) in Backend Connector Examples, into your app. If your app already has a `fetchCredentials()`, keep it, and copy only `uploadData()` and the code it uses.
 
-    If your app uses the Dart, Kotlin, Swift, .NET, or Rust SDK, copy the Custom Backend example for your SDK from [Backend Connector Examples](/configuration/app-backend/backend-connector-examples#custom-backend) instead, and skip the rest of this step. Each example sends one transaction per request and leaves retry timing to the SDK.
+    In your copy:
 
-    There are two versions of the connector:
+    1. Set the write endpoint URL at the top of the file. Use a URL that the device can reach: `localhost` on a phone refers to the phone.
+    2. Replace `[Your PowerSync instance URL or self-hosted endpoint]` with your PowerSync instance URL.
+    3. Replace the placeholder `fetchAuthToken()` with code that gets the current token from your auth provider. The connector caches the token until the write endpoint rejects it, so sync can keep sending an expired token after your provider refreshes the session. If your provider's SDK refreshes sessions itself, return its current token directly instead of caching it, as the comments in the example describe.
 
-    - [**Single file**](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts): copy `src/PowersyncConnector.singlefile.ts`. It requires only your PowerSync SDK. Set the write endpoint URL, the PowerSync instance URL, and the batch size in the constants at the top of the file.
-    - [**Modular**](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.ts): copy `src/PowersyncConnector.ts`, `src/library/powersync/`, and `src/generated/api.d.ts`, preserving their relative paths. Install `openapi-fetch` and `uuid` alongside your PowerSync SDK. This version reads the same settings from `VITE_` environment variables.
+    Then pass the connector to `connect()` in place of your current connector. The Rust example has a `connect()` function that does this.
 
-    Use a write endpoint URL that the device can reach: `localhost` on a phone refers to the phone.
-
-    Replace the demo `fetchAuthToken()` with code that retrieves the current token from your auth provider. If the provider SDK manages session refresh, remove the `_authToken` field, its initialization in the constructor, and the `AuthenticationError` check in `onTransportError()` that resets it. Then replace `getAuthToken()` with:
-
-    ```typescript
-    // Inside your copied PowersyncConnector class.
-    private async getAuthToken(): Promise<string> {
-      return this.fetchAuthToken();
-    }
-    ```
-
-    The demo cache is cleared only after an upload request fails authentication. Keeping it can make `fetchCredentials()` return an expired token even after the provider refreshes the session. See [client authentication](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/README.md#authentication) for provider integration.
-
-    Pass the connector to your PowerSync database, adjusting the import path to match your copied file:
-
-    ```typescript
-    import { PowersyncConnector } from './PowersyncConnector';
-    
-    await db.connect(new PowersyncConnector());
-    ```
+    The reference connector sends one transaction per request. For JavaScript and React Native apps, the repository's [`example-client`](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/example-client) has a TypeScript connector that can also send several transactions per request and wait for the retry delay that the write endpoint suggests. See its [README](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/README.md).
   </Step>
   <Step title="Add Authorization">
     Add your checks to the `authorize()` function in `backend/standalone/src/auth/authorizer.ts`. It receives the transaction's operations and the verified token's `sub` and claims, and returns `false` to reject the transaction. By default, it allows every write and logs an error for each transaction until you replace it. See the repository's [authorization guide](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/authorization.md).
@@ -117,7 +99,7 @@ If your source database is Supabase and you rely on RLS policies to authorize wr
 
 The reference connector sends transactions to a single endpoint, `POST /api/data`. The reference write endpoint applies each transaction in its own database transaction, so either all of its changes are stored or none are. It returns one result per transaction, in the order they were sent.
 
-By default, the connector sends one transaction per request. To send up to 50 transactions in one request, set the connector's maximum batch size. The connector never splits a transaction across requests.
+The reference connector sends one transaction per request. The TypeScript connector in the repository's `example-client` can send up to 50 transactions in one request: set its maximum batch size. It never splits a transaction across requests.
 
 The reference write endpoint has no conflict detection. Writes are applied in the order they arrive, so the last write to a column wins. A `PATCH` to a deleted row changes nothing, and a `PUT` with the ID of a deleted row creates the row again. See the repository's [conflict resolution notes](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/conflict-resolution.md) and [Handling Update Conflicts](/handling-writes/handling-update-conflicts).
 
@@ -149,7 +131,7 @@ The default dead-letter hook doesn't store anything. To keep rejected writes, re
 Before you deploy the reference write endpoint for real users, review the following defaults. The [reference repository README](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/README.md#before-production) has the same checklist.
 
 - **Configure write authorization.** The standalone write endpoint allows every write from an authenticated user by default. Add your checks to `authorize()` (step 5 in [Set Up](#set-up)) or use Postgres RLS. See [Authorization](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/authorization.md). For the [Supabase Edge Function](/handling-writes/write-path/supabase-edge-function), check that your grants and RLS policies cover every table and operation that your app writes to.
-- **Replace demo authentication.** The example client uses a fixed demo token. Use your auth provider's session and token refresh instead. See [Authentication](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/README.md#authentication).
+- **Replace placeholder authentication.** The reference connector returns a placeholder token. Use your auth provider's session and token refresh instead, as described in [Connect Your App](#connect-your-app).
 - **Decide how to recover rejected writes.** By default, the write endpoint logs [rejected writes](/handling-writes/write-path/concepts#rejected-writes), and the connector removes them from the upload queue. The dead-letter hook does not store them or guarantee delivery. Replace `onDeadLetter()` with recovery that suits your app. See [Error handling](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md).
 - **Handle blocked transactions.** A [blocked transaction](/handling-writes/write-path/concepts#blocked-transactions) stays in the upload queue and holds back every later write. Override `onFatalTransaction()` in your connector to show the problem to the user. Also review the [authorization failure defaults](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md#authorization-failure-defaults): the Supabase Edge Function retries RLS errors, but removes transactions that its optional `authorize()` check denies.
 - **Validate your data and mapping.** Review which tables and fields users can write, who owns each row, and how values are validated. The [default mapping](https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/schema-mapping.md#default-mapping) does not validate data for your app.

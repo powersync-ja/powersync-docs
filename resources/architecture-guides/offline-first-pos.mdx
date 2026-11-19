@@ -1,0 +1,448 @@
+---
+title: "Building an Offline-First POS Architecture"
+sidebarTitle: "Retail Point-of-Sale (POS)"
+keywords:
+  - "pos"
+  - "point of sale"
+  - "retail"
+  - "offline"
+  - "inventory"
+  - "stock"
+  - "ledger"
+  - "idempotency"
+---
+
+A point-of-sale system must be able to keep selling, regardless of whether the store's internet has dropped or the head-office API has an outage. If the cash register stops working, the store loses sales.
+
+To address this, most POS systems have an "offline mode". Here are a few common failure cases:
+
+- The POS device calls the API for every sale and writes to a local outbox only when the call fails. Now there are two code paths, and the offline path is not well tested.
+- Sales go into SQLite, and a background job posts them to the server. The job retries after a timeout and the server records the same sale twice.
+- Two POS devices disagree on the stock count and overwrite each other.
+- The POS device can't get an order number while offline, so it generates a temporary one, causing reconciliation issues.
+- The POS device fetches changes since its last sync. A race condition causes it to miss changes.
+
+A few architecture patterns will help you avoid all of these. This guide explains those patterns and shows how to implement them with PowerSync, using React Native (Expo) and Postgres.
+
+## 1. Put a Real Database on Every POS Device
+
+The network should never be on the critical path of a sale. Every terminal should have its own full database, and the UI reads from and writes to only that database. The network is only used to move data between that database and head office.
+
+PowerSync gives each device a SQLite database and syncs it with your backend. Your app queries SQLite with plain SQL, and writes go to SQLite first, whether or not the device is online. You define the client schema in code:
+
+```ts powersync/AppSchema.ts
+import { column, Schema, Table } from '@powersync/react-native';
+
+// Flows down from head office
+const products = new Table({
+  sku: column.text,
+  barcode: column.text,
+  name: column.text,
+  active: column.integer
+});
+
+const store_prices = new Table(
+  {
+    store_id: column.text,
+    product_id: column.text,
+    price_cents: column.integer,
+    tax_rate_bp: column.integer
+  },
+  { indexes: { product: ['product_id'] } }
+);
+
+
+// Flows from the POS device to the server
+const sales = new Table({
+  store_id: column.text,
+  pos_device_id: column.text,
+  receipt_no: column.text,
+  kind: column.text, // 'sale' | 'refund' | 'void'
+  original_sale_id: column.text,
+  sold_at: column.text,
+  total_cents: column.integer
+});
+
+const sale_lines = new Table(
+  {
+    sale_id: column.text,
+    product_id: column.text,
+    qty: column.integer,
+    unit_price_cents: column.integer,
+    tax_rate_bp: column.integer,
+    line_total_cents: column.integer
+  },
+  { indexes: { sale: ['sale_id'] } }
+);
+
+// The stock ledger
+const stock_movements = new Table(
+  {
+    store_id: column.text,
+    product_id: column.text,
+    qty_delta: column.integer,
+    reason: column.text, // 'sale' | 'refund' | 'receipt' | 'transfer' | 'adjustment'
+    ref_id: column.text,
+    created_at: column.text
+  },
+  { indexes: { product: ['product_id'] } }
+);
+
+const stock_baselines = new Table(
+  { store_id: column.text, product_id: column.text, quantity: column.integer },
+  { indexes: { product: ['product_id'] } }
+);
+
+
+// Never leaves the POS device
+const pos_device_state = new Table(
+  { open_cart: column.text, next_receipt_seq: column.integer },
+  { localOnly: true }
+);
+
+export const AppSchema = new Schema({
+  products, store_prices, sales, sale_lines,
+  stock_movements, stock_baselines, pos_device_state
+});
+```
+
+To avoid rounding errors, money is stored as integer cents and tax rates as integer basis points. Prices are tax-inclusive, so a sale's total is the sum of its lines. PowerSync adds an `id` column to every table, so you don't declare one. See the [React Native & Expo SDK reference](/client-sdks/reference/react-native-and-expo) for setup and the `PowerSyncDatabase` constructor.
+
+## 2. Generate IDs on the POS Device and Make Every Upload Idempotent
+
+Every record gets a globally unique ID generated on the device at the moment it is created. The server uses that ID as the idempotency key, so receiving the same record twice has the same effect as receiving it once.
+
+PowerSync recommends UUID primary keys for tables the client writes to, and provides a `uuid()` SQL helper on the device ([Client ID](/sync/advanced/client-id)). Your backend [should expect to receive the same operation more than once and handle it idempotently](/handling-writes/handling-update-conflicts). For append-only POS records, that is one line of SQL per table on the server:
+
+```sql
+INSERT INTO sales (id, store_id, pos_device_id, receipt_no, kind, original_sale_id, sold_at, total_cents)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (id) DO NOTHING;
+```
+
+## 3. You Don't Need to Build an Outbox
+
+Once sales live in a local database, something has to get them to the server reliably and in order. This process needs to survive app restarts. DIY designs need an **outbox**: a local table of unsent changes, drained by a worker that retries until the server confirms.
+
+PowerSync records every `INSERT`, `UPDATE` or `DELETE` on a synced table automatically in an **upload queue** (the internal `ps_crud` table), in the same SQLite transaction as the write. You define an `uploadData()` function that determines how entries in that upload queue are uploaded to your backend. The PowerSync SDK calls that `uploadData()` function after local writes, on reconnection, and automatically retries after failures. Entries leave the queue only once they have been successfully processed. See [Client-Side Integration](/configuration/app-backend/client-side-integration).
+
+Ringing up a sale is one local transaction. The sale, its lines and its stock movements are queued together and uploaded as a group:
+
+```ts sales/completeSale.ts
+import { powersync } from '../powersync/system';
+
+type CartLine = { productId: string; qty: number; unitPriceCents: number; taxRateBp: number };
+
+export async function completeSale(cart: CartLine[], storeId: string, posDeviceId: string) {
+  await powersync.writeTransaction(async (tx) => {
+    const { id: saleId } = await tx.get<{ id: string }>('SELECT uuid() AS id');
+    const state = await tx.get<{ id: string; next_receipt_seq: number }>(
+      'SELECT id, next_receipt_seq FROM pos_device_state LIMIT 1'
+    );
+    const receiptNo = `${posDeviceId}-${String(state.next_receipt_seq).padStart(6, '0')}`;
+    const now = new Date().toISOString();
+    const total = cart.reduce((sum, l) => sum + l.qty * l.unitPriceCents, 0);
+
+    await tx.execute(
+      `INSERT INTO sales (id, store_id, pos_device_id, receipt_no, kind, sold_at, total_cents)
+       VALUES (?, ?, ?, ?, 'sale', ?, ?)`,
+      [saleId, storeId, posDeviceId, receiptNo, now, total]
+    );
+
+    for (const l of cart) {
+      await tx.execute(
+        `INSERT INTO sale_lines (id, sale_id, product_id, qty, unit_price_cents, tax_rate_bp, line_total_cents)
+         VALUES (uuid(), ?, ?, ?, ?, ?, ?)`,
+        [saleId, l.productId, l.qty, l.unitPriceCents, l.taxRateBp, l.qty * l.unitPriceCents]
+      );
+      await tx.execute(
+        `INSERT INTO stock_movements (id, store_id, product_id, qty_delta, reason, ref_id, created_at)
+         VALUES (uuid(), ?, ?, ?, 'sale', ?, ?)`,
+        [storeId, l.productId, -l.qty, saleId, now]
+      );
+    }
+
+    await tx.execute(
+      'UPDATE pos_device_state SET next_receipt_seq = next_receipt_seq + 1, open_cart = NULL WHERE id = ?',
+      [state.id]
+    );
+  });
+}
+```
+
+Your `uploadData()` function sends each queued transaction to your write endpoint:
+
+```ts powersync/Connector.ts
+// Inside your backend connector
+async uploadData(database: CommonPowerSyncDatabase) {
+  const transaction = await database.getNextCrudTransaction();
+  if (!transaction) return;
+
+  const res = await fetch(`${API_URL}/pos/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await getPOSToken()}` },
+    body: JSON.stringify({
+      ops: transaction.crud.map((e) => ({ op: e.op, table: e.table, id: e.id, data: e.opData }))
+    })
+  });
+
+  // Throw only when a retry can succeed. Throwing keeps the transaction at the
+  // head of the queue and the SDK retries it, so a 4xx would block the queue.
+  // Your write endpoint returns 2xx for rejected writes after recording them in the review table.
+  if (res.status >= 500) throw new Error(`Upload failed: ${res.status}`);
+  await transaction.complete();
+}
+```
+
+## 4. Make Sales Append-Only
+
+Edits to completed sales break audit trails and tax reports. If a refund updates the original sale row, you lose data. Two POS devices editing the same record creates a race condition.
+
+To prevent this, treat sales as immutable facts. Nothing is updated or deleted after the receipt prints. A refund or void is a new entry with a reference to the original.
+
+With PowerSync, your own API code handles uploads. This allows you to accept `PUT` operations on `sales`, `sale_lines` and `stock_movements` with `ON CONFLICT (id) DO NOTHING`. You should also record any `PATCH` or `DELETE` on those tables in a review table (see [section 9](#9-write-down-your-conflict-rules)) instead of applying it.
+
+## 5. Treat Stock as a Ledger, Not a Counter
+
+If two POS devices in the same store each sell three units of a product while offline, each device's local copy says `quantity = 6`. Each writes `quantity = 3`. When they sync, the server ends up at 3. The real answer is 0. With a counter, last-write-wins silently causes data loss.
+
+Treat quantity changes as changes, not absolute values, so concurrent sales are all honored. PowerSync's conflict resolution guide calls this [Cumulative Operations (Inventory)](/handling-writes/custom-conflict-resolution#strategy-7-cumulative-operations-inventory). The guide lists a separate transactions table as one way to do it: this is your ledger.
+
+In Postgres:
+
+```sql
+CREATE TABLE stock_movements (
+  id          uuid PRIMARY KEY,               -- generated on the POS device
+  store_id    uuid NOT NULL,
+  product_id  uuid NOT NULL,
+  qty_delta   integer NOT NULL,
+  reason      text NOT NULL,
+  ref_id      uuid,                           -- sale, delivery or adjustment
+
+  created_at  timestamptz NOT NULL,           -- POS device clock
+  received_at timestamptz NOT NULL DEFAULT now(),
+  folded      boolean NOT NULL DEFAULT false  -- rolled into the baseline yet?
+);
+
+CREATE TABLE stock_baselines (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id   uuid NOT NULL,
+  product_id uuid NOT NULL,
+  quantity   integer NOT NULL,
+  UNIQUE (store_id, product_id)
+);
+
+CREATE VIEW stock_on_hand AS
+SELECT store_id, product_id, SUM(qty) AS on_hand
+FROM (
+  SELECT store_id, product_id, quantity AS qty FROM stock_baselines
+  UNION ALL
+  SELECT store_id, product_id, qty_delta FROM stock_movements WHERE NOT folded
+) t
+GROUP BY store_id, product_id;
+```
+
+The baseline keeps the ledger small on the device. A ledger that grows forever is fine in Postgres but not on a POS device, so a server-side job regularly rolls up movements into the baseline. One statement marks the movements as folded and adds exactly those rows to the baseline, so nothing is counted twice or missed.
+
+```sql
+WITH batch AS (
+  UPDATE stock_movements SET folded = true
+  WHERE store_id = $1 AND NOT folded
+  RETURNING store_id, product_id, qty_delta
+)
+INSERT INTO stock_baselines (store_id, product_id, quantity)
+SELECT store_id, product_id, SUM(qty_delta)
+FROM batch
+GROUP BY store_id, product_id
+ON CONFLICT (store_id, product_id)
+DO UPDATE SET quantity = stock_baselines.quantity + EXCLUDED.quantity;
+```
+
+The POS device runs the same derivation in SQLite. It sees the store's baselines, the unfolded movements from every POS device in the store (once they have synced), and its own movements immediately, including ones still waiting to upload:
+
+```ts
+import { useQuery } from '@powersync/react-native';
+
+export function useOnHand(productId: string): number {
+  const { data } = useQuery<{ on_hand: number }>(
+    `SELECT COALESCE(SUM(qty), 0) AS on_hand FROM (
+       SELECT quantity AS qty FROM stock_baselines WHERE product_id = ?
+       UNION ALL
+       SELECT qty_delta FROM stock_movements WHERE product_id = ?
+     )`,
+    [productId, productId]
+  );
+  return data?.[0]?.on_hand ?? 0;
+}
+```
+
+The fold doesn't cause a double count or a gap on the device. PowerSync applies server changes to the client at [consistent checkpoints](/architecture/consistency) that contain only fully committed transactions.
+
+## 6. Decide Your Overselling Policy Before It Happens
+
+With offline POS devices, you can't prevent overselling. Two POS devices with no connection between them cannot agree on who sold the last unit. You need to decide how to handle this.
+
+PowerSync doesn't impose a policy. Pick one per product type:
+
+- **Allow and flag.** The POS device warns when a sale would take derived stock below zero but completes the sale. The server alerts on negative positions for a supervisor to investigate (a missed delivery receipt, a mis-scan, or real shrinkage).
+- **Block.** Refuse the sale when stock would go negative. This only works reliably when the check happens against a single authority, which means online. Reserve it for things that can't be oversold, such as serialized items, event tickets or click-and-collect reservations. Accept that those sales need a connection.
+
+## 7. Sync Only the Data Each Device Needs
+
+A chain has thousands of products, store-specific prices and promotions, and dozens or hundreds of stores. Each POS device needs the full catalog and its own store's prices and stock, and nothing else.
+
+[Sync Streams](/sync/streams/overview) define what each device receives, using SQL-like queries filtered by [parameters](/sync/streams/parameters). Your auth server issues each device a JWT with `store_id` and `pos_device_id` claims ([custom auth](/configuration/auth/custom)). The streams filter on those claims, so PowerSync only syncs the required data to the device.
+
+```yaml
+config:
+  edition: 3
+
+streams:
+  catalog:
+    auto_subscribe: true
+    query: SELECT * FROM products WHERE active = true
+
+  store_data:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM store_prices WHERE store_id = auth.parameter('store_id')
+      - SELECT * FROM stock_baselines WHERE store_id = auth.parameter('store_id')
+      - SELECT * FROM stock_movements WHERE store_id = auth.parameter('store_id') AND folded = false
+```
+
+PowerSync works out which rows changed for each store and streams only those, so there is no cursor to store and no export job. Sales are in no stream, so they leave the POS device once uploaded. If the POS device needs them offline for refunds or reprints, add a stream for its recent sales.
+
+A DIY "changes since" API with an `updated_at` cursor can fail in subtle ways:
+
+- **Late commits are skipped.** A transaction that started before the cursor time can commit after the device fetched changes. Its rows have an older `updated_at`, so the device never receives them.
+- **Deletes are missed.** A deleted row has no `updated_at` to query. You need tombstones or soft deletes, and a way to clean them up later.
+- **Rows that leave scope stay on the device.** When a product is deactivated, the old row in the local database matches nothing on the server, so the device keeps it.
+- **Cursor and data get out of step.** If the device saves the cursor before it applies the data and then crashes, it will skip data on the next fetch.
+
+## 8. Share Open Orders Between Devices in the Store
+
+In a restaurant, when one POS device takes an order, that order needs to reach the kitchen screen and the other POS devices within seconds. Open orders are shared state that several devices may need to display and change.
+
+Store an order as a header row plus one row per item. Two devices that add items to the same order insert separate rows, so they never conflict. The kitchen screen only changes an item's status, and the default conflict resolution (per-field last-write-wins) handles that.
+
+```ts
+// Add to AppSchema
+const orders = new Table({
+  store_id: column.text,
+  table_no: column.text,
+  opened_at: column.text,
+  closed: column.integer
+});
+
+const order_items = new Table(
+  {
+    order_id: column.text,
+    store_id: column.text,
+    product_id: column.text,
+    qty: column.integer,
+    note: column.text,
+    status: column.text, // 'new' | 'preparing' | 'ready' | 'served'
+    closed: column.integer
+  },
+  { indexes: { by_order: ['order_id'] } }
+);
+```
+
+Every device in the store subscribes to the store's open orders:
+
+```yaml
+  open_orders:
+    auto_subscribe: true
+    queries:
+      - SELECT * FROM orders WHERE store_id = auth.parameter('store_id') AND closed = false
+      - SELECT * FROM order_items WHERE store_id = auth.parameter('store_id') AND closed = false
+```
+
+When an order is closed, your write endpoint sets `closed` on the order and its items, and they drop off every device. The item rows carry their own `store_id` and `closed` so the stream can filter them without a join.
+
+A change travels from the device to your write endpoint, into the source database, and back out through PowerSync to the other devices. A PowerSync POS customer [stress-tested this propagation across a swarm of tablets](https://x.com/powersync_/status/2008930308725551284), demonstrating the order propagation completing to 14 tablets in under 5 seconds.
+
+PowerSync syncs through the server, not peer-to-peer. If the store's internet goes down, each device keeps working, but new orders don't reach the kitchen until it reconnects. If that isn't acceptable, you can run a self-hosted PowerSync Service and source database on a local server in the store.
+
+## 9. Write Down Your Conflict Rules
+
+With the architecture above, conflict rules reduce to these five points:
+
+- **Sales, sale lines, stock movements:** never conflict. Append-only, client UUIDs, `ON CONFLICT (id) DO NOTHING`.
+- **Stock levels:** derived from the ledger, never written directly.
+- **Catalog and prices:** head office is authoritative.
+- **Open orders:** one row per item, so devices adding items never conflict. Status changes are last-write-wins per field.
+- **Anything that fails a business rule:** accepted, recorded in a **review table** for a supervisor to handle.
+
+PowerSync uses [server-authoritative reconciliation](/handling-writes/handling-update-conflicts): your write endpoint decides what gets applied to the source database, and the result syncs back to every device. The default behavior for updates is last-write-wins per field, and the [custom conflict resolution guide](/handling-writes/custom-conflict-resolution) covers more complex cases if needed.
+
+## 10. Snapshot the Price at the Moment of Sale
+
+A POS device that is offline during a head-office price change keeps selling at the old price until it reconnects. If the server recalculates the sale from the current price table, totals won't match what the customer paid.
+
+Copy the unit price and tax rate onto the sale line when the sale happens. The sale line is the record of what was charged. The server stores it as-is and never recalculates it from the catalog.
+
+With PowerSync, a POS device with sales in its upload queue doesn't apply new server data until they have uploaded (see [Consistency](/architecture/consistency)). This means that the charged price and the price on the server can differ for a short window even when online.
+
+## 11. Make Sync Status Visible per POS Device and per Store
+
+Support needs to know whether a POS device is synced. The head office also needs to know which stores have POS devices holding sales that have not yet been uploaded.
+
+The PowerSync SDK exposes `SyncStatus` (`connected`, `hasSynced`, `lastSyncedAt`, upload and download state), available in React Native through the `useStatus()` hook. The pending upload count is a query against the upload queue, as recommended in the [production readiness guide](/maintenance-ops/production-readiness-guide).
+
+Here's how you display the information to the operator:
+
+```tsx
+import { useQuery, useStatus } from '@powersync/react-native';
+import { Text, View } from 'react-native';
+
+export function POSSyncBadge() {
+  const status = useStatus();
+  const { data } = useQuery<{ pending: number }>('SELECT COUNT(*) AS pending FROM ps_crud');
+  const pending = data?.[0]?.pending ?? 0;
+
+  return (
+    <View>
+      <Text>{status.connected ? 'Online' : 'Offline'}</Text>
+      <Text>{pending} change(s) waiting to upload</Text>
+      <Text>Last synced: {status.lastSyncedAt?.toLocaleString() ?? 'never'}</Text>
+    </View>
+  );
+}
+```
+
+For head office, PowerSync provides [observability capabilities](/maintenance-ops/monitoring-and-alerting) to inspect whether devices are connecting and syncing successfully, with additional features on the roadmap to make fleet-wide monitoring easier.
+
+## What PowerSync Removes from a DIY Design
+
+| DIY component | PowerSync equivalent |
+| --- | --- |
+| Hand-written outbox table, triggers, and "mark as sent" logic | Upload queue, filled automatically on every write to a synced table |
+| Background worker with retries | SDK calls `uploadData()` after writes, on reconnect and after failures |
+| Per-store or per-POS sync cursor and "changes since" API | Sync Streams with checkpoints. Each device downloads only what changed in its streams |
+| Logic to merge downloaded data with unsent local changes | Not needed: the client doesn't apply a new checkpoint while uploads are pending |
+| Polling or a message bus to get orders to the kitchen screen | An `open_orders` stream per store |
+
+You still need to implement:
+
+1. Your write endpoint (idempotent inserts, append-only enforcement, the review table for rejected writes)
+2. Device credentials and JWTs with store and POS device claims
+3. Business policies for stale prices, late data and overselling
+
+Those are the parts that encode how your business works, so that's where to focus your effort.
+
+## Which Backend Database
+
+PowerSync works with [Postgres](/configuration/source-db/setup#postgres), [MySQL](/configuration/source-db/setup#mysql), [SQL Server](/configuration/source-db/setup#sql-server) and [MongoDB](/configuration/source-db/setup#mongodb) as the source database, so you can add PowerSync to an existing POS system without migrating its database.
+
+## Where to Start
+
+Make the decisions in this order:
+
+1. UUIDs and append-only sales schema design
+2. Stock ledger design
+3. Overselling policy
+
+Those three determine your schema, and they are expensive to change once POS devices are in stores.
+
+With them settled, the sync layer is configuration (a client schema and a Sync Streams file) plus a write endpoint, not a large codebase you have to build and maintain. PowerSync's [Setup Guide](/intro/setup-guide) covers connecting a source database and a client app end to end.

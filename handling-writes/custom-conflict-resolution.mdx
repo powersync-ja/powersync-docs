@@ -951,7 +951,7 @@ async function handleInventoryOperation(db, operation) {
   const { table, id, op, opData } = operation;
   
   // Identify cumulative fields for specific tables
-  if (table === 'inventory' && 'quantity' in opData) {
+  if (table === 'inventory_movements' && op === 'PUT') {
     return await applyInventoryDelta(db, operation);
   }
   
@@ -960,7 +960,8 @@ async function handleInventoryOperation(db, operation) {
 }
 
 async function applyInventoryDelta(db, operation) {
-  const { id, opData } = operation;
+  const { opData } = operation;
+  const id = opData.inventory_id;
   const quantityChange = opData.quantity; // This is the delta, not absolute value
   
   // Get current inventory
@@ -1009,19 +1010,19 @@ async function applyInventoryDelta(db, operation) {
 
 ### Client Implementation
 
-On the client side, you need to ensure updates are sent as deltas, not absolute values. When a sale occurs, send the change amount:
+On the client side, you need to ensure changes are sent as deltas, not absolute values. When a sale occurs, insert the change amount as a row in an `inventory_movements` table (`id`, `inventory_id`, `quantity`):
 
 **Client code:**
 
 ```typescript
 // When selling 3 units
 await powerSync.execute(
-  'UPDATE inventory SET quantity = quantity - ? WHERE id = ?',
-  [3, inventoryId] // Send -3 as the delta
+  'INSERT INTO inventory_movements (id, inventory_id, quantity) VALUES (uuid(), ?, ?)',
+  [inventoryId, -3] // Send -3 as the delta
 );
 ```
 
-The backend receives this as a PATCH operation where `opData.quantity = -3`, which it then adds to the current quantity rather than replacing it.
+The backend receives this as a PUT operation where `opData.quantity = -3`, which it then adds to the current quantity rather than replacing it.
 
 ### Alternative Approaches
 

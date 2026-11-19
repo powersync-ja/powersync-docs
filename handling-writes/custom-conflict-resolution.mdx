@@ -951,7 +951,7 @@ async function handleInventoryOperation(db, operation) {
   const { table, id, op, opData } = operation;
   
   // Identify cumulative fields for specific tables
-  if (table === 'inventory_movements' && op === 'PUT') {
+  if (table === 'inventory' && 'quantity' in opData) {
     return await applyInventoryDelta(db, operation);
   }
   
@@ -960,8 +960,7 @@ async function handleInventoryOperation(db, operation) {
 }
 
 async function applyInventoryDelta(db, operation) {
-  const { opData } = operation;
-  const id = opData.inventory_id;
+  const { id, opData } = operation;
   const quantityChange = opData.quantity; // This is the delta, not absolute value
   
   // Get current inventory
@@ -1010,18 +1009,18 @@ async function applyInventoryDelta(db, operation) {
 
 ### Client Implementation
 
-On the client side, you need to ensure changes are sent as deltas, not absolute values. When a sale occurs, insert the change amount as a row in an `inventory_movements` table. Mark it as [insert-only](#insert-only-fire-and-forget) and don't include it in your Sync Streams: movements are uploaded to the server but never downloaded back to clients.
+On the client side, you need to ensure updates are sent as deltas, not absolute values. The upload queue records the new value of a changed column, so enable [`trackPrevious`](/client-sdks/advanced/custom-types-arrays-and-json#advanced-schema-options-to-process-writes) (`trackPreviousValues` in non-JS SDKs) on the table and calculate the delta in `uploadData()`:
 
 **Client schema:**
 
 ```typescript
-const inventoryMovements = new Table(
+const inventory = new Table(
   {
-    inventory_id: column.text,
+    product_id: column.text,
     quantity: column.integer
   },
   {
-    insertOnly: true  // Only allows INSERT operations
+    trackPrevious: true  // Include previous values in each queued operation
   }
 );
 ```
@@ -1031,12 +1030,18 @@ const inventoryMovements = new Table(
 ```typescript
 // When selling 3 units
 await powerSync.execute(
-  'INSERT INTO inventory_movements (id, inventory_id, quantity) VALUES (uuid(), ?, ?)',
-  [inventoryId, -3] // Send -3 as the delta
+  'UPDATE inventory SET quantity = quantity - ? WHERE id = ?',
+  [3, inventoryId]
 );
+
+// In uploadData(): send the change, not the new value
+const opData = { ...op.opData };
+if (op.table === 'inventory' && 'quantity' in opData && op.previousValues) {
+  opData.quantity = opData.quantity - op.previousValues.quantity; // 7 - 10 = -3
+}
 ```
 
-The backend receives this as a PUT operation where `opData.quantity = -3`, which it then adds to the current quantity rather than replacing it.
+The backend receives this as a PATCH operation where `opData.quantity = -3`, which it then adds to the current quantity rather than replacing it.
 
 ### Alternative Approaches
 

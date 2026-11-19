@@ -1,6 +1,6 @@
 ```rust src/connector.rs
-// Uploads local writes to the PowerSync reference write API, one transaction per request.
-// Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
+// Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
+// Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in post_transaction() to match
 // it, or have a coding agent write the uploader for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
@@ -20,10 +20,10 @@ use powersync::{Authenticator, CrudTransaction, MutationUploader, PowerSyncDatab
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Base URL of the write API. On a phone or emulator, `localhost` refers to the device itself.
+/// Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself.
 const BACKEND_URL: &str = "http://localhost:6060";
 
-/// Abort a write API request after this long.
+/// Abort a write endpoint request after this long.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Consecutive retryable errors for one transaction before it is passed to on_fatal_transaction().
@@ -40,8 +40,8 @@ pub async fn connect(db: &PowerSyncDatabase) {
     .await;
 }
 
-/// Provides the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
-/// The token is cached until the PowerSync Service or the write API rejects it.
+/// Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
+/// The token is cached until the PowerSync Service or the write endpoint rejects it.
 #[derive(Clone, Default)]
 pub struct MyAuthenticator {
     token: Arc<Mutex<Option<Arc<String>>>>,
@@ -52,7 +52,7 @@ impl MyAuthenticator {
     /// Supabase and Firebase tokens can be used as they are:
     /// - https://docs.powersync.com/configuration/auth/supabase-auth
     /// - https://docs.powersync.com/configuration/auth/firebase-auth
-    /// To use a development token with the write API, see
+    /// To use a development token with the write endpoint, see
     /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
     async fn fetch_auth_token(&self) -> Result<String, PowerSyncError> {
         Ok("An authentication token".to_string())
@@ -70,7 +70,7 @@ impl Authenticator for MyAuthenticator {
         Ok(token)
     }
 
-    /// Called by the SDK when the PowerSync Service rejects the token, and by the uploader when the write API
+    /// Called by the SDK when the PowerSync Service rejects the token, and by the uploader when the write endpoint
     /// rejects it. If your auth provider's SDK refreshes sessions itself, return its current token from
     /// resolve_credentials() instead of caching it.
     fn invalidate_credentials(&self) {
@@ -96,7 +96,7 @@ impl MyMutationUploader {
         }
     }
 
-    /// Called for fatal errors that the write API leaves to the client, and when a transaction reaches
+    /// Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
     /// RETRY_MAX_ATTEMPTS. `Retain` keeps the transaction queued, which blocks later uploads, and the SDK calls
     /// this again on its next attempt. Return `Complete` to discard the transaction, for example after telling the
     /// user. See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
@@ -106,7 +106,7 @@ impl MyMutationUploader {
     }
 
     /// Sends one transaction to POST /api/data and returns its result. The request and response shapes are
-    /// defined by the write API's OpenAPI spec:
+    /// defined by the write endpoint's OpenAPI spec:
     /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
     async fn post_transaction(&self, transaction: &CrudTransaction<'_>) -> Result<TransactionResult, PowerSyncError> {
         let body = TransactionBatch {
@@ -138,7 +138,7 @@ impl MyMutationUploader {
 
         let status = response.status();
         if !status.is_success() {
-            // Every non-2xx response from the write API has the shape { message }.
+            // Every non-2xx response from the write endpoint has the shape { message }.
             let message = response
                 .json::<MessageResponse>()
                 .await
@@ -148,9 +148,9 @@ impl MyMutationUploader {
                 // Fetch a new token before the next attempt. Like other transport errors, this doesn't count
                 // toward RETRY_MAX_ATTEMPTS.
                 self.authenticator.invalidate_credentials();
-                return Err(upload_error(format!("Write API rejected the token ({status}): {message}")));
+                return Err(upload_error(format!("Write endpoint rejected the token ({status}): {message}")));
             }
-            return Err(upload_error(format!("Write API request failed ({status}): {message}")));
+            return Err(upload_error(format!("Write endpoint request failed ({status}): {message}")));
         }
 
         let mut results = response.json::<TransactionBatchResponse>().await?.results;
@@ -161,7 +161,7 @@ impl MyMutationUploader {
     }
 
     /// Turns the RETRY_MAX_ATTEMPTS-th consecutive retryable error for the same transaction into a fatal error
-    /// for on_fatal_transaction(). The write API retries database errors that it doesn't recognize as permanent,
+    /// for on_fatal_transaction(). The write endpoint retries database errors that it doesn't recognize as permanent,
     /// so without a limit, one bad transaction could block the queue forever.
     fn apply_retry_limit(&self, transaction: &CrudTransaction<'_>, result: TransactionResult) -> TransactionResult {
         let mut retries = self.retries.lock().unwrap();
@@ -213,7 +213,7 @@ impl MutationUploader for MyMutationUploader {
                             result.error_code()
                         )));
                     }
-                    // A fatal error that the write API already handled (for example, with a dead-letter hook), or
+                    // A fatal error that the write endpoint already handled (for example, with a dead-letter hook), or
                     // one that on_fatal_transaction() chose to discard.
                 }
                 status => return Err(upload_error(format!("Unexpected transaction result: {status}"))),
@@ -234,7 +234,7 @@ fn upload_error(message: String) -> PowerSyncError {
     PowerSyncError::upload_error(std::io::Error::other(message))
 }
 
-// Request and response types from the write API's OpenAPI spec.
+// Request and response types from the write endpoint's OpenAPI spec.
 
 #[derive(Serialize)]
 struct TransactionBatch<'a> {
@@ -269,7 +269,7 @@ struct TransactionBatchResponse {
 pub struct TransactionResult {
     pub status: String,
     pub message: Option<String>,
-    /// For a fatal error. True: the write API leaves the decision to the client. False: it already handled the
+    /// For a fatal error. True: the write endpoint leaves the decision to the client. False: it already handled the
     /// failure.
     pub requires_client_handling: Option<bool>,
     pub failed_operation: Option<FailedOperation>,

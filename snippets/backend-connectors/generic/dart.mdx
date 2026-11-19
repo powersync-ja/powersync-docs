@@ -1,6 +1,6 @@
 ```dart lib/powersync.dart
-// Uploads local writes to the PowerSync reference write API, one transaction per request.
-// Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
+// Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
+// Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in _postTransaction() to match
 // it, or have a coding agent write uploadData() for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
@@ -11,10 +11,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http; // Add the http package: https://pub.dev/packages/http
 import 'package:powersync/powersync.dart';
 
-/// Base URL of the write API. On a phone or emulator, `localhost` refers to the device itself.
+/// Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself.
 const backendUrl = 'http://localhost:6060';
 
-/// Abort a write API request after this long.
+/// Abort a write endpoint request after this long.
 const requestTimeout = Duration(seconds: 30);
 
 /// Consecutive retryable errors for one transaction before it is passed to onFatalTransaction().
@@ -66,7 +66,7 @@ class MyBackendConnector extends PowerSyncBackendConnector {
             await onFatalTransaction(transaction, result) == FatalDecision.retain) {
           throw Exception('Transaction retained after ${result['failed_operation']['error_code']}');
         }
-        // A fatal error that the write API already handled (for example, with a dead-letter hook), or one that
+        // A fatal error that the write endpoint already handled (for example, with a dead-letter hook), or one that
         // onFatalTransaction() chose to discard.
         break;
       default:
@@ -75,7 +75,7 @@ class MyBackendConnector extends PowerSyncBackendConnector {
     await transaction.complete();
   }
 
-  /// Called for fatal errors that the write API leaves to the client, and when a transaction reaches
+  /// Called for fatal errors that the write endpoint leaves to the client, and when a transaction reaches
   /// retryMaxAttempts. [FatalDecision.retain] keeps the transaction queued, which blocks later uploads, and the
   /// SDK calls this again on its next attempt. Return [FatalDecision.complete] to discard the transaction, for
   /// example after telling the user.
@@ -85,8 +85,8 @@ class MyBackendConnector extends PowerSyncBackendConnector {
     return FatalDecision.retain;
   }
 
-  /// Returns the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
-  /// The token is cached until the write API rejects it. If your auth provider's SDK refreshes sessions itself,
+  /// Returns the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
+  /// The token is cached until the write endpoint rejects it. If your auth provider's SDK refreshes sessions itself,
   /// return `_fetchAuthToken()` directly instead.
   Future<String> _getAuthToken() async {
     return _authToken ??= await _fetchAuthToken();
@@ -96,14 +96,14 @@ class MyBackendConnector extends PowerSyncBackendConnector {
   /// Supabase and Firebase tokens can be used as they are:
   /// - https://docs.powersync.com/configuration/auth/supabase-auth
   /// - https://docs.powersync.com/configuration/auth/firebase-auth
-  /// To use a development token with the write API, see
+  /// To use a development token with the write endpoint, see
   /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
   Future<String> _fetchAuthToken() async {
     return 'An authentication token';
   }
 
   /// Sends one transaction to POST /api/data and returns its result. The request and response shapes are defined
-  /// by the write API's OpenAPI spec:
+  /// by the write endpoint's OpenAPI spec:
   /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
   Future<Map<String, dynamic>> _postTransaction(CrudTransaction transaction) async {
     final body = {
@@ -136,7 +136,7 @@ class MyBackendConnector extends PowerSyncBackendConnector {
         .timeout(requestTimeout);
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      // Every non-2xx response from the write API has the shape { message }.
+      // Every non-2xx response from the write endpoint has the shape { message }.
       String message;
       try {
         message = jsonDecode(response.body)['message'] as String;
@@ -144,9 +144,9 @@ class MyBackendConnector extends PowerSyncBackendConnector {
         message = response.reasonPhrase ?? '';
       }
       if (response.statusCode == 401 || response.statusCode == 403) {
-        throw AuthenticationException('Write API rejected the token (${response.statusCode}): $message');
+        throw AuthenticationException('Write endpoint rejected the token (${response.statusCode}): $message');
       }
-      throw Exception('Write API request failed (${response.statusCode}): $message');
+      throw Exception('Write endpoint request failed (${response.statusCode}): $message');
     }
 
     // One result per transaction sent. A result's status is 'success', 'retryable_error', 'fatal_error' or
@@ -159,7 +159,7 @@ class MyBackendConnector extends PowerSyncBackendConnector {
   }
 
   /// Turns the retryMaxAttempts-th consecutive retryable error for the same transaction into a fatal error for
-  /// onFatalTransaction(). The write API retries database errors that it doesn't recognize as permanent, so
+  /// onFatalTransaction(). The write endpoint retries database errors that it doesn't recognize as permanent, so
   /// without a limit, one bad transaction could block the queue forever.
   Map<String, dynamic> _applyRetryLimit(CrudTransaction transaction, Map<String, dynamic> result) {
     if (result['status'] != 'retryable_error') {
@@ -184,7 +184,7 @@ class MyBackendConnector extends PowerSyncBackendConnector {
 
 enum FatalDecision { retain, complete }
 
-/// Thrown when the write API rejects the token (401 or 403).
+/// Thrown when the write endpoint rejects the token (401 or 403).
 class AuthenticationException implements Exception {
   AuthenticationException(this.message);
 

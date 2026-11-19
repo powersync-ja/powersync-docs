@@ -19,7 +19,7 @@ const SOURCES = {
   connectors: {
     dir: 'snippets/backend-connectors',
     groups: {
-      // Generic connectors call the reference write API. Consumers replace the placeholder with the PowerSync instance URL.
+      // Generic connectors call the reference write endpoint. Consumers replace the placeholder with the PowerSync instance URL.
       generic: {
         sdks: ['javascript', 'typescript', 'react-native', 'dart', 'kotlin', 'swift', 'dotnet', 'rust'],
         requiresPlaceholder: true

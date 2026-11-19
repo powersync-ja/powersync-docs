@@ -32,7 +32,7 @@ There are three approaches, and you can combine them.
 
 `getNextCrudTransaction()` returns one transaction at a time, so if each write is its own transaction, your `uploadData()` sends one request per write. `getCrudBatch()` returns up to a set number of mutations across transactions, which you can send to a batch endpoint in one request. Your backend API gets fewer requests, but your source database still applies every mutation.
 
-Uploads are also [throttled](/configuration/app-backend/client-side-integration#throttling). While the device is online, a longer throttle interval lets more mutations build up between uploads, so each batch is bigger.
+Uploads are also [throttled](/configuration/app-backend/client-side-integration#throttling). While the device is online, a longer throttle interval lets more mutations build up between uploads, so each batch is bigger. The trade-off is that each write can take up to that much longer to reach your backend.
 
 ### 2. Merging Mutations Before Uploading
 
@@ -40,7 +40,7 @@ You can merge mutations in your `uploadData()` before you send them. For example
 
 The example below merges all updates (`PATCH`) to a row into one update with the latest value of each column. It sends the merged update where the row's last update was, so a value never reaches your backend before the device wrote it. Inserts (`PUT`) and deletes (`DELETE`) are sent where they were queued, so a row is still created before anything that references it. An update after an insert isn't merged into the insert, because some backends only insert on `PUT`. A delete of any row stops merging, because it can cascade to other rows on your backend.
 
-The upload queue only changes when you call `complete()`. If the upload fails, the client SDK retries it with the same mutations, and they merge with the same result. Mutations written while an upload is in progress are left for the next upload.
+The upload queue only changes when you call `complete()`. If the upload fails, nothing is removed, so the retry reads the same mutations again, along with any written since, and merges them the same way. After a successful upload, `complete()` only removes the mutations in that batch, so mutations written during the upload are left for the next one.
 
 ```js
 import { UpdateType } from '@powersync/web'; // Or @powersync/react-native, @powersync/node

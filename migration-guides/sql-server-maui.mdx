@@ -160,12 +160,12 @@ flowchart LR
 | Dispatch changes | Seen after a refresh | Appear on the device in a few seconds |
 | IDs | Server `NEWSEQUENTIALID()` | Generated on the device (same column type) |
 | Auth | RS256 and JWKS | Unchanged. The PowerSync Service reads the same JWKS |
-| SQL Server | Plain tables | Same schema, CDC enabled |
-| Backend API | REST endpoints | Stays. One endpoint accepts the device's ID and tap time, and treats a repeat as already done. Read endpoints deprecated |
+| SQL Server | Plain tables | Identical tables, CDC enabled |
+| Backend API | REST endpoints | Stays. One endpoint accepts the device's ID and tap time, and treats a repeat as already done. Read endpoints are no longer needed |
 
 ## Step 1: Prepare SQL Server for CDC
 
-The [PowerSync Service](/architecture/powersync-service) reads changes from SQL Server through [Change Data Capture (CDC)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server). Your tables are unchanged, CDC adds change tables next to them. A SQL Server Agent job fills those tables from the transaction log. The PowerSync Service polls the change tables and turns each change into sync data.
+The [PowerSync Service](/architecture/powersync-service) reads changes from SQL Server through [Change Data Capture (CDC)](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server). Your tables are unchanged: CDC adds change tables next to them. A SQL Server Agent job fills those tables from the transaction log. The PowerSync Service polls the change tables and turns each change into sync data.
 
 This step usually needs a DBA. Check the requirements below, then run the setup script.
 
@@ -176,7 +176,7 @@ This step usually needs a DBA. Check the requirements below, then run the setup 
 - **SQL Server Agent must be running**: If the Agent is stopped, enabling CDC still succeeds, but the change tables stay empty and the PowerSync Service never sees an update. In the official Docker image, the Agent is off by default, so set `MSSQL_AGENT_ENABLED=true`. This item doesn't apply to Azure SQL Database, which manages the CDC jobs itself.
 - **Transaction log**: CDC reads the log, so SQL Server can't free log space until the capture job has processed it. Monitor log growth and the retention of the CDC cleanup job.
 - **Delayed durability must be off**: SQL Server refuses to enable CDC on a database with delayed durability set. It also refuses to turn delayed durability on (`FORCED` or `ALLOWED`) while CDC is enabled. Run `SELECT delayed_durability_desc FROM sys.databases` and make sure that it returns `DISABLED`.
-- **Sync tables, not views**: CDC captures only tables. If you name a view in your Sync Streams, the PowerSync Service stops replicating. Sync the underlying tables and do the join on the client.
+- **Sync tables, not views**: CDC captures only tables. If you name a view in your Sync Streams, the PowerSync Service stops replicating and logs the PowerSync error [`PSYNC_S1602`](/debugging/error-codes#psync_s16xx-mssql-replication-issues). The solution is to sync the underlying tables and do the join on the client.
 - **Don't sync computed columns**: The initial copy reads the real value, but CDC records computed columns (persisted or not) as `NULL`, so every later insert or update syncs `NULL`. Leave them out of your Sync Stream queries and compute the value on the client, or write it to a normal column.
 - **Prefer a single-column primary key**: The PowerSync Service copies tables keyed on one column in resumable batches. It copies other tables (composite keys or no key) in one pass, and starts again from zero if it restarts mid-copy.
 
@@ -271,13 +271,13 @@ The companion repo does all of this in one idempotent script, [`db/powersync.sql
 
 ## Step 2: Run the PowerSync Service
 
-This guide [self-hosts](/intro/self-hosting) the PowerSync Service with Docker Compose (see the repo's [`docker-compose.yml`](https://github.com/ckritzinger/sql_server_courier_example/blob/powersync-existing-api/docker-compose.yml)). 
+This guide [self-hosts](/intro/self-hosting) the PowerSync Service with Docker Compose (see the repo's [`docker-compose.yml`](https://github.com/ckritzinger/sql_server_courier_example/blob/powersync-existing-api/docker-compose.yml)).
 
-You can also use [PowerSync Cloud](/configuration/powersync-service/cloud-instances). 
+You can also use [PowerSync Cloud](/configuration/powersync-service/cloud-instances).
 
 <Note>PowerSync Cloud [Private Endpoints](/configuration/source-db/private-endpoints) don't currently support SQL Server, so an on-premises database needs a network route that PowerSync Cloud can reach.</Note>
 
-### Configure Powersync Service using `service.yaml`
+### Configure the PowerSync Service
 
 ```yaml service.yaml
 replication:
@@ -302,7 +302,9 @@ client_auth:
   audience: ["courier-api"]
 ```
 
-`PS_DATA_SOURCE_URI` has the form `mssql://powersync_user:<password>@sqlserver:1433/CourierApp`. <Note>If your password isn't URL-safe, you must URL-encode it.</Note>
+`PS_DATA_SOURCE_URI` has the form `mssql://powersync_user:<password>@sqlserver:1433/CourierApp`.
+
+<Note>If your password isn't URL-safe, you must URL-encode it.</Note>
 
 Devices authenticate to the PowerSync Service with a JWT. If your backend API already issues JWTs signed with an asymmetric key and publishes a JWKS (as Entra ID, Auth0, and most identity providers do), point `client_auth.jwks_uri` at it and set the audience that your tokens carry. See [Custom Authentication](/configuration/auth/custom) for other token setups.
 
@@ -329,7 +331,7 @@ After you change this file, restart the PowerSync Service container. A change to
 
 ## Step 4: Swap the App's Reads to Local SQLite
 
-Add version 1.0.0 of the `PowerSync.Common` and `PowerSync.Maui` NuGet packages. 
+Add version 1.0.0 of the `PowerSync.Common` and `PowerSync.Maui` NuGet packages.
 
 <Note>To run on the iOS simulator, version 1.0.0 currently needs a [`.csproj` workaround](https://github.com/ckritzinger/sql_server_courier_example/blob/powersync-existing-api/app/CourierApp/CourierApp.csproj), because the package links the SQLite build for physical devices.</Note>
 
@@ -440,7 +442,7 @@ public class CourierConnector(ApiClient api) : IPowerSyncBackendConnector
 }
 ```
 
-### Replace the REST-based Loads with Watch Queries
+### Replace the REST-Based Loads with Watch Queries
 
 The route list now [watches](/client-sdks/watch-queries) a local query instead of calling the backend API. A stop that dispatch adds or cancels appears without a refresh, and the list works offline:
 
@@ -505,7 +507,7 @@ The device generates the delivery's ID with `Guid.NewGuid()`, in upper case. Bec
 
 ### Upload Through the Existing API
 
-The write goes into the [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue). The client SDK calls the connector's `UploadData()`, which posts the delivery to the existing endpoint. It no longer needs to manage the status change, because the backend API sets the status itself:
+The write goes into the [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue). The client SDK calls the connector's `UploadData()`, which posts the delivery to the existing endpoint.
 
 ```csharp CourierConnector.cs
 public async Task UploadData(IPowerSyncDatabase database)

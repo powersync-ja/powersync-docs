@@ -54,6 +54,7 @@ The full code is on the repo's [`main` branch](https://github.com/ckritzinger/sq
   <Frame caption="The day's route, part done.">
     ![Route list with eight stops, two delivered, one failed, and one canceled](/images/migration-guides/sql-server-maui/before-route-list.png)
   </Frame>
+
   <Frame caption="A stop with a failed attempt, ready to try again.">
     ![Stop page showing one failed attempt and the Delivered and Failed buttons](/images/migration-guides/sql-server-maui/before-stop-page.png)
   </Frame>
@@ -73,9 +74,11 @@ Dispatch canceled stop 4 after the driver opened it. The page still shows the st
   <Frame caption="Stop 4, canceled by dispatch, still shows as assigned.">
     ![Stop 4 page showing status assigned](/images/migration-guides/sql-server-maui/before-stale-stop-page.png)
   </Frame>
+
   <Frame caption="Tapping Delivered gets a 409.">
     ![Stop 4 page with the error banner Dispatch cancelled this stop](/images/migration-guides/sql-server-maui/before-cancelled-409.png)
   </Frame>
+
   <Frame caption="No network: opening the app shows an empty route.">
     ![Empty route list with the error banner Couldn't reach the server](/images/migration-guides/sql-server-maui/before-offline-cold-start.png)
   </Frame>
@@ -155,7 +158,7 @@ flowchart LR
 
 ### What Changes and What Stays
 
-| | Before | After |
+|  | Before | After |
 | --- | --- | --- |
 | Reads | `HttpClient` calls to REST | Watched local SQLite queries. The UI updates live |
 | Writes | `POST` to the backend API, which fails offline | Local write adds to the [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue). The same `POST` is sent once the device is online |
@@ -193,7 +196,7 @@ The companion repo does all of this in one idempotent script, [`db/powersync.sql
     ```sql
     USE CourierApp;
     GO
-
+    
     IF NOT EXISTS (
       SELECT 1 FROM sys.dm_server_services
       WHERE servicename LIKE N'SQL Server Agent%' AND status_desc = N'Running'
@@ -209,7 +212,7 @@ The companion repo does all of this in one idempotent script, [`db/powersync.sql
     IF (SELECT is_cdc_enabled FROM sys.databases WHERE name = N'CourierApp') = 0
       EXEC sys.sp_cdc_enable_db;
     GO
-
+    
     IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'dbo.stops'))
       EXEC sys.sp_cdc_enable_table
         @source_schema = N'dbo', @source_name = N'stops',
@@ -227,7 +230,7 @@ The companion repo does all of this in one idempotent script, [`db/powersync.sql
       ALTER LOGIN powersync_user WITH PASSWORD = N'$(POWERSYNC_DB_PASSWORD)';
     GRANT VIEW SERVER PERFORMANCE STATE TO powersync_user;  -- SQL Server only, not Azure SQL
     GO
-
+    
     USE CourierApp;
     IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'powersync_user')
       CREATE USER powersync_user FOR LOGIN powersync_user;
@@ -277,7 +280,9 @@ This guide [self-hosts](/intro/self-hosting) the PowerSync Service with Docker C
 
 You can also use [PowerSync Cloud](/configuration/powersync-service/cloud-instances).
 
-<Note>PowerSync Cloud [Private Endpoints](/configuration/source-db/private-endpoints) don't currently support SQL Server, so an on-premises database needs a network route that PowerSync Cloud can reach.</Note>
+<Note>
+  PowerSync Cloud [Private Endpoints](/configuration/source-db/private-endpoints) don't currently support SQL Server, so an on-premises database needs a network route that PowerSync Cloud can reach.
+</Note>
 
 ### Configure the PowerSync Service
 
@@ -306,7 +311,9 @@ client_auth:
 
 `PS_DATA_SOURCE_URI` has the form `mssql://powersync_user:<password>@sqlserver:1433/CourierApp`.
 
-<Note>If your password isn't URL-safe, you must URL-encode it.</Note>
+<Note>
+  If your password isn't URL-safe, you must URL-encode it.
+</Note>
 
 Devices authenticate to the PowerSync Service with a JWT. If your backend API already issues JWTs signed with an asymmetric key and publishes a JWKS (as Entra ID, Auth0, and most identity providers do), point `client_auth.jwks_uri` at it and set the audience that your tokens carry. See [Custom Authentication](/configuration/auth/custom) for other token setups.
 
@@ -500,6 +507,7 @@ async Task WatchStopsAsync(CancellationToken ct)
   <Frame caption="The route list, read from the local database.">
     ![Route list after the migration, read from local SQLite](/images/migration-guides/sql-server-maui/after-route-list.png)
   </Frame>
+
   <Frame caption="The stop page, read from the local database.">
     ![Stop page after the migration, showing two earlier attempts](/images/migration-guides/sql-server-maui/after-stop-page.png)
   </Frame>
@@ -624,6 +632,7 @@ The business rule is unchanged. If a driver records a delivery offline on a stop
   <Frame caption="Before: rejected while online.">
     ![Baseline stop page with the error banner Dispatch cancelled this stop](/images/migration-guides/sql-server-maui/before-cancelled-409.png)
   </Frame>
+
   <Frame caption="After: recorded offline, then rejected on upload.">
     ![Stop page with a banner saying the delivered outcome for stop 5 wasn't saved because dispatch canceled the stop](/images/migration-guides/sql-server-maui/after-rejected-upload.png)
   </Frame>
@@ -651,6 +660,7 @@ The driver gets these updates without any app code:
   <Frame caption="Stop 7 is assigned.">
     ![Route list with stop 7 assigned](/images/migration-guides/sql-server-maui/after-dispatch-before.png)
   </Frame>
+
   <Frame caption="Seconds after dispatch cancels it, with no refresh.">
     ![Route list with stop 7 shown as canceled](/images/migration-guides/sql-server-maui/after-dispatch-after.png)
   </Frame>
@@ -664,12 +674,15 @@ To test offline behavior, cut the simulator's network, for example with the **10
   <Frame caption="Before: recording an outcome with no network shows an error.">
     ![Baseline stop page with the error banner Couldn't reach the server](/images/migration-guides/sql-server-maui/before-offline-record.png)
   </Frame>
+
   <Frame caption="After: the delivery is saved and queued for upload.">
     ![Stop page showing the delivered status and the line Offline. Changes pending.](/images/migration-guides/sql-server-maui/after-offline-record.png)
   </Frame>
+
   <Frame caption="Before: opening the app with no network shows an empty route.">
     ![Baseline empty route list with an error banner](/images/migration-guides/sql-server-maui/before-offline-cold-start.png)
   </Frame>
+
   <Frame caption="After: the full route comes from the local database.">
     ![Full route list shown while offline, with the line Offline. Changes pending.](/images/migration-guides/sql-server-maui/after-offline-cold-start.png)
   </Frame>
@@ -695,7 +708,7 @@ See [SQL Server Specifics](/maintenance-ops/implementing-schema-changes#sql-serv
 
 [CommunityToolkit Datasync](https://communitytoolkit.github.io/Datasync/) and [Dotmim.Sync](https://github.com/Mimetis/Dotmim.Sync) are the other common options for MAUI and SQL Server.
 
-| | Datasync | Dotmim.Sync | PowerSync |
+|  | Datasync | Dotmim.Sync | PowerSync |
 | --- | --- | --- | --- |
 | Changes to your schema | `Id`, `UpdatedAt`, and `Version` on every entity. Offline clients see deletes only with soft delete | Change Tracking enabled | CDC enabled. Tables unchanged |
 | Backend API code | A table controller per table | None. Writes go database to database, bypass your backend API, and conflicts resolve per row | Your existing backend API |
@@ -709,18 +722,23 @@ See [SQL Server Specifics](/maintenance-ops/implementing-schema-changes#sql-serv
   <Card title="Companion Repo" icon="github" href="https://github.com/ckritzinger/sql_server_courier_example">
     The `main` branch is the REST app, and `powersync-existing-api` adds PowerSync.
   </Card>
+
   <Card title="SQL Server Setup" icon="database" href="/configuration/source-db/setup#sql-server">
     Full SQL Server source database setup.
   </Card>
+
   <Card title=".NET SDK (Beta)" icon="code" href="/client-sdks/reference/dotnet">
     Reference for the .NET SDK.
   </Card>
+
   <Card title="Use Your Existing API" icon="upload" href="/handling-writes/write-path/existing-api">
     How to upload local writes through the API you already have.
   </Card>
+
   <Card title="Offline-First Architecture Jargon" icon="book" href="/resources/architecture-guides/offline-first-architecture">
     The terms and patterns behind this guide.
   </Card>
+
   <Card title="Offline-First POS Architecture" icon="book" href="/resources/architecture-guides/offline-first-pos">
     The same patterns applied to a retail point-of-sale app.
   </Card>

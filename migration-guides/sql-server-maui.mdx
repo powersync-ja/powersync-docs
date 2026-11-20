@@ -333,24 +333,23 @@ After you change this file, restart the PowerSync Service container. A change to
 
 ## Step 4: Swap the App's Reads to Local SQLite
 
-Add version 1.0.0 of the `PowerSync.Common` and `PowerSync.Maui` NuGet packages.
+Add version 1.0.1-rc.1 of the `PowerSync.Common` NuGet package. It includes the native libraries for iOS and Android, so you don't need the `PowerSync.Maui` package.
 
-<Note>To run on the iOS simulator, version 1.0.0 currently needs a [`.csproj` workaround](https://github.com/ckritzinger/sql_server_courier_example/blob/powersync-existing-api/app/CourierApp/CourierApp.csproj), because the package links the SQLite build for physical devices.</Note>
-
-{/* TODO: Before publishing, check whether a PowerSync.Maui release after 1.0.0 includes the iOS simulator fix. If it does, remove the workaround sentence and update the version. */}
+{/* TODO: When PowerSync.Common 1.0.1 is released, change the version above to 1.0.1 and update the companion repo to match. */}
 
 ### Define the Schema
 
-The client-side schema is one C# class for every local table. These classes also serve as query result types, and replace the backend API's DTOs:
+The client-side schema is one C# class for every local table. The `[Column]` attributes declare the local columns. Each class also implements `IFromRow<T>`, so it can serve as a query result type, and the classes replace the backend API's DTOs:
 
 ```csharp AppSchema.cs
 using System.Globalization;
+using PowerSync.Common.DB;
 using PowerSync.Common.DB.Schema.Attributes;
 using PS = PowerSync.Common.DB.Schema;
 
 [Table("stops")]
 [Index("route", ["route_date", "sequence"])]
-public class Stop
+public class Stop : IFromRow<Stop>
 {
     [Column("id")] public string Id { get; set; } = "";
     [Column("driver_id")] public string DriverId { get; set; } = "";
@@ -360,11 +359,23 @@ public class Stop
     [Column("address")] public string Address { get; set; } = "";
     [Column("status")] public string Status { get; set; } = "";
     [Column("updated_at")] public string UpdatedAt { get; set; } = "";
+
+    public static Stop FromRow(IQueryRow row) => new()
+    {
+        Id = row.GetString("id"),
+        DriverId = row.GetString("driver_id"),
+        RouteDate = row.GetString("route_date"),
+        Sequence = row.GetInt("sequence"),
+        Recipient = row.GetString("recipient"),
+        Address = row.GetString("address"),
+        Status = row.GetString("status"),
+        UpdatedAt = row.GetString("updated_at"),
+    };
 }
 
 [Table("deliveries")]
 [Index("stop_recorded", ["stop_id", "recorded_at"])]
-public class Delivery
+public class Delivery : IFromRow<Delivery>
 {
     [Column("id")] public string Id { get; set; } = "";
     [Column("stop_id")] public string StopId { get; set; } = "";
@@ -372,6 +383,16 @@ public class Delivery
     [Column("outcome")] public string Outcome { get; set; } = "";
     [Column("note")] public string? Note { get; set; }
     [Column("recorded_at")] public string RecordedAt { get; set; } = "";
+
+    public static Delivery FromRow(IQueryRow row) => new()
+    {
+        Id = row.GetString("id"),
+        StopId = row.GetString("stop_id"),
+        DriverId = row.GetString("driver_id"),
+        Outcome = row.GetString("outcome"),
+        Note = row.GetStringOrNull("note"),
+        RecordedAt = row.GetString("recorded_at"),
+    };
 }
 
 public static class AppSchema
@@ -401,7 +422,7 @@ public Database(CourierConnector connector, ILogger<Database> logger)
     _connector = connector;
     Db = new PowerSyncDatabase(new PowerSyncDatabaseOptions
     {
-        Database = new MAUISQLiteDBOpenFactory(new MDSQLiteOpenFactoryOptions
+        Database = new MDSQLiteDBOpenFactory(new MDSQLiteOpenFactoryOptions
         {
             DbFilename = Path.Combine(FileSystem.AppDataDirectory, "courier.db"),
         }),

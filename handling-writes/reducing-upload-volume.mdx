@@ -1,0 +1,108 @@
+---
+title: "Reducing Upload Volume"
+description: "Reduce the number of mutations and requests the client SDK uploads to your backend."
+keywords:
+  - "upload queue"
+  - "merge"
+  - "squash"
+  - "compact"
+  - "batch"
+  - "uploadData"
+---
+
+By default, the client SDK places every local write in the [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) as its own mutation (a `PUT`, `PATCH` or `DELETE`), and your `uploadData()` uploads each one. Mutations to the same row are not merged. In many apps the queue stays small, but an app that updates the same rows often, or a device that was offline for a long time, can build up thousands of mutations. Your backend then has to apply every one of them.
+
+Fewer mutations means less load in three places. Your backend API handles fewer requests, and your source database applies fewer writes. The PowerSync Service also has less to do, because it replicates every write from your source database and syncs it to each client that has the row.
+
+## Approaches
+
+There are three approaches, and you can combine them.
+
+| Approach | Your backend API | Your source database | PowerSync Service | Backend gets every change |
+| --- | --- | --- | --- | --- |
+| [1. Uploading in batches](#1-uploading-in-batches) | Fewer requests | Same number of writes | Same work | Yes |
+| [2. Merging mutations before uploading](#2-merging-mutations-before-uploading) | Fewer or smaller requests | Fewer writes | Less to replicate and sync | No, only the latest value of each column |
+| [3. Using local-only tables](#3-using-local-only-tables) | Fewer requests | Fewer writes | Less to replicate and sync | No, only the latest value you copy |
+
+<Tip>
+  Before you pick one, check whether your app can write less often. For example, save a text field when the user stops typing instead of on every keystroke. You can also set `ignoreEmptyUpdates` on a table, so that an `UPDATE` that doesn't change any values doesn't add a mutation. See [Advanced Schema Options](/client-sdks/advanced/custom-types-arrays-and-json#advanced-schema-options-to-process-writes).
+</Tip>
+
+### 1. Uploading in Batches
+
+Each mutation is one change to one row. The client SDK groups the mutations from one local database transaction into one transaction in the upload queue. For example, if your app creates an order and its three line items in one `writeTransaction()`, the upload queue holds one transaction with four mutations. A single `execute()` outside `writeTransaction()` is a transaction of its own. See [Write Operations](/handling-writes/write-path/concepts#write-operations).
+
+`getNextCrudTransaction()` returns one transaction at a time, so an `uploadData()` that uses it sends one request per transaction. If your app writes one row at a time, that's one request per row. To send fewer requests, read several transactions with `getCrudTransactions()` and send them to a batch endpoint in one request. Each transaction still arrives whole, so your backend can save the order and all its line items together, or none of them. The TypeScript connector in the [Reference Write Implementation](/handling-writes/write-path/reference-write-implementation#how-uploads-are-applied) works this way.
+
+`getCrudBatch()` returns up to a set number of mutations, 100 by default, and doesn't look at transactions. A batch can hold mutations from several transactions, and it can end partway through one. In the example above, the order and two of its line items could arrive in one request, and the last line item in the next. Use `getNextCrudTransaction()` or `getCrudTransactions()` by default. If your backend doesn't need transactions kept together, for example when you [merge mutations](#2-merging-mutations-before-uploading), you can use `getCrudBatch()` instead.
+
+Batching lowers the number of requests to your backend API, but your source database still applies every mutation. If your connector sends one request per mutation, as the Supabase connector example does, you can also group a transaction's mutations into fewer requests, for example one upsert per table. [Improve Supabase Connector](/integrations/supabase/connector-performance#batching-strategies) shows two approaches.
+
+Uploads are also [throttled](/configuration/app-backend/client-side-integration#throttling). While the device is online, a longer throttle interval lets more mutations build up between uploads, so each batch is bigger. The trade-off is that each write can take up to that much longer to reach your backend.
+
+### 2. Merging Mutations Before Uploading
+
+You can merge mutations in your `uploadData()` before you send them. For example, if a user renames a list 50 times while offline, your backend API receives one update with the last name, your source database applies one write, and the PowerSync Service replicates and syncs one change instead of 50.
+
+The example below merges all updates (`PATCH`) to a row into one update with the latest value of each column. It sends the merged update where the row's last update was, so a value never reaches your backend before the device wrote it. Inserts (`PUT`) and deletes (`DELETE`) are sent where they were queued, so a row is still created before anything that references it. An update after an insert isn't merged into the insert, because some backends only insert on `PUT`. A delete of any row stops merging, because it can cascade to other rows on your backend.
+
+Mutations only leave the upload queue when you call `complete()`. If the upload fails, nothing is removed, so the retry reads the same mutations again and merges them the same way. If more mutations were written in the meantime, the retry also reads those, up to the batch size. After a successful upload, `complete()` only removes the mutations in that batch, so mutations written during the upload are left for the next one.
+
+The example reads mutations with `getCrudBatch()`, so it doesn't keep transactions together. Merging also moves updates out of their original transactions. After merging, your backend can't save a transaction as a whole, such as an order and all its line items. If your backend needs that, don't merge mutations.
+
+```js
+import { UpdateType } from '@powersync/web'; // Or @powersync/react-native, @powersync/node
+
+function mergeMutations(mutations) {
+  const merged = [];
+  // For each row, where its update is in `merged`, so its next update can merge into it.
+  const openUpdates = new Map();
+
+  for (const { op, table, id, opData } of mutations) {
+    const key = `${table}/${id}`;
+    if (op === UpdateType.PATCH) {
+      const index = openUpdates.get(key);
+      const data = index === undefined ? opData : { ...merged[index].data, ...opData };
+      if (index !== undefined) merged[index] = null;
+      merged.push({ op, table, id, data });
+      openUpdates.set(key, merged.length - 1);
+    } else {
+      // A delete can cascade to other rows on your backend, so no update merges past it.
+      // Some backends only insert on PUT, so updates after an insert don't merge into it.
+      if (op === UpdateType.DELETE) openUpdates.clear();
+      else openUpdates.delete(key);
+      merged.push({ op, table, id, data: opData });
+    }
+  }
+  return merged.filter((mutation) => mutation !== null);
+}
+
+async function uploadData(database) {
+  // Merging only happens within one batch, so read more than the default of 100 mutations.
+  const batch = await database.getCrudBatch(1000);
+  if (!batch) return;
+
+  await backendApi.uploadChanges(mergeMutations(batch.crud));
+  await batch.complete();
+}
+```
+
+`backendApi` stands for your own API client. Use a batch size your backend can handle in one request.
+
+Before you merge mutations, check that your backend works with them.
+
+- Your backend needs to apply mutations in the order it receives them, and an update should only change the columns it contains.
+- If your backend rejects a merged update, all the updates merged into it are rejected with it. See [Rejected Writes](/handling-writes/write-path/concepts#rejected-writes).
+- A merged update can arrive after mutations that were queued between its updates. If two rows swap a unique value while offline, your backend can reject the upload, unless it applies the whole upload in one transaction and checks unique constraints at the end.
+- Don't merge tables where each update matters on its own, for example when a trigger writes an audit row for every update. Skip those tables in `mergeMutations()`.
+- Merged mutations don't keep operation IDs (`clientId`), metadata or previous values. If your backend deduplicates by operation ID, or your app uses `trackMetadata` or `trackPreviousValues` (`trackPrevious` in the JavaScript SDKs), don't merge those mutations.
+
+<Warning>
+  **Don't merge mutations inside the upload queue.** Avoid merging mutations in the upload queue (the `ps_crud` table) itself, for example with a trigger. Your `uploadData()` may already have read the mutation you merge into, and `complete()` then removes it along with the new value. Deleting an earlier update instead loses any columns that only it changed.
+</Warning>
+
+### 3. Using Local-Only Tables
+
+Writes to [local-only tables](/client-sdks/advanced/local-only-usage#local-only-tables) don't go into the upload queue. If data changes often but your backend only needs its latest value, such as a progress value, write it to a local-only table instead. Then copy the latest value to your synced table with a single `UPDATE`, for example every few minutes or when the device reconnects. Only that one `UPDATE` reaches your backend API, your source database and the PowerSync Service.
+
+This doesn't work if your backend needs every change.

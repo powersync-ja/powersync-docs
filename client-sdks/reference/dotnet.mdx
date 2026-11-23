@@ -264,23 +264,38 @@ The most commonly used CRUD functions to interact with your SQLite data are:
 
 ### Mapping Rows to Objects
 
-By default, the read methods return rows. `Get` and `GetOptional` return a single `IQueryRow`, and `GetAll` and `Watch` return a `QueryResult` with the rows in its `Rows` property.
+By default, the read methods return rows. Each row holds the values of the columns that your query selects. Unlike a C# object, a row has no properties such as `todo.Description`. Instead, you read each value by its column name with the method for its type, such as `GetString("description")`.
 
-Read a row's columns by name with the method for the column type, such as `GetString("name")`. For columns that can be `NULL`, use the `OrNull` methods. The other methods throw an exception for `NULL` values.
+`Get` and `GetOptional` return a single row. `GetAll` and `Watch` return a `QueryResult`, with the rows in its `Rows` property:
 
-Rows work well for dynamic queries, where you don't know the columns ahead of time. To work with C# objects instead, such as a list of todos, pass the read method a mapper function or a result type:
+```cs
+QueryResult result = await db.GetAll("SELECT description, completed_at FROM todos");
 
-- **Mapper function:** For one-off queries, or to get a single value from each row, pass a function that converts each row.
-- **Result type:** To map a table to a class that you use throughout your app, implement `IFromRow<T>` on the class and pass the class as the type argument. The class then converts each row itself, so you don't pass a function with each query.
+foreach (IQueryRow todo in result.Rows)
+{
+    string description = todo.GetString("description");
+    // completed_at is NULL until the todo is completed, so read it with an OrNull method
+    DateTime? completedAt = todo.GetDateTimeOrNull("completed_at");
+}
+```
+
+Rows work well for dynamic queries, where you don't know the shape of the data ahead of time. When you do know it, as in the example above, you usually want a list of todos that you can pass to the rest of your app, such as your UI.
+
+Instead of building that list yourself in a loop, tell the read method how to convert each row, and it returns the list. You can do this in two ways:
+
+- **Mapper function:** Pass the read method a function that converts a row. Use it for one-off queries, or to get a single value from each row.
+- **Result type:** Implement `IFromRow<T>` on your class, so the class converts rows itself, and pass the class as the type argument. Use it to map a table to a class that you use throughout your app, since every query reuses the same conversion.
 
 <Tabs>
   <Tab title="Mapper Function">
     ```cs
-    // Map each row to a tuple, without defining a class
-    var lists = await db.GetAll(
-        "SELECT id, name FROM lists",
+    // Convert each row to a tuple, without defining a class
+    var todos = await db.GetAll(
+        "SELECT description, completed_at FROM todos",
         null,
-        row => (Id: row.GetString("id"), Name: row.GetString("name"))
+        row => (
+            Description: row.GetString("description"),
+            CompletedAt: row.GetDateTimeOrNull("completed_at"))
     );
     ```
   </Tab>
@@ -288,29 +303,32 @@ Rows work well for dynamic queries, where you don't know the columns ahead of ti
     ```cs
     using PowerSync.Common.DB;
     
-    public record ListResult(string Id, string Name, string OwnerId, string CreatedAt) : IFromRow<ListResult>
+    public class TodoItem : IFromRow<TodoItem>
     {
-        public static ListResult FromRow(IQueryRow row) => new(
-            row.GetString("id"),
-            row.GetString("name"),
-            row.GetString("owner_id"),
-            row.GetString("created_at"));
+        public string Description { get; set; } = "";
+        public DateTime? CompletedAt { get; set; }
+    
+        public static TodoItem FromRow(IQueryRow row) => new()
+        {
+            Description = row.GetString("description"),
+            CompletedAt = row.GetDateTimeOrNull("completed_at")
+        };
     }
     
-    List<ListResult> lists = await db.GetAll<ListResult>("SELECT * FROM lists");
+    List<TodoItem> todos = await db.GetAll<TodoItem>("SELECT description, completed_at FROM todos");
     ```
   </Tab>
 </Tabs>
 
 #### Generating Row Mappers
 
-If you have many result types, the [`PowerSync.Common.SourceGenerators`](https://github.com/powersync-ja/powersync-dotnet/tree/main/PowerSync/PowerSync.Common.SourceGenerators) package can generate their mapping code at compile time, so you don't need to write it yourself. This package is currently in [alpha](/resources/feature-status).
+If you have many result types, the [`PowerSync.Common.SourceGenerators`](https://github.com/powersync-ja/powersync-dotnet/tree/main/PowerSync/PowerSync.Common.SourceGenerators) package can generate the conversion for each one at compile time, so you don't need to write it yourself. This package is currently in [alpha](/resources/feature-status).
 
 ```bash
 dotnet add package PowerSync.Common.SourceGenerators --prerelease
 ```
 
-Mark a `partial` class, struct, or record with `[GenerateSqlMapper]`:
+Mark a `partial` class, struct, or record with `[GenerateSqlMapper]`. This example is the `TodoItem` result type from above, without the conversion:
 
 ```cs
 using PowerSync.Common.DB;
@@ -319,9 +337,6 @@ using PowerSync.Common.DB.Schema.Attributes;
 [GenerateSqlMapper]
 public partial class TodoItem
 {
-    [Column("id")]
-    public string Id { get; set; } = "";
-
     [Column("description")]
     public string Description { get; set; } = "";
 
@@ -329,7 +344,7 @@ public partial class TodoItem
     public DateTime? CompletedAt { get; set; }
 }
 
-List<TodoItem> todos = await db.GetAll<TodoItem>("SELECT * FROM todos");
+List<TodoItem> todos = await db.GetAll<TodoItem>("SELECT description, completed_at FROM todos");
 ```
 
 Each property reads the column named by its `[Column]` attribute, the same attribute that your schema classes use. Without the attribute, the property reads the column with the same name, ignoring case. The generator does not convert between naming styles, so `CompletedAt` needs `[Column("completed_at")]` to read the `completed_at` column. For the full mapping rules and supported types, see the [package README](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common.SourceGenerators/README.md).
@@ -339,8 +354,8 @@ Each property reads the column named by its `[Column]` attribute, the same attri
 The `Get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `GetOptional` to return a single optional result (returns `null` if no result is found).
 
 ```cs
-// Find a list by ID
-var list = await db.Get<ListResult>("SELECT * FROM lists WHERE id = ?", [listId]);
+// Find a todo by ID
+var todo = await db.Get<TodoItem>("SELECT * FROM todos WHERE id = ?", [todoId]);
 ```
 
 ### Querying Items (PowerSync.GetAll)

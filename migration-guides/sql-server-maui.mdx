@@ -68,7 +68,7 @@ The REST-based app fails in three ways:
 - If the driver opens the app while offline, the screen is empty, so they can't see where to go.
 - If dispatch cancels a stop, it still shows as assigned until the driver refreshes. A delivery attempt on it then fails with a 409.
 
-Dispatch canceled stop 4 after the driver opened it. The page still shows the stop as assigned. When the driver taps **Delivered**, the backend API returns 409. In the same way, the route list keeps showing a canceled stop as assigned until the driver pulls to refresh.
+In the example scenario below, dispatch canceled stop 4 after the driver opened it. The page still shows the stop as assigned. When the driver taps **Delivered**, the backend API returns 409. In the same way, the route list keeps showing a canceled stop as assigned until the driver pulls to refresh.
 
 <Columns cols={3}>
   <Frame caption="Stop 4, canceled by dispatch, still shows as assigned.">
@@ -161,12 +161,12 @@ flowchart LR
 |  | Before | After |
 | --- | --- | --- |
 | Reads | `HttpClient` calls to REST | Watched local SQLite queries. The UI updates live |
-| Writes | `POST` to the backend API, which fails offline | Local write adds to the [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue). The same `POST` is sent once the device is online |
+| Writes | `POST` to the backend API, which fails offline | Write to SQLite. Define the `UploadData()` function to `POST` to the backend API. PowerSync automatically adds writes to its [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) and invokes and retries `UploadData()` as needed. |
 | Dispatch changes | Seen after a refresh | Appear on the device in a few seconds |
 | IDs | Server `NEWSEQUENTIALID()` | Generated on the device (same column type) |
 | Auth | RS256 and JWKS | Unchanged. The PowerSync Service reads the same JWKS |
 | SQL Server | Plain tables | Identical tables, CDC enabled |
-| Backend API | REST endpoints | Stays. One endpoint accepts the device's ID and tap time, and treats a repeat as already done. Read endpoints are no longer needed |
+| Backend API | REST endpoints | Read endpoints are no longer needed. Write endpoint stays (see above). |
 
 ## Step 1: Prepare SQL Server for CDC
 
@@ -538,7 +538,7 @@ The device generates the delivery's ID with `Guid.NewGuid()`, in upper case. Bec
 
 ### Upload Through the Existing API
 
-The write goes into the [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue). The client SDK calls the connector's `UploadData()`, which posts the delivery to the existing endpoint.
+The PowerSync client SDK automatically places writes into its [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue), and calls the connector's `UploadData()`, which posts the delivery to the existing API endpoint.
 
 ```csharp CourierConnector.cs
 public async Task UploadData(IPowerSyncDatabase database)
@@ -689,7 +689,7 @@ To test offline behavior, cut the simulator's network, for example with the **10
 </Columns>
 
 <Warning>
-  The client SDK calls `FetchCredentials()` on every connect, and in this example that calls your backend API's token endpoint. If your backend API is down, the app can't connect to the PowerSync Service either. Reads still work, because they're local. To keep sync running through an API outage, cache the token on the device and return it from `FetchCredentials()` until it expires.
+  The PowerSync client SDK calls `FetchCredentials()` on every connect, and in this example that calls your backend API's token endpoint. If your backend API is down, the app can't connect to the PowerSync Service either. Reads still work, because they're local. To keep sync running through an API outage, cache the token on the device and return it from `FetchCredentials()` until it expires.
 </Warning>
 
 ## Schema Changes
@@ -714,7 +714,7 @@ See [SQL Server Specifics](/maintenance-ops/implementing-schema-changes#sql-serv
 | Backend API code | A table controller per table | None. Writes go database to database, bypass your backend API, and conflicts resolve per row | Your existing backend API |
 | SQL Server changes reach the device | When the app pulls | When the app syncs | Streamed |
 | SQL Server editions | Anything EF Core supports | Express works (Change Tracking) | 2019 and later. No Express |
-| Platforms and maturity | .NET apps. Blazor is online only | .NET. Mostly one maintainer | MAUI and other platforms. Beta, and a service to run |
+| Platforms | .NET apps. Blazor is online only | .NET. | MAUI and other platforms. |
 
 ## Next Steps
 

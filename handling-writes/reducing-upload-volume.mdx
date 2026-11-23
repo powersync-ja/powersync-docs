@@ -30,7 +30,13 @@ There are three approaches, and you can combine them.
 
 ### 1. Uploading in Batches
 
-`getNextCrudTransaction()` returns one transaction at a time, so if each write is its own transaction, your `uploadData()` sends one request per write. `getCrudBatch()` returns up to a set number of mutations across transactions, which you can send to a batch endpoint in one request. Your backend API gets fewer requests, but your source database still applies every mutation.
+Each mutation is one change to one row. The client SDK groups the mutations from one local database transaction into one transaction in the upload queue. For example, if your app creates an order and its three line items in one `writeTransaction()`, the upload queue holds one transaction with four mutations. A single `execute()` outside `writeTransaction()` is a transaction of its own. See [Write Operations](/handling-writes/write-path/concepts#write-operations).
+
+`getNextCrudTransaction()` returns one transaction at a time, so an `uploadData()` that uses it sends one request per transaction. If your app writes one row at a time, that's one request per row. To send fewer requests, read several transactions with `getCrudTransactions()` and send them to a batch endpoint in one request. Each transaction still arrives whole, so your backend can save the order and all its line items together, or none of them. The TypeScript connector in the [Reference Write Implementation](/handling-writes/write-path/reference-write-implementation#how-uploads-are-applied) works this way.
+
+`getCrudBatch()` returns up to a set number of mutations, 100 by default, and doesn't look at transactions. A batch can hold mutations from several transactions, and it can end partway through one. In the example above, the order and two of its line items could arrive in one request, and the last line item in the next. Use `getNextCrudTransaction()` or `getCrudTransactions()` by default. If your backend doesn't need transactions kept together, for example when you [merge mutations](#2-merging-mutations-before-uploading), you can use `getCrudBatch()` instead.
+
+Batching lowers the number of requests to your backend API, but your source database still applies every mutation. If your connector sends one request per mutation, as the Supabase connector example does, you can also group a transaction's mutations into fewer requests, for example one upsert per table. [Improve Supabase Connector](/integrations/supabase/connector-performance#batching-strategies) shows two approaches.
 
 Uploads are also [throttled](/configuration/app-backend/client-side-integration#throttling). While the device is online, a longer throttle interval lets more mutations build up between uploads, so each batch is bigger. The trade-off is that each write can take up to that much longer to reach your backend.
 
@@ -40,7 +46,9 @@ You can merge mutations in your `uploadData()` before you send them. For example
 
 The example below merges all updates (`PATCH`) to a row into one update with the latest value of each column. It sends the merged update where the row's last update was, so a value never reaches your backend before the device wrote it. Inserts (`PUT`) and deletes (`DELETE`) are sent where they were queued, so a row is still created before anything that references it. An update after an insert isn't merged into the insert, because some backends only insert on `PUT`. A delete of any row stops merging, because it can cascade to other rows on your backend.
 
-The upload queue only changes when you call `complete()`. If the upload fails, nothing is removed, so the retry reads the same mutations again, along with any written since, and merges them the same way. After a successful upload, `complete()` only removes the mutations in that batch, so mutations written during the upload are left for the next one.
+Mutations only leave the upload queue when you call `complete()`. If the upload fails, nothing is removed, so the retry reads the same mutations again and merges them the same way. If more mutations were written in the meantime, the retry also reads those, up to the batch size. After a successful upload, `complete()` only removes the mutations in that batch, so mutations written during the upload are left for the next one.
+
+The example reads mutations with `getCrudBatch()`, so it doesn't keep transactions together. Merging also moves updates out of their original transactions. After merging, your backend can't save a transaction as a whole, such as an order and all its line items. If your backend needs that, don't merge mutations.
 
 ```js
 import { UpdateType } from '@powersync/web'; // Or @powersync/react-native, @powersync/node
@@ -87,7 +95,7 @@ Before you merge mutations, check that your backend works with them.
 - If your backend rejects a merged update, all the updates merged into it are rejected with it. See [Rejected Writes](/handling-writes/write-path/concepts#rejected-writes).
 - A merged update can arrive after mutations that were queued between its updates. If two rows swap a unique value while offline, your backend can reject the upload, unless it applies the whole upload in one transaction and checks unique constraints at the end.
 - Don't merge tables where each update matters on its own, for example when a trigger writes an audit row for every update. Skip those tables in `mergeMutations()`.
-- Merged mutations don't keep the original transaction grouping, operation IDs (`clientId`), metadata or previous values. If your backend deduplicates by operation ID, or your app uses `trackMetadata` or `trackPreviousValues`, don't merge those mutations.
+- Merged mutations don't keep operation IDs (`clientId`), metadata or previous values. If your backend deduplicates by operation ID, or your app uses `trackMetadata` or `trackPreviousValues` (`trackPrevious` in the JavaScript SDKs), don't merge those mutations.
 
 <Warning>
   **Don't merge mutations inside the upload queue.** Avoid merging mutations in the upload queue (the `ps_crud` table) itself, for example with a trigger. Your `uploadData()` may already have read the mutation you merge into, and `complete()` then removes it along with the new value. Deleting an earlier update instead loses any columns that only it changed.

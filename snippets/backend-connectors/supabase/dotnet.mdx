@@ -1,0 +1,234 @@
+```csharp PowerSyncConnector.cs
+namespace CommandLine;
+
+using System.Text.RegularExpressions;
+using CommandLine.Helpers;
+using CommandLine.Models.Supabase;
+using CommandLine.Utils;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using PowerSync.Common.Client;
+using PowerSync.Common.Client.Connection;
+using PowerSync.Common.DB.Crud;
+using Supabase;
+using Supabase.Gotrue;
+using Supabase.Postgrest.Exceptions;
+using Supabase.Postgrest.Interfaces;
+
+public class SupabaseConnector : IPowerSyncBackendConnector
+{
+    /// <summary>
+    /// Postgres error codes that a retry can never fix, so the transaction is discarded
+    /// instead of being retried forever.
+    /// </summary>
+    private static readonly Regex[] FatalResponseCodes =
+    [
+        // Class 22 — Data Exception
+        // Examples include data type mismatch.
+        new Regex("^22...$"),
+        // Class 23 — Integrity Constraint Violation.
+        // Examples include NOT NULL, FOREIGN KEY and UNIQUE violations.
+        new Regex("^23...$"),
+        // INSUFFICIENT PRIVILEGE - typically a row-level security violation
+        new Regex("^42501$")
+    ];
+
+    private readonly Supabase.Client _supabase;
+    private readonly Config _config;
+    private Session? _currentSession;
+
+    public Session? CurrentSession
+    {
+        get => _currentSession;
+        set
+        {
+            _currentSession = value;
+
+            if (_currentSession?.User?.Id != null)
+            {
+                UserId = _currentSession.User.Id;
+            }
+        }
+    }
+
+    public string UserId { get; private set; } = "";
+
+    public bool Ready { get; private set; }
+
+    public SupabaseConnector(Config config)
+    {
+        _config = config;
+        _supabase = new Supabase.Client(config.SupabaseUrl, config.SupabaseAnonKey, new SupabaseOptions
+        {
+            AutoConnectRealtime = true
+        });
+
+        _ = _supabase.InitializeAsync();
+    }
+
+    public async Task Login(string email, string password)
+    {
+        var response = await _supabase.Auth.SignInWithPassword(email, password);
+        if (response?.User == null || response.AccessToken == null)
+        {
+            throw new Exception("Login failed.");
+        }
+
+        CurrentSession = response;
+    }
+
+    public Task<PowerSyncCredentials?> FetchCredentials()
+    {
+        PowerSyncCredentials? credentials = null;
+
+        var sessionResponse = _supabase.Auth.CurrentSession;
+        if (sessionResponse?.AccessToken != null)
+        {
+            credentials = new PowerSyncCredentials(_config.PowerSyncUrl, sessionResponse.AccessToken);
+        }
+
+        return Task.FromResult(credentials);
+    }
+
+    public async Task UploadData(IPowerSyncDatabase database)
+    {
+        var transaction = await database.GetNextCrudTransaction();
+        if (transaction == null) return;
+
+        CrudEntry? lastOp = null;
+        try
+        {
+            foreach (var op in transaction.Crud)
+            {
+                lastOp = op;
+                switch (op.Op)
+                {
+                    case UpdateType.PUT:
+                        if (op.Table.ToLower().Trim() == "lists")
+                        {
+                            var model = JsonConvert.DeserializeObject<List>(JsonConvert.SerializeObject(op.OpData)) ?? throw new InvalidOperationException("Model is null.");
+                            model.Id = op.Id;
+
+                            await _supabase.From<List>().Upsert(model);
+                        }
+                        else if (op.Table.ToLower().Trim() == "todos")
+                        {
+                            var model = JsonConvert.DeserializeObject<Todo>(JsonConvert.SerializeObject(op.OpData)) ?? throw new InvalidOperationException("Model is null.");
+                            model.Id = op.Id;
+
+                            await _supabase.From<Todo>().Upsert(model);
+                        }
+                        break;
+
+                    case UpdateType.PATCH:
+                        if (op.OpData is null || op.OpData.Count == 0)
+                        {
+                            Console.WriteLine("PATCH skipped: No data to update.");
+                            break;
+                        }
+
+                        if (op.Table.ToLower().Trim() == "lists")
+                        {
+                            // Create an update query for the 'List' table where the 'Id' matches 'op.Id'
+                            IPostgrestTable<List> updateQuery = _supabase
+                            .From<List>()
+                            .Where(x => x.Id == op.Id);
+
+                            // Loop through each key-value pair in the operation data (op.OpData) to apply updates dynamically
+                            foreach (var kvp in op.OpData)
+                            {
+                                // Apply the "SET" operation for each key-value pair. 
+                                // The key represents the JSON property name and the value is the new value to be set
+                                updateQuery = SupabasePatchHelper.ApplySet(updateQuery, kvp.Key, kvp.Value);
+                            }
+
+                            _ = await updateQuery.Update();
+                        }
+                        else if (op.Table.ToLower().Trim() == "todos")
+                        {
+                            // Create an update query for the 'Todo' table where the 'Id' matches 'op.Id'
+                            IPostgrestTable<Todo> updateQuery = _supabase
+                                .From<Todo>()
+                                .Where(x => x.Id == op.Id);
+
+                            // Loop through each key-value pair in the operation data (op.OpData) to apply updates dynamically
+                            foreach (var kvp in op.OpData)
+                            {
+                                // Apply the "SET" operation for each key-value pair. 
+                                // The key represents the JSON property name and the value is the new value to be set
+                                updateQuery = SupabasePatchHelper.ApplySet(updateQuery, kvp.Key, kvp.Value);
+                            }
+
+                            _ = await updateQuery.Update();
+                        }
+                        break;
+
+                    case UpdateType.DELETE:
+                        if (op.Table.ToLower().Trim() == "lists")
+                        {
+                            await _supabase
+                            .From<List>()
+                            .Where(x => x.Id == op.Id)
+                            .Delete();
+                        }
+                        else if (op.Table.ToLower().Trim() == "todos")
+                        {
+                            await _supabase
+                            .From<Todo>()
+                            .Where(x => x.Id == op.Id)
+                            .Delete();
+                        }
+                        break;
+
+                    default:
+                        throw new InvalidOperationException("Unknown operation type.");
+                }
+            }
+
+            await transaction.Complete();
+        }
+        catch (PostgrestException ex)
+        {
+            var errorCode = PostgresErrorCode(ex);
+            if (errorCode != null && FatalResponseCodes.Any(pattern => pattern.IsMatch(errorCode)))
+            {
+                // Instead of blocking the queue with these errors,
+                // discard the (rest of the) transaction.
+                //
+                // Note that these errors typically indicate a bug in the application.
+                // If protecting against data loss is important, save the failing records
+                // elsewhere instead of discarding, and/or notify the user.
+                Console.WriteLine($"Data upload error - discarding {lastOp}: {ex.Message}");
+                await transaction.Complete();
+                return;
+            }
+
+            // Error may be retryable - e.g. network error or temporary server error.
+            // Throwing an error here causes this call to be retried after a delay.
+            Console.WriteLine($"Error during upload: {ex.Message}");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Reads the Postgres error code from a PostgREST error response. PostgrestException does not
+    /// expose the code directly, so it is read from the response body.
+    /// </summary>
+    private static string? PostgresErrorCode(PostgrestException exception)
+    {
+        if (string.IsNullOrWhiteSpace(exception.Content))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JObject.Parse(exception.Content!)["code"]?.ToString();
+        }
+        catch (JsonReaderException)
+        {
+            return null;
+        }
+    }
+}
+```

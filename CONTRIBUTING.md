@@ -38,6 +38,8 @@ Thanks for contributing to our documentation!
 
 Once your PR is approved and merged to `main`, your changes will be automatically published to https://docs.powersync.com.
 
+Files in `snippets/backend-connectors/`, `snippets/write-path/*-prompt.mdx`, and `images/handling-writes/` also feed the [`@powersync/docs-content`](/packages/docs-content/README.md) package, which the PowerSync Dashboard and other projects use. Maintainers release it separately.
+
 ## Getting Help
 
 If you have questions or need help:

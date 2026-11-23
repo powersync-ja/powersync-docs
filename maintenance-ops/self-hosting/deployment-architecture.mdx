@@ -137,7 +137,16 @@ Deploy the same components as the primary instance: replication containers, API 
 - **Use separate bucket storage.** Each instance needs its own bucket storage database and, if enabled, its own [S3 bucket or prefix](/sync/advanced/storage-version-4#self-hosted-s3-setup). Two instances cannot share bucket storage.
 - **Keep the standby running.** A running standby stays up to date with the source database, so clients can connect to it as soon as you switch. A standby that starts after the primary fails must complete its initial replication first.
 - **Run the same Sync Config.** Deploy [Sync Config](/sync/streams/overview) changes to one instance at a time. See [Sync Config Deployments](#sync-config-deployments).
-- **Accept the same tokens.** Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens that your backend issues: use the same keys and the same [`audience`](/configuration/auth/custom#self-hosted-configuration) values on both. If your tokens use an instance URL as the audience, add both instance URLs to `audience` on each instance.
+- **Accept the same tokens.** Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens that your backend issues. Use the same keys on both instances, and choose a [token audience](#token-audience) that both instances accept.
+
+#### Token Audience
+
+A self-hosted instance does not compare a token's `aud` claim with its own URL. The instance accepts a token if the `aud` claim matches one of the values in [`client_auth.audience`](/configuration/auth/custom#self-hosted-configuration) in its config file. Use one of these options so that a token stays valid after you switch clients:
+
+- **One shared audience.** Set the same `audience` value on both instances, and issue tokens with that value as the `aud` claim. If clients connect through one stable URL, use that URL as the value. This option needs the least configuration.
+- **Instance URLs as audiences.** If each instance uses its own URL as its `audience` value, issue tokens with both instance URLs in the `aud` claim.
+
+#### Replication Slots
 
 For a Postgres source database, each instance uses its own [replication slots](/configuration/source-db/postgres-maintenance#maximum-replication-slots). Set a different [`slot_name_prefix`](/configuration/powersync-service/self-hosted-instances#param-slot-name-prefix) for each instance so that you can identify which instance a slot belongs to.
 
@@ -163,7 +172,7 @@ To keep this option, deploy a Sync Config change to one instance first. Confirm 
 
 ### Switching Clients to the Standby
 
-Do not hardcode the URL of the primary instance in the app. Use one of these two options so that you can switch clients without releasing a new app version.
+Do not hardcode the URL of the primary instance in the app. Use one of these options so that you can switch clients without releasing a new app version.
 
 #### Return the Endpoint From Your Backend
 
@@ -174,17 +183,32 @@ Your [`fetchCredentials()`](/configuration/app-backend/client-side-integration) 
 
 The client SDK caches credentials and [fetches new ones](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) when the token expires or the app restarts. A client that is already running therefore keeps trying the failed endpoint until its token expires. Use a short token lifetime, such as 5 to 15 minutes, to reduce this delay.
 
+#### Repoint a DNS Record
+
+Give clients one stable hostname, and point its DNS record to the load balancer of the primary instance. To switch clients to the standby, change the record to point to the standby's load balancer. The app needs no endpoint lookup, and `fetchCredentials()` always returns the same URL.
+
+- **Serve the same hostname on both instances.** Each load balancer needs a TLS certificate that covers the stable hostname.
+- **Set a low TTL on the record.** A client reaches the standby only after the previous record expires from DNS caches. A TTL such as 60 seconds limits this delay.
+
+The client SDK retries a failed connection against the same URL, so a client reaches the standby when it reconnects after the record updates. The client does not wait for its token to expire. A client with an open connection to a primary that still runs stays on the primary until that connection closes.
+
 #### Reroute With an API Gateway
 
-Give clients one stable URL that points to an API gateway, and configure the gateway to forward connections to the primary instance. To switch clients to the standby, change the gateway's target. The app needs no endpoint lookup, and `fetchCredentials()` always returns the same URL.
-
-The client SDK retries a failed connection against the same URL, so a client reaches the standby on its next connection attempt and does not wait for its token to expire. A client with an open connection to a primary that still runs stays on the primary until that connection closes.
+Give clients one stable URL that points to an API gateway or reverse proxy, and configure the gateway to forward connections to the primary instance. To switch clients to the standby, change the gateway's target. As with a DNS record, the app needs no endpoint lookup, and a client reaches the standby on its next connection attempt.
 
 The gateway must meet the same requirements as the [load balancer](#load-balancer): it must support long-lived streaming connections and must not buffer responses.
 
-With either option, host the backend API or gateway so that it remains available when the primary instance or its region fails.
+<Warning>
+  AWS API Gateway does not meet these requirements. It enforces an integration timeout and buffers responses, so sync connections through it fail. On AWS, repoint a DNS record or use a proxy that supports streaming, such as nginx.
+</Warning>
 
-Do not load-balance clients between the two instances. A client that alternates between instances downloads all of its data again on every switch. See [Mapping Users to PowerSync Endpoints](/maintenance-ops/self-hosting/multiple-instances#mapping-users-to-powersync-endpoints).
+#### Availability and Load Balancing
+
+With each option, host the component that controls the switch so that it remains available when the primary instance or its region fails. This component is the backend API, the DNS service, or the gateway.
+
+Make the switch a manual decision. If a health check switches clients automatically, for example through DNS failover routing, a brief failure can move clients to the standby and back. A client that alternates between instances downloads all of its data again on every switch.
+
+For the same reason, do not load-balance clients between the two instances. See [Mapping Users to PowerSync Endpoints](/maintenance-ops/self-hosting/multiple-instances#mapping-users-to-powersync-endpoints).
 
 ### What Clients Experience
 

@@ -1,6 +1,6 @@
 ---
-title: ".NET SDK (beta)"
-description: "Use PowerSync in .NET apps (beta)."
+title: ".NET SDK"
+description: "Use PowerSync in .NET apps."
 sidebarTitle: "SDK Reference"
 ---
 
@@ -28,7 +28,7 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
     Refer to the `powersync-dotnet` repo on GitHub
   </Card>
 
-  <Card title="API Reference" icon="book" href="https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.html">
+  <Card title="API Reference" icon="book" href="https://powersync-ja.github.io/powersync-dotnet">
     Full API reference for the SDK
   </Card>
 
@@ -42,17 +42,15 @@ Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skill
 </CardGroup>
 
 <Note>
-  This SDK is currently in a [**beta** release](/resources/feature-status). It is production-ready for tested use cases. APIs are stable, and we communicate breaking changes clearly.
+  If you previously used the .NET Beta SDK, follow the instructions in the [v1 upgrade guide](#upgrading-to-net-sdk-v1).
 </Note>
 
 ## Supported Frameworks and Targets
 
 The PowerSync .NET SDK supports:
 
-- **.NET Versions**: 6, 8, and 9
-- **.NET Standard**: 2.0 (for compatibility with older libraries and frameworks)
-- **.NET Framework**: Version 4.8, which requires additional configuration (see the package [README](https://github.com/powersync-ja/powersync-dotnet/tree/main?tab=readme-ov-file))
-- **MAUI**: Cross-platform support for Android, iOS, Mac Catalyst, and Windows (targeting `net8.0` and `net9.0` mobile frameworks)
+- **.NET Versions**: 8 (desktop-only), 9, and 10
+- **MAUI**: Cross-platform support for Android, iOS, Mac Catalyst, and Windows (targeting `net9.0` and `net10.0` mobile frameworks)
 - **WPF**: Windows desktop applications
 - **Console/CLI**: Windows (x64, ARM), macOS (x64, ARM), and Linux (x64, ARM)
 
@@ -86,9 +84,10 @@ The available column types are `text`, `integer`, and `real`. These should match
 
 There are two supported syntaxes for defining the schema:
 
-**Attribute-based (recommended):** Annotate a C# class with [`[Table]`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.DB.Schema.Attributes.TableAttribute.html), [`[Column]`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.DB.Schema.Attributes.ColumnAttribute.html), and [`[Index]`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.DB.Schema.Attributes.IndexAttribute.html) attributes. The same class can then be used directly as the result type in queries, so you define your data structure once:
+**Attribute-based (recommended):** Annotate a C# class with [`[Table]`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.DB.Schema.Attributes.TableAttribute.html), [`[Column]`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.DB.Schema.Attributes.ColumnAttribute.html), and [`[Index]`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.DB.Schema.Attributes.IndexAttribute.html) attributes:
 
 ```cs
+using PowerSync.Common.DB;
 using PowerSync.Common.DB.Schema;
 using PowerSync.Common.DB.Schema.Attributes;
 
@@ -110,9 +109,6 @@ public class Todo
 }
 
 public static Schema PowerSyncSchema = new Schema(typeof(Todo));
-
-// The same Todo class is used for queries:
-var todos = await db.GetAll<Todo>("SELECT * FROM todos");
 ```
 
 <Note>
@@ -154,56 +150,29 @@ Next, instantiate the PowerSync database. PowerSync streams changes from your ba
 
 **Example:**
 
-The initialization syntax differs slightly between the Common and MAUI SDKs:
+```cs
+using PowerSync.Common.Client;
+// If using MAUI:
+// using Microsoft.Maui.Storage;
 
-<Tabs>
-  <Tab title="Common">
-    ```cs
-    using PowerSync.Common.Client;
-    
-    class Demo
+class Demo
+{
+    static async Task Main()
     {
-        static async Task Main()
+        string dbLocation = "tododemo.db";
+
+        // If using MAUI, ensure the DB file is stored in a platform-appropriate location
+        // dbLocation = Path.Combine(FileSystem.AppDataDirectory, dbLocation);
+
+        var db = new PowerSyncDatabase(new PowerSyncDatabaseOptions
         {
-            var db = new PowerSyncDatabase(new PowerSyncDatabaseOptions
-            {
-                Database = new SQLOpenOptions { DbFilename = "tododemo.db" },
-                Schema = AppSchema.PowerSyncSchema,
-            });
-            await db.Init();
-        }
+            Database = new SQLOpenOptions { DbFilename = dbLocation },
+            Schema = AppSchema.PowerSyncSchema,
+        });
+        await db.Init();
     }
-    ```
-  </Tab>
-  <Tab title="MAUI">
-    ```cs
-    using PowerSync.Common.Client;
-    using PowerSync.Common.MDSQLite;
-    using PowerSync.Maui.SQLite;
-    
-    class Demo
-    {
-        static async Task Main() 
-        {
-            // Ensures the DB file is stored in a platform appropriate location
-            var dbPath = Path.Combine(FileSystem.AppDataDirectory, "maui-example.db");
-            var factory = new MAUISQLiteDBOpenFactory(new MDSQLiteOpenFactoryOptions()
-            {
-                DbFilename = dbPath
-            });
-    
-            var db = new PowerSyncDatabase(new PowerSyncDatabaseOptions()
-            {
-                Database = factory, // Supply a factory
-                Schema = AppSchema.PowerSyncSchema,
-            });
-    
-            await db.Init();
-        }
-    }
-    ```
-  </Tab>
-</Tabs>
+}
+```
 
 ### 3. Integrate with Your Backend
 
@@ -293,15 +262,105 @@ The most commonly used CRUD functions to interact with your SQLite data are:
 - [`PowerSyncDatabase.Watch`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.Client.PowerSyncDatabase.Watch.html) - execute a read query every time a dependent table changes.
 - [`PowerSyncDatabase.Execute`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.Client.PowerSyncDatabase.Execute.html) - execute a write (`INSERT`/`UPDATE`/`DELETE`) query.
 
+### Mapping Rows to Objects
+
+By default, the read methods return rows. Each row holds the values of the columns that your query selects. You read each value by passing its column name to the corresponding method for its type, such as `GetString("description")`.
+
+`Get` and `GetOptional` return a single row. `GetAll` and `Watch` return a `QueryResult`, with the rows in its `Rows` property:
+
+```cs
+QueryResult result = await db.GetAll("SELECT description, completed_at FROM todos");
+
+foreach (IQueryRow todo in result.Rows)
+{
+    string description = todo.GetString("description");
+    // completed_at is NULL until the todo is completed, so read it with an OrNull method
+    DateTime? completedAt = todo.GetDateTimeOrNull("completed_at");
+}
+```
+
+Rows work well for dynamic queries, where you don't know the shape of the data ahead of time. When you do know it, you usually want a list of regular C# objects that you can pass to the rest of your app, such as your UI.
+
+Instead of building that list yourself in a loop, tell the read method how to convert each row, and it returns the list. You can do this in two ways:
+
+- **Mapper function:** Pass the read method a function that converts a row. Use it for one-off queries, or to get a single value from each row.
+- **Result type:** Implement `IFromRow<T>` on your class, so the class converts rows itself, and pass the class as the type argument. Use it to map a table or query to a class that you use throughout your app, since every query reuses the same conversion.
+
+<Tabs>
+  <Tab title="Mapper Function">
+    ```cs
+    // Convert each row to a tuple, without defining a class
+    var todos = await db.GetAll(
+        "SELECT description, completed_at FROM todos",
+        null,
+        row => (
+            Description: row.GetString("description"),
+            CompletedAt: row.GetDateTimeOrNull("completed_at"))
+    );
+    // Or, extract a value from a row in a single step
+    bool latestTodoIsCompleted = await db.Get(
+        "SELECT completed FROM todos ORDER BY created_at DESC",
+        null,
+        row => row.GetBool("completed"));
+    ```
+  </Tab>
+  <Tab title="Result Type">
+    ```cs
+    using PowerSync.Common.DB;
+    
+    public class TodoItem : IFromRow<TodoItem>
+    {
+        public string Description { get; set; } = "";
+        public DateTime? CompletedAt { get; set; }
+    
+        public static TodoItem FromRow(IQueryRow row) => new()
+        {
+            Description = row.GetString("description"),
+            CompletedAt = row.GetDateTimeOrNull("completed_at")
+        };
+    }
+    
+    List<TodoItem> todos = await db.GetAll<TodoItem>("SELECT description, completed_at FROM todos");
+    ```
+  </Tab>
+</Tabs>
+
+#### Generating Row Mappers
+
+If you have many result types, the [`PowerSync.Common.SourceGenerators`](https://github.com/powersync-ja/powersync-dotnet/tree/main/PowerSync/PowerSync.Common.SourceGenerators) package can generate the conversion for each one at compile time, so you don't need to write it yourself. This package is currently in [alpha](/resources/feature-status).
+
+```bash
+dotnet add package PowerSync.Common.SourceGenerators --prerelease
+```
+
+Mark a `partial` class, struct, or record with `[GenerateSqlMapper]`. This example is the `TodoItem` result type from above, without the conversion:
+
+```cs
+using PowerSync.Common.DB;
+using PowerSync.Common.DB.Schema.Attributes;
+
+[GenerateSqlMapper]
+public partial class TodoItem
+{
+    [Column("description")]
+    public string Description { get; set; } = "";
+
+    [Column("completed_at")]
+    public DateTime? CompletedAt { get; set; }
+}
+
+List<TodoItem> todos = await db.GetAll<TodoItem>("SELECT description, completed_at FROM todos");
+```
+
+Each property reads the column named by its `[Column]` attribute, the same attribute that your schema classes use. Without the attribute, the property reads the column with the same name, ignoring case. The generator does not convert between naming styles, so `CompletedAt` needs `[Column("completed_at")]` to read the `completed_at` column. For the full mapping rules and supported types, see the [package README](https://github.com/powersync-ja/powersync-dotnet/blob/main/PowerSync/PowerSync.Common.SourceGenerators/README.md).
+
 ### Fetching a Single Item
 
 The `Get` method executes a read-only (SELECT) query and returns a single result. It throws an exception if no result is found. Use `GetOptional` to return a single optional result (returns `null` if no result is found).
 
 ```cs
-// Define a result type with properties matching the schema columns (some columns omitted here for brevity)
-// public class ListResult { public string id; public string name; public string owner_id; ... }
-
-var list = await db.Get<ListResult>("SELECT * FROM lists WHERE id = ?", [listId]);
+// Find a todo by ID
+var todo = await db.Get<TodoItem>("SELECT * FROM todos WHERE id = ?", [todoId]);
 ```
 
 ### Querying Items (PowerSync.GetAll)
@@ -309,10 +368,8 @@ var list = await db.Get<ListResult>("SELECT * FROM lists WHERE id = ?", [listId]
 The `GetAll` method returns a set of rows from a table.
 
 ```cs
-// Define a result type with properties matching the schema columns (some columns omitted here for brevity)
-// public class ListResult { public string id; public string name; public string owner_id; ... }
-
-var lists = await db.GetAll<ListResult>("SELECT * FROM lists");
+// Get all list IDs
+var listIds = await db.GetAll("SELECT id FROM lists", null, row => row.GetString("id"));
 ```
 
 ### Watching Queries (PowerSync.Watch)
@@ -390,16 +447,87 @@ See [Supported Platforms -> .NET SDK](/resources/supported-platforms#net).
 
 To upgrade the PowerSync package, run the following command in your project folder:
 
-<Tabs>
-  <Tab title="Common">
-    ```bash
-    dotnet add package PowerSync.Common
-    ```
-  </Tab>
-  <Tab title="MAUI">
-    ```bash
-    dotnet add package PowerSync.Common
-    dotnet add package PowerSync.Maui
-    ```
-  </Tab>
-</Tabs>
+```bash
+dotnet add package PowerSync.Common
+```
+
+### Upgrading to .NET SDK v1
+
+Version 1 of the .NET SDK (v1.0.1 and later) has breaking API changes from the beta SDK (v0.x). This section describes the changes that you must make to upgrade.
+
+#### Target .NET 8 or Later
+
+The SDK no longer supports .NET Standard 2.0, .NET Framework 4.8 or .NET 6. Desktop and console apps must target .NET 8 or later. MAUI apps must target .NET 9 or later.
+
+#### Replace the PowerSync.Maui Package
+
+The `PowerSync.Maui` package is deprecated. `PowerSync.Common` now includes the native libraries for Android, iOS, and Mac Catalyst.
+
+1. Remove the `PowerSync.Maui` package from your project.
+2. Replace the MAUI classes with their equivalents in the `PowerSync.Common.MDSQLite` namespace. Each equivalent takes the same options as the class it replaces:
+   - Replace `MAUISQLiteAdapter` with `MDSQLiteAdapter`, which takes `MDSQLiteAdapterOptions`.
+   - Replace `MAUISQLiteDBOpenFactory` with `MDSQLiteDBOpenFactory`, which takes `MDSQLiteOpenFactoryOptions`.
+
+   Alternatively, pass `SQLOpenOptions` as shown in [Instantiate the PowerSync Database](#2-instantiate-the-powersync-database).
+
+#### Update Queries
+
+`Get`, `GetOptional`, `GetAll`, and `Watch` no longer use Dapper, and the SDK no longer depends on the `Dapper` package. The SDK does not map rows to objects automatically, and untyped queries no longer return `dynamic` values.
+
+```cs
+// Before (v0.x): Dapper matched columns to properties by name
+ListResult[] lists = await db.GetAll<ListResult>("SELECT * FROM lists");
+
+dynamic list = await db.Get("SELECT name FROM lists WHERE id = ?", [listId]);
+Console.WriteLine(list.name);
+```
+
+```cs
+// After (v1): ListResult implements IFromRow<ListResult>
+List<ListResult> lists = await db.GetAll<ListResult>("SELECT * FROM lists");
+
+// Alternatively, pass a mapper function
+List<string> names = await db.GetAll(
+    "SELECT name FROM lists",
+    null,
+    row => row.GetString("name")
+);
+
+// Untyped queries return IQueryRow values
+IQueryRow list = await db.Get("SELECT name FROM lists WHERE id = ?", [listId]);
+Console.WriteLine(list.GetString("name"));
+```
+
+Make these changes to your queries:
+
+- For each result type, implement `IFromRow<T>`, generate the mapping code with the alpha source generator, or pass a mapper function. This also applies to schema classes that use `[Column]` attributes. See [Mapping Rows to Objects](#mapping-rows-to-objects).
+- Change code that expects `T[]` from `GetAll<T>` or `Watch<T>`. These methods now return `List<T>`.
+- Replace `dynamic` results with `IQueryRow` methods, such as `GetString`. `GetAll` and `Watch` without a result type return a `QueryResult`. Its `Rows` property contains the `IQueryRow` values.
+
+#### Update Table Names from OnChange
+
+`PowerSyncDatabase.OnChange` now reports the name of the underlying table instead of the view name. For example, a change to the `todo_lists` table is reported as `ps_data__todo_lists`. Update code that compares the values in `ChangedTables` with view names.
+
+#### Use long Values for Operation IDs and Checkpoints
+
+Operation IDs, write checkpoints, and checkpoint request IDs are now `long` values instead of `string` values. Update code that uses these APIs:
+
+- `CrudBatch` and `CrudTransaction` objects returned by `GetCrudBatch()` and `GetNextCrudTransaction()` take an optional `long?` write checkpoint in their `Complete()` methods.
+- `PowerSyncDatabase.HandleCrudCheckpoint()` takes an optional `long?` write checkpoint.
+- `ICustomCheckpointRequestConnector.PostCheckpointRequest()` receives a `long` request ID and returns `Task<long>`.
+
+#### Implement `IPowerSyncBackendConnector` with `ICustomCheckpointRequestConnector`
+
+`ICustomCheckpointRequestConnector` no longer extends `IPowerSyncBackendConnector`. It now extends `IAuthenticator`, so a class that implements only `ICustomCheckpointRequestConnector` cannot be passed to `Connect()` as a backend connector. Add `IPowerSyncBackendConnector` to each class that implements `ICustomCheckpointRequestConnector`:
+
+```cs
+// Before (v0.x)
+class BackendConnector : ICustomCheckpointRequestConnector
+
+// After (v1)
+class BackendConnector : IPowerSyncBackendConnector, ICustomCheckpointRequestConnector
+```
+
+#### Use `HashSet<string>` instead of `BatchedUpdateNotification`
+
+`DBAdapterEvents.TablesUpdatedEvent.TablesUpdated` is now a `HashSet<string>` of updated table names. It no longer uses the `BatchedUpdateNotification` wrapper, which has been removed (along with `INotification` and `UpdateNotification`).

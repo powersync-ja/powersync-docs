@@ -1,26 +1,26 @@
 ```csharp
-// Define a result type with properties matching the schema columns (some columns omitted here for brevity)
-// public class ListResult { public string id; public string name; public string owner_id; ... }
+// Assumes a result type such as: public record ListItem(string Id, string Name);
 
 // Optional cancellation token to stop watching
 var cts = new CancellationTokenSource();
 
 // Register listener synchronously on the calling thread...
-var listener = db.Watch<ListResult>(
+var listener = db.Watch(
     "SELECT * FROM lists WHERE owner_id = ?",
     [ownerId],
+    row => new ListItem(row.GetString("id"), row.GetString("name")),
     new SQLWatchOptions { Signal = cts.Token }
 );
 
 // ...then listen to changes on another thread (or await foreach directly if already in an async context)
 _ = Task.Run(async () =>
 {
-    await foreach (var results in listener)
+    await foreach (var lists in listener)
     {
         Console.WriteLine("Lists: ");
-        foreach (var result in results)
+        foreach (var list in lists)
         {
-            Console.WriteLine($"{result.id}: {result.name}");
+            Console.WriteLine($"{list.Id}: {list.Name}");
         }
     }
 }, cts.Token);

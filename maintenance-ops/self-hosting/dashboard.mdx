@@ -1,24 +1,28 @@
 ---
 title: "Self-Hosted Dashboard"
-description: "Run the PowerSync Dashboard as a Docker container to check the health of a self-hosted PowerSync Service instance and manage its Sync Config."
+description: "Check the health of your self-hosted PowerSync Service instance and manage its Sync Streams in a web UI."
 sidebarTitle: "Dashboard"
 ---
 
 import SelfHostedDashboardCompose from '/snippets/self-hosted-dashboard-compose.mdx';
 
-The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service instance. It runs as a container next to the Service and connects to the Service API with an API token.
+The Self-Hosted Dashboard runs as a Docker container next to your PowerSync Service. Each dashboard connects to one Service instance.
 
 ## What It Provides
 
-- **Health:** Errors and warnings that the Service reports, the source database connection status, the replication activity, and the active and deploying Sync Config versions.
-- **Sync Config editor:** Edit, validate, and compare a draft with the deployed Sync Config. Use [Sync Config Management](#sync-config-management) to find out whether to deploy from the editor or export the YAML.
-- **Client SDK Setup:** Generated schema and connector files for your client framework.
-- **Write Endpoint:** Reference implementation guide for writing to your backend.
-- **Settings:** Reprocess, which rebuilds the sync buckets from the source database under the active Sync Config. Clients then re-sync their data from the rebuilt buckets.
+- **Health:** See whether the Service reports errors or warnings, whether it can connect to your source database, whether replication is running, and which Sync Config version is active or deploying.
+- **Sync Streams:** Edit a draft of your Sync Config, validate it, and compare it with the deployed version. To decide whether to deploy from the editor or export the YAML, see [Sync Config Management](#sync-config-management).
+- **Client SDK Setup:** Generate the schema and connector code for your client framework.
+- **Write Endpoint:** Follow a guide with reference code to [build your write endpoint](/handling-writes/write-path/build-your-own-write-endpoint).
+- **Settings:** Reprocess, which replicates all data from your source database again. All clients then download their data again. Use it to clear a large history of changes that compacting can't remove, as described in [Defragmenting Strategies](/maintenance-ops/compacting-buckets#defragmenting-strategies).
 
 <Frame caption="The Health page of the Self-Hosted Dashboard">
   ![Self-Hosted Dashboard Health page showing no issues, a connected Postgres source database, replication activity, and an active Sync Config](/images/maintenance-ops/self-hosting/self-hosted-dashboard-health.png)
 </Frame>
+
+<Note>
+  The dashboard shows the instance's current state. To track metrics over time and set up alerts, scrape the Service's metrics endpoint with your own monitoring tools, as described in [Monitoring](/maintenance-ops/self-hosting/monitoring).
+</Note>
 
 ## Requirements
 
@@ -29,7 +33,7 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
 ## Access Control
 
 <Warning>
-  The dashboard has no sign-in. Anyone who can reach it can start a reprocess and, when the Service allows API deployments, deploy Sync Config. For local access, keep the loopback binding (`127.0.0.1`) in the examples. For remote access, use a private network, a VPN, or an authenticating gateway such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/). If you use a gateway, configure it to authenticate requests to `/api` before forwarding them unchanged to the dashboard.
+  The dashboard has no sign-in. Anyone who can reach it can start a reprocess and, when the Service allows API deployments, deploy Sync Config. For local access, keep the loopback binding (`127.0.0.1`) in the examples. For remote access, use a private network, a VPN, or an authenticating gateway such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/). If you use a gateway, configure it to authenticate requests to `/api` as well, and to forward requests with their original headers. The dashboard checks the `Origin`, `Host`, and `Sec-Fetch-Site` headers and rejects Deploy and Reprocess requests that it can't confirm came from its own page.
 </Warning>
 
 ## Run the Dashboard
@@ -100,9 +104,9 @@ The Self-Hosted Dashboard is a web UI for one self-hosted PowerSync Service inst
       </Tab>
     </Tabs>
 
-    The container runs as an unprivileged user (UID 101) and writes only to `/tmp`, so it supports a read-only root filesystem. If you mount a token file, make it readable by this user.
+    The container runs as an unprivileged user (UID 101). If you mount a token file, make it readable by this user.
 
-    In Kubernetes, set `readOnlyRootFilesystem: true`, mount an `emptyDir` volume at `/tmp`, and use the Service's fully qualified name in `POWERSYNC_ADMIN_URL`, such as `http://powersync.<namespace>.svc.cluster.local:8080`.
+    In Kubernetes, use the Service's fully qualified name in `POWERSYNC_ADMIN_URL`, such as `http://powersync.<namespace>.svc.cluster.local:8080`, so the name resolves even if the Service doesn't exist yet when the dashboard starts. The container writes only to `/tmp`, so for a read-only root filesystem, set `readOnlyRootFilesystem: true` and mount an `emptyDir` volume at `/tmp`.
   </Step>
   <Step title="Open the Dashboard">
     Go to `http://localhost:8090`. The dashboard starts even if the Service is not available yet, and it connects when the Service responds.
@@ -124,19 +128,19 @@ Set `POWERSYNC_ADMIN_TOKEN_FILE` or `POWERSYNC_ADMIN_TOKEN`. If you set both, th
 
 ## Sync Config Management
 
-How you apply a draft depends on whether `service.yaml` defines `sync_config`.
+You manage your Sync Streams by editing a draft of your Sync Config on the dashboard's **Sync Streams** page. The draft stays in your browser until you apply it.
 
-- **`sync_config` is set.** Copy or download the draft YAML. Update the file at `sync_config.path` or the inline YAML at `sync_config.content`, then restart the Service.
-- **`sync_config` is absent.** Select **Deploy** to validate and deploy the draft through the Service API. You can do this for the first deployment and for updates.
+The dashboard deploys through the Service API, so how you apply a draft depends on whether the Service allows API deployments. The Service disables them when `service.yaml` defines `sync_config`.
 
-If you skip the version check and the Service omits its Sync Config source, copy or download the draft YAML and apply it separately.
+- **API deployments allowed:** `service.yaml` doesn't define `sync_config`. Select **Deploy** to validate and deploy the draft. You can do this for the first deployment and for updates.
+- **API deployments disabled:** `service.yaml` defines `sync_config`. Copy or download the draft YAML. Update the file at `sync_config.path` or the inline YAML at `sync_config.content`, then restart the Service.
 
-For all the ways to update Sync Config, see [Update Sync Config](/maintenance-ops/self-hosting/update-sync-rules).
+For all the ways to update Sync Config, see [Update Sync Streams (Sync Config)](/maintenance-ops/self-hosting/update-sync-streams).
 
 ## Troubleshooting
 
-- **The container exits at startup.** Check which setting caused the error with `docker logs powersync-dashboard` for `docker run` or `docker compose logs dashboard` for Docker Compose.
-- **"Can't Reach the PowerSync Service":** The dashboard container can't connect to `POWERSYNC_ADMIN_URL`. Check that the container is on the Service's Docker network. If the network and URL are correct, check the dashboard container's log.
+- **The container exits at startup:** To see which setting caused the error, run `docker logs powersync-dashboard` for `docker run` or `docker compose logs dashboard` for Docker Compose.
+- **"Can't Reach the PowerSync Service":** The dashboard container can't connect to `POWERSYNC_ADMIN_URL`. Check that the container is on the Service's Docker network and that the URL is correct.
 
 ## Image Versions
 

@@ -141,6 +141,11 @@ Use root-relative links without extensions for site pages, such as `/sync/stream
 
 Update `docs.json` when adding, moving, or removing pages. Add redirects for moved content and preserve existing navigation paths.
 
+Every sidebar section needs an overview page. When you add a page to a section:
+
+- If the section has an overview, add the new page to it.
+- If the section has no overview, create one at `<section>/overview.mdx` with `sidebarTitle: "Overview"`. List it first in the section's `docs.json` group. Link every page in the section from it, with one line on what each page covers. Then point any other page that lists the section's pages to the overview. See `migration-guides/overview.mdx` for an example.
+
 ## Sync Streams and Sync Rules
 
 Sync Rules are deprecated, but many customers still run them. New documentation covers Sync Streams. Keep the Sync Rules docs accurate, and add to them when that makes them more accurate or helpful, without prioritizing that work. The goal is to avoid noisy Sync Rules references outside their own section, not to stop maintaining it.

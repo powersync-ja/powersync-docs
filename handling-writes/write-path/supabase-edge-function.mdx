@@ -1,15 +1,17 @@
 ---
 title: "Supabase: Edge Function Route"
 sidebarTitle: "Supabase (Edge Function)"
-description: "Deploy the reference write API as a Supabase Edge Function, so that each uploaded transaction is applied atomically and your RLS policies authorize every write."
+description: "Deploy the reference write endpoint as a Supabase Edge Function, so that each uploaded transaction is applied atomically and your RLS policies authorize every write."
 ---
 
-This route uses the [reference write implementation](/handling-writes/write-path/reference-write-implementation). You deploy its write API as a Supabase Edge Function, and your app sends writes to the function with the reference connector. Compared with the [PostgREST route](/handling-writes/write-path/supabase-postgrest), you deploy and maintain one function, and in return each transaction is applied in one database transaction.
+import SupabaseGrantsAndRls from '/snippets/write-path/supabase-grants-and-rls.mdx';
 
-The function runs each write as the signed-in user. Inside each transaction, it switches to the `authenticated` role and sets the user's token claims. Policies that use `auth.uid()` therefore work the same way as for requests from supabase-js.
+This route uses the [reference write implementation](/handling-writes/write-path/reference-write-implementation). You deploy its write endpoint as a Supabase Edge Function, and your app sends writes to the function with the reference connector. Compared with the [PostgREST route](/handling-writes/write-path/supabase-postgrest), you deploy and maintain one function, and in return each transaction is applied in one database transaction.
+
+The function runs each write as the signed-in user. Inside each transaction, it switches to the `authenticated` role and sets the user's token claims. Policies that use `auth.uid()` therefore work the same way as for requests from the Supabase client SDKs.
 
 <Frame caption="The Edge Function runs inside your Supabase project. Supabase Auth issues the tokens, and RLS policies authorize each write.">
-  ![Diagram of the Edge Function route. Inside Supabase, an Edge Function runs the reference write API as the signed-in user and writes each transaction atomically to Postgres, where RLS policies apply. Supabase Postgres replicates to the PowerSync Service, which syncs to the SDK in the client app. The reference connector's uploadData() sends queued transactions to the Edge Function. Supabase Auth issues the JWTs that the Edge Function and PowerSync verify.](/images/handling-writes/supabase-edge-function.png)
+  ![Diagram of the Edge Function route. Inside Supabase, an Edge Function runs the reference write endpoint as the signed-in user and writes each transaction atomically to Postgres, where RLS policies apply. Supabase Postgres replicates to the PowerSync Service, which syncs to the SDK in the client app. The reference connector's uploadData() sends queued transactions to the Edge Function. Supabase Auth issues the JWTs that the Edge Function and PowerSync verify.](/images/handling-writes/supabase-edge-function.png)
 </Frame>
 
 ## Before You Start
@@ -17,33 +19,14 @@ The function runs each write as the signed-in user. Inside each transaction, it 
 - PowerSync connected to your Supabase project and configured for [Supabase Auth](/configuration/auth/supabase-auth). See the [Supabase guide](/integrations/supabase/guide).
 - Your Supabase project signs tokens with asymmetric JWT signing keys, the default for new projects. Projects that use the legacy JWT secret must [migrate](/configuration/auth/supabase-auth#migrating-from-legacy-to-new-jwt-signing-keys) first.
 - Each table that your app writes to has an `id` primary key or unique column that holds the client's row ID.
-- An app that signs users in with supabase-js.
+- An app that signs users in with Supabase Auth.
 - The [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started).
 
 ## Set Up
 
 <Steps>
   <Step title="Add Grants and RLS Policies">
-    Grant the `authenticated` role access to every table that your app writes to, enable RLS on each one, and add a policy for each operation that your app uploads:
-
-    - A `PUT` is an upsert, so it needs `INSERT` and `UPDATE` policies, and the existing row must be visible to the user.
-    - A `PATCH` needs an `UPDATE` policy, and a `DELETE` needs a `DELETE` policy.
-
-    Use `WITH CHECK` so that users can't assign rows to someone else. For example:
-
-    ```sql
-    grant select, insert, update, delete on public.lists to authenticated;
-    alter table public.lists enable row level security;
-    
-    create policy "Owners manage their lists" on public.lists
-      for all to authenticated
-      using (owner_id = (select auth.uid()))
-      with check (owner_id = (select auth.uid()));
-    ```
-
-    <Warning>
-      If `authenticated` has grants on a table that has RLS disabled, any signed-in user can write any row in it. Check every table in the schemas that your app writes to, not only the tables that you sync.
-    </Warning>
+    <SupabaseGrantsAndRls />
   </Step>
   <Step title="Deploy the Function">
     Clone [powersync-reference-write-implementation](https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main). From its `backend` folder, link your project and deploy the function:
@@ -75,39 +58,28 @@ The function runs each write as the signed-in user. Inside each transaction, it 
     A request without a token returns `401`.
   </Step>
   <Step title="Connect Your App">
-    Copy the reference connector into your app, as described in the reference write implementation's [Connect Your App step](/handling-writes/write-path/reference-write-implementation#connect-your-app). Then make these changes:
+    <span id="connect-your-app" />
 
-    1. Set the connector's write API URL to `https://<project-ref>.supabase.co/functions/v1/powersync-write`. Your PowerSync instance URL doesn't change.
-    2. Pass your app's supabase-js client to the connector, and replace `fetchCredentials()` and `getAuthToken()` with the code below. This code reads the session on every call.
-    3. Remove `fetchAuthToken()`, the `_authToken` field, its initialization in the constructor, and the `AuthenticationError` check in `onTransportError()` that resets it. supabase-js refreshes the session itself. The connector clears its cache only after a write request fails authentication, so while the cache is in place, sync keeps sending an expired token.
+    Copy the reference connector for your SDK into your app and pass it to `connect()`, as described in the reference write implementation's [Connect Your App step](/handling-writes/write-path/reference-write-implementation#connect-your-app). Then make these changes to your copy:
+
+    1. Set the write endpoint URL to `https://<project-ref>.supabase.co/functions/v1/powersync-write`. Your PowerSync instance URL doesn't change.
+    2. Replace `fetchAuthToken()` with code that returns the access token of the current Supabase session. The `fetchCredentials()` in the [Supabase example](/configuration/app-backend/backend-connector-examples#supabase) for your SDK shows how to read it.
+    3. Stop caching the token: return `fetchAuthToken()` directly from `getAuthToken()`, as the comments in the example describe. The Supabase client SDK refreshes the session itself. The connector clears its cache only after a write request fails authentication, so while the cache is in place, sync keeps sending an expired token.
+
+    For example, with supabase-js:
 
     ```typescript
-    constructor(private readonly supabase: SupabaseClient) {
-      // existing setup
-    }
-    
-    async fetchCredentials() {
-      const session = await this.getSession();
-      return {
-        endpoint: this.config.powersyncUrl,
-        token: session.access_token,
-        expiresAt: session.expires_at ? new Date(session.expires_at * 1000) : undefined
-      };
-    }
-    
-    private async getSession() {
-      const { data: { session }, error } = await this.supabase.auth.getSession();
-      if (!session || error) throw new Error('Not signed in to Supabase');
-      return session;
-    }
-    
-    // Write requests call this to get their token.
+    // Inside your copy of MyBackendConnector. `supabase` is your app's Supabase client.
     private async getAuthToken(): Promise<string> {
-      return (await this.getSession()).access_token;
+      return this.fetchAuthToken();
+    }
+    
+    private async fetchAuthToken(): Promise<string> {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (!session || error) throw new Error('Not signed in to Supabase');
+      return session.access_token;
     }
     ```
-
-    This code is for the modular connector. In the single-file connector, use `POWERSYNC_URL` instead of `this.config.powersyncUrl`.
 
     The function accepts only a signed-in user's access token. It rejects API keys, anon tokens, and service-role tokens.
   </Step>

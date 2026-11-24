@@ -469,9 +469,9 @@ The insert examples use `uuid()`, a SQL function that PowerSync provides, to gen
 
 ## Send Changes in Local Data to Your Backend Service
 
-The client SDK calls your [mutation uploader](/configuration/app-backend/client-side-integration#mutation-uploader), `uploadData()` in these examples, to send queued mutations to your write API. For the ways to set this up, see [Choosing Your Implementation](/handling-writes/write-path/choosing-your-implementation).
+The client SDK calls your [mutation uploader](/configuration/app-backend/client-side-integration#mutation-uploader), `uploadData()` in these examples, to send queued mutations to your write endpoint. For the ways to set this up, see [Choosing Your Setup](/handling-writes/write-path/choosing-your-setup).
 
-The examples below take the oldest queued transaction, send all of its mutations to your write API, and then mark the transaction as complete. Each mutation includes the operation (`PUT`, `PATCH`, or `DELETE`), the table, the row ID, and the changed data. `writeApi` stands for your client for the write API. If the upload fails with an error that a retry can fix, such as a network error, throw it. The SDK then keeps the mutations in the queue and retries later. If your backend permanently rejects a mutation, mark the transaction complete anyway, so that it doesn't block later uploads. See [What Happens When a Write Fails](/handling-writes/write-path/concepts#what-happens-when-a-write-fails).
+The examples below take the oldest queued transaction, send all of its mutations to your write endpoint, and then mark the transaction as complete. Each mutation includes the operation (`PUT`, `PATCH`, or `DELETE`), the table, the row ID, and the changed data. `writeApi` stands for your client for the write endpoint. If the upload fails with an error that a retry can fix, such as a network error, throw it. The SDK then keeps the mutations in the queue and retries later. If your backend permanently rejects a mutation, mark the transaction complete anyway, so that it doesn't block later uploads. See [What Happens When a Write Fails](/handling-writes/write-path/concepts#what-happens-when-a-write-fails).
 
 <Tabs>
   <Tab title="JavaScript Web">
@@ -1732,7 +1732,7 @@ If your authentication library already stores the current token, return that tok
     ```
   </Tab>
   <Tab title=".NET">
-    The .NET SDK doesn't support authenticators yet. It uses a backend connector, and the SDK caches the credentials that `FetchCredentials()` returns.
+    For an `IAuthenticator` that caches its token, see the .NET tab in [Connect for Downloads or Uploads Only](#connect-for-downloads-or-uploads-only). If you use a backend connector instead, the SDK caches the credentials that `FetchCredentials()` returns.
   </Tab>
   <Tab title="Rust">
     ```Rust
@@ -1867,13 +1867,63 @@ Each example shows the three calls. Use the call for the mode you need. In these
     ```
   </Tab>
   <Tab title=".NET">
-    Connecting in download or upload-only mode is not yet available for the .NET SDK.
+    You can implement `IAuthenticator` and `IMutationUploader` independently:
+
+    ```csharp
+    // Requires PowerSync.Common SDK 1.0.1 or later
+    using PowerSync.Common.Client;
+    using PowerSync.Common.Client.Connection;
+    
+    class MyAuthenticator : IAuthenticator
+    {
+        private string? cachedToken;
+        private readonly HttpClient client = new HttpClient();
+    
+        public async Task<string> ResolveCredentials()
+        {
+            if (cachedToken != null)
+            {
+                return cachedToken;
+            }
+    
+            // TODO: Fetch token from your backend or re-use a token stored in your app's state.
+            var token = await client.GetStringAsync("https://example.org/token");
+            return cachedToken = token;
+        }
+    
+        public void InvalidateCredentials()
+        {
+            cachedToken = null;
+        }
+    }
+    
+    class MyMutationUploader : IMutationUploader
+    {
+        public async Task UploadMutations(IPowerSyncDatabase db)
+        {
+            var tx = await db.GetNextCrudTransaction();
+            if (tx == null)
+            {
+                return;
+            }
+    
+            // TODO: Upload transaction to your backend
+            await tx.Complete();
+        }
+    }
+    ```
+
+    Next, use one of the following `Connect` overloads to connect in download-only, upload-only, or full mode:
+
+    - `PowerSyncDatabase.Connect(endpoint, authenticator: new MyAuthenticator(), uploader: null)` to connect in download-only mode. Pass the endpoint of the PowerSync service to connect to. You don’t need to provide the mutation uploader for this.
+    - `PowerSyncDatabase.Connect(uploader: new MyMutationUploader())` to connect in upload-only mode. This doesn’t need a PowerSync service endpoint or authenticator.
+    - `PowerSyncDatabase.Connect(endpoint, authenticator: new MyAuthenticator(), uploader: new MyMutationUploader())` to connect both for downloads and uploads. This roughly matches what the SDK does when an IPowerSyncBackendConnector is passed, except that it allows you to implement the authenticator and uploader independently.
   </Tab>
   <Tab title="Rust">
-    In Rust, the uploader is a type that implements `MutationUploader`. This example calls it `MyMutationUploader`.
+    In Rust, the uploader is a type that implements `MutationUploader`. This example calls it `MyMutationUploader`. Tauri apps connect from Rust, so they use the same calls in their `connect` command.
 
     ```Rust
-    // Requires PowerSync Rust SDK 0.2.0 or later
+    // Requires PowerSync Rust SDK 0.2.0 or later (tauri-plugin-powersync 0.3.0 or later for Tauri)
     
     // Download-only
     db.connect(SyncOptions::download_only(endpoint, MyAuthenticator::default())).await;

@@ -1,0 +1,22 @@
+{/* Shared by handling-writes/write-path/supabase-edge-function.mdx (inside a Step) and handling-writes/write-path/supabase-postgrest.mdx (under an H2). Keep it valid for both routes: both upload a PUT as an upsert, a PATCH as an UPDATE and a DELETE as a DELETE, as the authenticated role. */}
+
+Grant the `authenticated` role access to every table that your app writes to, enable RLS on each one, and add a policy for each operation that your app uploads:
+
+- A `PUT` is an upsert, so it needs `INSERT` and `UPDATE` policies, and the existing row must be visible to the user.
+- A `PATCH` needs an `UPDATE` policy, and a `DELETE` needs a `DELETE` policy.
+
+Use `WITH CHECK` so that users can't assign rows to someone else. For example:
+
+```sql
+grant select, insert, update, delete on public.lists to authenticated;
+alter table public.lists enable row level security;
+
+create policy "Owners manage their lists" on public.lists
+  for all to authenticated
+  using (owner_id = (select auth.uid()))
+  with check (owner_id = (select auth.uid()));
+```
+
+<Warning>
+  If `authenticated` has grants on a table that has RLS disabled, any signed-in user can write any row in it. Check every table in the schemas that your app writes to, not only the tables that you sync.
+</Warning>

@@ -17,15 +17,15 @@ See [Handling Update Conflicts](/handling-writes/handling-update-conflicts) for 
 
 ## Where Conflicts Are Resolved
 
-Each client's writes reach your source database through its upload queue and your write API, and the result syncs back to every client. See [Write Path Overview](/handling-writes/write-path/overview). Conflicts arise when multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
+Each client's writes reach your source database through its upload queue and your write endpoint, and the result syncs back to every client. See [Write Path Overview](/handling-writes/write-path/overview). Conflicts arise when multiple clients modify the same row (or fields) before syncing, or when a client's changes conflict with server-side rules.
 
-Your write API resolves these conflicts: it receives each operation and decides what to store in the source database. Some strategies below also record extra data on the client, such as timestamps or a change log, or sync conflict records back to the client.
+Your write endpoint resolves these conflicts: it receives each operation and decides what to store in the source database. Some strategies below also record extra data on the client, such as timestamps or a change log, or sync conflict records back to the client.
 
 ---
 
 ## Understanding Operations & `CrudEntry`
 
-Your write API receives each change as a `PUT`, `PATCH`, or `DELETE` operation. See [Write Operations](/handling-writes/write-path/concepts#write-operations) for what each one contains.
+Your write endpoint receives each change as a `PUT`, `PATCH`, or `DELETE` operation. See [Write Operations](/handling-writes/write-path/concepts#write-operations) for what each one contains.
 
 ### `CrudEntry` Structure
 
@@ -40,7 +40,7 @@ interface CrudEntry {
   opData?: Record<string, any>;          // Changed column values (optional)
   transactionId?: number;                // Groups ops from same transaction
   metadata?: string;                     // Custom metadata (trackMetadata)
-  previousValues?: Record<string, any>; // Previous values (trackPreviousValues)
+  previousValues?: Record<string, any>; // Previous values (trackPrevious)
 }
 ```
 
@@ -65,7 +65,7 @@ async uploadData(database) {
     previousValues
   }));
   
-  // Send to your backend API
+  // Send to your write endpoint
   const response = await fetch('/api/data', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -82,7 +82,7 @@ async uploadData(database) {
 }
 ```
 
-**Backend API receives:**
+**Write endpoint receives:**
 
 ```json
 {
@@ -150,7 +150,7 @@ CREATE TRIGGER tasks_modified_at
 
 ### Backend Conflict Detection
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function handleUpdate(operation, userId) {
@@ -219,7 +219,7 @@ CREATE TABLE documents (
 
 ### Backend Conflict Detection
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function handleUpdateWithVersion(operation) {
@@ -320,7 +320,7 @@ await powerSync.execute(
 
 ### Backend Field-Level Resolution
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function fieldLevelLWW(operation) {
@@ -383,7 +383,7 @@ This is where your domain rules live. The logic becomes the gatekeeper that bloc
 
 ### Backend with Business Rules
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function validateOrderUpdate(db, operation) {
@@ -509,7 +509,7 @@ streams:
 
 ### Step 3: Record Conflicts in Backend
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function handleUpdateWithConflictRecording(db, operation, userId) {
@@ -716,7 +716,7 @@ async function updateTaskField(
 
 ### Step 3: Backend Processes Changes
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function processFieldChanges() {
@@ -934,7 +934,7 @@ ALTER TABLE inventory ADD CONSTRAINT positive_quantity CHECK (quantity >= 0);
 
 The key is detecting when an operation should be treated as a delta versus an absolute value. You can identify this through table/field combinations, metadata flags, or operation patterns.
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function handleInventoryOperation(db, operation) {
@@ -1078,7 +1078,7 @@ await powerSync.execute(
 
 ### Access in Backend
 
-**Backend API (Node.js):**
+**Write endpoint (Node.js):**
 
 ```javascript
 async function processOperation(operation) {
@@ -1119,7 +1119,7 @@ Here's how to tie it all together in a Node.js backend with Postgres.
 
 Include the helpers from Strategies 4 and 5 and your order patch and delete handlers. Add authentication middleware before the route to set `req.user`.
 
-**Backend API (Node.js + Express):**
+**Write endpoint (Node.js + Express):**
 
 ```javascript
 import express from 'express';

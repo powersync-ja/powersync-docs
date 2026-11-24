@@ -1,10 +1,10 @@
 ---
 title: "Write Path Concepts"
 sidebarTitle: "Concepts"
-description: "What the upload queue records, how the write API authenticates and applies uploads, and what happens to a write that fails temporarily, is rejected, or blocks the upload queue."
+description: "What the upload queue records, how the write endpoint authenticates and applies uploads, and what happens to a write that fails temporarily, is rejected, or blocks the upload queue."
 ---
 
-These concepts apply to every write path setup, whether you use your own API or Supabase. In every setup, the client SDK records your app's local writes in an upload queue and calls your `uploadData()` function to send them to your write API. Your write API applies them to your source database, and the PowerSync Service syncs the result back to the client. [Write Path Overview](/handling-writes/write-path/overview) walks through these steps.
+These concepts apply whichever write path setup you use. In each one, the client SDK records your app's local writes in an upload queue and calls your `uploadData()` function to send them to your write endpoint. Your write endpoint applies them to your source database, and the PowerSync Service syncs the result back to the client. [Write Path Overview](/handling-writes/write-path/overview) walks through these steps.
 
 ## Write Operations
 
@@ -21,20 +21,20 @@ The SDK groups the operations from one local database transaction into a transac
 ## Authenticating Writes
 
 <Warning>
-  PowerSync does not authenticate or authorize writes. Your write API is responsible for both.
+  PowerSync does not authenticate or authorize writes. Your write endpoint is responsible for both.
 </Warning>
 
-If your auth provider issues JWTs, we recommend that your write API verify the same JWT that your app sends to PowerSync. Your backend connector's `fetchCredentials()` already returns this token, so `uploadData()` can send it in the request's `Authorization` header. To verify the token:
+If your auth provider issues JWTs, we recommend that your write endpoint verify the same JWT that your app sends to PowerSync. Your backend connector's `fetchCredentials()` already returns this token, so `uploadData()` can send it in the request's `Authorization` header. To verify the token:
 
 1. Check the signature with your auth provider's keys, usually from its JWKS URL.
 2. Check the issuer and expiry.
-3. Accept the audience that your PowerSync instance is configured for. If your write API already verifies tokens for a different audience, add this one to the accepted list.
+3. Accept the audience that your PowerSync instance is configured for. If your write endpoint already verifies tokens for a different audience, add this one to the accepted list.
 
 The `sub` claim holds the user ID. Use it to decide which writes that user is allowed to make. See [Authentication](/configuration/auth/overview) for the audience and keys each provider uses.
 
 ## Applying Writes Before Responding
 
-Your write API must store each write in the source database before it responds. Don't put writes in a queue to process later. If your backend has to apply writes asynchronously, use [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints).
+Your write endpoint must store each write in the source database before it responds. Don't put writes in a queue to process later. If your backend has to apply writes asynchronously, use [Custom Write Checkpoints](/handling-writes/custom-write-checkpoints).
 
 After an upload, the client requests a write checkpoint. This checkpoint marks the source database position at that moment. The client then waits until it has synced data up to that checkpoint before it updates the local database with the synced data. If a write is not in the source database yet, the synced data does not include it, and the change disappears from the device. It appears again after the write reaches the source database and syncs. See [Consistency](/architecture/consistency).
 
@@ -46,21 +46,21 @@ The SDK removes changes from the upload queue only when `uploadData()` calls `co
   The queue is ordered, so a change that stays at the front holds back every write behind it. No later writes from that device upload until the change leaves the queue.
 </Warning>
 
-When a write fails, your write API and `uploadData()` decide between the following outcomes.
+When a write fails, your write endpoint and `uploadData()` decide between the following outcomes.
 
 ### Retryable Errors
 
 A **retryable error** is a failure that is likely to succeed later without any change to the write, such as a network error, a timeout, or a database that is temporarily unavailable. `uploadData()` throws, and the SDK retries.
 
-A retry sends the whole transaction or batch again, including changes that your write API may already have applied. Make each write safe to repeat. For example, don't reject a create or delete only because an earlier attempt already applied it.
+A retry sends the whole transaction or batch again, including changes that your write endpoint may already have applied. Make each write safe to repeat. For example, don't reject a create or delete only because an earlier attempt already applied it.
 
 ### Rejected Writes
 
-A **rejected write** is a write that your write API will never apply, for example because it fails validation. The write API tells `uploadData()` that it rejected the write, preferably with a 2xx response that includes the reason. `uploadData()` then marks the write complete, and the queue keeps moving.
+A **rejected write** is a write that your write endpoint will never apply, for example because it fails validation. Your write endpoint tells `uploadData()` that it rejected the write, preferably with a 2xx response that includes the reason. `uploadData()` then marks the write complete, and the queue keeps moving.
 
 The rejected change stays in the local database until the upload queue is empty and the client has synced. Then the local data is replaced with the state from your source database. See [How Changes Are Rolled Back](#how-changes-are-rolled-back).
 
-To keep a record of rejected writes, your write API can store each one in a **dead-letter queue**: a table or queue on your backend that you inspect later. If you apply a dead-lettered write later, newer writes from the same client may already be in your source database, so the writes are applied out of order.
+To keep a record of rejected writes, your write endpoint can store each one in a **dead-letter queue**: a table or queue on your backend that you inspect later. If you apply a dead-lettered write later, newer writes from the same client may already be in your source database, so the writes are applied out of order.
 
 To show the user why a write was rejected, return the reason in the 2xx response, or write it to a table that syncs back to the client. See [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution) for examples.
 
@@ -70,7 +70,7 @@ To reject fewer writes, consider relaxing backend constraints that aren't strict
 
 A **blocked transaction** is a failed transaction that stays in the upload queue and prevents later writes from uploading. A transaction becomes blocked when `uploadData()` throws, or returns without calling `complete()`, for a write that a retry can't fix, such as one that violates a constraint. Your `uploadData()` code decides how to handle each response, so this can happen with any status, 4xx or 5xx. If `uploadData()` throws, the sync status shows an `uploadError` on every attempt.
 
-Your app may also keep a transaction blocked on purpose, for example when the write API refuses a write because the user lacks a permission that an administrator can grant.
+Your app may also keep a transaction blocked on purpose, for example when your write endpoint refuses a write because the user lacks a permission that an administrator can grant.
 
 Your app needs a way to resolve a blocked transaction, such as showing the problem to the user. When the cause is fixed, the next retry succeeds. If the write should be dropped instead, `uploadData()` calls `complete()` on the transaction. The change is rolled back like a rejected write, so the user loses the changes they made in that transaction.
 
@@ -78,9 +78,9 @@ Your app needs a way to resolve a blocked transaction, such as showing the probl
 
 The client has no explicit rollback operation. Instead, the client SDK keeps a copy of the data as last synced from the source database, separate from local changes. When the upload queue is empty and the client has synced up to its latest write checkpoint, the SDK replaces the local data with that synced copy. As a result:
 
-- A change that your write API applied appears in the synced copy, so the local data stays the same.
-- A change that your write API applied in a modified form is replaced with the version from your source database.
-- A change that your write API rejected is not in the synced copy, so the local data returns to its last synced state.
+- A change that your write endpoint applied appears in the synced copy, so the local data stays the same.
+- A change that your write endpoint applied in a modified form is replaced with the version from your source database.
+- A change that your write endpoint rejected is not in the synced copy, so the local data returns to its last synced state.
 - A change that a later write from another client overwrote is replaced with that other write.
 
 Until then, the local database keeps the user's changes, so your app shows them while uploads are pending or the device is offline.
@@ -88,4 +88,4 @@ Until then, the local database keeps the user's changes, so your app shows them 
 ## Related Pages
 
 - [Handling Update Conflicts](/handling-writes/handling-update-conflicts): what happens when two clients change the same row.
-- [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution): strategies for resolving conflicts in your write API.
+- [Custom Conflict Resolution](/handling-writes/custom-conflict-resolution): strategies for resolving conflicts in your write endpoint.

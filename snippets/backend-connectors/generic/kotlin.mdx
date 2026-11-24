@@ -1,6 +1,6 @@
 ```kotlin PowerSync.kt
-// Uploads local writes to the PowerSync reference write API, one transaction per request.
-// Set up the write API: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
+// Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
+// Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in postTransaction() to match it,
 // or have a coding agent write uploadData() for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
@@ -33,23 +33,17 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
 
-/** Base URL of the write API. On a phone or emulator, `localhost` refers to the device itself. */
+/** Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself. */
 private const val BACKEND_URL = "http://localhost:6060"
 
-/** Abort a write API request after this many milliseconds. */
+/** Abort a write endpoint request after this many milliseconds. */
 private const val REQUEST_TIMEOUT_MS = 30_000L
-
-/** Consecutive retryable errors for one transaction before it is passed to onFatalTransaction(). */
-private const val RETRY_MAX_ATTEMPTS = 10
 
 open class MyBackendConnector(
     private val httpClient: HttpClient = HttpClient(),
 ) : PowerSyncBackendConnector() {
     private var authToken: String? = null
-    private var retryKey: Any? = null
-    private var retryCount = 0
 
     override suspend fun fetchCredentials(): PowerSyncCredentials? {
         return PowerSyncCredentials(
@@ -70,11 +64,10 @@ open class MyBackendConnector(
         val result = try {
             postTransaction(transaction)
         } catch (e: AuthenticationException) {
-            // Fetch a new token before the next attempt. Like other transport errors, this doesn't count toward
-            // RETRY_MAX_ATTEMPTS.
+            // Fetch a new token before the next attempt.
             authToken = null
             throw e
-        }.let { applyRetryLimit(transaction, it) }
+        }
 
         when (val status = result.status) {
             "success" -> {}
@@ -84,7 +77,7 @@ open class MyBackendConnector(
                 if (requiresClientHandling && onFatalTransaction(transaction, result) == FatalDecision.RETAIN) {
                     throw Exception("Transaction retained after ${result.errorCode}")
                 }
-                // A fatal error that the write API already handled (for example, with a dead-letter hook), or one
+                // A fatal error that the write endpoint already handled (for example, with a dead-letter hook), or one
                 // that onFatalTransaction() chose to discard.
             }
             else -> throw Exception("Unexpected transaction result: $status")
@@ -93,9 +86,9 @@ open class MyBackendConnector(
     }
 
     /**
-     * Called for fatal errors that the write API leaves to the client, and when a transaction reaches
-     * RETRY_MAX_ATTEMPTS. RETAIN keeps the transaction queued, which blocks later uploads, and the SDK calls this
-     * again on its next attempt. Return COMPLETE to discard the transaction, for example after telling the user.
+     * Called for fatal errors that the write endpoint leaves to the client. RETAIN keeps the transaction queued,
+     * which blocks later uploads, and the SDK calls this again on its next attempt. Return COMPLETE to discard
+     * the transaction, for example after telling the user.
      * See https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/error-handling.md
      */
     protected open suspend fun onFatalTransaction(transaction: CrudTransaction, result: JsonObject): FatalDecision {
@@ -104,8 +97,8 @@ open class MyBackendConnector(
     }
 
     /**
-     * Returns the token for sync and for the write API, which accepts the same JWTs as your PowerSync instance.
-     * The token is cached until the write API rejects it. If your auth provider's SDK refreshes sessions itself,
+     * Returns the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
+     * The token is cached until the write endpoint rejects it. If your auth provider's SDK refreshes sessions itself,
      * return fetchAuthToken() directly instead.
      */
     private suspend fun getAuthToken(): String = authToken ?: fetchAuthToken().also { authToken = it }
@@ -115,14 +108,14 @@ open class MyBackendConnector(
      * Supabase and Firebase tokens can be used as they are:
      * - https://docs.powersync.com/configuration/auth/supabase-auth
      * - https://docs.powersync.com/configuration/auth/firebase-auth
-     * To use a development token with the write API, see
+     * To use a development token with the write endpoint, see
      * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
      */
     private suspend fun fetchAuthToken(): String = "An authentication token"
 
     /**
      * Sends one transaction to POST /api/data and returns its result. The request and response shapes are defined
-     * by the write API's OpenAPI spec:
+     * by the write endpoint's OpenAPI spec:
      * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
      */
     private suspend fun postTransaction(transaction: CrudTransaction): JsonObject {
@@ -157,18 +150,18 @@ open class MyBackendConnector(
                 bearerAuth(getAuthToken())
                 setBody(body.toString())
             }
-        } ?: throw Exception("Write API request timed out")
+        } ?: throw Exception("Write endpoint request timed out")
 
         val text = response.bodyAsText()
         val status = response.status.value
         if (!response.status.isSuccess()) {
-            // Every non-2xx response from the write API has the shape { message }.
+            // Every non-2xx response from the write endpoint has the shape { message }.
             val message = runCatching { Json.parseToJsonElement(text).jsonObject.message }.getOrNull()
                 ?: response.status.description
             if (status == 401 || status == 403) {
-                throw AuthenticationException("Write API rejected the token ($status): $message")
+                throw AuthenticationException("Write endpoint rejected the token ($status): $message")
             }
-            throw Exception("Write API request failed ($status): $message")
+            throw Exception("Write endpoint request failed ($status): $message")
         }
 
         // One result per transaction sent. A result's status is "success", "retryable_error", "fatal_error" or
@@ -179,39 +172,11 @@ open class MyBackendConnector(
         }
         return results[0].jsonObject
     }
-
-    /**
-     * Turns the RETRY_MAX_ATTEMPTS-th consecutive retryable error for the same transaction into a fatal error for
-     * onFatalTransaction(). The write API retries database errors that it doesn't recognize as permanent, so
-     * without a limit, one bad transaction could block the queue forever.
-     */
-    private fun applyRetryLimit(transaction: CrudTransaction, result: JsonObject): JsonObject {
-        if (result.status != "retryable_error") {
-            retryKey = null
-            return result
-        }
-        val key: Any = transaction.transactionId ?: transaction.crud.first().clientId
-        retryCount = if (key == retryKey) retryCount + 1 else 1
-        retryKey = key
-        if (retryCount < RETRY_MAX_ATTEMPTS) {
-            return result
-        }
-        retryCount = 0
-        return buildJsonObject {
-            put("status", "fatal_error")
-            put("message", result.message)
-            put("requires_client_handling", true)
-            putJsonObject("failed_operation") {
-                put("error_code", "RETRY_LIMIT_EXCEEDED")
-                put("message", result.message)
-            }
-        }
-    }
 }
 
 enum class FatalDecision { RETAIN, COMPLETE }
 
-/** Thrown when the write API rejects the token (401 or 403). */
+/** Thrown when the write endpoint rejects the token (401 or 403). */
 class AuthenticationException(message: String) : Exception(message)
 
 private val JsonObject.status: String? get() = this["status"]?.jsonPrimitive?.contentOrNull

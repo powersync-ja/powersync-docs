@@ -66,18 +66,13 @@ Troubleshooting techniques depend on the type of issue:
 4. **Writes to the backend source database are failing:** PowerSync is not actively involved: use normal debugging techniques (server-side logging; client and server-side error tracking).
 5. **Updates are slow to sync, or queries run slow**: See [Performance](#performance)
 
+### Sync Test
+
+If you're on PowerSync Cloud, use [Sync Test](/tools/sync-test#sync-test) in the dashboard to connect a client as a specific user and inspect it with [PowerSync DevTools](/tools/devtools-overview). It shows the user's tables, rows, buckets and Sync Stream subscriptions, and any download errors. You can also query the client-side SQLite database.
+
 ### Sync Diagnostics Client
 
-Access the Sync Diagnostics Client here: [https://diagnostics-app.powersync.com](https://diagnostics-app.powersync.com)
-
-This is a standalone web app that presents data from the perspective of a specific user. It can be used to:
-
-- See stats about the user's local database.
-- Inspect tables, rows and buckets on the device.
-- Query the local SQL database.
-- Identify common issues, e.g. too many buckets.
-
-See the [Readme](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app#readme) for further details.
+If you self-host, use the [Sync Diagnostics Client](https://diagnostics-app.powersync.com) to connect a client as a specific user with a [development token](/configuration/auth/development-tokens). It shows the user's tables, rows and buckets, and lets you query the client-side SQLite database. See the [README](https://github.com/powersync-ja/powersync-js/tree/main/tools/diagnostics-app#readme) for details.
 
 ### Instance Logs
 
@@ -101,14 +96,14 @@ Run one from your app code, or use the **Sync now** action in [PowerSync DevTool
 
 The result tells you where to look next:
 
-- **The wait completes, but the data is still missing:** Check that the data was committed to the source database before you created the request, and that the user's Sync Streams include it. To see what the device has synced, use [PowerSync DevTools](/tools/devtools-overview) or the [Sync Diagnostics Client](#sync-diagnostics-client).
+- **The wait completes, but the data is still missing:** Check that the data was committed to the source database before you created the request, and that the user's Sync Streams include it. To see what the device has synced, use [PowerSync DevTools](/tools/devtools-overview) in your app. To see what the user's Sync Streams sync, use [Sync Test](#sync-test) or the [Sync Diagnostics Client](#sync-diagnostics-client).
 - **The wait fails or does not complete:** The wait has not confirmed catch-up. If it failed, check whether it was canceled or timed out. Check `SyncStatus` for connection, upload, or download errors, then check [replication lag](/maintenance-ops/replication-lag) and [instance logs](#instance-logs).
 
 ### Inspect Local SQLite Database
 
 Opening the SQLite file directly is useful for verifying sync state, inspecting raw table contents, and diagnosing unexpected data. See [Understanding the SQLite Database](/maintenance-ops/client-database-diagnostics) for platform-specific instructions (Android, iOS, Web), how to merge the WAL file, and how to analyze storage usage.
 
-Our [Sync Diagnostics Client](/tools/diagnostics-client) and several of our [demo apps](/intro/examples) also contain a SQL console view to inspect the local database contents without pulling the file. Consider implementing similar functionality in your app. See a React example [here](https://github.com/powersync-ja/powersync-js/blob/main/tools/diagnostics-app/src/app/views/sql-console.tsx).
+[PowerSync DevTools](/tools/devtools/using-devtools#data-inspector) and several of our [demo apps](/intro/examples) also contain a SQL console view to inspect the local database contents without pulling the file. Consider implementing similar functionality in your app. See a React example [here](https://github.com/powersync-ja/powersync-js/blob/main/tools/diagnostics-app/src/app/views/sql-console.tsx).
 
 ### Client-Side Logging
 
@@ -143,7 +138,7 @@ The downstream pipeline (source database to client) has two stages:
 1. **Source database to PowerSync Service** (replication).
 2. **PowerSync Service to client** (sync session).
 
-The upstream path (the client sending a write to your backend, your backend processing it, and your backend committing to the source database) sits outside PowerSync and is not covered by the diagnostics below. To measure that, instrument your backend API directly.
+The upstream path (the client sending a write to your backend, your backend processing it, and your backend committing to the source database) sits outside PowerSync and is not covered by the diagnostics below. To measure that, instrument your write endpoint directly.
 
 #### Measuring Downstream Latency (Source to Device)
 
@@ -165,7 +160,7 @@ Sync & API logs in the [PowerSync Dashboard](https://dashboard.powersync.com/) r
 
 #### Common Causes of Latency
 
-- **Large initial sync**: if your Sync Streams result in a large dataset, the first sync after connecting will be slow. Inspect bucket sizes and sync state with the [Sync Diagnostics Client](/tools/diagnostics-client).
+- **Large initial sync**: if your Sync Streams result in a large dataset, the first sync after connecting will be slow. Inspect bucket sizes and sync state with [Sync Test](#sync-test) if you're on PowerSync Cloud, or with the [Sync Diagnostics Client](/tools/sync-test#sync-diagnostics-client) if you self-host.
 - **Upload queue blocking downloads**: by default, uploads are processed before downloads, so a backlogged upload queue delays receiving new data. If the queue doesn't drain, see [Blocked Transactions](/handling-writes/write-path/concepts#blocked-transactions). Buckets and streams at [priority 0](/sync/streams/prioritized-sync) are not blocked by uploads, but come with the trade-off of potential sync inconsistencies.
 - **Replication lag on the source database**: high write volume, long-running transactions, bulk updates, or backfills can cause replication to fall behind faster than the service can drain it. See [Replication Lag](/maintenance-ops/replication-lag) for source-specific causes and fixes.
 - **Too many buckets per user**: incremental sync overhead scales roughly linearly with the number of buckets per user. See [Too Many Buckets](#psync_s2305-too-many-buckets-/-parameter-query-results) above.

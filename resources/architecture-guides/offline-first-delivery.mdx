@@ -84,7 +84,7 @@ See the [React Native & Expo SDK reference](/client-sdks/reference/react-native-
 
 ## 2. Record Every Scan as an Append-Only Scan Event
 
-Edits to scan and delivery rows break audit trails and can lead to data inconsistencies. A driver may retry a delivery, and a retried upload must not overwrite the original scan event.
+Edits to scan rows break audit trails and can lead to data inconsistencies. A retried upload must not overwrite the original scan event.
 
 To address this, every scan (loaded at the warehouse, out for delivery, delivered, failed) is a new `scan_events` row. Nothing is updated or deleted, so a package's history is the list of its scan events, and a retried upload can't change a scan already recorded ([effectively-once delivery](/resources/architecture-guides/offline-first-architecture#exactly-once-delivery)).
 
@@ -120,7 +120,7 @@ export async function recordDelivery(s: Scan, outcome: 'delivered' | 'failed', f
 
 ## 3. Make Every Upload Idempotent by Generating IDs on the Device
 
-A retry resends the whole transaction, including writes that your backend already applied ([What Happens When a Write Fails](/handling-writes/write-path/concepts#what-happens-when-a-write-fails)). Your backend must be able to recognize a retried upload and ignore it, so every row must have a globally unique ID.
+A retry sends the whole transaction again, including writes that your backend already applied ([What Happens When a Write Fails](/handling-writes/write-path/concepts#what-happens-when-a-write-fails)). Your backend must be able to recognize a retried upload and ignore it, so every row must have a globally unique ID.
 
 PowerSync provides the `uuid()` SQLite function ([Client ID](/sync/advanced/client-id)), so every row gets its ID on the device. The scan event uses `uuid()` in the `INSERT`; `recordDelivery` selects the delivery ID first because the photo needs it. Your backend stores that ID as the primary key and never generates its own.
 
@@ -210,7 +210,7 @@ The local storage adapter creates a ready-made streaming transport (`createTrans
 
 When a device comes back online, its data may conflict with what was written to the backend while it was offline. Your backend needs [conflict resolution rules](/handling-writes/handling-update-conflicts) to handle this.
 
-Append-only rows with client IDs can't conflict. With this design, the conflict rules are minimal:
+Append-only rows with client IDs can't conflict, so this design has minimal conflict rules:
 
 - **Scan events:** never conflict and are never rejected. Your backend records them even against a cancelled stop.
 - **Stops:** dispatch-owned. Only dispatch creates and cancels them; drivers only record outcomes. Your backend sets `stops.status` from the delivery it receives. Until then, the app shows a stop as done if it has a local `deliveries` row.
@@ -226,7 +226,7 @@ A driver can only record deliveries for stops that are on the device, so the app
 
 PowerSync provides [Sync Streams](/sync/streams/overview) as a declarative way to define what each device receives and stores locally. The driver is `auth.user_id()` from the JWT, and the `my_route` stream below filters on it ([parameters](/sync/streams/parameters)).
 
-The `my_route` stream sends the driver's stops and deliveries, plus their own `scan_events`. Without that query, scans disappear from the device after upload.
+The `my_route` stream sends the driver's stops and deliveries, plus their own `scan_events`. Without the `scan_events` query, scans disappear from the device after upload.
 
 Stream parameter filters are equality-only, and `now()` isn't allowed ([Sync Data by Time](/sync/advanced/sync-data-by-time)), so bind the stream to today's route with a server-maintained boolean `is_current_route` column. Your backend sets it to true on the day's stops and on each delivery and scan event it receives, and a scheduled job sets it to false when the route closes.
 
@@ -272,7 +272,7 @@ You still need to implement:
 
 Make the decisions in this order:
 
-1. Whether to implement client-generated UUIDs and the append-only `scan_events` schema, including both clocks
+1. How to model scans with client-generated UUIDs, an append-only schema, and both timestamps
 2. How photos and signatures attach to deliveries
 3. Conflict rules for dispatch-owned stops
 
@@ -280,7 +280,7 @@ They set your schema and are expensive to change once drivers are on the road.
 
 With those settled, the sync layer is a client-side schema and a Sync Config, plus the backend pieces listed above.
 
-PowerSync also supports MySQL, SQL Server, and MongoDB as the [source database](/configuration/source-db/setup).
+PowerSync supports Postgres, MySQL, SQL Server, and MongoDB as the [source database](/configuration/source-db/setup).
 
 ## Next Steps
 

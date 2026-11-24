@@ -958,45 +958,20 @@ try await db.connect(
 ```
 
 ```csharp .NET
-using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
-using PowerSync.Common.Client;
 using PowerSync.Common.Client.Connection;
-using PowerSync.Common.DB.Crud;
 
-public class MyConnector : IPowerSyncBackendConnector
+public class MyAuthenticator : IAuthenticator
 {
-    public MyConnector()
+    public Task<string> ResolveCredentials()
     {
-    }
-
-    public async Task<PowerSyncCredentials?> FetchCredentials()
-    {
-        var powerSyncUrl = "https://your-instance.powersync.com";
-        var authToken = "your-development-token-here";
-
-        // Return credentials with PowerSync endpoint and JWT token
-        return new PowerSyncCredentials(powerSyncUrl, authToken);
-    }
-
-    public async Task UploadData(IPowerSyncDatabase database)
-    {
-        var transaction = await database.GetNextCrudTransaction();
-        if (transaction == null) return;
-
-        // Placeholder: send the mutations in transaction.Crud to your write endpoint here,
-        // before you complete the transaction. See the Write Data step.
-
-        await transaction.Complete();
+        // For development: return your development token
+        return Task.FromResult("your-development-token-here");
     }
 }
 
-// connect the database to PowerSync Service
-await db.Connect(new MyConnector());
+// Connect the database to the PowerSync Service
+await db.Connect("https://your-instance.powersync.com", new MyAuthenticator(), uploader: null);
 ```
 
 ```rust Rust
@@ -1485,9 +1460,22 @@ try await db.connect(
 ```
 
 ```csharp .NET
-// The .NET SDK uploads mutations with the UploadData() method of the backend
-// connector from the Connect step. Replace the placeholder in that method
-// with a call to your write endpoint.
+public class MyMutationUploader : IMutationUploader
+{
+    public async Task UploadMutations(IPowerSyncDatabase database)
+    {
+        var transaction = await database.GetNextCrudTransaction();
+        if (transaction == null) return;
+
+        // Send the mutations to your write endpoint
+        await writeApi.UploadChanges(transaction.Crud);
+
+        await transaction.Complete();
+    }
+}
+
+// Connect with the authenticator and the uploader
+await db.Connect("https://your-instance.powersync.com", new MyAuthenticator(), new MyMutationUploader());
 ```
 
 ```rust Rust

@@ -602,7 +602,8 @@ The examples below take the oldest queued transaction, send all of its mutations
     `GetNextCrudTransaction()` returns the oldest transaction in the upload queue, or `null` if the queue is empty. Call `Complete()` only after your backend has applied or permanently rejected the mutations.
 
     ```cs
-    public async Task UploadData(IPowerSyncDatabase database)
+    // Inside your IMutationUploader implementation
+    public async Task UploadMutations(IPowerSyncDatabase database)
     {
         var transaction = await database.GetNextCrudTransaction();
         if (transaction == null) return;
@@ -618,7 +619,7 @@ The examples below take the oldest queued transaction, send all of its mutations
     - [Write Path Concepts](/handling-writes/write-path/concepts)
   </Tab>
   <Tab title="Rust">
-    `crud_transactions()` returns a stream of the queued transactions, oldest first. This example uploads each transaction and completes it before it moves to the next one.
+    `crud_transactions()` returns a stream of the queued transactions, oldest first. This example uploads each transaction and completes it before it moves to the next one. Tauri apps implement the uploader in Rust, so they use this example too.
 
     ```rust
     use futures_lite::StreamExt;
@@ -1732,9 +1733,38 @@ If your authentication library already stores the current token, return that tok
     ```
   </Tab>
   <Tab title=".NET">
-    For an `IAuthenticator` that caches its token, see the .NET tab in [Connect for Downloads or Uploads Only](#connect-for-downloads-or-uploads-only). If you use a backend connector instead, the SDK caches the credentials that `FetchCredentials()` returns.
+    ```csharp
+    // Requires PowerSync.Common SDK 1.0.1 or later
+    using PowerSync.Common.Client;
+    using PowerSync.Common.Client.Connection;
+    
+    class MyAuthenticator : IAuthenticator
+    {
+        private string? cachedToken;
+        private readonly HttpClient client = new HttpClient();
+    
+        public async Task<string> ResolveCredentials()
+        {
+            if (cachedToken != null)
+            {
+                return cachedToken;
+            }
+    
+            // TODO: Fetch token from your backend or re-use a token stored in your app's state.
+            var token = await client.GetStringAsync("https://example.org/token");
+            return cachedToken = token;
+        }
+    
+        public void InvalidateCredentials()
+        {
+            cachedToken = null;
+        }
+    }
+    ```
   </Tab>
   <Tab title="Rust">
+    Tauri apps implement the authenticator in Rust, so they use this example too.
+
     ```Rust
     // Requires PowerSync Rust SDK 0.2.0 or later
     use std::sync::{Arc, Mutex};
@@ -1867,57 +1897,20 @@ Each example shows the three calls. Use the call for the mode you need. In these
     ```
   </Tab>
   <Tab title=".NET">
-    You can implement `IAuthenticator` and `IMutationUploader` independently:
+    In .NET, the uploader is a class that implements `IMutationUploader`. This example calls it `MyMutationUploader`.
 
     ```csharp
     // Requires PowerSync.Common SDK 1.0.1 or later
-    using PowerSync.Common.Client;
-    using PowerSync.Common.Client.Connection;
     
-    class MyAuthenticator : IAuthenticator
-    {
-        private string? cachedToken;
-        private readonly HttpClient client = new HttpClient();
+    // Download-only
+    await db.Connect(endpoint, new MyAuthenticator(), uploader: null);
     
-        public async Task<string> ResolveCredentials()
-        {
-            if (cachedToken != null)
-            {
-                return cachedToken;
-            }
+    // Upload-only
+    await db.Connect(new MyMutationUploader());
     
-            // TODO: Fetch token from your backend or re-use a token stored in your app's state.
-            var token = await client.GetStringAsync("https://example.org/token");
-            return cachedToken = token;
-        }
-    
-        public void InvalidateCredentials()
-        {
-            cachedToken = null;
-        }
-    }
-    
-    class MyMutationUploader : IMutationUploader
-    {
-        public async Task UploadMutations(IPowerSyncDatabase db)
-        {
-            var tx = await db.GetNextCrudTransaction();
-            if (tx == null)
-            {
-                return;
-            }
-    
-            // TODO: Upload transaction to your backend
-            await tx.Complete();
-        }
-    }
+    // Downloads and uploads
+    await db.Connect(endpoint, new MyAuthenticator(), new MyMutationUploader());
     ```
-
-    Next, use one of the following `Connect` overloads to connect in download-only, upload-only, or full mode:
-
-    - `PowerSyncDatabase.Connect(endpoint, authenticator: new MyAuthenticator(), uploader: null)` to connect in download-only mode. Pass the endpoint of the PowerSync service to connect to. You don’t need to provide the mutation uploader for this.
-    - `PowerSyncDatabase.Connect(uploader: new MyMutationUploader())` to connect in upload-only mode. This doesn’t need a PowerSync service endpoint or authenticator.
-    - `PowerSyncDatabase.Connect(endpoint, authenticator: new MyAuthenticator(), uploader: new MyMutationUploader())` to connect both for downloads and uploads. This roughly matches what the SDK does when an IPowerSyncBackendConnector is passed, except that it allows you to implement the authenticator and uploader independently.
   </Tab>
   <Tab title="Rust">
     In Rust, the uploader is a type that implements `MutationUploader`. This example calls it `MyMutationUploader`. Tauri apps connect from Rust, so they use the same calls in their `connect` command.

@@ -26,9 +26,7 @@ This guide takes an online-only app built with .NET MAUI, ASP.NET Core, and SQL 
 
 The example is a delivery-driver app. Drivers see today's stops and record each one as delivered or failed. Dispatch is a back-office system that writes straight to SQL Server, and it adds and cancels stops.
 
-The [companion repo](https://github.com/ckritzinger/sql_server_courier_example) has both versions: the original REST app on the `main` branch, and the updated architecture using PowerSync on the `powersync-existing-api` branch.
-
-{/* TODO: Confirm the repo's final home (personal GitHub or `powersync-ja`) and update every repo link on this page before publishing. */}
+The [companion repo](https://github.com/powersync-community/powersync-delivery-sql-server-maui) has both versions: the original REST app on the `main` branch, and the updated architecture using PowerSync on the `powersync-existing-api` branch.
 
 <Note>
   The [SQL Server source](/configuration/source-db/setup#sql-server) is in [Beta](/resources/feature-status).
@@ -47,14 +45,14 @@ flowchart LR
 
 There are two tables, both with server-generated `NEWSEQUENTIALID()` GUIDs:
 
-- `stops`: driver, route date, sequence, recipient, address, and a status of `assigned`, `delivered`, `failed`, or `cancelled`.
+- `stops`: driver, route date, sequence, recipient, address, and a status of `assigned`, `delivered`, `failed`, or `canceled`.
 - `deliveries`: one row per attempt, with the outcome, a note, and `recorded_at`.
 
 The backend API signs RS256 tokens and publishes the public key at `/.well-known/jwks.json`, the way Entra ID or any other identity provider does.
 
 To record an outcome, the app calls `POST /api/stops/{id}/deliveries`. This endpoint enforces the app's one business rule: it returns 409 if dispatch canceled the stop or the stop is already delivered. The endpoint locks the stop row first, so a cancel that arrives at the same moment can't slip in.
 
-The full code is on the repo's [`main` branch](https://github.com/ckritzinger/sql_server_courier_example/tree/main).
+The full code is on the repo's [`main` branch](https://github.com/powersync-community/powersync-delivery-sql-server-maui/tree/main).
 
 <Columns cols={2}>
   <Frame caption="The day's route, part done.">
@@ -82,7 +80,7 @@ In the example scenario below, dispatch canceled stop 4 after the driver opened 
   </Frame>
 
   <Frame caption="Tapping Delivered gets a 409.">
-    ![Stop 4 page with the error banner Dispatch cancelled this stop](/images/migration-guides/sql-server-maui/before-cancelled-409.png)
+    ![Stop 4 page with the error banner Dispatch canceled this stop](/images/migration-guides/sql-server-maui/before-canceled-409.png)
   </Frame>
 
   <Frame caption="No network: opening the app shows an empty route.">
@@ -151,7 +149,7 @@ async Task RecordAsync(string outcome)
 
 In the new architecture, the app reads and writes its local SQLite database. The PowerSync Service streams changes from SQL Server to the device, and the client SDK uploads local writes through the existing backend API.
 
-To see a full diff of the migration, including the backend API change, see the [pull request in the companion repo](https://github.com/ckritzinger/sql_server_courier_example/pull/1/changes).
+To see a full diff of the migration, including the backend API change, see the [pull request in the companion repo](https://github.com/powersync-community/powersync-delivery-sql-server-maui/pull/1/changes).
 
 ```mermaid
 flowchart LR
@@ -186,7 +184,7 @@ You are migrating this project, an online-only .NET MAUI app with an ASP.NET Cor
 Read these before you explore this project:
 
 - The migration guide (follow its steps in order): https://docs.powersync.com/migration-guides/sql-server-maui.md
-- The companion repo: https://github.com/ckritzinger/sql_server_courier_example. The `main` branch is the online-only app, and the `powersync-existing-api` branch is the migrated app. The full migration diff is https://github.com/ckritzinger/sql_server_courier_example/pull/1/files. Use the diff as the reference implementation, and map each change onto this project.
+- The companion repo: https://github.com/powersync-community/powersync-delivery-sql-server-maui. The `main` branch is the online-only app, and the `powersync-existing-api` branch is the migrated app. The full migration diff is https://github.com/powersync-community/powersync-delivery-sql-server-maui/pull/1/files. Use the diff as the reference implementation, and map each change onto this project.
 
 PowerSync publishes agent skills for its SDKs, backend integration, and debugging. Install them before you explore, unless this project already has them (look for a `powersync` skill):
 
@@ -255,14 +253,14 @@ This step usually needs a DBA. Check the requirements below, then run the setup 
 
 ### The Setup Script
 
-The companion repo does all of this in one idempotent script, [`db/powersync.sql`](https://github.com/ckritzinger/sql_server_courier_example/blob/powersync-existing-api/db/powersync.sql), which runs as a one-shot container after the app's own `init.sql`. The steps below show a trimmed version. Replace `CourierApp` and the table names with your own.
+The companion repo does all of this in one idempotent script, [`db/powersync.sql`](https://github.com/powersync-community/powersync-delivery-sql-server-maui/blob/powersync-existing-api/db/powersync.sql), which runs as a one-shot container after the app's own `init.sql`. The steps below show a trimmed version. Replace `DeliveryApp` and the table names with your own.
 
 <Steps>
   <Step title="Fail Early If SQL Server Agent Is Off">
     If the Agent is stopped, CDC enables without error but captures nothing. This check stops the script instead.
 
     ```sql
-    USE CourierApp;
+    USE DeliveryApp;
     GO
     
     IF NOT EXISTS (
@@ -277,7 +275,7 @@ The companion repo does all of this in one idempotent script, [`db/powersync.sql
     Name every replicated table here and in your Sync Streams (Step 3).
 
     ```sql
-    IF (SELECT is_cdc_enabled FROM sys.databases WHERE name = N'CourierApp') = 0
+    IF (SELECT is_cdc_enabled FROM sys.databases WHERE name = N'DeliveryApp') = 0
       EXEC sys.sp_cdc_enable_db;
     GO
     
@@ -299,7 +297,7 @@ The companion repo does all of this in one idempotent script, [`db/powersync.sql
     GRANT VIEW SERVER PERFORMANCE STATE TO powersync_user;  -- SQL Server only, not Azure SQL
     GO
     
-    USE CourierApp;
+    USE DeliveryApp;
     IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'powersync_user')
       CREATE USER powersync_user FOR LOGIN powersync_user;
     GRANT SELECT ON dbo.stops TO powersync_user;
@@ -344,7 +342,7 @@ The companion repo does all of this in one idempotent script, [`db/powersync.sql
 
 ## Step 2: Run the PowerSync Service
 
-This guide [self-hosts](/intro/self-hosting) the PowerSync Service with Docker Compose (see the repo's [`docker-compose.yml`](https://github.com/ckritzinger/sql_server_courier_example/blob/powersync-existing-api/docker-compose.yml)).
+This guide [self-hosts](/intro/self-hosting) the PowerSync Service with Docker Compose (see the repo's [`docker-compose.yml`](https://github.com/powersync-community/powersync-delivery-sql-server-maui/blob/powersync-existing-api/docker-compose.yml)).
 
 You can also use [PowerSync Cloud](/configuration/powersync-service/cloud-instances).
 
@@ -374,10 +372,10 @@ sync_config:
 
 client_auth:
   jwks_uri: http://server:7070/.well-known/jwks.json
-  audience: ["courier-api"]
+  audience: ["delivery-api"]
 ```
 
-`PS_DATA_SOURCE_URI` has the form `mssql://powersync_user:<password>@sqlserver:1433/CourierApp`.
+`PS_DATA_SOURCE_URI` has the form `mssql://powersync_user:<password>@sqlserver:1433/DeliveryApp`.
 
 <Note>
   If your password isn't URL-safe, you must URL-encode it.
@@ -490,14 +488,14 @@ public static class AppSchema
 Open the database and call `Connect()` during app init. The pages read local data, so they don't wait for the connection:
 
 ```csharp Database.cs
-public Database(CourierConnector connector, ILogger<Database> logger)
+public Database(DeliveryConnector connector, ILogger<Database> logger)
 {
     _connector = connector;
     Db = new PowerSyncDatabase(new PowerSyncDatabaseOptions
     {
         Database = new MDSQLiteDBOpenFactory(new MDSQLiteOpenFactoryOptions
         {
-            DbFilename = Path.Combine(FileSystem.AppDataDirectory, "courier.db"),
+            DbFilename = Path.Combine(FileSystem.AppDataDirectory, "delivery.db"),
         }),
         Schema = AppSchema.Schema,
         Logger = logger,
@@ -525,8 +523,8 @@ public App(Database database)
 
 The connector's `FetchCredentials()` gets a token from the backend API's existing token endpoint. The PowerSync Service checks the token against the same JWKS as the backend API:
 
-```csharp CourierConnector.cs
-public class CourierConnector(ApiClient api) : IPowerSyncBackendConnector
+```csharp DeliveryConnector.cs
+public class DeliveryConnector(ApiClient api) : IPowerSyncBackendConnector
 {
     public async Task<PowerSyncCredentials?> FetchCredentials()
     {
@@ -606,7 +604,7 @@ The device generates the delivery's ID with `Guid.NewGuid()`, in upper case. Bec
 
 The PowerSync client SDK automatically places writes into its [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue), and calls the connector's `UploadData()`, which posts the delivery to the existing API endpoint.
 
-```csharp CourierConnector.cs
+```csharp DeliveryConnector.cs
 public async Task UploadData(IPowerSyncDatabase database)
 {
     var transaction = await database.GetNextCrudTransaction();
@@ -678,7 +676,7 @@ if (request.Id is { } deliveryId &&
 
 switch (stop.Status) // The business rule is unchanged.
 {
-    case StopStatus.Cancelled: return ApiResults.Conflict("Dispatch cancelled this stop.");
+    case StopStatus.Canceled: return ApiResults.Conflict("Dispatch canceled this stop.");
     case StopStatus.Delivered: return ApiResults.Conflict("This stop is already delivered.");
 }
 
@@ -696,7 +694,7 @@ The business rule is unchanged. If a driver records a delivery offline on a stop
 
 <Columns cols={2}>
   <Frame caption="Before: rejected while online.">
-    ![Baseline stop page with the error banner Dispatch cancelled this stop](/images/migration-guides/sql-server-maui/before-cancelled-409.png)
+    ![Baseline stop page with the error banner Dispatch canceled this stop](/images/migration-guides/sql-server-maui/before-canceled-409.png)
   </Frame>
 
   <Frame caption="After: recorded offline, then rejected on upload.">
@@ -723,12 +721,12 @@ The driver gets these updates without any app code:
 - Writes from any system reach the device, not only writes through your backend API.
 
 <Columns cols={2}>
-  <Frame caption="Stop 7 is assigned.">
-    ![Route list with stop 7 assigned](/images/migration-guides/sql-server-maui/after-dispatch-before.png)
+  <Frame caption="Stop 6 is assigned.">
+    ![Route list with stop 6 assigned](/images/migration-guides/sql-server-maui/after-dispatch-before.png)
   </Frame>
 
   <Frame caption="Seconds after dispatch cancels it, with no refresh.">
-    ![Route list with stop 7 shown as canceled](/images/migration-guides/sql-server-maui/after-dispatch-after.png)
+    ![Route list with stop 6 shown as canceled](/images/migration-guides/sql-server-maui/after-dispatch-after.png)
   </Frame>
 </Columns>
 
@@ -785,7 +783,7 @@ See [SQL Server Specifics](/maintenance-ops/implementing-schema-changes#sql-serv
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Companion Repo" icon="github" href="https://github.com/ckritzinger/sql_server_courier_example">
+  <Card title="Companion Repo" icon="github" href="https://github.com/powersync-community/powersync-delivery-sql-server-maui">
     The `main` branch is the REST app, and `powersync-existing-api` adds PowerSync.
   </Card>
 

@@ -1,7 +1,7 @@
 ---
 title: "Demystifying Offline-First Architecture Jargon"
 sidebarTitle: "Offline-First Fundamentals"
-description: "What outbox, idempotency key, delta sync, tombstones, last-write-wins and other offline-first terms mean, and how that compares to using PowerSync."
+description: "What outbox, idempotency key, delta sync, partial sync, tombstones, last-write-wins and other offline-first terms mean, and how that compares to using PowerSync."
 ---
 
 Your app needs to keep working when the network isn't available, so you read a few blog posts and asked an AI assistant.
@@ -12,6 +12,7 @@ Now you have a recipe full of jargon:
 - write changes to an [outbox](#outbox-pattern),
 - give every write an [idempotency key](#idempotency-key),
 - pull [deltas](#delta-sync-incremental-pull) from the server,
+- sync only [the data each device needs](#partial-sync),
 - mark deletes with [tombstones](#tombstones-soft-deletes),
 - settle conflicts with [last-write-wins](#last-write-wins-lww).
 
@@ -215,14 +216,61 @@ This is where most hand-built sync subtly goes wrong. To get it right:
 
 - Use a commit-ordered position (e.g. the Postgres LSN, or `xmin` with snapshot checks). Normal timestamps and serial IDs are both assigned before commit, so a long transaction can commit with a value older than the cursor a client has already moved past. If that happens, those rows will never be sent.
 - Record deletes so they can be sent too. A deleted row isn't returned by the query (see tombstones below).
-- Track who can see what, and tell the device to drop rows when a user loses access (e.g. removed from a team).
+- Return only the rows the requesting user can see, and handle changes to what they can see (see [partial sync](#partial-sync) below).
 - Pull related tables together, so the client never shows e.g. an order without its line items.
 
 ### With PowerSync
 
-You don't need to build delta sync. The PowerSync Service reads your database's replication stream (e.g. Postgres logical replication), so it sees every committed change, including deletes. Clients receive only changes since their last [checkpoint](/architecture/consistency). The client applies a checkpoint only once it has all of the operations for that checkpoint, so it never has <Tooltip tip="In other words, there will never be missing data, or a transaction that’s uncommitted or only partly applied">inconsistent data</Tooltip>. When a user's access changes, rows they should no longer have are automatically removed from the device.
+You don't need to build delta sync. The PowerSync Service reads your database's replication stream (e.g. Postgres logical replication), so it sees every committed change, including deletes. Clients receive only changes since their last [checkpoint](/architecture/consistency). The client applies a checkpoint only once it has all of the operations for that checkpoint, so it never has <Tooltip tip="In other words, there will never be missing data, or a transaction that’s uncommitted or only partly applied">inconsistent data</Tooltip>.
 
-You still need to define what data each user syncs with [Sync Streams](/sync/streams/overview).
+You still need to define what data each user syncs (see [partial sync](#partial-sync) below).
+
+## Partial Sync
+
+Partial sync means that each device gets only the subset of server data it needs. The subset usually depends on the user: their own records, plus records shared with them through a team, project or organization.
+
+Partial sync is important for security, performance and data consumption:
+
+- **Security.** Anyone with access to the device can read its data outside the app, for example by opening the SQLite file or using browser devtools. Hiding rows in the UI doesn't restrict access.
+- **Performance.** The device has limited storage, and the first sync downloads every row in the subset. A smaller subset uses less storage and finishes its first sync sooner.
+- **Data consumption.** Syncing only the necessary data reduces bandwidth usage, which is important for users on mobile data or poor connections.
+
+### Typical Implementation
+
+Write a server-side rule for each table that defines which rows a user can see, and apply it to every sync query. For shared data, the rule often joins through a membership table:
+
+```sql
+SELECT tasks.* FROM tasks
+JOIN project_members ON project_members.project_id = tasks.project_id
+WHERE project_members.user_id = $1   -- $1 = the authenticated user
+  AND tasks.updated_at > $2;         -- $2 = client's last cursor
+```
+
+The tricky part is that each user's subset changes over time:
+
+- **Gaining access.** When a user joins a project, the device needs all of the project's existing tasks. The delta query above misses them, because their `updated_at` values are older than the client's cursor. You need a full download of the new scope, and then a separate cursor for it.
+- **Losing access.** When a user leaves a project, the delta query stops returning the project's tasks, so the device never learns that it must delete them. As with deletes, you need to detect the change and tell the device which rows to remove.
+- **Changes in other tables.** Adding or removing a `project_members` row changes which `tasks` rows a user can see, without any change to the `tasks` rows themselves. Your change tracking has to follow these dependencies.
+
+### With PowerSync
+
+You don't need to build the filtering, or add and remove data on the device when access changes. You define each user's subset with [Sync Streams](/sync/streams/overview): SQL-like queries that the PowerSync Service evaluates with values from the user's [auth token](/configuration/auth/overview), such as the user ID. For example:
+
+```yaml
+streams:
+  # Tasks in every project the user is a member of
+  my_tasks:
+    auto_subscribe: true
+    query: |
+      SELECT * FROM tasks
+      WHERE project_id IN (SELECT project_id FROM project_members WHERE user_id = auth.user_id())
+```
+
+The Service keeps each user's subset up to date as data changes, including changes to join tables like `project_members`. When a user gains access, the device downloads all of the existing data, not only recent changes. When a user loses access, the data is removed from the device.
+
+For data that a device doesn't need all the time, the client [subscribes to a stream](/sync/streams/client-usage) with parameters, such as the ID of the project the user opened. Write that stream's query so it also ensures that the user is a member of the project.
+
+You still need to decide which data each user needs and define the streams accordingly.
 
 ## Tombstones (Soft Deletes)
 
@@ -336,6 +384,7 @@ Here's a summary of the terms on this page:
 | Optimistic UI | Handled for you: local writes + live queries |
 | Idempotency key | Easier: the key is provided, your backend uses it |
 | Delta / incremental sync | Handled for you |
+| Partial sync | Easier: you define each user's data with Sync Streams |
 | Tombstones | Handled for you, for synced data |
 | Last-write-wins | Easier, and customizable |
 | CRDTs | Easier: PowerSync syncs the updates |

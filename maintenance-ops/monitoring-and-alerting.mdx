@@ -28,6 +28,7 @@ Monitoring and alerting functionality varies by [PowerSync Cloud plan](https://w
 | **Usage Metrics** | Available | Available | Available |
 | **Instance Logs** | Available | Available | Available |
 | **Log retention period** | 24 hours | 7 days | 30 days |
+| **User Lookup** | Not available | Not available | Available |
 | **Issue Alerts** | Available | Available | Available |
 | **Usage Alerts** | Not available | Not available | Available |
 | **Alert Notifications** | - Email | - Email <br />- Webhooks | - Email <br />- Webhooks |
@@ -93,7 +94,7 @@ Access instance logs through the [PowerSync Dashboard](https://dashboard.powersy
 
 You can manage logs with the following options:
 
-- **Log Type**: Select one of the log types described above.
+- **Log Type**: Select a log type in the side menu of the **Logs** view.
 - **Log Levels**: Show or hide `Info`, `Error`, `Warn`, and `Debug` entries.
 - **Time Range**: Limit results to a relative window (last 15 minutes, last hour, etc.) or a custom range. The available window depends on your plan's retention period. You can also click the timestamp on any log entry to set it as the start or end of the time range.
 - **Sort Order**: Sort by newest or oldest first.
@@ -248,6 +249,51 @@ rid:<request-id>
 
 Use the [Session Lifecycle](/debugging/log-reference#session-lifecycle) and [Session Fields](/debugging/log-reference#session-fields) reference to interpret the results.
 
+On the Team and Enterprise plans, [User Lookup](#user-lookup) finds a user's Sync Sessions without these searches.
+
+### User Lookup
+
+Use **User Lookup** to investigate one user's Sync Sessions, for example when a user reports missing data. A Sync Session lasts from when a client connects until it disconnects. User Lookup reads the Sync & API logs and lists the Sync Sessions that the user started in the selected time range.
+
+1. In the **Logs** view, select **User Lookup** in the side menu.
+2. Enter the user ID. This is the `sub` claim in the user's token.
+3. Select a time range of up to 30 days.
+
+You can also open User Lookup from a log entry. If the **Metadata** display option is on, open the menu of a `user_id` pill and choose **Look Up User**.
+
+<Frame caption="User Lookup showing all of a user's Sync Sessions in one timeline">
+  ![User Lookup with a user's Sync Sessions listed and the All Session Events timeline](/images/resources/user-lookup.png)
+</Frame>
+
+Select a Sync Session to see when it started and ended, what it synced, and a timeline of its events. Click **View in Logs** to see all of its log entries.
+
+#### Check a User's Sync State
+
+Use these parts of User Lookup to check whether a user is connected, whether they have their latest data, and whether anything failed.
+
+| Question | Where to Look |
+| --- | --- |
+| Is the user connected? | The status at the top shows **Connected** while the user has an open Sync Session. |
+| Does the user have their latest data? | While the user is connected and the selected time range runs to now, **Download Status** in **All Session Events** shows **Latest checkpoint sent** after the PowerSync Service has sent every open Sync Session its newest checkpoint. It shows **Sending since** or **Waiting for a checkpoint since** while a download is in progress. If the user is not connected, **Last Checkpoint Sent** shows when the PowerSync Service last finished sending a client a checkpoint. To confirm that a device has applied the data, check its [SyncStatus API](/debugging/troubleshooting#syncstatus-api). |
+| Did anything fail? | **With Errors** at the top counts the Sync Sessions that logged an error. Each Sync Session in the list shows its error and warning counts, and its timeline shows each error. |
+
+#### What the Logs Show
+
+User Lookup reads the PowerSync Service's logs. It shows the Sync Sessions the PowerSync Service accepted and the data it sent, but not what happened on the device. Whether a device applied the data, and whether its uploads are waiting or failing, can only be checked on the device with the [SyncStatus API](/debugging/troubleshooting#syncstatus-api) or [client-side logging](/debugging/troubleshooting#client-side-logging).
+
+| Term | Meaning |
+| --- | --- |
+| Connected | The user has an open Sync Session with the PowerSync Service, based on the last 24 hours of logs, not the selected time range. This does not prove that the device is online. The PowerSync Service notices a dropped connection only when keepalives stop or a write fails, which takes up to 90 seconds over WebSocket and several minutes over HTTP. If the PowerSync Service stops abruptly, it logs no end, and the Sync Session shows as connected until the client connects again or a day has passed. |
+| Download Status | Whether the PowerSync Service has finished sending each connected client its newest checkpoint. Changes not yet replicated from your source database are not in it. User Lookup shows it only while the user is connected and the selected time range runs to now. |
+| Last Checkpoint Sent | The last time the PowerSync Service finished sending a client a checkpoint, including checkpoints with no new data. A client applies a checkpoint only after its upload queue is empty and the checksums match, so the SDK's `lastSyncedAt` on the device can be earlier. |
+| Last Upload | The last time a client finished uploading its queued changes to your backend and asked for a [write checkpoint](/architecture/powersync-protocol#write-checkpoints). The uploads themselves go to your backend, so the logs do not show uploads that are waiting or failing, or whether your backend saved them. Clients that use [Checkpoint Requests](/client-sdks/checkpoint-requests) log `Requested checkpoint for` instead, which User Lookup does not count as an upload. |
+| Operations Synced and Data Synced | What the PowerSync Service sent, before compression. Data Synced also counts protocol messages such as keepalives. A checkpoint that finished in the selected time range counts in full, even if it started earlier. |
+| Open at Range End | No end was logged before the selected time range ended. |
+| No End Logged | No end was logged, but the client connected again later, or the Sync Session started more than a day before the selected time range ended. Tokens last at most a day by default, so it has most likely ended. Supabase Auth tokens can last up to a week, and with those it may still be open. |
+| No Buckets | None of the Sync Config's buckets applied to the user when the Sync Session started, so the PowerSync Service had no data to send. This happens when the client subscribed to no Sync Streams, or when the queries that choose the user's buckets return nothing for them. If buckets apply later in the Sync Session, the timeline shows **Buckets Changed**. |
+
+Connections that the PowerSync Service rejected, for example because of an invalid token, do not start a Sync Session and are not listed. Search the Sync & API logs for their errors.
+
 ### Sync As This User
 
 Use **Sync As This User** to reproduce what a user synced. It opens [Sync Test](/tools/sync-test#sync-test) as the user, with the connection parameters and Sync Stream subscriptions from their sync logs. Sync Test then shows the client in [PowerSync DevTools](/tools/devtools-overview).
@@ -256,6 +302,8 @@ Use **Sync As This User** to reproduce what a user synced. It opens [Sync Test](
 2. Click the **Sync As This User** button on the entry. If the **Metadata** display option is on, you can also open the menu of the `user_id` pill and choose **Sync As This User**.
 3. Check the values in the dialog. If a value is wrong or missing, change it or add it. Sync logs keep only the first 20 connection parameters and shorten values longer than 100 characters, and the dialog notes the values that the logs could not fill in. To use the values from another recent Sync Session of the user, select them under the field.
 4. Click **Sync As This User** to open Sync Test and connect.
+
+In [User Lookup](#user-lookup), **Sync As This User** starts from the user's most recent Sync Session in the selected time range.
 
 The button shows only if you can use Sync Test. See the [Sync Test requirements](/tools/sync-test#requirements).
 

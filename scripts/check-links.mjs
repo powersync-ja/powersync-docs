@@ -142,15 +142,28 @@ function anchorsFor(file) {
   return anchors;
 }
 
+// Mintlify truncates long links in its report. Restore the full link from the
+// page source when exactly one link in that page starts with the reported text.
+function fullLink(item) {
+  if (!existsSync(path.join(root, item.file))) return item.link;
+  const src = readFileSync(path.join(root, item.file), 'utf8');
+  const matches = new Set();
+  for (const m of src.matchAll(/\]\(([^)\s]+)\)/g)) {
+    if (m[1].startsWith(item.link)) matches.add(m[1]);
+  }
+  return matches.size === 1 ? [...matches][0] : item.link;
+}
+
 const unresolved = [];
 for (const item of flagged) {
-  const hash = item.link.indexOf('#');
+  const link = fullLink(item);
+  const hash = link.indexOf('#');
   if (hash < 0) {
     unresolved.push(item); // a path problem, not an anchor problem
     continue;
   }
-  const target = item.link.slice(0, hash).split('?')[0];
-  let anchor = item.link.slice(hash + 1);
+  const target = link.slice(0, hash).split('?')[0];
+  let anchor = link.slice(hash + 1);
   try {
     anchor = decodeURIComponent(anchor);
   } catch {

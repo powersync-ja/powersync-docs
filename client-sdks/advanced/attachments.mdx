@@ -799,16 +799,15 @@ static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchProfilePhotos(
     PowerSyncDatabase db,
     [EnumeratorCancellation] CancellationToken ct)
 {
-    var stream = db.Watch<UserPhotoRow>(
+    var stream = db.Watch(
         "SELECT photo_id FROM users WHERE photo_id IS NOT NULL",
         null,
+        row => new WatchedAttachmentItem(row.GetString("photo_id"), fileExtension: "jpg"),
         new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
 
-    await foreach (var rows in stream.WithCancellation(ct))
-        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.photo_id, fileExtension: "jpg"))];
+    await foreach (var items in stream.WithCancellation(ct))
+        yield return [.. items];
 }
-
-internal sealed class UserPhotoRow { public string photo_id { get; set; } = ""; }
 ```
 
 </CodeGroup>
@@ -1015,7 +1014,7 @@ static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchAllAttachments(
     PowerSyncDatabase db,
     [EnumeratorCancellation] CancellationToken ct)
 {
-    var stream = db.Watch<AttachmentRef>(
+    var stream = db.Watch(
         """
         SELECT photo_id AS id, photo_file_extension AS file_extension
         FROM users
@@ -1034,16 +1033,11 @@ static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchAllAttachments(
         WHERE video_id IS NOT NULL
         """,
         null,
+        row => new WatchedAttachmentItem(row.GetString("id"), fileExtension: row.GetString("file_extension")),
         new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
 
-    await foreach (var rows in stream.WithCancellation(ct))
-        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.id, fileExtension: r.file_extension))];
-}
-
-internal sealed class AttachmentRef
-{
-    public string id { get; set; } = "";
-    public string file_extension { get; set; } = "";
+    await foreach (var items in stream.WithCancellation(ct))
+        yield return [.. items];
 }
 ```
 
@@ -1279,29 +1273,29 @@ static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchPhotos(
     PowerSyncDatabase db,
     [EnumeratorCancellation] CancellationToken ct)
 {
-    var stream = db.Watch<UserPhotoRow>(
+    var stream = db.Watch(
         "SELECT photo_id FROM users WHERE photo_id IS NOT NULL",
         null,
+        row => new WatchedAttachmentItem(row.GetString("photo_id"), fileExtension: "jpg"),
         new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
 
-    await foreach (var rows in stream.WithCancellation(ct))
-        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.photo_id, fileExtension: "jpg"))];
+    await foreach (var items in stream.WithCancellation(ct))
+        yield return [.. items];
 }
 
 static async IAsyncEnumerable<WatchedAttachmentItem[]> WatchDocuments(
     PowerSyncDatabase db,
     [EnumeratorCancellation] CancellationToken ct)
 {
-    var stream = db.Watch<DocumentRow>(
+    var stream = db.Watch(
         "SELECT document_id FROM documents WHERE document_id IS NOT NULL",
         null,
+        row => new WatchedAttachmentItem(row.GetString("document_id"), fileExtension: "pdf"),
         new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
 
-    await foreach (var rows in stream.WithCancellation(ct))
-        yield return [.. rows.Select(r => new WatchedAttachmentItem(r.document_id, fileExtension: "pdf"))];
+    await foreach (var items in stream.WithCancellation(ct))
+        yield return [.. items];
 }
-
-internal sealed class DocumentRow { public string document_id { get; set; } = ""; }
 ```
 
 </CodeGroup>
@@ -1765,7 +1759,7 @@ static async IAsyncEnumerable<string?> WatchProfilePhotoUri(
     string userId,
     [EnumeratorCancellation] CancellationToken ct = default)
 {
-    var stream = db.Watch<PhotoState>(
+    var stream = db.Watch(
         """
         SELECT a.local_uri, a.state
         FROM users u
@@ -1773,19 +1767,11 @@ static async IAsyncEnumerable<string?> WatchProfilePhotoUri(
         WHERE u.id = ?
         """,
         [userId],
+        row => row.GetLongOrNull("state") == (long)AttachmentState.Synced ? row.GetStringOrNull("local_uri") : null,
         new SQLWatchOptions { TriggerImmediately = true, Signal = ct });
 
-    await foreach (var rows in stream.WithCancellation(ct))
-    {
-        var row = rows.FirstOrDefault();
-        yield return row?.state == (long)AttachmentState.Synced ? row.local_uri : null;
-    }
-}
-
-internal sealed class PhotoState
-{
-    public string? local_uri { get; set; }
-    public long state { get; set; }
+    await foreach (var uris in stream.WithCancellation(ct))
+        yield return uris.FirstOrDefault();
 }
 ```
 

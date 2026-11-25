@@ -332,11 +332,15 @@ read@<your_database>
 dbAdmin@<your_database>
 ```
 
-If you are replicating from multiple databases in the cluster, you need read permissions on the entire cluster, in addition to the above:
+If you are replicating from [multiple databases in the cluster](/sync/advanced/schemas-and-connections#multiple-databases-mysql-and-mongodb), you need read permissions on the entire cluster, in addition to the above:
 
 ```text
 readAnyDatabase@admin
 ```
+
+Read access on each database is not enough, because PowerSync reads changes from the whole cluster in this case. Without cluster-wide read access, replication fails with `[PSYNC_S1346] Error reading MongoDB ChangeStream`, caused by `not authorized on admin to execute command`.
+
+With **Post Images** set to **Auto-Configure**, PowerSync also needs `dbAdmin` on each of the other databases, so it can enable `changeStreamPreAndPostImages` on their collections. To avoid granting that, enable the option on those collections yourself, as described in [Post Images](#post-images).
 
 #### Privileges Required: Self-Hosted or Custom Roles
 
@@ -562,6 +566,8 @@ GRANT SELECT ON <source_database>.* TO 'repl_user'@'%';
 FLUSH PRIVILEGES;
 ```
 
+If your Sync Streams use tables from [other databases on the same server](/sync/advanced/schemas-and-connections#multiple-databases-mysql-and-mongodb), grant `SELECT` on each of those databases too. Without it, initial replication skips their tables, and replication stops with `Insufficient permissions to access [<database>.<table>], or the table has been dropped.` the next time one of those tables changes.
+
 It is possible to constrain the MySQL user further and limit access to specific tables. Care should be taken to ensure that all the tables in your Sync Streams are included in the grants.
 
 ```sql
@@ -594,6 +600,8 @@ binlog-do-db=invoices_db
 # Row events for tables in the user_db will be ignored. Events for any other database will be logged.
 binlog-ignore-db=user_db
 ```
+
+If you limit the binlog, make sure every database that your Sync Streams use is still logged. PowerSync only sees changes that are in the binlog, so tables in a database that isn't logged stop updating after initial replication.
 
 ## <Icon icon="server" iconType="solid" size={32} /> SQL Server
 

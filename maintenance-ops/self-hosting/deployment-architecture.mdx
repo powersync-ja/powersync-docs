@@ -4,7 +4,7 @@ description: "Infrastructure and sizing recommendations for self-hosted PowerSyn
 sidebarTitle: "Deployment Architecture"
 ---
 
-## Minimal Setup
+## Minimal Development Setup
 
 For a runnable development setup, use the [self-hosting examples](https://github.com/powersync-ja/self-host-demo), which include Docker Compose files and configuration.
 
@@ -16,7 +16,7 @@ For development and testing, use:
 
 This setup has no redundancy. If bucket storage data is lost, [re-replicate from the source database](#backups). All clients must then download their data again.
 
-## Production
+## Production Setup
 
 Run [API and replication](/configuration/powersync-service/self-hosted-instances#service-commands) in separate containers so you can scale them independently.
 
@@ -26,6 +26,10 @@ You can use MongoDB or Postgres for bucket storage, independently of your source
 
 - [MongoDB](/configuration/powersync-service/self-hosted-instances#mongodb-storage) supports [storage version 4](/sync/advanced/compatibility#available-versions) and optional S3 object storage. Use a three-node replica set for production.
 - [Postgres](/configuration/powersync-service/self-hosted-instances#postgres-storage) uses [storage version 2](/sync/advanced/compatibility#available-versions). It does not support storage version 4 or S3 object storage.
+
+<Note>
+  MongoDB storage is currently better performance-optimized than Postgres, and is currently recommended for higher scale and performance use cases.
+</Note>
 
 With [S3 object storage](/sync/advanced/storage-version-4#self-hosted-s3-setup), S3 stores larger blocks of sync data while MongoDB retains smaller blocks and metadata.
 
@@ -40,21 +44,21 @@ Use these CPU and memory settings as a starting point. These may be scaled up or
 
 ### Replication Container
 
-Run [`start -r sync`](/configuration/powersync-service/self-hosted-instances#service-commands) to replicate source changes into bucket storage.
+Run [`start -r sync`](/configuration/powersync-service/self-hosted-instances#service-commands) to start the PowerSync Service in replication mode.
 
 Only one process can replicate from the source database at a time. Running multiple replication containers provides failover, not more throughput. It is recommended to run 2 replication processes for failover purposes.
 
 During rolling deploys or failover, [`PSYNC_S1003`](/debugging/error-codes#psync_s1xxx-replication-issues) is expected briefly while another process holds the replication lock.
 
-Size replication for source database write volume, row size, and buckets per row. A row in ten buckets creates more replication work than a row in one bucket. Initial replication and catch-up after a large batch update can need more capacity than steady-state replication.
+Size the replication container for source database write volume, row size, and buckets per row. A row in ten buckets creates more replication work than a row in one bucket. Initial replication and catch-up after a large batch update can need more capacity than steady-state replication.
 
-Use [replication lag](/maintenance-ops/replication-lag), replication throughput, CPU, memory, and database metrics to assess capacity.
+Measure [replication lag](/maintenance-ops/replication-lag), replication throughput, CPU, memory, and database metrics to assess capacity.
 
 ### API Containers
 
 Run at least two API containers in production for high availability. Scale horizontally by adding API containers as the concurrent client load grows.
 
-Run [`start -r api`](/configuration/powersync-service/self-hosted-instances#service-commands) for client connections. Collect [metrics](/maintenance-ops/self-hosting/monitoring) separately from API and replication containers.
+Run [`start -r api`](/configuration/powersync-service/self-hosted-instances#service-commands) to start the PowerSync Service in API mode. Collect [metrics](/maintenance-ops/self-hosting/monitoring) separately from API and replication containers.
 
 The [`max_concurrent_connections`](/configuration/powersync-service/self-hosted-instances#param-max-concurrent-connections) config parameter determines the maximum number of concurrent client connections that each API process can handle. The default is `200`. We recommend keeping autoscaling targets below the `max_concurrent_connections` limit (e.g. ~100 concurrent connections per API process) to allow for headroom.
 
@@ -70,7 +74,7 @@ Add API containers before many clients are expected to run an initial sync at on
 
 Run [`compact`](/configuration/powersync-service/self-hosted-instances#service-commands) as a separate scheduled job, [hourly for storage version 4](/maintenance-ops/compacting-buckets#self-hosted-powersync) or daily for [storage version 2](/sync/advanced/compatibility#available-versions).
 
-Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, CPU, and peak memory to size the job for your dataset. If jobs fail or overlap, check the compact job's CPU and memory usage and bucket storage performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
+Compaction resources depend on bucket size, accumulated changes, and concurrency. Monitor completion, duration, CPU, and peak memory to size the job for your dataset. If compact jobs fail or overlap, check the compact job's CPU and memory usage and storage database performance before changing resources or the schedule. See [Compacting Buckets](/maintenance-ops/compacting-buckets#self-hosted-powersync).
 
 ### Memory Configuration
 
@@ -125,19 +129,28 @@ None of the containers use any local storage, so no backups are required there.
 
 Recover PowerSync's sync data by re-replicating from the source database. Allow for the time and capacity needed for full replication and for clients to download their data again.
 
-## High Availability and Disaster Recovery
+## Disaster Recovery: Hot Standby Instance(s)
 
-The [production setup](#production) covers the failure of a single container or node. A **standby instance** covers failures that affect the whole instance, such as the loss of bucket storage, a Sync Config deployment that syncs the wrong data, or a regional outage. A standby instance is a second PowerSync instance that replicates from the same source database and that you can switch clients to.
+The [production setup](#production-setup) covers _high-availability_ within a single PowerSync instance, and handles the failure of individual containers. A **standby instance** covers _disaster recovery_ scenarios: failures that affect the whole instance, such as the loss of the storage database, a Sync Config deployment that syncs the wrong data, or a regional outage. A standby instance is a second PowerSync instance that replicates from the same source database and that you can switch clients to.
 
 ### Standby Instance
 
 Deploy the same components as the primary instance: replication containers, API containers, the compact job, a load balancer, and a bucket storage database.
 
 - **Use the same source database.** Both instances replicate from it independently.
-- **Use separate bucket storage.** Each instance needs its own bucket storage database and, if enabled, its own [S3 bucket or prefix](/sync/advanced/storage-version-4#self-hosted-s3-setup). Two instances cannot share bucket storage.
-- **Keep the standby running.** A running standby stays up to date with the source database, so clients can connect to it as soon as you switch. A standby that starts after the primary fails must complete its initial replication first.
+- **Use separate bucket storage.** Each instance needs its own bucket storage database and, if enabled, its own [S3 bucket or prefix](/sync/advanced/storage-version-4#self-hosted-s3-setup). Two instances cannot share bucket storage. For high-scale deployments, we recommend placing the standby instance’s storage database in a dedicated cluster to simplify performance debugging and tuning.
+- **Keep the standby running.** A running standby stays up to date with the source database, so clients can connect to it as soon as you switch. If you start your standby instance only after your primary instance fails, it must complete its initial replication first, which can add significant delays for deployments with large data volumes.
 - **Run the same Sync Config.** Deploy [Sync Config](/sync/streams/overview) changes to one instance at a time. See [Sync Config Deployments](#sync-config-deployments).
-- **Accept the same tokens.** Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens that your backend issues: use the same keys and the same [`audience`](/configuration/auth/custom#self-hosted-configuration) values on both. If your tokens use an instance URL as the audience, add both instance URLs to `audience` on each instance.
+- **Accept the same tokens (JWTs).** Configure [client authentication](/configuration/auth/overview) so that both instances accept the tokens. Use the same keys on both instances, and choose a [token audience](#token-audience) that both instances accept.
+
+#### Token Audience
+
+A self-hosted instance does not compare a token's `aud` claim with its own URL. The instance accepts a token if the `aud` claim matches one of the values in [`client_auth.audience`](/configuration/auth/custom#self-hosted-configuration) in its config file. Use one of these options so that a token stays valid after you switch clients:
+
+- **One shared audience.** Set the same `audience` value on both instances, and issue tokens with that value as the `aud` claim. If clients connect through one stable instance URL, use that URL as the value. This option needs the least configuration.
+- **Multiple instance URLs as audiences.** If each instance uses its own URL as its `audience` value, issue tokens with both instance URLs in the `aud` claim.
+
+#### Replication Slots
 
 For a Postgres source database, each instance uses its own [replication slots](/configuration/source-db/postgres-maintenance#maximum-replication-slots). Set a different [`slot_name_prefix`](/configuration/powersync-service/self-hosted-instances#param-slot-name-prefix) for each instance so that you can identify which instance a slot belongs to.
 
@@ -148,11 +161,11 @@ Where you run the standby determines which failures it covers:
 - **Same region as the primary.** The standby covers failures of the primary instance, such as the loss of its bucket storage or a Sync Config deployment that syncs the wrong data.
 - **Different region.** The standby also covers an outage of the primary's region. For example, if your primary instance runs in `us-east-1`, run the standby in `us-west-2`, with its bucket storage in the same region as the standby.
 
-A standby in a different region keeps clients syncing during a regional outage only if the source database and your backend API also remain available. The standby replicates from the source database, and clients upload their writes through your backend. For a replicated Postgres source database, see [High Availability / Replicated Databases](/sync/advanced/schemas-and-connections#high-availability-/-replicated-databases-postgres).
+A standby in a different region keeps clients syncing during a regional outage only if the source database and your backend API also remain available. The standby replicates from the source database, and clients upload their writes [through your backend](/handling-writes/write-path/overview). For a replicated Postgres source database, see [High Availability / Replicated Databases](/sync/advanced/schemas-and-connections#high-availability-/-replicated-databases-postgres).
 
 ### Sync Config Deployments
 
-A single instance already protects clients while a [Sync Config deployment](/maintenance-ops/self-hosting/update-sync-streams) is in progress. The Service replicates the new Sync Config alongside the active one. Clients continue to sync with the active Sync Config until the new one completes [initial replication](/architecture/powersync-service#initial-replication-vs-incremental-replication), and then the Service makes the new one active.
+A single instance already protects clients while a [Sync Config deployment](/maintenance-ops/self-hosting/update-sync-streams) is in progress. The PowerSync Service replicates the new Sync Config alongside the active one. Clients continue to sync with the active Sync Config until the new one completes [initial replication](/architecture/powersync-service#initial-replication-vs-incremental-replication), and then the Service makes the new one active.
 
 How the standby helps therefore depends on how the deployment goes wrong:
 
@@ -163,40 +176,53 @@ To keep this option, deploy a Sync Config change to one instance first. Confirm 
 
 ### Switching Clients to the Standby
 
-Do not hardcode the URL of the primary instance in the app. Use one of these two options so that you can switch clients without releasing a new app version.
+Do not hardcode the URL of the primary instance in the app. Use one of these options so that you can switch clients without releasing a new app version.
 
-#### Return the Endpoint From Your Backend
+#### 1. Update the URL the Client Uses: Get It From Your Backend
 
-Your [`fetchCredentials()`](/configuration/app-backend/client-side-integration) implementation returns the PowerSync endpoint together with the token. Get the endpoint from your backend API in that function. To switch clients to the standby, change the endpoint that your API returns.
+Your [`fetchCredentials()`](/configuration/app-backend/client-side-integration) implementation returns the PowerSync endpoint URL together with the token. Get the endpoint from your backend API in that function. To switch clients to the standby, change the endpoint that your API returns.
 
 - If `fetchCredentials()` already calls your backend for a token, return the endpoint in the same response.
 - If `fetchCredentials()` returns a JWT from client-side state, for example a token from your authentication provider, it makes no backend call. Add a call that gets the endpoint.
 
 The client SDK caches credentials and [fetches new ones](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) when the token expires or the app restarts. A client that is already running therefore keeps trying the failed endpoint until its token expires. Use a short token lifetime, such as 5 to 15 minutes, to reduce this delay.
 
-#### Reroute With an API Gateway
+#### 2. Stable URL on the Client; Update a DNS Record
 
-Give clients one stable URL that points to an API gateway, and configure the gateway to forward connections to the primary instance. To switch clients to the standby, change the gateway's target. The app needs no endpoint lookup, and `fetchCredentials()` always returns the same URL.
+Give clients one stable endpoint, and point the DNS record for the hostname to the load balancer of the primary instance. To switch clients to the standby, change the record to point to the standby's load balancer. The app needs no endpoint lookup, and `fetchCredentials()` always returns the same URL.
 
-The client SDK retries a failed connection against the same URL, so a client reaches the standby on its next connection attempt and does not wait for its token to expire. A client with an open connection to a primary that still runs stays on the primary until that connection closes.
+- **Serve the same hostname on both instances.** Each load balancer needs a TLS certificate that covers the stable hostname.
+- **Set a low TTL on the record.** A client reaches the standby only after the previous record expires from DNS caches. A TTL such as 60 seconds limits this delay.
+
+The PowerSync client SDK retries a failed connection against the same URL, so a client reaches the standby when it reconnects after the record updates. The client does not wait for its token to expire.
+
+#### 3. Stable URL on the Client; Reroute With an API Gateway
+
+Give clients one stable URL that points to an API gateway or reverse proxy, and configure the gateway to forward connections to the primary instance. To switch clients to the standby, change the gateway's target. As with a DNS record, the app needs no endpoint lookup, and a client reaches the standby on its next connection attempt.
 
 The gateway must meet the same requirements as the [load balancer](#load-balancer): it must support long-lived streaming connections and must not buffer responses.
 
-With either option, host the backend API or gateway so that it remains available when the primary instance or its region fails.
+<Warning>
+  [AWS API Gateway](https://aws.amazon.com/api-gateway/) does not meet these requirements. It enforces an integration timeout and buffers responses, so sync connections through it fail. On AWS, update a DNS record or use a proxy that supports streaming, such as nginx.
+</Warning>
 
-Do not load-balance clients between the two instances. A client that alternates between instances downloads all of its data again on every switch. See [Mapping Users to PowerSync Endpoints](/maintenance-ops/self-hosting/multiple-instances#mapping-users-to-powersync-endpoints).
+#### Availability and Load Balancing
+
+With each option, host the component that controls the switch (e.g. the backend API or API gateway) so that it remains available when the primary instance or its region fails.
+
+Make the switch a manual decision. If a health check switches clients automatically, for example through DNS failover routing, a brief failure can move clients to the standby and back. A client that alternates between instances downloads all of its data again on every switch.
+
+For the same reason, do not load-balance clients between the two instances. See [Mapping Users to PowerSync Endpoints](/maintenance-ops/self-hosting/multiple-instances#mapping-users-to-powersync-endpoints).
 
 ### What Clients Experience
 
-<Note>
-  After the switch, each client performs an initial sync again from the standby.
-</Note>
+After the switch, each client performs an initial sync again from the standby.
 
-The client keeps its local data during the switch:
+The client keeps its existing local data during the switch:
 
-- The app can read and write the local database for the whole process.
+- The app can read and write the local SQLite database during the whole process.
 - Pending writes stay in the upload queue. The client uploads them through your backend, which does not depend on the PowerSync instance.
-- New changes from the source database appear after the sync completes.
+- New changes from the source database appear after the initial sync completes.
 
 <Note>
   On its first connection after the switch, a client can log a checksum error such as `Could not apply checkpoint, Checksums didn't match`. The client's local sync state comes from the previous instance and does not match the new instance. The client SDK then retries and downloads its data from the new instance. No action is needed.

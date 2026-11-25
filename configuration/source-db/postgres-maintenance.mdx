@@ -77,36 +77,43 @@ If this number is exceeded, you'll see an error such as "all replication slots a
 
 ### Replication Slot Failover
 
-A replication slot exists only on the server that created it. If your database fails over to a standby, PowerSync's slot is lost and PowerSync has to replicate all your data again. On Postgres 17 or later, the Replication Slot Failover option creates slots that Postgres keeps in sync on the standby, so replication continues after a failover.
+With streaming replication, a replication slot exists only on the server that created it. If your database fails over to a standby, PowerSync's slot is lost and PowerSync has to replicate all your data again. On Postgres 17 or later, the Replication Slot Failover option creates slots that Postgres keeps in sync on the standby, so replication continues after a failover.
 
-Most databases don't need this. Only turn it on if your database has a standby set up for [logical replication failover](https://www.postgresql.org/docs/current/logical-replication-failover.html):
+Only turn it on if your database has a standby set up for [logical replication failover](https://www.postgresql.org/docs/current/logical-replication-failover.html):
 
 - On the primary, `synchronized_standby_slots` names the standby's physical replication slot.
-- On the standby, `sync_replication_slots` and `hot_standby_feedback` are on, and `primary_conninfo` includes `dbname`.
-- PowerSync connects through an address that always points at the current primary, so it reaches the standby once it's promoted.
+- On the standby, `primary_slot_name` names that slot, `wal_level` is `logical`, `sync_replication_slots` and `hot_standby_feedback` are on, and `primary_conninfo` includes `dbname`.
 
 Not all hosting providers expose these settings.
 
+After a failover, PowerSync must connect to the promoted standby. Use a hostname that follows the primary, or update the connection.
+
 <Warning>
-  PowerSync checks the Postgres version and that `synchronized_standby_slots` is set only when it creates a new replication slot. Turning the option on for a database that isn't set up shows no error. The next Sync Streams deploy or reprocess then fails with [`PSYNC_S1147`](/debugging/error-codes#psync_s11xx-postgres-replication-issues). This is why the option is off by default.
+  PowerSync checks the Postgres version and that `synchronized_standby_slots` is set only when it creates a new replication slot. Turning the option on for a database that isn't set up shows no error. The next Sync Streams deploy or reprocess then fails with [`PSYNC_S1147`](/debugging/error-codes#psync_s11xx-postgres-replication-issues).
 </Warning>
 
-#### Turning It On
+#### Turning On Replication Slot Failover
 
 The option applies only to replication slots that PowerSync creates after you turn it on. For a new instance, turn it on before your first Sync Streams deploy. For an existing instance, turn it on and then make PowerSync create a new slot. This replicates all your data again, and clients download all their data again.
 
 <Tabs>
   <Tab title="PowerSync Cloud">
     1. In the [PowerSync Dashboard](https://dashboard.powersync.com/), select your project and instance and go to **Database Connection**.
-    2. Click **Edit**, turn on **Replication Slot Failover** under **Advanced**, and save. Wait for the deploy to finish.
+    2. Click **Edit**, turn on **Replication Slot Failover** under **Advanced**, and click **Save Connection**. Wait for the deploy to finish.
     3. For an existing instance, open **Settings** and click **Reprocess** in the **Compact Operation History** section.
   </Tab>
   <Tab title="Self-Hosted">
     1. Set [`slot_failover: true`](/configuration/powersync-service/self-hosted-instances#replication) on the connection and restart the Service.
-    2. For an existing instance, deploy a new version of your Sync Streams. Each new version gets a new replication slot.
+    2. For an existing instance, deploy a change to your Sync Config. Restarting the Service with an unchanged Sync Config keeps the current slot.
   </Tab>
 </Tabs>
 
-<Note>
-  Postgres treats a newly synced slot on the standby as temporary until PowerSync's slot first advances on the primary. A failover in that short window can still lose the slot.
-</Note>
+To check that the option took effect, run this query on the primary and on the standby:
+
+```sql
+select slot_name, failover, synced, temporary from pg_replication_slots;
+```
+
+On the primary, PowerSync's slot shows `failover` as `true`. On the standby, its copy shows `synced` as `true` and `temporary` as `false`. Until the standby's copy shows these values, a failover can still lose the slot.
+
+{/* TODO: Verify on a Postgres 17 standby that a newly synced slot shows temporary = true until Postgres persists it. */}

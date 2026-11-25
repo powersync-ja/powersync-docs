@@ -18,9 +18,9 @@ keywords:
   - "photo"
 ---
 
-Delivery drivers often work where there is no signal: underground parking garages, basements, loading docks, and rural routes. A driver app must keep scanning packages and capturing proof of delivery (POD) in those places. (Outside the US, drivers are often called couriers, and packages parcels.)
+Delivery drivers (often called couriers outside the US) frequently work where there is no signal or unreliable connectivity: underground parking garages, basements, loading docks, and rural routes. A driver app must keep scanning packages and capturing proof of delivery (POD) in those places.
 
-A scan is business-critical data. A lost scan can mean a lost package or a disputed delivery, so treat it as fact from the moment the device records it, not only once the server receives it.
+A scan is business-critical data. A lost scan can mean a lost package or a disputed delivery, so it must be treated as fact from the moment the driver records it.
 
 Many driver apps have an "offline mode". These have some common failure cases:
 
@@ -32,16 +32,16 @@ Many driver apps have an "offline mode". These have some common failure cases:
 A few architecture patterns avoid all of these. This guide explains those patterns and shows how to implement them using PowerSync.
 
 <Note>
-  Although PowerSync works with many [front-end stacks](/client-sdks/overview) and [backend databases](/configuration/source-db/setup), the example code uses React Native and Postgres. For a complete example app (SQL Server and .NET MAUI), see [Migrating a SQL Server and .NET MAUI App to Offline-First](/migration-guides/sql-server-maui).
+  Although PowerSync works with many [front-end stacks](/client-sdks/overview) and [backend databases](/configuration/source-db/setup), the example code below uses React Native and Postgres. In our _Migration Guides_ section, we also have a complete delivery driver example app that uses SQL Server and .NET MAUI. See [Migrating a SQL Server and .NET MAUI App to Offline-First](/migration-guides/sql-server-maui).
 </Note>
 
 ## 1. Put a Database on the Driver's Device
 
-For robust offline behavior, the network must not be on the critical path for a scan (see [Local-First Database](/resources/architecture-guides/offline-first-architecture#local-first-database)).
+For robust offline behavior, the network must not be on the critical path for a driver accessing their route or scanning packages.
 
-PowerSync gives the app on the driver's device (a phone, tablet, or rugged handheld) a [client-side SQLite database](/architecture/client-architecture). Whether online or offline, the UI reads and writes only to that database. The client SDK downloads changes from the PowerSync Service and uploads writes to your backend.
+PowerSync gives the app on the driver's device (a phone, tablet, or rugged handheld) a [client-side SQLite database](/resources/architecture-guides/offline-first-architecture#local-first-database). Whether online or offline, the app reads and writes only to that database. The PowerSync client SDK downloads changes via the PowerSync Service based on your [Sync Streams](/sync/streams/overview), and uploads writes via your backend API. The SDK automatically handles retries of failed uploads.
 
-A route is the driver's `stops` rows for the day, flowing down from dispatch. Proof of delivery is one `deliveries` row per attempt, with an outcome, plus `photo_id` and `signature_id` pointing to attachments.
+When wiring up the PowerSync client SDK, you define a schema for the local SQLite database that matches your Sync Streams. Here is what a basic schema for a delivery driver app typically looks like: A route is the driver's `stops` rows for the day, flowing down from dispatch. Proof of delivery is one `deliveries` row per attempt, with an outcome, plus `photo_id` and `signature_id` pointing to attachments.
 
 ```ts powersync/AppSchema.ts
 import { AttachmentTable, column, Schema, Table } from '@powersync/react-native';
@@ -86,13 +86,13 @@ See the [React Native & Expo SDK reference](/client-sdks/reference/react-native-
 
 Edits to scan rows break audit trails and can lead to data inconsistencies. A retried upload must not overwrite the original scan event.
 
-To address this, every scan (loaded at the warehouse, out for delivery, delivered, failed) is a new `scan_events` row. Nothing is updated or deleted, so a package's history is the list of its scan events, and a retried upload can't change a scan already recorded ([effectively-once delivery](/resources/architecture-guides/offline-first-architecture#exactly-once-delivery)).
+To address this, every scan (loaded at the warehouse, out for delivery, delivered, failed) is a new `scan_events` row. Nothing is updated or deleted, so a package's history is the list of its scan events, and a retried upload can't change a scan already recorded.
 
-With PowerSync, `scan_events` is a standard synced table. Your app writes each scan to it directly. You configure a [Sync Stream](/sync/streams/overview) that sends each driver's own scan events back to the device ([section 7](#7-load-the-route-at-the-warehouse-and-sync-only-the-drivers-stops)), so the full history stays available after upload.
+With PowerSync, `scan_events` is a standard synced table. Your app writes each scan to it directly. The PowerSync client SDK manages uploading those writes via your backend API. You configure a [Sync Stream](/sync/streams/overview) that sends each driver's own scan events back to the device ([section 7](#7-load-the-route-at-the-warehouse-and-sync-only-the-driver’s-stops)), so the full history stays available after upload.
 
-A failed attempt is a `deliveries` row with outcome `failed`, plus a scan event with `kind = 'failed'` and a `failure_reason`. A later attempt is a new row, not an edit.
+A failed delivery attempt is a `deliveries` row with outcome `failed`, plus a scan event with `kind = 'failed'` and a `failure_reason`. A later attempt is a new row.
 
-Record `lat` and `lng` on each scan event, since location is part of the evidence. Keep two clocks: `scanned_at` is what the device said, and `received_at` is set by your backend on insert (null on the device until the row syncs back). The device's clock can be wrong, so your backend never overwrites `scanned_at`.
+Record `lat` and `lng` on each scan event, since location is part of the evidence. Keep two clocks: `scanned_at` is what the device said, and `received_at` is set by your backend on insert (`null` on the device until the row syncs back). The device's clock can be wrong, so your backend never overwrites `scanned_at`.
 
 Write the scan event and the delivery in one `writeTransaction()`, so they upload together:
 
@@ -120,11 +120,11 @@ export async function recordDelivery(s: Scan, outcome: 'delivered' | 'failed', f
 
 ## 3. Make Every Upload Idempotent by Generating IDs on the Device
 
-A retry sends the whole transaction again, including writes that your backend already applied ([What Happens When a Write Fails](/handling-writes/write-path/concepts#what-happens-when-a-write-fails)). Your backend must be able to recognize a retried upload and ignore it, so every row must have a globally unique ID.
+Due to the flaky nature of networks, when retrying write uploads, the server can sometimes apply the write, but the client does not receive a response. Therefore, write operations should be made idempotent, which requires the use of an [Idempotency Key](/resources/architecture-guides/offline-first-architecture#idempotency-key),
 
-PowerSync provides the `uuid()` SQLite function ([Client ID](/sync/advanced/client-id)), so every row gets its ID on the device. The scan event uses `uuid()` in the `INSERT`; `recordDelivery` selects the delivery ID first because the photo needs it. Your backend stores that ID as the primary key and never generates its own.
+PowerSync provides the `uuid()` SQLite function (see [Client ID](/sync/advanced/client-id)), so you can generate a unique ID for each row on the device, without relying on the network. In the above example, we use `uuid()` for the `deliveries` and `scan_events` rows. Your backend stores those IDs as the primary keys for the rows.
 
-The client's ID is the [idempotency key](/resources/architecture-guides/offline-first-architecture#idempotency-key): `uploadData()` forwards `op.id`, and your backend inserts with `ON CONFLICT (id) DO NOTHING`. If a scan is uploaded multiple times, the repeats have no effect.
+In your backend implementation for handling writes, inserts should be processed using `ON CONFLICT (id) DO NOTHING` to make them idempotent. If a scan is uploaded multiple times, the repeats have no effect.
 
 ```sql
 -- received_at defaults to now(); a trigger sets is_current_route while the driver's route is open.
@@ -135,18 +135,15 @@ ON CONFLICT (id) DO NOTHING;
 
 Your write endpoint must [commit to the source database before it responds](/handling-writes/write-path/concepts#applying-writes-before-responding). Otherwise, the client completes a scan that your backend could still lose or reject.
 
-## 4. Scan When Offline, Upload When Online
+## 4. Scan Anytime and Upload When Online
 
-A scan recorded while the device is offline must reach your backend in order, even across app restarts. DIY designs need an [outbox](/resources/architecture-guides/offline-first-architecture#outbox-pattern) table plus a worker that drains and retries it, and only one instance of that worker may ever run on the device.
+Scans recorded while the device is offline must reach your backend in order, even across app restarts. DIY sync implementations need an [outbox](/resources/architecture-guides/offline-first-architecture#outbox-pattern) table plus a worker that drains and retries it, and only one instance of that worker may ever run on the device.
 
-PowerSync records every write to a synced table in its [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue) (the internal `ps_crud` table). The queue is first in, first out, and survives restarts. The client SDK calls your `uploadData()` after writes and on reconnect, and retries after failures, so scans queued without signal upload as soon as the device reconnects ([Client-Side Integration](/configuration/app-backend/client-side-integration)).
-
-One stuck write blocks every write behind it, so throw only when a retry can succeed. Sort responses as [Use Your Existing API](/handling-writes/write-path/existing-api) describes:
+When PowerSync, you don't need to build an outbox. PowerSync records every write to a synced table in its [upload queue](/architecture/client-architecture#writing-data-via-sqlite-database-and-upload-queue). You define an `uploadData()` function that determines how entries in that upload queue are uploaded to your backend. The PowerSync SDK calls that `uploadData()` function after local writes, on reconnection, and automatically retries after failures – so queued scans upload as soon as the network allows. Entries leave the queue only once they have been successfully processed.
 
 ```ts powersync/Connector.ts
 // Inside your backend connector
 async uploadData(database: CommonPowerSyncDatabase) {
-  // Production: uploads may only run in the foreground (Doze, iOS limits); test backgrounded and killed.
   const transaction = await database.getNextCrudTransaction();
   if (!transaction) return;
 
@@ -159,7 +156,6 @@ async uploadData(database: CommonPowerSyncDatabase) {
   });
 
   if (res.status >= 400 && res.status < 500 && res.status !== 401) {
-    // Rejected (for example 409, stop cancelled). Drop it so later scans aren't blocked.
     // Production: keep the rejection in a local-only table so it survives an app restart before the driver sees it.
     showRejection(await res.text());
   } else if (res.status === 401) {
@@ -173,15 +169,15 @@ async uploadData(database: CommonPowerSyncDatabase) {
 }
 ```
 
-Your backend returns 200 for an ID it already recorded, before applying business rules, so a retried "delivered" doesn't get a 409 for an already-delivered stop. Only a `deliveries` write can be rejected: your backend records the scan event even when it rejects the delivery in the same upload, because the scan is the fact, and the evidence for resolving the conflict. Reject any `UPDATE` or `DELETE` on `scan_events`.
+Your backend should return a 200 for an ID it already inserted, so a retried insert doesn't yield an error. Reject any `UPDATE` or `DELETE` on `scan_events`, since they are considered append-only.
 
 ## 5. Upload POD Photos and Signatures as Attachments
 
-Keep photos and signatures out of your database rows. Embedding image data as base64 or binary blobs bloats the local database, slows queries and sync, and puts multi-megabyte uploads in the same queue as the scan events and status changes your dispatchers are waiting for. Store each file in object storage and keep only its ID in the row.
+Keep photos and signatures out of your database rows. Embedding image data as base64 or binary blobs bloats the local database, slows queries and sync, and puts multi-megabyte uploads in the same queue as the scan events and status changes. Store each file in object storage and keep only its ID in the row.
 
-PowerSync's built-in [`AttachmentQueue`](/client-sdks/advanced/attachments) (currently [alpha](/resources/feature-status) in every SDK) handles POD photos and signatures. A signature is saved as an image, like a photo, and `deliveries` holds the attachment IDs.
+PowerSync's built-in Attachment Helpers can handle POD photos and signatures. The `deliveries` row holds the attachment IDs.
 
-`saveFileFromUri()` saves a file that is already on disk, like a camera capture, without reading it into memory. It needs a streaming-capable local storage adapter ([Saving Files Already on Disk](/client-sdks/advanced/attachments#saving-files-already-on-disk)). Like `saveFile()`, it runs an `updateHook` that sets `deliveries.photo_id` in the same transaction as the save, so a delivery never points at a missing file.
+For more details on how this works, refer to [Attachments / Files](/client-sdks/advanced/attachments).
 
 ```ts pod/attachPhoto.ts
 import { podQueue } from './podQueue';
@@ -202,33 +198,31 @@ export async function attachPhoto(deliveryId: string, cameraUri: string) {
 
 Give the `AttachmentQueue` an `errorHandler` whose `onUploadError` returns `true`, so failed uploads retry. Returning `false` archives the file, which loses the POD evidence.
 
-Photos upload on their own queue, not with the row, so your backend must accept a `photo_id` before the file arrives. The upload to storage must also be safe to repeat, since a killed app can re-upload a photo that already finished.
-
-The local storage adapter creates a ready-made streaming transport (`createTransportAdapter()`). You supply `resolveUpload`, which asks your backend for a signed URL, and the transport uploads the file straight to object storage without reading it into memory ([Transferring Large Files Without Buffering](/client-sdks/advanced/attachments#transferring-large-files-without-buffering)).
+Attachments upload on their own queue, not with the row, so your backend must accept a `photo_id` before the file arrives. The upload to storage must also be safe to repeat, since a killed app can re-upload a photo that already finished.
 
 ## 6. Write Down Your Conflict Rules
 
-When a device comes back online, its data may conflict with what was written to the backend while it was offline. Your backend needs [conflict resolution rules](/handling-writes/handling-update-conflicts) to handle this.
+When a device comes back online, its local state and pending uploads may conflict with what was written to the backend while it was offline. Your backend needs [conflict resolution rules](/handling-writes/handling-update-conflicts) to handle this.
 
 Append-only rows with client IDs can't conflict, so this design has minimal conflict rules:
 
 - **Scan events:** never conflict and are never rejected. Your backend records them even against a cancelled stop.
-- **Stops:** dispatch-owned. Only dispatch creates and cancels them; drivers only record outcomes. Your backend sets `stops.status` from the delivery it receives. Until then, the app shows a stop as done if it has a local `deliveries` row.
-- **A delivery on a stop which dispatch already cancelled:** your backend decides. It returns 409, and `uploadData()` drops the write and shows the driver why.
+- **Stops:** dispatch-owned. Only dispatch creates and cancels them; drivers only record outcomes. Your backend sets `stops.status` from the delivery it receives. Until then, your app can show a stop as done if it has a local `deliveries` row.
+- **A delivery on a stop which dispatch already cancelled:** your backend decides. For example, you can record the attempted delivery in a dead-letter queue and propagate an error message back to the driver via a synced table.
 
-While scans are queued, PowerSync doesn't apply downloads ([Consistency](/architecture/consistency)), so a cancelled stop shows on the device only after the driver's scans upload. A driver may complete a stop that was cancelled while they were offline, which is why the rule lives in your backend and you don't need client-side merge code.
+While uploads are queued, PowerSync doesn't apply downloads (see [Consistency](/architecture/consistency)), so a cancelled stop shows on the device only after the driver's scans upload.
 
-Dispatchers read scans and POD from your backend database as soon as they upload, with no extra PowerSync piece.
+Dispatchers read scans and POD from your backend database as soon as they upload.
 
 ## 7. Load the Route at the Warehouse and Sync Only the Driver's Stops
 
-A driver can only record deliveries for stops that are on the device, so the app must have the day's stops available even while offline. Each device should download only the stops and deliveries for its own driver, both to reduce data usage and for data privacy.
+The app must have the driver's scheduled stops available even while offline. Each device should download only the stops and deliveries for its own driver.
 
-PowerSync provides [Sync Streams](/sync/streams/overview) as a declarative way to define what each device receives and stores locally. The driver is `auth.user_id()` from the JWT, and the `my_route` stream below filters on it ([parameters](/sync/streams/parameters)).
+PowerSync provides [Sync Streams](/sync/streams/overview) as a declarative way to define what each device receives and stores locally. The driver is `auth.user_id()` from the JWT, and the `my_route` stream below filters on it (see [Using Parameters](/sync/streams/parameters)).
 
 The `my_route` stream sends the driver's stops and deliveries, plus their own `scan_events`. Without the `scan_events` query, scans disappear from the device after upload.
 
-Stream parameter filters are equality-only, and `now()` isn't allowed ([Sync Data by Time](/sync/advanced/sync-data-by-time)), so bind the stream to today's route with a server-maintained boolean `is_current_route` column. Your backend sets it to true on the day's stops and on each delivery and scan event it receives, and a scheduled job sets it to false when the route closes.
+For the purposes of the example below, the `is_current_route` flag is set by the backend to indicate the current active route for the driver.
 
 ```yaml
 config:
@@ -243,13 +237,13 @@ streams:
       - SELECT * FROM scan_events WHERE driver_id = auth.user_id() AND is_current_route = true
 ```
 
-`my_route` downloads the day's stops while the driver is in the warehouse and the device is connected. Before leaving the warehouse or going offline, the driver checks the download finished: `SyncStatus` shows `downloading` false and a recent `lastSyncedAt`.
+`my_route` downloads the scheduled stops before the driver is dispatched, while their device is connected. Before leaving the warehouse or going offline, the driver should be able to check whether their device is synced. This can be implemented in your UI using `SyncStatus` provided by the PowerSync client SDK.
 
 ## 8. Show the Driver What's Still Waiting to Upload
 
-A driver with no connection needs to know which scans and POD are safe on the device but not yet uploaded, so they can keep working instead of scanning a package twice or waiting for signal.
+It can be helpful to show the driver which scans and POD are safe on the device but not yet uploaded.
 
-PowerSync's `SyncStatus` gives `connected`, `uploading`, and `lastSyncedAt` ([Production Readiness Guide](/maintenance-ops/production-readiness-guide#sdk-diagnostics)). Pending scans and deliveries are in the upload queue: `SELECT COUNT(*) FROM ps_crud`. Pending photos and signatures are rows in the local `attachments` table with state `QUEUED_UPLOAD`.
+PowerSync's `SyncStatus` gives `connected`, `uploading`, and `lastSyncedAt` (see [Production Readiness Guide](/maintenance-ops/production-readiness-guide#sdk-diagnostics)). The number of pending uploads (i.e. scans and deliveries) in the upload queue can also be displayed to the driver: `SELECT COUNT(*) FROM ps_crud`. Pending photos and signatures can also be shown: they are rows in the local `attachments` table with state `QUEUED_UPLOAD`.
 
 ## What PowerSync Removes from a DIY Design
 
@@ -257,30 +251,16 @@ PowerSync's `SyncStatus` gives `connected`, `uploading`, and `lastSyncedAt` ([Pr
 | --- | --- |
 | Hand-written outbox table and "mark as sent" logic | Upload queue, filled automatically on every write to a synced table |
 | Background worker with retries, limited to a single instance | SDK calls `uploadData()` after writes, on reconnect and after failures |
-| Photo upload queue with its own retry state | `AttachmentQueue` with a streaming transport. You supply `resolveUpload` |
+| Photo upload queue with its own retry state | `AttachmentQueue` with a streaming transport. |
 | Logic to merge dispatch changes with unsent scans | Not needed: the client doesn't apply downloads while uploads are pending |
 | Per-driver "changes since" API and sync cursor | The `my_route` Sync Stream. Each device downloads only what changed in its stream |
 
 You still need to implement:
 
 1. Your idempotent write endpoint, including rejection handling
-2. The signed-URL endpoint and `resolveUpload`
-3. Driver auth and JWTs (your backend sets `driver_id` from the JWT, not from the client)
-4. Maintenance of the `is_current_route` column
-
-## Where to Start
-
-Make the decisions in this order:
-
-1. How to model scans with client-generated UUIDs, an append-only schema, and both timestamps
-2. How photos and signatures attach to deliveries
-3. Conflict rules for dispatch-owned stops
-
-They set your schema and are expensive to change once drivers are on the road.
-
-With those settled, the sync layer is a client-side schema and a Sync Config, plus the backend pieces listed above.
-
-PowerSync supports Postgres, MySQL, SQL Server, and MongoDB as the [source database](/configuration/source-db/setup).
+2. Wiring up the [Attachment Helper](/client-sdks/advanced/attachments)
+3. Driver auth and JWTs (your backend sets `driver_id` from the JWT)
+4. Dispatch functionality that maintains the driver's scheduled stops
 
 ## Next Steps
 
@@ -291,9 +271,5 @@ PowerSync supports Postgres, MySQL, SQL Server, and MongoDB as the [source datab
 
   <Card title="Attachments / Files" href="/client-sdks/advanced/attachments">
     Set up the attachment queue.
-  </Card>
-
-  <Card title="Offline-First Fundamentals" href="/resources/architecture-guides/offline-first-architecture">
-    What the offline-first terms in this guide mean.
   </Card>
 </CardGroup>

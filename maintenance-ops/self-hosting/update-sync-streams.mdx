@@ -1,48 +1,26 @@
 ---
 title: "Update Sync Streams (Sync Config)"
-description: "Update Sync Streams in a self-hosted PowerSync deployment."
+description: "Choose how your self-hosted PowerSync Service manages its Sync Config, and update your Sync Streams."
 ---
 
-There are four ways to update your Sync Config in a self-hosted deployment:
+How you update your Sync Streams depends on how your PowerSync Service manages your Sync Config:
 
-1. **CLI** — Edit your config and apply with `powersync docker reset`
-2. **Config file** — Update your config and restart the Service
-3. **API endpoint** — Deploy at runtime without restarting
-4. **Self-Hosted Dashboard** — Edit and validate in a web UI, and deploy from it when your Service configuration doesn't define your Sync Config (API-managed)
+- **Defined in your Service configuration (config-managed):** `sync_config` in `service.yaml` or the `POWERSYNC_SYNC_CONFIG_B64` environment variable defines your Sync Config. The Service loads it at startup, so you apply changes by restarting the Service. Choose this to keep your Sync Config with the rest of your Service configuration, such as in version control or your infrastructure-as-code.
+- **Deployed through the API (API-managed):** Your Service configuration doesn't define your Sync Config. You deploy it while the Service runs, from the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard) or with a request to the Service API. Choose this to deploy changes without restarting the Service, for example when your whole Service configuration is stored in a secret and each change would otherwise mean redeploying your containers.
+
+If you choose API-managed, your repository doesn't record what you deploy from the dashboard. Anyone who can reach the dashboard can deploy, so restrict access as described in [Access Control](/maintenance-ops/self-hosting/dashboard#access-control).
 
 <Info>
-  During deployment, the existing Sync Config continues serving clients while the Service processes the new one. Clients seamlessly transition once [initial replication](/architecture/powersync-service#initial-replication-vs-incremental-replication) completes.
+  During deployment, the existing Sync Config continues serving clients while the Service processes the new one. Clients switch to the new Sync Config once its [initial replication](/architecture/powersync-service#initial-replication-vs-incremental-replication) completes.
 </Info>
 
 <Tip>
-  Run `powersync validate` in the CLI before deploying to catch errors in your Sync Config without applying changes.
+  To catch errors in your Sync Config without applying it, validate it first: run `powersync validate` in the CLI, or select **Validate** in the Self-Hosted Dashboard.
 </Tip>
 
-## Option 1: CLI
+## Update Your Service Configuration (Config-Managed)
 
-If you set up PowerSync using the CLI (`powersync docker`), update your Sync Config and apply it without a full service restart:
-
-<Steps>
-  <Step title="Edit Sync Config">
-    Update `powersync/sync-config.yaml` in your project directory.
-  </Step>
-  <Step title="Validate">
-    ```bash
-    powersync validate
-    ```
-  </Step>
-  <Step title="Apply">
-    ```bash
-    powersync docker reset
-    ```
-
-    This restarts the PowerSync Service and applies your updated Sync Config.
-  </Step>
-</Steps>
-
-## Option 2: Config File
-
-Define your Sync Config in `service.yaml`, either inline or in a separate file. You can also supply it Base64-encoded in the `POWERSYNC_SYNC_CONFIG_B64` environment variable, which takes precedence over `sync_config`. Because your Service configuration then defines your Sync Config (**config-managed**), the Service loads it at startup: you apply changes by restarting the Service. See [Self-Hosted Instance Configuration](/configuration/powersync-service/self-hosted-instances) for the full config reference.
+Define your Sync Config in `service.yaml`, either in a separate file or inline. You can also supply it Base64-encoded in the `POWERSYNC_SYNC_CONFIG_B64` environment variable, which takes precedence over `sync_config`. See [Self-Hosted Instance Configuration](/configuration/powersync-service/self-hosted-instances) for the full config reference.
 
 <Steps>
   <Step title="Edit Config">
@@ -68,24 +46,41 @@ Define your Sync Config in `service.yaml`, either inline or in a separate file. 
 
     </CodeGroup>
   </Step>
-  <Step title="Restart Service">
-    Restart your service to apply changes:
+  <Step title="Restart the Service">
+    Restart the Service to apply changes, for example:
 
     ```shell
     docker compose restart powersync
     ```
 
-    Once the service starts up, it will load the updated Sync Config and begin processing it while continuing to serve the existing config until initial replication completes.
+    The Service loads the updated Sync Config when it starts.
   </Step>
 </Steps>
 
-## Option 3: Deploy via API
+### With the PowerSync CLI
 
-Deploy Sync Config at runtime without restarting. Useful for quick iterations during development.
+If you set up PowerSync with the CLI (`powersync docker`), edit `powersync/sync-config.yaml` in your project directory. Then validate it and apply it:
 
-<Warning>
-  The API accepts deployments only when your Service configuration doesn't define your Sync Config (**API-managed**). If it does, as in [Option 2](#option-2-config-file), the API rejects deployments with `PSYNC_S4105`.
-</Warning>
+```bash
+powersync validate
+powersync docker reset
+```
+
+`powersync docker reset` restarts the PowerSync Service, which loads your updated Sync Config.
+
+### With the Self-Hosted Dashboard
+
+You can edit, validate, and compare a draft with the deployed Sync Config in the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard). The dashboard can't deploy config-managed Sync Config, so copy or download the draft YAML, update your Sync Config where it's defined, and restart the Service. The dashboard keeps the draft until you select **Discard Draft**, so discard it once the Service runs the new version.
+
+## Deploy Through the API (API-Managed)
+
+If your Service configuration doesn't define your Sync Config, you deploy it while the Service runs, without a restart. If it does, the Service rejects deployments with `PSYNC_S4105`. To switch to API-managed, remove `sync_config` from `service.yaml` and unset `POWERSYNC_SYNC_CONFIG_B64`, then restart the Service.
+
+### From the Self-Hosted Dashboard
+
+In the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard), edit your Sync Config on the **Sync Streams** page and select **Deploy**. The dashboard validates the draft and deploys it through the Service API. The Health page shows the deploying version until it becomes active.
+
+### With an API Request
 
 <Steps>
   <Step title="Configure API Token">
@@ -109,19 +104,12 @@ Deploy Sync Config at runtime without restarting. Useful for quick iterations du
   </Step>
 </Steps>
 
-### Additional Endpoints
+#### Additional Endpoints
 
 | Endpoint | Method | Description |
 | --- | --- | --- |
 | `/api/sync-rules/v1/current` | GET | Get the active and pending Sync Config |
 | `/api/sync-rules/v1/reprocess` | POST | Restart replication from scratch |
-
-## Option 4: Self-Hosted Dashboard
-
-Use the Sync Config editor in the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard) to edit, validate, and compare a draft with the deployed Sync Config. How you apply the draft depends on how your Sync Config is managed:
-
-- **Deployed through the API (API-managed):** Deploy the draft from the editor. The dashboard deploys through the [Service API](#option-3-deploy-via-api).
-- **Defined in your Service configuration (config-managed):** Copy or download the draft YAML and apply it as described in [Option 2](#option-2-config-file).
 
 ## Troubleshooting
 
@@ -132,5 +120,3 @@ Common errors when using the API:
 | `PSYNC_S4105` | Your Service configuration defines your Sync Config (config-managed), so the API is disabled |
 | `PSYNC_S4104` | No Sync Config deployed yet |
 | `PSYNC_R0001` | Invalid Sync Config YAML - check `details` field |
-
-See [Error Codes Reference](/debugging/error-codes) for the complete list.

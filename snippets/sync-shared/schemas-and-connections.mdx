@@ -9,6 +9,49 @@ When no schema is specified, the Postgres `public` schema is used for every quer
 SELECT * FROM "other"."assets"
 ```
 
+## Schemas (SQL Server)
+
+When no schema is specified, the `dbo` schema is used. To use a table from another schema in the same database, prefix it with the schema name.
+
+```sql
+SELECT * FROM "inventory"."assets"
+```
+
+Wildcards are not supported in SQL Server schema or table names, so list each table separately. If a query uses a wildcard, replication fails with `PSYNC_R2201`.
+
+On self-hosted instances, the connection's [`schema` option](/configuration/powersync-service/self-hosted-instances#replication) changes the default schema. The `_powersync_checkpoints` table must be in that schema too.
+
+## Multiple Databases (MySQL and MongoDB)
+
+A MySQL or MongoDB connection can replicate from several databases on the same MySQL server or MongoDB cluster. Tables without a prefix come from the database in the connection settings. To use a table from another database, prefix it with the database name.
+
+```sql
+-- MySQL: the assets table in the database from the connection settings
+SELECT * FROM assets
+
+-- MySQL: the assets table in the inventory database on the same server
+SELECT * FROM inventory.assets
+
+-- MongoDB: the assets collection in the inventory database in the same cluster
+SELECT *, _id AS id FROM inventory.assets
+```
+
+If a name needs quotes, use double quotes, such as `"inventory"."assets"`. MySQL backticks are not supported.
+
+Rows sync to a client-side table named after the source table, without the database name. If two databases have a table with the same name, rows from both sync to the same client-side table. To keep them apart, give one of them an alias.
+
+```sql
+SELECT * FROM inventory.assets AS inventory_assets
+```
+
+The database name can't contain a wildcard, so list each database separately. If a query uses a wildcard such as `"tenant_%".orders`, replication fails with `PSYNC_R2201`.
+
+For MySQL, grant the database user `SELECT` on each database you use, as described in [Database User Configuration](/configuration/source-db/setup#database-user-configuration).
+
+For MongoDB, read access on each database is not enough. Once a query uses a second database, PowerSync reads changes from the whole cluster, so the user needs read access on the entire cluster. With Post Images set to Auto-Configure, the default for new instances, the user also needs `dbAdmin` on each database. See [MongoDB Permissions](/configuration/source-db/setup#mongodb-permissions).
+
+A Postgres or SQL Server connection replicates from one database, and the prefix there is a schema in that database. For databases on separate servers or clusters, see [Multiple Separate Database Connections](#multiple-separate-database-connections-planned).
+
 ## Wildcard Schemas (Postgres)
 
 <Note>
@@ -40,7 +83,7 @@ When the source Postgres database is replicated, for example with Amazon RDS Mul
 
 For this, each endpoint must point to the same physical database, with the same replication slots. This is the case when block-level replication is used between the databases, but not when streaming physical or logical replication is used. In those cases, replication slots are unique on each host, and all data would be re-synced in a fail-over event.
 
-On Postgres 17 or later, self-hosted instances can keep their replication slots through a failover to a physical standby. Configure the cluster for [logical replication failover](https://www.postgresql.org/docs/current/logical-replication-failover.html) as described in the Postgres documentation, and set the [`slot_failover`](/configuration/powersync-service/self-hosted-instances#replication) connection option. Postgres then syncs the PowerSync replication slots to the standby. The option only affects replication slots that the Service creates after you enable it.
+On Postgres 17 or later, PowerSync can keep its replication slots through a failover to a physical standby. See [Replication Slot Failover](/configuration/source-db/postgres-maintenance#replication-slot-failover).
 
 ## Multiple Separate Database Connections (Planned)
 

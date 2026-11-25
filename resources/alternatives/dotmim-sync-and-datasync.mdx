@@ -14,13 +14,13 @@ sidebarTitle: "PowerSync vs Dotmim.Sync and Datasync"
 
 [PowerSync](/intro/powersync-overview) syncs data from your backend database into a SQLite database inside your app. The app reads and writes that local database directly, so it responds instantly and keeps working without a network connection. PowerSync syncs changes in both directions when the app is connected. On SQL Server, the PowerSync Service reads changes through Change Data Capture (CDC).
 
-All three tools also support other databases, as listed under [Source Databases](#source-databases). This page compares them on SQL Server.
+All three tools also support other databases, as listed under [Source Databases](#source-databases). This document compares them on SQL Server.
 
 <Note>
   This document compares Dotmim.Sync 1.3.0, CommunityToolkit.Datasync 10.2.0, PowerSync Service 1.28.3, and version 1.0.1 of the PowerSync .NET SDK (`PowerSync.Common`).
 </Note>
 
-This comparison is based on each product's documentation and source code, and on building the same SQL Server, ASP.NET Core, and .NET MAUI app with each of the three tools. See [Migrating a SQL Server and .NET MAUI App to Offline-First](/migration-guides/sql-server-maui) for the PowerSync version of that app.
+This document is based on each product's documentation and source code, and on building the same SQL Server, ASP.NET Core, and .NET MAUI app with each of the three tools. See [Migrating a SQL Server and .NET MAUI App to Offline-First](/migration-guides/sql-server-maui) for the PowerSync version of that app. The code for all three versions is linked under [Companion Repo](#companion-repo).
 
 {/* PowerSync versions: the hands-on build used the journeyapps/powersync-service:1.28.3 image (1.29.1 is the latest tag on Docker Hub as of 2026-11-24) and PowerSync.Common 1.0.1 (NuGet, published 2026-11-23, the latest stable). The .NET SDK is GA in resources/feature-status.mdx. */}
 
@@ -32,14 +32,14 @@ This comparison is based on each product's documentation and source code, and on
 | Status | SQL Server source in Beta. .NET SDK GA. See [Feature Status](/resources/feature-status). | Latest release 1.3.0, March 2025 | Latest release 10.2.0, November 2026 |
 | SQL Server editions | 2019 and later: Standard, Enterprise, Developer, or Evaluation. Azure SQL Database or Managed Instance. No Express. See [SQL Server](/configuration/source-db/setup#sql-server). | Any edition, Express included | Any edition that EF Core supports, Express included |
 | Changes to your tables | None | None to columns. It adds stored procedures, table types, and scope tables to the database. | `Id`, `UpdatedAt`, `Version`, and `Deleted` on each entity, plus a trigger on SQL Server |
-| Extra infrastructure | The PowerSync Service, on PowerSync Cloud or self-hosted, plus CDC and SQL Server Agent. Self-hosting also needs MongoDB or Postgres for [bucket storage](/configuration/powersync-service/self-hosted-instances). | None. With more than one API instance, a shared distributed cache for sync sessions. | None |
+| Extra infrastructure | The PowerSync Service, on PowerSync Cloud or self-hosted, plus CDC and SQL Server Agent. Self-hosting also needs MongoDB or Postgres for [bucket storage](/configuration/powersync-service/self-hosted-instances). | A distributed cache for sync sessions, shared by your API instances, such as Redis or the SQL Server distributed cache. A single instance can use the in-memory cache. | None |
 | Where business rules live | Your existing API endpoint, called from `uploadData()` | A second copy, in a server interceptor | A second copy, in an access control provider |
-| Rejected writes | `uploadData()` completes the write, and the client SDK rolls the change back. If `uploadData()` throws instead, later uploads are blocked. | Your server interceptor drops or refuses the row. You build the cleanup. | The operation stays queued and blocks pulls for that table until your code removes it |
+| Rejected writes | `uploadData()` completes the write, and the client SDK rolls the change back. | Your server interceptor drops or refuses the row. You build the cleanup. | The operation stays queued and blocks pulls for that table until your code removes it |
 | Client platforms | .NET, plus JavaScript, Dart/Flutter, Kotlin, Swift, and Rust | .NET | .NET 10 only, on both the server and the client |
 
 ## What Each Tool Includes
 
-"Yes" means the tool does this with its documented setup. "No" means it doesn't, or you build it yourself.
+"Yes" means the tool does this with its documented setup.<br /> "No" means it doesn't, or you build it yourself.
 
 |  | **PowerSync** | **Dotmim.Sync** | **Datasync** |
 | --- | --- | --- | --- |
@@ -52,13 +52,13 @@ This comparison is based on each product's documentation and source code, and on
 | Works with SQL Server Express | No | Yes | Yes |
 | Built-in conflict detection | No | Yes | Yes |
 
-The sections below cover each row.
+The sections below explain each row in more detail.
 
 {/* UI updates: neither the Dotmim.Sync docs nor the Datasync docs describe query change notifications. Datasync raises SynchronizationProgress events during push and pull, and Dotmim.Sync has interceptors such as OnTableChangesApplied, which an app can use to reload its own queries. */}
 
 ## How Server Changes Are Captured
 
-All three tools pick up writes made directly with SQL, for example by a back-office system, with no change to that system.
+All three tools pick up writes made directly with SQL, for example by a back-office system. PowerSync and Dotmim.Sync need no change to that system. With Datasync, that system must mark rows as deleted instead of deleting them.
 
 ### PowerSync
 
@@ -72,7 +72,7 @@ Dotmim.Sync's `SqlSyncChangeTrackingProvider` uses SQL Server [Change Tracking](
 
 Datasync tracks changes with metadata on each row, and the client pulls the rows whose `UpdatedAt` is later than the newest row it already has. See [Azure SQL and SQL Server](https://communitytoolkit.github.io/Datasync/in-depth/server/db/azuresql/) for the trigger that keeps `UpdatedAt` current.
 
-Datasync doesn't send hard deletes to devices. To sync deletes, you [enable soft delete](https://communitytoolkit.github.io/Datasync/in-depth/server/) and run a separate job to purge deleted rows.
+Datasync doesn't send hard deletes to devices. To sync deletes, you [enable soft delete](https://communitytoolkit.github.io/Datasync/in-depth/server/) and run a separate job to purge deleted rows. Every system that writes to the table must then set `Deleted` instead of running `DELETE`. A row removed with `DELETE` stays on devices that already have it.
 
 ## How Data Is Stored on the Client
 
@@ -110,15 +110,13 @@ Each tool has its own detail to handle:
 
 ## Rejected Writes and Stuck Queues
 
-Sometimes your backend permanently refuses a write. A business rule says no, or the record changed on the server while the device was offline. Any of the three tools can get stuck if the app treats a permanent rejection as a temporary error. The difference is what each tool does by itself, and what you build to recover.
+Sometimes your backend permanently refuses a write, for example because the write breaks a business rule. Any of the three tools can get stuck if the app treats a permanent rejection as a temporary error. The difference is what each tool does automatically, and what you must build to recover from errors.
 
 ### PowerSync
 
-Your `uploadData()` function classifies each response from your API. On a permanent rejection, it logs the error, records the reason, and calls `complete()` so the upload queue moves on. Your API returns the reason in a 2xx response body, or writes it to a table that syncs back to the client.
+You write the code in `uploadData()` that decides whether each response from your API is a permanent rejection or a temporary error. On a permanent rejection, it logs the error, records the reason, and calls `complete()` so the upload queue moves on. Your API returns the reason in a 2xx response body, or writes it to a table that syncs back to the client.
 
 After the upload queue is empty and the client has synced, the client SDK replaces the local data with the synced copy. The rejected change disappears from the device with no extra code. See [How Changes Are Rolled Back](/handling-writes/write-path/concepts#how-changes-are-rolled-back).
-
-If `uploadData()` throws on a permanent rejection instead, the transaction is **blocked**. Later writes from that device can't upload, and the sync status shows an `uploadError` on every attempt. See [Blocked Transactions](/handling-writes/write-path/concepts#blocked-transactions).
 
 ### Dotmim.Sync
 
@@ -163,7 +161,7 @@ While the app is connected, the PowerSync Service streams changes to it, and the
 
 Dotmim.Sync and Datasync don't push changes to the device. A sync reads SQL Server directly, so it returns current data with no replication delay. The device sees server changes only when the app syncs, for example at startup, on pull-to-refresh, or when a page opens. Datasync's [real-time tutorial](https://communitytoolkit.github.io/Datasync/tutorial/server/part-5/) sends SignalR messages from `PostCommitHookAsync`. That hook runs only for writes through the table controllers, not for writes made directly with SQL.
 
-Queued writes upload only when the app syncs.
+In both Dotmim.Sync and Datasync, queued writes upload only when the app syncs.
 
 ## Auth and Per-User Data
 
@@ -197,11 +195,11 @@ Adding a nullable column to a synced table takes different steps in each tool.
 
 ### PowerSync
 
-You run `ALTER TABLE`, add a new CDC capture instance for the table, and redeploy your Sync Config. The redeploy reprocesses the data, and the previous deployment serves clients until the new one is active. Installed apps keep working, because the client-side schema is a view over schemaless data. To use the column, the app adds it to its client-side schema. See [SQL Server Specifics](/maintenance-ops/implementing-schema-changes#sql-server-specifics).
+You run `ALTER TABLE`, add a new CDC capture instance for the table, and redeploy your Sync Config. The redeploy reprocesses the data, and the previous deployment serves clients until the new one is active. Installed apps keep syncing in both directions, because the client-side schema is a view over schemaless data. You can change the server before or after the app release. To use the column, the app adds it to its client-side schema. See [SQL Server Specifics](/maintenance-ops/implementing-schema-changes#sql-server-specifics).
 
 ### Dotmim.Sync
 
-You re-provision the server scope in code. After that, apps that haven't upgraded can still download changes, but can't upload them. The [Provision](https://dotmimsync.readthedocs.io/Provision.html) docs say that each client must migrate its local schema and re-provision too. An app release must therefore reach devices before you change the server. Alternatively, you can use a new scope for each schema version.
+You re-provision the server scope in code. After that, apps that haven't upgraded can still download changes, but can't upload them. Writes made on those devices don't reach the server until the user installs the new app version. The [Provision](https://dotmimsync.readthedocs.io/Provision.html) docs say that each client must migrate its local schema and re-provision. An app release must therefore reach devices before you change the server. Alternatively, you can use a new scope for each schema version.
 
 ### Datasync
 
@@ -224,18 +222,20 @@ On the server, a schema change takes three steps: `ALTER TABLE`, add the propert
 
 ### Client Platforms
 
-PowerSync maturity labels as documented in [Feature Status](/resources/feature-status). See [Supported Platforms](/resources/supported-platforms) for minimum versions.
+PowerSync statuses come from [Feature Status](/resources/feature-status). See [Supported Platforms](/resources/supported-platforms) for minimum versions.
 
-{/* The .NET rows come first on purpose: they are the only rows where all three tools apply, and the reader is a .NET team. The other SDKs are grouped in one row, in the standard order within each status. */}
+{/* The .NET rows come first on purpose: they are the only rows where all three tools apply, and the reader is a .NET team. The non-.NET SDKs follow, grouped by PowerSync status and in the standard SDK order within each group. Datasync's web tutorial (docs/tutorial/server/part-5.md) calls the REST API with fetch(), which works only online, so it is not an offline client and those rows say No. */}
 
 | Platform | **PowerSync** | **Dotmim.Sync** | **Datasync** |
 | --- | --- | --- | --- |
 | .NET MAUI (Android, iOS, Mac Catalyst, Windows) | GA | Yes | Yes (.NET 10) |
 | WPF and other .NET desktop apps | GA (WPF, console) | Yes | Yes (.NET 10): WPF, WinUI 3, Avalonia, and Uno |
 | Blazor (web) | Not supported | Not documented | Tested with Blazor WebAssembly |
-| Other PowerSync SDKs | JavaScript (web, React Native, Node.js), Dart/Flutter, Kotlin, and Swift: GA. Capacitor and Rust: Beta. Tauri: Alpha. | — | — |
+| Web (JavaScript), React Native, Node.js, Flutter, Kotlin, Swift | GA | No | No |
+| Capacitor, Rust | Beta | No | No |
+| Tauri | Alpha | No | No |
 
-If your team also has a web, React Native, or Flutter app, PowerSync can sync the same data to it with the same Sync Streams.
+Dotmim.Sync and Datasync have client libraries only for .NET. If your team also has a web, React Native, Flutter, or native mobile app, PowerSync syncs the same data to it with the same Sync Streams.
 
 {/* Dotmim.Sync: the docs index says it is "ready to use within Xamarin, MAUI, .NET Core 3.1, .NET 6 & 7", the README adds IOT, .NET, and UWP, and the packages target net6.0, net8.0, and netstandard2.0, so any .NET desktop app can reference them. The repo has a MAUI sample. The hands-on build ran on the iOS simulator. Datasync: the docs index lists the tested client platforms (Avalonia, Blazor WASM, .NET MAUI, Uno Platform, WPF, WinUI 3). */}
 
@@ -270,11 +270,11 @@ The [companion repo](https://github.com/powersync-community/powersync-delivery-s
 - [Dotmim.Sync](https://github.com/powersync-community/powersync-delivery-sql-server-maui/compare/main...dotmim-sync)
 - [Datasync](https://github.com/powersync-community/powersync-delivery-sql-server-maui/compare/main...datasync)
 
-Each branch follows its tool's documentation, so the branches don't add the same features. The Dotmim.Sync and Datasync branches leave out what this page lists as things you build yourself, such as getting server changes to the device without user action and recovering from rejected writes.
+Each branch follows its tool's documentation, so the branches don't add the same features. The Dotmim.Sync and Datasync branches leave out what this document lists as things you build yourself, such as getting server changes to the device without user action and recovering from rejected writes.
 
 ## Learn More
 
 - [SQL Server source database setup](/configuration/source-db/setup#sql-server), the [.NET SDK](/client-sdks/reference/dotnet), and [Write Path Concepts](/handling-writes/write-path/concepts)
-- [Migrating a SQL Server and .NET MAUI App to Offline-First](/migration-guides/sql-server-maui): the PowerSync version of the app behind this comparison
+- [Migrating a SQL Server and .NET MAUI App to Offline-First](/migration-guides/sql-server-maui): the PowerSync version of the app behind this document
 - [Building an Offline-First Architecture for Proof of Delivery (POD)](/resources/architecture-guides/offline-first-delivery): the architecture behind a delivery driver app like this one
 - [Dotmim.Sync documentation](https://dotmimsync.readthedocs.io/) and [Datasync documentation](https://communitytoolkit.github.io/Datasync/)

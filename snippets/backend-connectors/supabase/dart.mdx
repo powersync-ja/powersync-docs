@@ -28,9 +28,9 @@ final List<RegExp> fatalResponseCodes = [
 ];
 
 /// Use Supabase for authentication and data upload.
-// The connector is the Authenticator for sync and provides the upload callback. Connect with:
-//   db.connect(connector: ConnectRequest(endpoint: AppConfig.powersyncUrl, authenticator: connector, uploader: connector.upload));
-class SupabaseConnector implements Authenticator {
+// The connector is the Authenticator for sync and the MutationUploader for uploads. Connect with:
+//   db.connect(connector: ConnectRequest(endpoint: AppConfig.powersyncUrl, authenticator: connector, uploader: connector));
+class SupabaseConnector implements Authenticator, MutationUploader {
   PowerSyncDatabase db;
 
   Future<void>? _refreshFuture;
@@ -47,7 +47,7 @@ class SupabaseConnector implements Authenticator {
   /// expired session is refreshed here before its token is used.
   @override
   Future<String> resolveCredentials(Future<void> abortSignal) async {
-    if (_cachedToken case final token?) {
+    if (_cachedToken case String token) {
       return token;
     }
 
@@ -98,8 +98,8 @@ class SupabaseConnector implements Authenticator {
   }
 
   // Upload pending changes to Supabase.
-  late final MutationUploader upload =
-      MutationUploader((PowerSyncDatabase database) async {
+  @override
+  Future<void> upload(PowerSyncDatabase database, Future<void> abortSignal) async {
     // This function is called whenever there is data to upload, whether the
     // device is online or offline.
     // If this call throws an error, it is retried periodically.
@@ -147,7 +147,7 @@ class SupabaseConnector implements Authenticator {
         rethrow;
       }
     }
-  });
+  }
 }
 
 /// Global reference to the database
@@ -190,7 +190,7 @@ Future<void> openDatabase() async {
         connector: ConnectRequest(
             endpoint: AppConfig.powersyncUrl,
             authenticator: currentConnector,
-            uploader: currentConnector.upload));
+            uploader: currentConnector));
   }
 
   Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
@@ -202,7 +202,7 @@ Future<void> openDatabase() async {
           connector: ConnectRequest(
               endpoint: AppConfig.powersyncUrl,
               authenticator: currentConnector!,
-              uploader: currentConnector!.upload));
+              uploader: currentConnector!));
     } else if (event == AuthChangeEvent.signedOut) {
       // Implicit sign out - disconnect, but don't delete data
       currentConnector = null;

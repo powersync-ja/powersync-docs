@@ -26,7 +26,7 @@ Future<void> connect(PowerSyncDatabase db) async {
     connector: ConnectRequest(
       endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
       authenticator: authenticator,
-      uploader: MyBackendConnector(authenticator).upload,
+      uploader: MyBackendConnector(authenticator),
     ),
   );
 }
@@ -60,7 +60,7 @@ class MyAuthenticator implements Authenticator {
   }
 }
 
-class MyBackendConnector {
+class MyBackendConnector implements MutationUploader {
   /// Supplies the token for write endpoint requests.
   MyBackendConnector(this._authenticator);
 
@@ -70,7 +70,8 @@ class MyBackendConnector {
   /// keepalives, and keeps calling it until the upload queue is empty. Throwing keeps the transaction queued,
   /// and the SDK retries after a delay.
   /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
-  late final MutationUploader upload = MutationUploader((database) async {
+  @override
+  Future<void> upload(PowerSyncDatabase database, Future<void> abortSignal) async {
     final transaction = await database.getNextCrudTransaction();
     if (transaction == null) {
       return;
@@ -102,7 +103,7 @@ class MyBackendConnector {
         throw Exception('Unexpected transaction result: ${result['status']}');
     }
     await transaction.complete();
-  });
+  }
 
   /// Called for fatal errors that the write endpoint leaves to the client. [FatalDecision.retain] keeps the
   /// transaction queued, which blocks later uploads, and the SDK calls this again on its next attempt. Return

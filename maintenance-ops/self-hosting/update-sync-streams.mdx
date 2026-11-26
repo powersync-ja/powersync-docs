@@ -1,0 +1,104 @@
+---
+title: "Update Sync Streams (Sync Config)"
+description: "Choose how your self-hosted PowerSync Service manages its Sync Config, and update your Sync Streams."
+---
+
+How you update your Sync Streams depends on how your PowerSync Service manages your Sync Config:
+
+- **Defined in your Service configuration (config-managed):** Your Service configuration defines your Sync Config, as described in [`sync_config`](/configuration/powersync-service/self-hosted-instances#sync_config). The Service loads it at startup, so you apply changes by restarting the Service. Choose this to keep your Sync Config with the rest of your Service configuration, such as in version control or your infrastructure-as-code.
+- **Deployed through the API (API-managed):** Your Service configuration doesn't define your Sync Config. You deploy it while the Service runs, from the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard) or with a request to the Service API. Choose this to deploy changes without restarting the Service, for example when your whole Service configuration is stored in a secret and each change would otherwise mean redeploying your containers.
+
+If you choose API-managed, your repository doesn't record what you deploy from the dashboard. Anyone who can reach the dashboard can deploy, so restrict access as described in [Access Control](/maintenance-ops/self-hosting/dashboard#access-control).
+
+<Info>
+  During deployment, the existing Sync Config continues serving clients while the Service processes the new one. Clients switch to the new Sync Config once its [initial replication](/architecture/powersync-service#initial-replication-vs-incremental-replication) completes.
+</Info>
+
+<Tip>
+  To catch errors in your Sync Config without applying it, validate it first: run `powersync validate` in the CLI, or select **Validate** in the Self-Hosted Dashboard.
+</Tip>
+
+## Update Your Service Configuration (Config-Managed)
+
+Most setups define the Sync Config in a separate file that `sync_config.path` in `service.yaml` references. For all the ways to define it, see [`sync_config`](/configuration/powersync-service/self-hosted-instances#sync_config).
+
+<Steps>
+  <Step title="Edit Your Sync Config">
+    Update your Sync Config where your Service configuration defines it, such as in `sync-config.yaml`.
+  </Step>
+  <Step title="Restart the Service">
+    Restart the Service to apply changes, for example:
+
+    ```shell
+    docker compose restart powersync
+    ```
+
+    The Service loads the updated Sync Config when it starts.
+  </Step>
+</Steps>
+
+### With the PowerSync CLI
+
+If you set up PowerSync with the CLI (`powersync docker`), edit `powersync/sync-config.yaml` in your project directory. To edit it in a web editor instead, run `powersync edit config` to open Config Studio. It saves your changes to the file and validates them against your instance as you type.
+
+Then validate and apply your changes:
+
+```bash
+powersync validate
+powersync docker reset
+```
+
+`powersync docker reset` restarts the PowerSync Service, which loads your updated Sync Config.
+
+### With the Self-Hosted Dashboard
+
+You can edit, validate, and compare a draft with the deployed Sync Config in the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard). The dashboard can't deploy config-managed Sync Config, so copy or download the draft YAML, update your Sync Config where it's defined, and restart the Service.
+
+## Deploy Through the API (API-Managed)
+
+If your Service configuration doesn't define your Sync Config, you deploy it while the Service runs, without a restart. If it does, the Service rejects deployments with `PSYNC_S4105`. To switch to API-managed, remove your Sync Config from your Service configuration (see [`sync_config`](/configuration/powersync-service/self-hosted-instances#sync_config)), then restart the Service.
+
+### From the Self-Hosted Dashboard
+
+In the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard), edit your Sync Config on the **Sync Streams** page and select **Deploy**. The dashboard validates the draft and deploys it through the Service API. The Health page shows the deploying version until it becomes active.
+
+### With an API Request
+
+<Steps>
+  <Step title="Configure API Token">
+    Add an API token to your `service.yaml` and restart:
+
+    ```yaml service.yaml
+    api:
+      tokens:
+        - !env PS_API_TOKEN
+    ```
+  </Step>
+  <Step title="Deploy Sync Streams">
+    ```shell
+    curl -X POST http://<host>:<port>/api/sync-rules/v1/deploy \
+         -H "Content-Type: application/yaml" \
+         -H "Authorization: Bearer ${PS_API_TOKEN}" \
+         -d @sync-config.yaml
+    ```
+
+    The `/api/sync-rules/v1/` endpoints handle both Sync Streams and legacy Sync Rules. Use `/api/sync-rules/v1/validate` first to check for errors without deploying.
+  </Step>
+</Steps>
+
+#### Additional Endpoints
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `/api/sync-rules/v1/current` | GET | Get the active and pending Sync Config |
+| `/api/sync-rules/v1/reprocess` | POST | Restart replication from scratch |
+
+## Troubleshooting
+
+Common errors when using the API:
+
+| Error Code | Meaning |
+| --- | --- |
+| `PSYNC_S4105` | Your Service configuration defines your Sync Config (config-managed), so the API is disabled |
+| `PSYNC_S4104` | No Sync Config deployed yet |
+| `PSYNC_R0001` | Invalid Sync Config YAML - check `details` field |

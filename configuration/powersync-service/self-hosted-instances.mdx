@@ -15,7 +15,9 @@ A self-hosted instance needs four things before clients can sync:
 3. [Client authentication](/configuration/auth/overview). When getting started, you can use temporary [development tokens](/configuration/auth/development-tokens) instead of setting up a full auth provider.
 4. A sync configuration defining what data syncs to which clients, written as [Sync Streams](/sync/streams/overview).
 
-You define all of these in the main config file, along with some operational settings. We recommend keeping the sync configuration in a separate file that the main config references, though it can also be defined inline. The skeleton below shows the most common options; the [Configuration Reference](#configuration-reference) documents all of them.
+You define all of these in the main config file, along with some operational settings. We recommend keeping the sync configuration in a separate file that the main config references. [`sync_config`](#sync_config) describes the other options.
+
+The skeleton below shows the most common options; the [Configuration Reference](#configuration-reference) documents all of them.
 
 ```yaml service.yaml
 # Settings for source database replication
@@ -766,7 +768,7 @@ The `port` setting determines where clients and tools connect to your instance. 
 
 ### `sync_config`
 
-The `sync_config` section points the Service at your [Sync Streams](/sync/streams/overview) definition, usually a separate file referenced with `path`:
+The `sync_config` section defines your [Sync Streams](/sync/streams/overview), usually in a separate file referenced with `path`:
 
 <CodeGroup>
 
@@ -791,7 +793,18 @@ streams:
 </ResponseField>
 
 <ResponseField name="content" type="string">
-  The sync configuration inline as a string, as an alternative to `path`.
+  The sync configuration inline as a string, as an alternative to `path`. If you set both, the Service uses `path`.
+
+  ```yaml service.yaml
+  sync_config:
+    content: |
+      config:
+        edition: 3
+      streams:
+        todos:
+          auto_subscribe: true
+          query: SELECT * FROM todos WHERE owner_id = auth.user_id()
+  ```
 </ResponseField>
 
 <ResponseField name="exit_on_error" type="boolean" default="true">
@@ -800,7 +813,11 @@ streams:
   Since Service version 1.28.0, setting this to `false` keeps the Service running without storing, replicating, or serving the rejected config to clients. Pending config processing stops, while any previous active config continues replicating and serving clients. Inspect `deploying_sync_rules.errors[]` in the [Diagnostics API](/maintenance-ops/self-hosting/diagnostics#errors-and-warnings) to identify and correct the errors.
 </ResponseField>
 
-The top-level `sync_rules` key is a deprecated alias for `sync_config`. Use `sync_config` in new configurations.
+Instead of `sync_config`, you can supply the sync configuration Base64-encoded in the `POWERSYNC_SYNC_CONFIG_B64` environment variable or the `--sync-base64` command line parameter. Either takes precedence over `sync_config`.
+
+If you define your Sync Config in any of these ways (a file, inline, or Base64-encoded), it is **config-managed**: the Service loads it at startup and rejects deployments through its API. To deploy your Sync Config through the API or the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard) instead, leave all of them out. See [Update Sync Streams](/maintenance-ops/self-hosting/update-sync-streams).
+
+The top-level `sync_rules` key and the `POWERSYNC_SYNC_RULES_B64` environment variable are deprecated aliases for `sync_config` and `POWERSYNC_SYNC_CONFIG_B64`. Use the new names in new configurations.
 
 ### `client_auth`
 
@@ -860,10 +877,10 @@ client_auth:
 
 ### `api`
 
-The `api` section protects the Service's admin API routes with access tokens, and sets limits that protect the Service from excessive load. Configure `tokens` if you use the [PowerSync CLI](/tools/cli) against this instance; the limits rarely need changing.
+The `api` section protects the Service's admin API routes with access tokens, and sets limits that protect the Service from excessive load. Configure `tokens` if you use the [PowerSync CLI](/tools/cli) or the [Self-Hosted Dashboard](/maintenance-ops/self-hosting/dashboard) against this instance; the limits rarely need changing.
 
 <ResponseField name="tokens" type="string[]">
-  Access tokens for the Service's admin API routes, provided by clients as a Bearer token. If no tokens are configured, the admin API routes reject all requests.
+  Access tokens for the Service's admin API routes, provided by clients as a Bearer token. If no tokens are configured, the admin API routes reject all requests. Give each tool its own token, so you can rotate one without affecting the others.
 </ResponseField>
 
 <ResponseField name="parameters" type="object">

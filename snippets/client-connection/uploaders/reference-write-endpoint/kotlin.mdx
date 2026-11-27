@@ -1,11 +1,11 @@
-```kotlin PowerSync.kt
+```kotlin PowerSyncUploader.kt
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
 // Requires PowerSync Kotlin SDK 1.16.0 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in postTransaction() to match it,
-// or have a coding agent write the upload callback for your API:
+// or have a coding agent write the uploader for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
-// For several transactions per request and client-side backoff, see the full reference connector:
+// For several transactions per request and client-side backoff, see the full reference uploader:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
 //
 // Uses the Ktor client and kotlinx.serialization JSON, which the PowerSync SDK already builds on. Add
@@ -41,47 +41,22 @@ private const val BACKEND_URL = "http://localhost:6060"
 /** Abort a write endpoint request after this many milliseconds. */
 private const val REQUEST_TIMEOUT_MS = 30_000L
 
-/** Connects `db` for downloads and uploads. */
+/** Connects `db` for downloads and uploads. Use this instead of connectDownloadOnly(). */
 suspend fun connect(db: PowerSyncDatabase) {
+    // MyAuthenticator is the authenticator from your Client SDK setup.
     val authenticator = MyAuthenticator()
     db.connect(
         endpoint = "[Your PowerSync instance URL or self-hosted endpoint]",
         authenticator = authenticator,
-        uploader = MyBackendConnector(authenticator),
+        uploader = MyMutationUploader(authenticator),
     )
 }
 
 /**
- * Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
- * The token is cached until it is about to expire, or the PowerSync Service or the write endpoint rejects it.
+ * @param authenticator Supplies the token for write endpoint requests. The write endpoint accepts the same JWTs
+ * as your PowerSync instance, so this is the same authenticator that you connect with.
  */
-open class MyAuthenticator : Authenticator {
-    private var token: String? = null
-
-    override suspend fun resolveCredentials(): String = token ?: fetchAuthToken().also { token = it }
-
-    /**
-     * Called by the SDK before the token expires and when the PowerSync Service rejects it, and by the connector
-     * when the write endpoint rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
-     * itself: the SDK isn't guaranteed to cache tokens.
-     */
-    override fun invalidateCredentials() {
-        token = null
-    }
-
-    /**
-     * Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-     * Supabase and Firebase tokens can be used as they are:
-     * - https://docs.powersync.com/configuration/auth/supabase-auth
-     * - https://docs.powersync.com/configuration/auth/firebase-auth
-     * To use a development token with the write endpoint, see
-     * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-     */
-    private suspend fun fetchAuthToken(): String = "An authentication token"
-}
-
-/** @param authenticator Supplies the token for write endpoint requests. */
-open class MyBackendConnector(
+open class MyMutationUploader(
     private val authenticator: Authenticator,
     private val httpClient: HttpClient = HttpClient(),
 ) : MutationUploader {

@@ -83,6 +83,7 @@ Use these conventions in authored prose, subject to the exceptions for exact tec
 | Sync Rules | sync rules |
 | Sync Streams | sync streams |
 | Sync Config | sync config, except in identifiers such as `sync_config` |
+| authenticator, mutation uploader | backend connector, except when describing the previous `PowerSyncBackendConnector` API |
 
 Generic services, such as a Docker Compose service or a third-party service, stay lowercase.
 

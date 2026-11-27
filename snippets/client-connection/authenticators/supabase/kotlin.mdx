@@ -1,9 +1,8 @@
-```kotlin PowerSync.kt
+```kotlin SupabaseAuthenticator.kt
 // Requires PowerSync Kotlin SDK 1.16.1 or later, with the Supabase integration:
 //   implementation("com.powersync:connector-supabase:$powersyncVersion")
 import com.powersync.PowerSyncDatabase
 import com.powersync.connector.supabase.SupabaseAuthenticator
-import com.powersync.connector.supabase.SupabaseUploader
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.auth.auth
@@ -21,17 +20,15 @@ fun createSupabase(supabaseUrl: String, supabaseAnonKey: String): SupabaseClient
     }
 
 /**
- * Connects `db` while a user is signed in to Supabase, and disconnects and clears local data when they sign out.
+ * Connects `db` for downloads only while a user is signed in to Supabase, and disconnects and clears local data
+ * when they sign out. To upload local writes as well, add the mutation uploader and use its connect() instead.
  * Call this from a coroutine that lives as long as the database, for example at app startup.
  *
  * SupabaseAuthenticator sends the access token of the current Supabase session, which the Supabase client
- * refreshes. SupabaseUploader uploads writes through PostgREST, so your RLS policies apply to them. It discards
- * a transaction that fails with a data exception (class 22), an integrity constraint violation (class 23), or
- * insufficient privilege (42501), and retries other errors. To change this, override handleError().
+ * refreshes.
  */
-suspend fun syncWithSupabase(db: PowerSyncDatabase, supabase: SupabaseClient, powerSyncUrl: String) {
+suspend fun connectDownloadOnly(db: PowerSyncDatabase, supabase: SupabaseClient, powerSyncUrl: String) {
     val authenticator = SupabaseAuthenticator(supabase)
-    val uploader = SupabaseUploader(supabase)
 
     supabase.auth.sessionStatus
         .filter { it is SessionStatus.Authenticated || it is SessionStatus.NotAuthenticated }
@@ -40,7 +37,7 @@ suspend fun syncWithSupabase(db: PowerSyncDatabase, supabase: SupabaseClient, po
         .distinctUntilChangedBy { it is SessionStatus.Authenticated }
         .collect { status ->
             if (status is SessionStatus.Authenticated) {
-                db.connect(endpoint = powerSyncUrl, authenticator = authenticator, uploader = uploader)
+                db.connect(endpoint = powerSyncUrl, authenticator = authenticator)
             } else {
                 db.disconnectAndClear()
             }

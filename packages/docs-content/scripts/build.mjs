@@ -13,24 +13,34 @@ const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(packageDir, '../..');
 const distDir = join(packageDir, 'dist');
 
-const CONNECTOR_URL_PLACEHOLDER = '[Your PowerSync instance URL or self-hosted endpoint]';
+const INSTANCE_URL_PLACEHOLDER = '[Your PowerSync instance URL or self-hosted endpoint]';
 
-const SOURCES = {
-  connectors: {
-    dir: 'snippets/backend-connectors',
+const ALL_SDKS = ['javascript', 'typescript', 'react-native', 'dart', 'kotlin', 'swift', 'dotnet', 'rust'];
+const SUPABASE_SDKS = ['javascript', 'typescript', 'react-native', 'dart', 'kotlin', 'swift', 'dotnet'];
+
+// Snippets that set up the client's connection. Each kind is published at `<kind>/<group>/<sdk>`.
+// Snippets in a group with `requiresPlaceholder` connect to the instance URL placeholder, which consumers replace with
+// the PowerSync instance URL. Supabase snippets read the URL from app config instead.
+const SNIPPET_KINDS = {
+  // An authenticator and a download-only connect.
+  authenticators: {
+    dir: 'snippets/client-connection/authenticators',
     groups: {
-      // Generic connectors call the reference write endpoint. Consumers replace the placeholder with the PowerSync instance URL.
-      generic: {
-        sdks: ['javascript', 'typescript', 'react-native', 'dart', 'kotlin', 'swift', 'dotnet', 'rust'],
-        requiresPlaceholder: true
-      },
-      // Supabase connectors read the PowerSync URL from app config, so they have no placeholder.
-      supabase: {
-        sdks: ['javascript', 'typescript', 'react-native', 'dart', 'kotlin', 'swift', 'dotnet'],
-        requiresPlaceholder: false
-      }
+      custom: { sdks: ALL_SDKS, requiresPlaceholder: true },
+      supabase: { sdks: SUPABASE_SDKS, requiresPlaceholder: false }
     }
   },
+  // A mutation uploader and a connect for downloads and uploads.
+  uploaders: {
+    dir: 'snippets/client-connection/uploaders',
+    groups: {
+      'reference-write-endpoint': { sdks: ALL_SDKS, requiresPlaceholder: true },
+      supabase: { sdks: SUPABASE_SDKS, requiresPlaceholder: false }
+    }
+  }
+};
+
+const SOURCES = {
   prompts: {
     'existing-api': 'snippets/write-path/existing-api-prompt.mdx',
     'build-your-own-backend': 'snippets/write-path/build-your-own-backend-prompt.mdx'
@@ -68,7 +78,7 @@ function readSource(path) {
 const FENCE = /^(`{3,})(.*)$/;
 
 // Returns the body of the one top-level fenced code block in `text`, without its fence lines.
-// With `allowIntro`, prose may come before the block (prompts); otherwise the file must be only the block (connectors).
+// With `allowIntro`, prose may come before the block (prompts); otherwise the file must be only the block (authenticators and uploaders).
 // Shorter fences inside the block are part of its body, as in CommonMark.
 function extractFencedBlock(text, path, { allowIntro }) {
   const lines = text.split('\n');
@@ -78,7 +88,7 @@ function extractFencedBlock(text, path, { allowIntro }) {
     return null;
   }
   if (!allowIntro && lines.slice(0, openIndex).some((line) => line.trim() !== '')) {
-    fail(path, 'has content before the fenced code block; a connector file must be exactly one fenced code block');
+    fail(path, 'has content before the fenced code block; a snippet file must be exactly one fenced code block');
     return null;
   }
 
@@ -113,27 +123,29 @@ function writeStringModule(outPath, source, content) {
 }
 
 // Collect sources before writing anything, so a failed build leaves no partial dist/.
-const connectors = [];
-for (const [group, { sdks, requiresPlaceholder }] of Object.entries(SOURCES.connectors.groups)) {
-  const groupDir = `${SOURCES.connectors.dir}/${group}`;
-  if (existsSync(join(repoRoot, groupDir))) {
-    for (const file of readdirSync(join(repoRoot, groupDir))) {
-      if (file.endsWith('.mdx') && !sdks.includes(file.slice(0, -'.mdx'.length))) {
-        fail(`${groupDir}/${file}`, 'is not in the build source list; add it to SOURCES in scripts/build.mjs');
+const snippets = { authenticators: [], uploaders: [] };
+for (const [kind, { dir, groups }] of Object.entries(SNIPPET_KINDS)) {
+  for (const [group, { sdks, requiresPlaceholder }] of Object.entries(groups)) {
+    const groupDir = `${dir}/${group}`;
+    if (existsSync(join(repoRoot, groupDir))) {
+      for (const file of readdirSync(join(repoRoot, groupDir))) {
+        if (file.endsWith('.mdx') && !sdks.includes(file.slice(0, -'.mdx'.length))) {
+          fail(`${groupDir}/${file}`, 'is not in the build source list; add it to SNIPPET_KINDS in scripts/build.mjs');
+        }
       }
     }
-  }
-  for (const sdk of sdks) {
-    const path = `${groupDir}/${sdk}.mdx`;
-    const text = readSource(path);
-    if (text === null) continue;
-    const code = extractFencedBlock(text, path, { allowIntro: false });
-    if (code === null) continue;
-    if (requiresPlaceholder && !code.includes(CONNECTOR_URL_PLACEHOLDER)) {
-      fail(path, `does not contain the instance URL placeholder ${CONNECTOR_URL_PLACEHOLDER}`);
-      continue;
+    for (const sdk of sdks) {
+      const path = `${groupDir}/${sdk}.mdx`;
+      const text = readSource(path);
+      if (text === null) continue;
+      const code = extractFencedBlock(text, path, { allowIntro: false });
+      if (code === null) continue;
+      if (requiresPlaceholder && !code.includes(INSTANCE_URL_PLACEHOLDER)) {
+        fail(path, `does not contain the instance URL placeholder ${INSTANCE_URL_PLACEHOLDER}`);
+        continue;
+      }
+      snippets[kind].push({ id: `${group}/${sdk}`, source: path, content: code });
     }
-    connectors.push({ id: `${group}/${sdk}`, source: path, content: code });
   }
 }
 
@@ -163,8 +175,10 @@ if (errors.length > 0) {
 
 rmSync(distDir, { recursive: true, force: true });
 
-for (const { id, source, content } of connectors) {
-  writeStringModule(join(distDir, 'connectors', id), source, content);
+for (const [kind, items] of Object.entries(snippets)) {
+  for (const { id, source, content } of items) {
+    writeStringModule(join(distDir, kind, id), source, content);
+  }
 }
 for (const { id, source, content } of prompts) {
   writeStringModule(join(distDir, 'prompts', id), source, content);
@@ -180,29 +194,34 @@ const union = (items) => items.map(({ id }) => JSON.stringify(id)).join(' | ');
 writeFileSync(
   join(distDir, 'index.mjs'),
   `// Generated by @powersync/docs-content.\n` +
-    `export const CONNECTOR_IDS = [${list(connectors)}];\n` +
+    `export const AUTHENTICATOR_IDS = [${list(snippets.authenticators)}];\n` +
+    `export const UPLOADER_IDS = [${list(snippets.uploaders)}];\n` +
     `export const PROMPT_IDS = [${list(prompts)}];\n` +
     `export const IMAGE_IDS = [${list(images)}];\n` +
-    `export const CONNECTOR_URL_PLACEHOLDER = ${JSON.stringify(CONNECTOR_URL_PLACEHOLDER)};\n`
+    `export const INSTANCE_URL_PLACEHOLDER = ${JSON.stringify(INSTANCE_URL_PLACEHOLDER)};\n`
 );
 writeFileSync(
   join(distDir, 'index.d.mts'),
-  `/** A connector snippet. Import its code from \`@powersync/docs-content/connectors/<id>\`. */\n` +
-    `export type ConnectorId = ${union(connectors)};\n` +
+  `/** An authenticator snippet, with a download-only connect. Import its code from \`@powersync/docs-content/authenticators/<id>\`. */\n` +
+    `export type AuthenticatorId = ${union(snippets.authenticators)};\n` +
+    `/** A mutation uploader snippet, with a connect for downloads and uploads. Import its code from \`@powersync/docs-content/uploaders/<id>\`. */\n` +
+    `export type UploaderId = ${union(snippets.uploaders)};\n` +
     `/** An agent prompt. Import its text from \`@powersync/docs-content/prompts/<id>\`. */\n` +
     `export type PromptId = ${union(prompts)};\n` +
     `/** A diagram. Import the file from \`@powersync/docs-content/images/<id>.png\`. */\n` +
     `export type ImageId = ${union(images)};\n` +
-    `export declare const CONNECTOR_IDS: readonly ConnectorId[];\n` +
+    `export declare const AUTHENTICATOR_IDS: readonly AuthenticatorId[];\n` +
+    `export declare const UPLOADER_IDS: readonly UploaderId[];\n` +
     `export declare const PROMPT_IDS: readonly PromptId[];\n` +
     `export declare const IMAGE_IDS: readonly ImageId[];\n` +
-    `/** Text in each generic connector that consumers replace with the PowerSync instance URL. */\n` +
-    `export declare const CONNECTOR_URL_PLACEHOLDER: ${JSON.stringify(CONNECTOR_URL_PLACEHOLDER)};\n`
+    `/** Text in the custom authenticator and reference write endpoint uploader snippets that consumers replace with the PowerSync instance URL. */\n` +
+    `export declare const INSTANCE_URL_PLACEHOLDER: ${JSON.stringify(INSTANCE_URL_PLACEHOLDER)};\n`
 );
 
 copyFileSync(join(repoRoot, 'LICENSE'), join(packageDir, 'LICENSE'));
 
 console.log(
-  `@powersync/docs-content: built ${connectors.length} connectors, ${prompts.length} prompts, ${images.length} images ` +
+  `@powersync/docs-content: built ${snippets.authenticators.length} authenticators, ${snippets.uploaders.length} uploaders, ` +
+    `${prompts.length} prompts, ${images.length} images ` +
     `into ${relative(repoRoot, distDir)}/`
 );

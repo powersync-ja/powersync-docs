@@ -1,0 +1,40 @@
+```kotlin SupabaseUploader.kt
+// Requires PowerSync Kotlin SDK 1.16.1 or later, with the Supabase integration:
+//   implementation("com.powersync:connector-supabase:$powersyncVersion")
+import com.powersync.PowerSyncDatabase
+import com.powersync.connector.supabase.SupabaseAuthenticator
+import com.powersync.connector.supabase.SupabaseUploader
+import io.github.jan.supabase.SupabaseClient
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.status.SessionStatus
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.filter
+
+/**
+ * Connects `db` for downloads and uploads while a user is signed in to Supabase, and disconnects and clears local
+ * data when they sign out. Use this instead of connectDownloadOnly(), with the same `supabase` client from
+ * createSupabase(). Call this from a coroutine that lives as long as the database, for example at app startup.
+ *
+ * SupabaseUploader uploads writes through PostgREST, as the signed-in user, so your RLS policies apply to them.
+ * It discards a transaction that fails with a data exception (class 22), an integrity constraint violation
+ * (class 23), or insufficient privilege (42501), and retries other errors. To change this, override handleError().
+ * To change how each operation is sent, override uploadCrudEntry().
+ */
+suspend fun connect(db: PowerSyncDatabase, supabase: SupabaseClient, powerSyncUrl: String) {
+    val authenticator = SupabaseAuthenticator(supabase)
+    val uploader = SupabaseUploader(supabase)
+
+    supabase.auth.sessionStatus
+        .filter { it is SessionStatus.Authenticated || it is SessionStatus.NotAuthenticated }
+        // The Supabase client reports Authenticated again after each token refresh. The SDK requests the new
+        // token itself, so only react when the user signs in or out.
+        .distinctUntilChangedBy { it is SessionStatus.Authenticated }
+        .collect { status ->
+            if (status is SessionStatus.Authenticated) {
+                db.connect(endpoint = powerSyncUrl, authenticator = authenticator, uploader = uploader)
+            } else {
+                db.disconnectAndClear()
+            }
+        }
+}
+```

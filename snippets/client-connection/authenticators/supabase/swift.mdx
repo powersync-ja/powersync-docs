@@ -1,0 +1,84 @@
+```swift SupabaseAuthenticator.swift
+// Requires PowerSync Swift SDK 1.17.0 or later.
+import Auth
+import PowerSync
+import Supabase
+import SwiftUI
+
+// Signs users in with Supabase Auth and gives the SDK their access token. Connect for downloads only with:
+//   try await db.connect(endpoint: authenticator.powerSyncEndpoint, authenticator: authenticator, options: ConnectOptions())
+@Observable
+@MainActor // _session is mutable, limiting to the MainActor satisfies Sendable constraints
+final class SupabaseAuthenticator: PowerSync.Authenticator {
+    let powerSyncEndpoint: String = Secrets.powerSyncEndpoint
+    let client: SupabaseClient = .init(
+        supabaseURL: Secrets.supabaseURL,
+        supabaseKey: Secrets.supabaseAnonKey,
+    )
+    private(set) var session: Session?
+
+    @ObservationIgnored
+    private var cachedToken: String?
+
+    @ObservationIgnored
+    private var observeAuthStateChangesTask: Task<Void, Never>?
+
+    init() {
+        session = client.auth.currentSession
+        observeAuthStateChangesTask = Task { [weak self, client] in
+            for await (event, session) in client.auth.authStateChanges {
+                guard [.initialSession, .signedIn, .signedOut, .tokenRefreshed].contains(event) else { continue }
+                guard let self else { return }
+
+                self.session = session
+                self.cachedToken = nil // A new session has a new token.
+            }
+        }
+    }
+
+    var currentUserID: String {
+        guard let id = session?.user.id else {
+            preconditionFailure("Required session.")
+        }
+
+        return id.uuidString.lowercased()
+    }
+
+    func getStorageBucket() -> StorageFileApi? {
+        guard let bucket = Secrets.supabaseStorageBucket else {
+            return nil
+        }
+
+        return client.storage.from(bucket)
+    }
+
+    /// Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+    /// After invalidateCredentials() clears it, `client.auth.session` returns a valid session, because supabase-swift
+    /// refreshes the session when it expires within 30 seconds.
+    func resolveCredentials() async throws -> String {
+        if let cachedToken {
+            return cachedToken
+        }
+
+        session = try await client.auth.session
+
+        if session == nil {
+            throw AuthError.sessionMissing
+        }
+
+        let token = session!.accessToken
+
+        cachedToken = token
+        return token
+    }
+
+    /// Called by the SDK before the token expires and when the PowerSync Service rejects it.
+    func invalidateCredentials() async {
+        cachedToken = nil
+    }
+
+    deinit {
+        observeAuthStateChangesTask?.cancel()
+    }
+}
+```

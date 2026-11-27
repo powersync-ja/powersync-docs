@@ -1,24 +1,22 @@
-```csharp PowerSyncConnector.cs
+```csharp SupabaseUploader.cs
 // Requires PowerSync.Common 1.0.1 or later.
 namespace CommandLine;
 
 using System.Text.RegularExpressions;
 using CommandLine.Helpers;
 using CommandLine.Models.Supabase;
-using CommandLine.Utils;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PowerSync.Common.Client;
 using PowerSync.Common.Client.Connection;
 using PowerSync.Common.DB.Crud;
-using Supabase;
-using Supabase.Gotrue;
 using Supabase.Postgrest.Exceptions;
 using Supabase.Postgrest.Interfaces;
 
-// The connector is the authenticator for sync and the mutation uploader for uploads. Connect with:
-//   await db.Connect(config.PowerSyncUrl, connector, connector);
-public class SupabaseConnector : IAuthenticator, IMutationUploader
+// Uploads local writes to Supabase through PostgREST, as the signed-in user, so your RLS policies apply.
+// Pass it the Supabase client from your SupabaseAuthenticator, and connect for downloads and uploads with:
+//   await db.Connect(config.PowerSyncUrl, authenticator, new SupabaseUploader(authenticator.Client));
+public class SupabaseUploader(Supabase.Client supabase) : IMutationUploader
 {
     /// <summary>
     /// Postgres error codes that a retry can never fix, so the transaction is discarded
@@ -36,90 +34,7 @@ public class SupabaseConnector : IAuthenticator, IMutationUploader
         new Regex("^42501$")
     ];
 
-    private readonly Supabase.Client _supabase;
-    private Session? _currentSession;
-    private string? _cachedToken;
-
-    public Session? CurrentSession
-    {
-        get => _currentSession;
-        set
-        {
-            _currentSession = value;
-
-            if (_currentSession?.User?.Id != null)
-            {
-                UserId = _currentSession.User.Id;
-            }
-        }
-    }
-
-    public string UserId { get; private set; } = "";
-
-    public bool Ready { get; private set; }
-
-    public SupabaseConnector(Config config)
-    {
-        _supabase = new Supabase.Client(config.SupabaseUrl, config.SupabaseAnonKey, new SupabaseOptions
-        {
-            AutoConnectRealtime = true
-        });
-
-        _ = _supabase.InitializeAsync();
-    }
-
-    public async Task Login(string email, string password)
-    {
-        var response = await _supabase.Auth.SignInWithPassword(email, password);
-        if (response?.User == null || response.AccessToken == null)
-        {
-            throw new Exception("Login failed.");
-        }
-
-        CurrentSession = response;
-        _cachedToken = null; // A new session has a new token.
-    }
-
-    /// <summary>
-    /// Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
-    ///
-    /// After InvalidateCredentials() clears the cache, this returns a valid token. The Supabase client refreshes
-    /// the session in the background, but CurrentSession only returns the stored session and never refreshes it.
-    /// If that background refresh hasn't run, for example because the app was suspended or offline, the stored
-    /// token can be expired, so it is refreshed here first.
-    /// </summary>
-    public async Task<string> ResolveCredentials()
-    {
-        if (_cachedToken != null)
-        {
-            return _cachedToken;
-        }
-
-        var session = _supabase.Auth.CurrentSession;
-        if (session?.AccessToken == null)
-        {
-            throw new InvalidOperationException("Not signed in to Supabase");
-        }
-
-        if (session.CreatedAt.AddSeconds(session.ExpiresIn) <= DateTime.UtcNow.AddMinutes(1))
-        {
-            session = await _supabase.Auth.RefreshSession();
-            if (session?.AccessToken == null)
-            {
-                throw new InvalidOperationException("Could not refresh the Supabase session");
-            }
-        }
-
-        return _cachedToken = session.AccessToken;
-    }
-
-    /// <summary>
-    /// Called by the SDK before the token expires and when the PowerSync Service rejects it.
-    /// </summary>
-    public void InvalidateCredentials()
-    {
-        _cachedToken = null;
-    }
+    private readonly Supabase.Client _supabase = supabase;
 
     public async Task UploadMutations(IPowerSyncDatabase database)
     {

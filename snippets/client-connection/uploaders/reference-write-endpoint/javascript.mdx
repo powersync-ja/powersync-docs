@@ -1,12 +1,15 @@
-```javascript PowerSyncConnector.js
+```javascript PowerSyncUploader.js
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
 // Requires @powersync/web 2.6.0 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in postTransaction() to match it,
-// or have a coding agent write the upload callback for your API:
+// or have a coding agent write the uploader for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
-// For several transactions per request and client-side backoff, see the full reference connector:
+// For several transactions per request and client-side backoff, see the full reference uploader:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
+
+// The authenticator from your Client SDK setup.
+import { MyAuthenticator } from './PowerSyncAuthenticator';
 
 // Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself.
 const BACKEND_URL = 'http://localhost:6060';
@@ -14,59 +17,24 @@ const BACKEND_URL = 'http://localhost:6060';
 // Abort a write endpoint request after this many milliseconds.
 const REQUEST_TIMEOUT_MS = 30000;
 
-/** Connects `db` for downloads and uploads. */
+/** Connects `db` for downloads and uploads. Use this instead of connectDownloadOnly(). */
 export async function connect(db) {
   const authenticator = new MyAuthenticator();
   await db.connect({
     powerSyncEndpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
     authenticator,
-    upload: new MyBackendConnector({ authenticator }).upload
+    upload: new MyMutationUploader({ authenticator }).upload
   });
 }
 
-/**
- * Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
- * The token is cached until it is about to expire, or the PowerSync Service or the write endpoint rejects it.
- */
-export class MyAuthenticator {
-  constructor() {
-    this.token = null;
-  }
-
-  async resolveCredentials() {
-    if (!this.token) {
-      this.token = await this.fetchAuthToken();
-    }
-    return this.token;
-  }
-
+export class MyMutationUploader {
   /**
-   * Called by the SDK before the token expires and when the PowerSync Service rejects it, and by the connector
-   * when the write endpoint rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
-   * itself: the SDK isn't guaranteed to cache tokens.
+   * @param authenticator Supplies the token for write endpoint requests. The write endpoint accepts the same JWTs
+   * as your PowerSync instance, so this is the same authenticator that you connect with.
    */
-  invalidateCredentials() {
-    this.token = null;
-  }
-
-  /**
-   * Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-   * Supabase and Firebase tokens can be used as they are:
-   * - https://docs.powersync.com/configuration/auth/supabase-auth
-   * - https://docs.powersync.com/configuration/auth/firebase-auth
-   * To use a development token with the write endpoint, see
-   * https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-   */
-  async fetchAuthToken() {
-    return 'An authentication token';
-  }
-}
-
-export class MyBackendConnector {
-  /** @param authenticator Supplies the token for write endpoint requests. */
   constructor({ authenticator }) {
     this.authenticator = authenticator;
-    // connect() calls upload() without the connector, so bind it.
+    // connect() passes upload() to the SDK on its own, so bind it to this uploader.
     this.upload = this.upload.bind(this);
   }
 

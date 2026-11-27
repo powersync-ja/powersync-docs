@@ -1,16 +1,17 @@
-```rust src/connector.rs
+```rust src/uploader.rs
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
+// Requires powersync 0.2.0 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in post_transaction() to match
 // it, or have a coding agent write the uploader for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
-// For several transactions per request and client-side backoff, see the full reference connector:
+// For several transactions per request and client-side backoff, see the full reference uploader:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
 //
 // Uses the `reqwest` feature of the powersync crate, plus these crates:
 //   cargo add async-trait futures-lite serde_json serde --features serde/derive
 //   cargo add reqwest@0.13 --features json  # The same major version as the powersync crate uses
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,13 +21,16 @@ use powersync::{Authenticator, CrudTransaction, MutationUploader, PowerSyncDatab
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+// MyAuthenticator is the authenticator from your Client SDK setup.
+use crate::authenticator::MyAuthenticator;
+
 /// Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself.
 const BACKEND_URL: &str = "http://localhost:6060";
 
 /// Abort a write endpoint request after this long.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Connects `db` for downloads and uploads.
+/// Connects `db` for downloads and uploads. Use this instead of `connect_download_only()`.
 pub async fn connect(db: &PowerSyncDatabase) {
     let authenticator = MyAuthenticator::default();
     db.connect(SyncOptions::new(
@@ -37,55 +41,19 @@ pub async fn connect(db: &PowerSyncDatabase) {
     .await;
 }
 
-/// Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
-/// The token is cached until the PowerSync Service or the write endpoint rejects it.
-#[derive(Clone, Default)]
-pub struct MyAuthenticator {
-    token: Arc<Mutex<Option<Arc<String>>>>,
-}
-
-impl MyAuthenticator {
-    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-    /// Supabase and Firebase tokens can be used as they are:
-    /// - https://docs.powersync.com/configuration/auth/supabase-auth
-    /// - https://docs.powersync.com/configuration/auth/firebase-auth
-    /// To use a development token with the write endpoint, see
-    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-    async fn fetch_auth_token(&self) -> Result<String, PowerSyncError> {
-        Ok("An authentication token".to_string())
-    }
-}
-
-#[async_trait]
-impl Authenticator for MyAuthenticator {
-    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
-        if let Some(token) = self.token.lock().unwrap().clone() {
-            return Ok(token);
-        }
-        let token = Arc::new(self.fetch_auth_token().await?);
-        *self.token.lock().unwrap() = Some(token.clone());
-        Ok(token)
-    }
-
-    /// Called by the SDK when the PowerSync Service rejects the token, and by the uploader when the write endpoint
-    /// rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
-    /// itself: the SDK isn't guaranteed to cache tokens.
-    fn invalidate_credentials(&self) {
-        *self.token.lock().unwrap() = None;
-    }
-}
-
 pub struct MyMutationUploader {
     db: PowerSyncDatabase,
-    authenticator: MyAuthenticator,
+    authenticator: Arc<dyn Authenticator>,
     http: reqwest::Client,
 }
 
 impl MyMutationUploader {
-    pub fn new(db: PowerSyncDatabase, authenticator: MyAuthenticator) -> Self {
+    /// `authenticator` supplies the token for write endpoint requests. The write endpoint accepts the same JWTs as
+    /// your PowerSync instance, so this is the same authenticator that you connect with.
+    pub fn new(db: PowerSyncDatabase, authenticator: impl Authenticator + 'static) -> Self {
         Self {
             db,
-            authenticator,
+            authenticator: Arc::new(authenticator),
             http: reqwest::Client::new(),
         }
     }

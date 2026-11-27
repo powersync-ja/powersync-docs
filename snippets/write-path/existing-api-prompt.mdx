@@ -1,9 +1,9 @@
-To have a coding agent write `uploadData()`, copy this prompt into it. The agent installs the PowerSync agent skills, finds your connector, client-side schema, and API, and asks you about anything it can't find before it writes code. It then adapts the `uploadData()` in the prompt to your SDK and your API.
+To have a coding agent write `uploadData()`, copy this prompt into it. The agent installs the PowerSync agent skills, finds where your app connects to PowerSync, your client-side schema, and your API, and asks you about anything it can't find before it writes code. It then adapts the `uploadData()` in the prompt to your SDK and your API.
 
 The prompt's default is to log and discard rejected writes so they can't block the queue. It asks whether you also want a retry cap or a dead-letter queue.
 
 ````text Build with AI expandable icon=sparkles wrap
-You are implementing/hardening the `uploadData` connector method for a PowerSync client SDK integration in this project.
+You are implementing/hardening `uploadData`, the mutation uploader that a PowerSync client SDK integration in this project uses to upload local writes to the backend.
 
 ## Start from the PowerSync agent skills and docs
 
@@ -41,7 +41,11 @@ Beyond these three, once you've explored the repo, ask about anything else you'r
 
 Look for, in this order:
 
-1. **The existing connector file:** usually named something like `*Connector.ts`/`*Connector.dart`/similar, implementing the PowerSync SDK's backend connector interface and containing (or stubbing) `uploadData`. This is the file you'll be editing.
+1. **Where the app connects to PowerSync:** the `connect()` call and the code it passes in. PowerSync SDKs connect in one of two ways:
+   - **Authenticator and mutation uploader (current API):** `connect()` receives an authenticator (`resolveCredentials()`) and, for uploads, a mutation uploader (for example `upload` in JavaScript, `uploader` in Kotlin and Dart, `mutationUploader` in Swift). If the app connects for downloads only, there is no uploader yet: add `uploadData` in a new file next to the authenticator, and pass it to `connect()` as the uploader. The upload request can use the token from the authenticator's `resolveCredentials()`.
+   - **Backend connector (previous API):** a class, usually `*Connector.ts`/`*Connector.dart`/similar, implementing `PowerSyncBackendConnector` with `fetchCredentials()` and `uploadData()`. Edit its `uploadData()` in place. Don't migrate the app to the current API unless I ask.
+
+   Don't create a backend connector in an app that uses an authenticator. Whichever file holds `uploadData` is the file you'll be editing.
 2. **The client schema:** usually `AppSchema.ts`/`schema.ts` or similar, defining `Table`s passed to `Schema(...)`. This tells you the table/column shape backing each mutation's `opData` (a `CrudEntry`), which you need to map mutations onto backend requests.
 3. **The backend API surface:** an existing OpenAPI/Swagger spec, generated API client, or hand-written `fetch`/`axios`/similar wrapper calling this project's backend. Most PowerSync customers already have a working backend API and are connecting `uploadData` to it rather than building a new one. Assume that's the case here unless told otherwise.
 
@@ -59,7 +63,7 @@ These come from recurring PowerSync support reports. Treat them as requirements:
 
 ## Implementation to translate, not rewrite from scratch
 
-The code below fully specifies the control flow: batching, error classification, and completion. It's written for the common case where the backend is a set of existing per-resource REST endpoints rather than a transaction-atomic write endpoint. If the backend can apply a whole transaction in one request, tell me before you write code. In that case, the PowerSync reference connector at https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/example-client, which uploads whole transactions, is a better starting point than the code below.
+The code below fully specifies the control flow: batching, error classification, and completion. It's written for the common case where the backend is a set of existing per-resource REST endpoints rather than a transaction-atomic write endpoint. If the backend can apply a whole transaction in one request, tell me before you write code. In that case, the PowerSync reference uploader at https://github.com/powersync-ja/powersync-reference-write-implementation/tree/main/example-client, which uploads whole transactions, is a better starting point than the code below.
 
 Translate this into the project's actual language/SDK (Dart, Kotlin, Swift, C#, JS/TS, or whatever this project uses), keeping the structure, comments, and error handling intact. The only part to design from scratch is `callBackendApi`. Everything else should be a close translation.
 
@@ -148,7 +152,7 @@ async function uploadData(database: AbstractPowerSyncDatabase): Promise<void> {
 
 ## Production hardening to raise with me
 
-The implementation above is the minimum. Before you finish, ask which of these I want now, and leave the rest as named follow-ups in the connector's comments. There are many reasonable ways to build each, so match whatever the project already uses rather than inventing a mechanism:
+The implementation above is the minimum. Before you finish, ask which of these I want now, and leave the rest as named follow-ups in comments next to `uploadData`. There are many reasonable ways to build each, so match whatever the project already uses rather than inventing a mechanism:
 
 - **A retry cap.** Without one, a backend that answers 5xx for a permanent failure blocks the queue forever. It needs a persisted counter per transaction, not an in-memory one, because the queue survives restarts.
 - **Dead-letter storage** for rejected or retry-exhausted mutations, instead of log and discard. Store them somewhere a developer can inspect: a dead-letter table on the backend, or your error tracker.
@@ -157,6 +161,6 @@ The implementation above is the minimum. Before you finish, ask which of these I
 ## Before you finish
 
 - Confirm `getCrudTransactions()` and the `CrudEntry` and `CrudTransaction` field names used above (`op`, `table`, `opData`, `id`) against the PowerSync SDK version and language in this project. Names differ slightly across SDKs, and this prompt may be ahead of or behind the installed version.
-- Tell me which hardening items you added and which you left as named follow-ups in the connector.
+- Tell me which hardening items you added and which you left as named follow-ups in the code.
 - Tell me, in plain language, how `callBackendApi` classifies responses (which HTTP statuses and response shapes you treated as retryable or fatal), so I can check it against how the backend behaves.
 ````

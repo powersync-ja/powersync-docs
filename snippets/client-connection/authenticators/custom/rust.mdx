@@ -1,0 +1,55 @@
+```rust src/authenticator.rs
+// Requires powersync 0.2.0 or later.
+// Uses the async-trait crate: cargo add async-trait
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use powersync::error::PowerSyncError;
+use powersync::{Authenticator, PowerSyncDatabase, SyncOptions};
+
+/// Connects `db` for downloads only. To upload local writes as well, add the mutation uploader and use its
+/// `connect()` instead.
+pub async fn connect_download_only(db: &PowerSyncDatabase) {
+    db.connect(SyncOptions::download_only(
+        "[Your PowerSync instance URL or self-hosted endpoint]",
+        MyAuthenticator::default(),
+    ))
+    .await;
+}
+
+/// Provides the token that the SDK sends to your PowerSync instance. The token is cached until it is rejected.
+#[derive(Clone, Default)]
+pub struct MyAuthenticator {
+    token: Arc<Mutex<Option<Arc<String>>>>,
+}
+
+impl MyAuthenticator {
+    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+    /// Supabase and Firebase tokens can be used as they are:
+    /// - https://docs.powersync.com/configuration/auth/supabase-auth
+    /// - https://docs.powersync.com/configuration/auth/firebase-auth
+    /// To get started without an auth provider, use a development token:
+    /// https://docs.powersync.com/configuration/auth/development-tokens
+    async fn fetch_auth_token(&self) -> Result<String, PowerSyncError> {
+        Ok("An authentication token".to_string())
+    }
+}
+
+#[async_trait]
+impl Authenticator for MyAuthenticator {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        if let Some(token) = self.token.lock().unwrap().clone() {
+            return Ok(token);
+        }
+        let token = Arc::new(self.fetch_auth_token().await?);
+        *self.token.lock().unwrap() = Some(token.clone());
+        Ok(token)
+    }
+
+    /// The SDK calls this when the PowerSync Service rejects the token. Keep the cache even if your auth provider's
+    /// SDK refreshes sessions itself: the PowerSync SDK isn't guaranteed to cache tokens.
+    fn invalidate_credentials(&self) {
+        *self.token.lock().unwrap() = None;
+    }
+}
+```

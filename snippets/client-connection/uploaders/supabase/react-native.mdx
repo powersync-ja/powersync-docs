@@ -1,11 +1,7 @@
-```typescript PowerSyncConnector.ts
+```typescript SupabaseUploader.ts
 // Requires @powersync/react-native 2.4.0 or later.
-import { UpdateType, type Authenticator, type CrudEntry, type MutationUploader } from '@powersync/react-native';
-
-import { SupabaseClient, createClient } from '@supabase/supabase-js';
-import { AppConfig } from './AppConfig';
-import { SupabaseStorageAdapter } from '../storage/SupabaseStorageAdapter';
-import { System } from '../powersync/system';
+import { UpdateType, type CrudEntry, type MutationUploader } from '@powersync/react-native';
+import { SupabaseClient } from '@supabase/supabase-js';
 
 /// Postgres Response codes that we cannot recover from by retrying.
 const FATAL_RESPONSE_CODES = [
@@ -19,72 +15,15 @@ const FATAL_RESPONSE_CODES = [
   new RegExp('^42501$')
 ];
 
-// The connector is the Authenticator for sync and provides the upload callback. Connect with:
-//   await db.connect({ powerSyncEndpoint: AppConfig.powersyncUrl, authenticator: connector, upload: connector.upload });
-export class SupabaseConnector implements Authenticator {
-  client: SupabaseClient;
-  storage: SupabaseStorageAdapter;
-  private cachedToken: string | null = null;
-
-  constructor(protected system: System) {
-    this.client = createClient(AppConfig.supabaseUrl, AppConfig.supabaseAnonKey, {
-      auth: {
-        persistSession: true,
-        storage: this.system.kvStorage
-      }
-    });
-    this.storage = new SupabaseStorageAdapter({ client: this.client });
-  }
-
-  async login(username: string, password: string) {
-    const { error } = await this.client.auth.signInWithPassword({
-      email: username,
-      password: password
-    });
-
-    if (error) {
-      throw error;
-    }
-    this.cachedToken = null; // A new session has a new token.
-  }
-
-  async userId() {
-    const {
-      data: { session },
-    } = await this.client.auth.getSession();
-
-    return session?.user.id;
-  }
-
-  /**
-   * Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
-   * After invalidateCredentials() clears it, getSession() returns a valid session, because supabase-js refreshes
-   * the session when it expires within 90 seconds.
-   */
-  async resolveCredentials(): Promise<string> {
-    if (this.cachedToken) {
-      return this.cachedToken;
-    }
-
-    const {
-      data: { session },
-      error
-    } = await this.client.auth.getSession();
-
-    if (!session || error) {
-      throw new Error(`Could not fetch Supabase credentials: ${error}`);
-    }
-
-    console.debug('session expires at', session.expires_at);
-
-    this.cachedToken = session.access_token;
-    return this.cachedToken;
-  }
-
-  /** Called by the SDK before the token expires and when the PowerSync Service rejects it. */
-  invalidateCredentials(): void {
-    this.cachedToken = null;
-  }
+// Uploads local writes to Supabase through PostgREST, as the signed-in user, so your RLS policies apply.
+// Pass it the Supabase client from your SupabaseAuthenticator, and connect for downloads and uploads with:
+//   await db.connect({
+//     powerSyncEndpoint: AppConfig.powersyncUrl,
+//     authenticator,
+//     upload: new SupabaseUploader(authenticator.client).upload
+//   });
+export class SupabaseUploader {
+  constructor(private readonly client: SupabaseClient) {}
 
   /** Uploads the oldest queued transaction. Throwing keeps it queued, and the SDK retries after a delay. */
   readonly upload: MutationUploader = async ({ database }) => {

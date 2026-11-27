@@ -1,11 +1,11 @@
-```csharp PowerSyncConnector.cs
+```csharp PowerSyncUploader.cs
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
 // Requires PowerSync.Common 1.0.1 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in PostTransaction() to match it,
-// or have a coding agent write the upload callback for your API:
+// or have a coding agent write the uploader for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
-// For several transactions per request and client-side backoff, see the full reference connector:
+// For several transactions per request and client-side backoff, see the full reference uploader:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
 using System;
 using System.Collections.Generic;
@@ -21,59 +21,23 @@ using PowerSync.Common.Client;
 using PowerSync.Common.Client.Connection;
 using PowerSync.Common.DB.Crud;
 
-public static class MyPowerSyncConnection
+/// <param name="authenticator">
+/// Supplies the token for write endpoint requests. The write endpoint accepts the same JWTs as your PowerSync
+/// instance, so this is the same authenticator that you connect with.
+/// </param>
+public class MyMutationUploader(IAuthenticator authenticator) : IMutationUploader
 {
-    /// <summary>Connects <paramref name="db"/> for downloads and uploads.</summary>
+    /// <summary>Connects <paramref name="db"/> for downloads and uploads. Use this instead of ConnectDownloadOnly().</summary>
     public static async Task Connect(IPowerSyncDatabase db)
     {
+        // MyAuthenticator is the authenticator from your Client SDK setup.
         var authenticator = new MyAuthenticator();
         await db.Connect(
             "[Your PowerSync instance URL or self-hosted endpoint]",
             authenticator,
-            new MyBackendConnector(authenticator));
-    }
-}
-
-/// <summary>
-/// Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
-/// The token is cached until it is about to expire, or the PowerSync Service or the write endpoint rejects it.
-/// </summary>
-public class MyAuthenticator : IAuthenticator
-{
-    private string? _token;
-
-    public async Task<string> ResolveCredentials()
-    {
-        return _token ??= await FetchAuthToken();
+            new MyMutationUploader(authenticator));
     }
 
-    /// <summary>
-    /// Called by the SDK before the token expires and when the PowerSync Service rejects it, and by the connector
-    /// when the write endpoint rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
-    /// itself: the SDK isn't guaranteed to cache tokens.
-    /// </summary>
-    public void InvalidateCredentials()
-    {
-        _token = null;
-    }
-
-    /// <summary>
-    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-    /// Supabase and Firebase tokens can be used as they are:
-    /// - https://docs.powersync.com/configuration/auth/supabase-auth
-    /// - https://docs.powersync.com/configuration/auth/firebase-auth
-    /// To use a development token with the write endpoint, see
-    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-    /// </summary>
-    private Task<string> FetchAuthToken()
-    {
-        return Task.FromResult("An authentication token");
-    }
-}
-
-/// <param name="authenticator">Supplies the token for write endpoint requests.</param>
-public class MyBackendConnector(IAuthenticator authenticator) : IMutationUploader
-{
     // Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself.
     private const string BackendUrl = "http://localhost:6060";
 

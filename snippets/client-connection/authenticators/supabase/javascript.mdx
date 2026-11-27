@@ -1,0 +1,92 @@
+```javascript SupabaseAuthenticator.js
+// Requires @powersync/web 2.6.0 or later.
+import { BaseObserver } from '@powersync/web';
+import { createClient } from '@supabase/supabase-js';
+
+// Signs users in with Supabase Auth and gives the SDK their access token. Connect for downloads only with:
+//   await db.connect({ powerSyncEndpoint: authenticator.config.powersyncUrl, authenticator });
+export class SupabaseAuthenticator extends BaseObserver {
+  constructor() {
+    super();
+    this.cachedToken = null;
+    this.config = {
+      supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
+      powersyncUrl: import.meta.env.VITE_POWERSYNC_URL,
+      supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY
+    };
+
+    this.client = createClient(this.config.supabaseUrl, this.config.supabaseAnonKey, {
+      auth: {
+        persistSession: true
+      }
+    });
+    this.currentSession = null;
+    this.ready = false;
+  }
+
+  async init() {
+    if (this.ready) {
+      return;
+    }
+
+    const sessionResponse = await this.client.auth.getSession();
+    this.updateSession(sessionResponse.data.session);
+
+    this.ready = true;
+    this.iterateListeners((cb) => cb.initialized?.());
+  }
+
+  async login(username, password) {
+    const {
+      data: { session },
+      error
+    } = await this.client.auth.signInWithPassword({
+      email: username,
+      password: password
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    this.updateSession(session);
+  }
+
+  /**
+   * Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+   * After invalidateCredentials() clears it, getSession() returns a valid session, because supabase-js refreshes
+   * the session when it expires within 90 seconds.
+   */
+  async resolveCredentials() {
+    if (this.cachedToken) {
+      return this.cachedToken;
+    }
+
+    const {
+      data: { session },
+      error
+    } = await this.client.auth.getSession();
+
+    if (!session || error) {
+      throw new Error(`Could not fetch Supabase credentials: ${error}`);
+    }
+
+    this.cachedToken = session.access_token;
+    return this.cachedToken;
+  }
+
+  /** Called by the SDK before the token expires and when the PowerSync Service rejects it. */
+  invalidateCredentials() {
+    this.cachedToken = null;
+  }
+
+  updateSession(session) {
+    this.currentSession = session;
+    this.cachedToken = null; // A new session has a new token.
+    if (!session) {
+      return;
+    }
+    this.iterateListeners((cb) => cb.sessionStarted?.(session));
+  }
+}
+```

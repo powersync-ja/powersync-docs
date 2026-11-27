@@ -1,0 +1,102 @@
+```csharp SupabaseAuthenticator.cs
+// Requires PowerSync.Common 1.0.1 or later.
+namespace CommandLine;
+
+using CommandLine.Utils;
+using PowerSync.Common.Client.Connection;
+using Supabase;
+using Supabase.Gotrue;
+
+// Signs users in with Supabase Auth and gives the SDK their access token. Connect for downloads only with:
+//   await db.Connect(config.PowerSyncUrl, authenticator, null);
+public class SupabaseAuthenticator : IAuthenticator
+{
+    private readonly Supabase.Client _supabase;
+    private Session? _currentSession;
+    private string? _cachedToken;
+
+    public Session? CurrentSession
+    {
+        get => _currentSession;
+        set
+        {
+            _currentSession = value;
+
+            if (_currentSession?.User?.Id != null)
+            {
+                UserId = _currentSession.User.Id;
+            }
+        }
+    }
+
+    public string UserId { get; private set; } = "";
+
+    public bool Ready { get; private set; }
+
+    /// <summary>The Supabase client that the session belongs to. Pass it to SupabaseUploader.</summary>
+    public Supabase.Client Client => _supabase;
+
+    public SupabaseAuthenticator(Config config)
+    {
+        _supabase = new Supabase.Client(config.SupabaseUrl, config.SupabaseAnonKey, new SupabaseOptions
+        {
+            AutoConnectRealtime = true
+        });
+
+        _ = _supabase.InitializeAsync();
+    }
+
+    public async Task Login(string email, string password)
+    {
+        var response = await _supabase.Auth.SignInWithPassword(email, password);
+        if (response?.User == null || response.AccessToken == null)
+        {
+            throw new Exception("Login failed.");
+        }
+
+        CurrentSession = response;
+        _cachedToken = null; // A new session has a new token.
+    }
+
+    /// <summary>
+    /// Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+    ///
+    /// After InvalidateCredentials() clears the cache, this returns a valid token. The Supabase client refreshes
+    /// the session in the background, but CurrentSession only returns the stored session and never refreshes it.
+    /// If that background refresh hasn't run, for example because the app was suspended or offline, the stored
+    /// token can be expired, so it is refreshed here first.
+    /// </summary>
+    public async Task<string> ResolveCredentials()
+    {
+        if (_cachedToken != null)
+        {
+            return _cachedToken;
+        }
+
+        var session = _supabase.Auth.CurrentSession;
+        if (session?.AccessToken == null)
+        {
+            throw new InvalidOperationException("Not signed in to Supabase");
+        }
+
+        if (session.CreatedAt.AddSeconds(session.ExpiresIn) <= DateTime.UtcNow.AddMinutes(1))
+        {
+            session = await _supabase.Auth.RefreshSession();
+            if (session?.AccessToken == null)
+            {
+                throw new InvalidOperationException("Could not refresh the Supabase session");
+            }
+        }
+
+        return _cachedToken = session.AccessToken;
+    }
+
+    /// <summary>
+    /// Called by the SDK before the token expires and when the PowerSync Service rejects it.
+    /// </summary>
+    public void InvalidateCredentials()
+    {
+        _cachedToken = null;
+    }
+}
+```

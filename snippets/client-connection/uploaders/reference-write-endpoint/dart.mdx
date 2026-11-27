@@ -1,11 +1,11 @@
-```dart lib/powersync.dart
+```dart lib/powersync_uploader.dart
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
 // Requires powersync 2.6.0 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in _postTransaction() to match
-// it, or have a coding agent write the upload callback for your API:
+// it, or have a coding agent write the uploader for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
-// For several transactions per request and client-side backoff, see the full reference connector:
+// For several transactions per request and client-side backoff, see the full reference uploader:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
 import 'dart:async';
 import 'dart:convert';
@@ -13,56 +13,31 @@ import 'dart:convert';
 import 'package:http/http.dart' as http; // Add the http package: https://pub.dev/packages/http
 import 'package:powersync/powersync.dart';
 
+// The authenticator from your Client SDK setup.
+import 'powersync_authenticator.dart';
+
 /// Base URL of the write endpoint. On a phone or emulator, `localhost` refers to the device itself.
 const backendUrl = 'http://localhost:6060';
 
 /// Abort a write endpoint request after this long.
 const requestTimeout = Duration(seconds: 30);
 
-/// Connects [db] for downloads and uploads.
+/// Connects [db] for downloads and uploads. Use this instead of connectDownloadOnly().
 Future<void> connect(PowerSyncDatabase db) async {
   final authenticator = MyAuthenticator();
   await db.connect(
     connector: ConnectRequest(
       endpoint: '[Your PowerSync instance URL or self-hosted endpoint]',
       authenticator: authenticator,
-      uploader: MyBackendConnector(authenticator),
+      uploader: MyMutationUploader(authenticator),
     ),
   );
 }
 
-/// Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
-/// The token is cached until it expires, or the PowerSync Service or the write endpoint rejects it.
-class MyAuthenticator implements Authenticator {
-  String? _token;
-
-  @override
-  Future<String> resolveCredentials(Future<void> abortSignal) async {
-    return _token ??= await _fetchAuthToken();
-  }
-
-  /// Called by the SDK when the token expires and when the PowerSync Service rejects it, and by the connector
-  /// when the write endpoint rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
-  /// itself: the SDK isn't guaranteed to cache tokens.
-  @override
-  void invalidateCredentials() {
-    _token = null;
-  }
-
-  /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-  /// Supabase and Firebase tokens can be used as they are:
-  /// - https://docs.powersync.com/configuration/auth/supabase-auth
-  /// - https://docs.powersync.com/configuration/auth/firebase-auth
-  /// To use a development token with the write endpoint, see
-  /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-  Future<String> _fetchAuthToken() async {
-    return 'An authentication token';
-  }
-}
-
-class MyBackendConnector implements MutationUploader {
-  /// Supplies the token for write endpoint requests.
-  MyBackendConnector(this._authenticator);
+class MyMutationUploader implements MutationUploader {
+  /// Takes the authenticator that supplies the token for write endpoint requests. The write endpoint accepts the
+  /// same JWTs as your PowerSync instance, so this is the same authenticator that you connect with.
+  MyMutationUploader(this._authenticator);
 
   final Authenticator _authenticator;
 

@@ -1,11 +1,11 @@
-```swift PowerSyncConnector.swift
+```swift PowerSyncUploader.swift
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
 // Requires PowerSync Swift SDK 1.17.0 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in postTransaction() to match it,
-// or have a coding agent write the upload callback for your API:
+// or have a coding agent write the uploader for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
-// For several transactions per request and client-side backoff, see the full reference connector:
+// For several transactions per request and client-side backoff, see the full reference uploader:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
 import Foundation
 import PowerSync
@@ -16,55 +16,24 @@ private let backendUrl = URL(string: "http://localhost:6060")!
 /// Abort a write endpoint request after this many seconds.
 private let requestTimeout: TimeInterval = 30
 
-/// Connects `db` for downloads and uploads.
+/// Connects `db` for downloads and uploads. Use this instead of connectDownloadOnly().
 func connect(db: PowerSyncDatabaseProtocol) async throws {
+    // MyAuthenticator is the authenticator from your Client SDK setup.
     let authenticator = MyAuthenticator()
     try await db.connect(
         endpoint: "[Your PowerSync instance URL or self-hosted endpoint]",
         authenticator: authenticator,
-        mutationUploader: MyBackendConnector(authenticator: authenticator).upload,
+        mutationUploader: MyMutationUploader(authenticator: authenticator).upload,
         options: ConnectOptions()
     )
 }
 
-/// Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
-/// The token is cached until it is about to expire, or the PowerSync Service or the write endpoint rejects it.
-/// An actor, because the SDK requires a Sendable authenticator and this one caches a token.
-actor MyAuthenticator: Authenticator {
-    private var token: String?
-
-    func resolveCredentials() async throws -> String {
-        if let token {
-            return token
-        }
-        let token = try await fetchAuthToken()
-        self.token = token
-        return token
-    }
-
-    /// Called by the SDK before the token expires and when the PowerSync Service rejects it, and by the connector
-    /// when the write endpoint rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
-    /// itself: the SDK isn't guaranteed to cache tokens.
-    func invalidateCredentials() async {
-        token = nil
-    }
-
-    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-    /// Supabase and Firebase tokens can be used as they are:
-    /// - https://docs.powersync.com/configuration/auth/supabase-auth
-    /// - https://docs.powersync.com/configuration/auth/firebase-auth
-    /// To use a development token with the write endpoint, see
-    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-    private func fetchAuthToken() async throws -> String {
-        return "An authentication token"
-    }
-}
-
 /// An actor, because the SDK requires a Sendable upload callback.
-actor MyBackendConnector {
+actor MyMutationUploader {
     private let authenticator: Authenticator
 
-    /// - Parameter authenticator: Supplies the token for write endpoint requests.
+    /// - Parameter authenticator: Supplies the token for write endpoint requests. The write endpoint accepts the same
+    ///   JWTs as your PowerSync instance, so this is the same authenticator that you connect with.
     init(authenticator: Authenticator) {
         self.authenticator = authenticator
     }

@@ -999,7 +999,21 @@ async function applyInventoryDelta(db, operation) {
 
 ### Client Implementation
 
-On the client side, you need to ensure updates are sent as deltas, not absolute values. When a sale occurs, send the change amount:
+On the client side, you need to ensure updates are sent as deltas, not absolute values. The upload queue records the new value of a changed column, so enable [`trackPrevious`](/client-sdks/advanced/custom-types-arrays-and-json#advanced-schema-options-to-process-writes) (`trackPreviousValues` in non-JS SDKs) on the table and calculate the delta in `uploadData()`:
+
+**Client schema:**
+
+```typescript
+const inventory = new Table(
+  {
+    product_id: column.text,
+    quantity: column.integer
+  },
+  {
+    trackPrevious: true  // Include previous values in each queued operation
+  }
+);
+```
 
 **Client code:**
 
@@ -1007,8 +1021,14 @@ On the client side, you need to ensure updates are sent as deltas, not absolute 
 // When selling 3 units
 await powerSync.execute(
   'UPDATE inventory SET quantity = quantity - ? WHERE id = ?',
-  [3, inventoryId] // Send -3 as the delta
+  [3, inventoryId]
 );
+
+// In uploadData(): send the change, not the new value
+const opData = { ...op.opData };
+if (op.table === 'inventory' && 'quantity' in opData && op.previousValues) {
+  opData.quantity = opData.quantity - op.previousValues.quantity; // 7 - 10 = -3
+}
 ```
 
 The backend receives this as a PATCH operation where `opData.quantity = -3`, which it then adds to the current quantity rather than replacing it.

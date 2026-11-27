@@ -15,6 +15,8 @@ import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.md
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
 import JavaScriptSubscribeSyncStream from '/snippets/javascript/subscribe-sync-stream.mdx';
 import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
+import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 
 ```text Build with AI icon=sparkles wrap
 Install the PowerSync Agent Skills with: npx skills add powersync-ja/agent-skills. Then follow the skills to onboard this project to PowerSync using the Tauri SDK.
@@ -142,11 +144,41 @@ export const db = new PowerSyncTauriDatabase({
 });
 ```
 
-Finally, instruct PowerSync to sync data from your backend. For Tauri apps, the sync client must be driven from Rust code.
+### 3. Connect to PowerSync
 
-To do that, add a new Tauri command to your Rust application:
+<SyncChangesIntro />
+
+In Tauri apps, you connect from Rust, so you implement the authenticator in Rust. This shares sync state across all windows and keeps sync running when no JavaScript is running.
+
+The authenticator implements `resolve_credentials`, which returns the token. To get started, return a [development token](/configuration/auth/development-tokens). For production, see [Authentication Setup](/configuration/auth/overview).
+
+**Example:**
 
 ```Rust
+// Requires tauri-plugin-powersync 0.3.0 or later
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use powersync::{Authenticator, error::PowerSyncError};
+
+struct MyAuthenticator;
+
+#[async_trait]
+impl Authenticator for MyAuthenticator {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        // Return a JWT for the PowerSync Service. To get started, use a development token:
+        // https://docs.powersync.com/configuration/auth/development-tokens
+        // For production, see https://docs.powersync.com/configuration/auth/overview
+        Ok(Arc::new("An authentication token".to_string()))
+    }
+}
+```
+
+With the authenticator implemented, add a Tauri command that connects the database to download changes:
+
+```Rust
+use powersync::SyncOptions;
+use tauri::{AppHandle, Runtime};
 use tauri_plugin_powersync::PowerSyncExt;
 
 #[tauri::command]
@@ -154,14 +186,13 @@ async fn connect<R: Runtime>(
     app: AppHandle<R>,
     handle: usize,
 ) -> tauri_plugin_powersync::Result<()> {
-    let ps = app.powersync();
-    let database = ps.database_from_javascript_handle(handle)?;
-
-    // MyBackendConnector is defined in the next step...
-    let options = SyncOptions::new(MyRustConnector {
-        db: database.clone(),
-    });
-    database.connect(options).await;
+    let database = app.powersync().database_from_javascript_handle(handle)?;
+    database
+        .connect(SyncOptions::download_only(
+            "[Your PowerSync instance URL]",
+            MyAuthenticator,
+        ))
+        .await;
 
     Ok(())
 }
@@ -169,7 +200,7 @@ async fn connect<R: Runtime>(
 
 Register the command by including it in the invoke handler with `tauri::generate_handler![connect]`.
 
-You can then invoke that command from your JavaScript code to connect:
+Then invoke the command from your JavaScript code to connect:
 
 ```TypeScript
 import { PowerSyncTauriDatabase } from '@powersync/tauri-plugin';
@@ -179,54 +210,6 @@ async function connect(db: PowerSyncTauriDatabase) {
   await db.init();
   const handle = db.rustHandle;
   await invoke<void>('connect', { handle });
-}
-```
-
-### 3. Integrate with Your Backend
-
-The backend connector gives the SDK the credentials it needs to connect to your PowerSync instance and download data. It also uploads your app's local writes to your backend.
-
-<Warning>
-  At the moment, backend connectors for the Tauri SDK must be implemented in Rust. This allows the connector to be used across multiple windows and even when no JavaScript is running. [Let us know](/resources/contact-us) if you want to implement a backend connector in JavaScript.
-</Warning>
-
-The connector must implement two methods:
-
-1. `fetch_credentials` - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
-2. `upload_data` - The SDK queues local writes and calls this method to send them to your write endpoint, which applies them to the source database. If your app only reads synced data for now, you can implement this method later. To pick how to upload writes, see [Choosing Your Setup](/handling-writes/write-path/choosing-your-setup).
-
-**Example:**
-
-```Rust
-struct MyBackendConnector {
-    db: PowerSyncDatabase,
-}
-
-#[async_trait]
-impl BackendConnector for MyBackendConnector {
-    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        // implement fetchCredentials to obtain the necessary credentials to connect to your backend
-        // See an example implementation in https://github.com/powersync-ja/powersync-native/blob/508193b0822b8dad1a534a16462e2fcd36a9ac68/examples/egui_todolist/src/database.rs#L119-L133
-
-        Ok(PowerSyncCredentials {
-            endpoint: "[Your PowerSync instance URL or self-hosted endpoint]".to_string(),
-            // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly
-            token: "An authentication token".to_string(),
-        })
-    }
-
-    async fn upload_data(&self) -> Result<(), PowerSyncError> {
-        // Implement uploadData to send local changes to your backend service
-        // You can omit this method if you only want to sync data from the server to the client
-        // To pick how to upload writes, see https://docs.powersync.com/handling-writes/write-path/choosing-your-setup
-        let  mut local_writes = self.db.crud_transactions();
-        while let Some(tx) = local_writes.try_next().await? {
-            todo!("Inspect tx.crud for local writes that need to be uploaded to your backend");
-            tx.complete().await?;
-        }
-
-        Ok(())
-    }
 }
 ```
 
@@ -313,6 +296,52 @@ export const deleteListWithTodos = async (id) => {
 
 <MutationConfirmationWithReturning />
 
+To upload mutations to your backend, add a mutation uploader. See [Upload Local Mutations](#upload-local-mutations).
+
+## Upload Local Mutations
+
+<UploadLocalMutationsIntro />
+
+In Tauri apps, the uploader is a Rust type that implements `MutationUploader`.
+
+**Example:**
+
+```Rust
+// Requires tauri-plugin-powersync 0.3.0 or later
+use async_trait::async_trait;
+use futures_lite::StreamExt;
+use powersync::{MutationUploader, PowerSyncDatabase, error::PowerSyncError};
+
+struct MyMutationUploader {
+    db: PowerSyncDatabase,
+}
+
+#[async_trait]
+impl MutationUploader for MyMutationUploader {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
+        let mut transactions = self.db.crud_transactions();
+        while let Some(tx) = transactions.try_next().await? {
+            todo!("Send the mutations in tx.crud to your write endpoint");
+            tx.complete().await?;
+        }
+
+        Ok(())
+    }
+}
+```
+
+Then connect for both downloads and uploads in your `connect` command:
+
+```Rust
+database
+    .connect(SyncOptions::new(
+        "[Your PowerSync instance URL]",
+        MyAuthenticator,
+        MyMutationUploader { db: database.clone() },
+    ))
+    .await;
+```
+
 ## Waiting for the Latest Server Data
 
 <CheckpointRequestsIntro />
@@ -322,9 +351,11 @@ In Tauri apps, sync runs in Rust, so you opt in and request checkpoints from Rus
 ```Rust
 use powersync::CheckpointMode;
 
-let mut options = SyncOptions::new(MyRustConnector {
-    db: database.clone(),
-});
+let mut options = SyncOptions::new(
+    "[Your PowerSync instance URL]",
+    MyAuthenticator,
+    MyMutationUploader { db: database.clone() },
+);
 options.with_checkpoint_mode(CheckpointMode::Requests(Default::default()));
 database.connect(options).await;
 ```

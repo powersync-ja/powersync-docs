@@ -5,6 +5,9 @@ description: "Step-by-step guide to adding PowerSync to your app, from connectin
 ---
 
 import LocalOnly from '/snippets/local-only-escape.mdx';
+import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import AuthenticatorIntro from '/snippets/authenticator-intro.mdx';
+import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 import ReactNativeInstallation from '/snippets/react-native/installation.mdx';
 import JavaScriptWebInstallation from '/snippets/javascript-web/installation.mdx';
 import NodeInstallation from '/snippets/node/installation.mdx';
@@ -756,17 +759,13 @@ import SdkInstantiateDbExamples from '/snippets/sdk-instantiate-db-examples.mdx'
 
 ### Connect to PowerSync Service Instance
 
-Connect your client-side PowerSync database to the PowerSync Service instance you created in [step 2](#2-set-up-powersync-service-instance) by defining a _backend connector_ and calling `connect()`. The backend connector handles authentication and uploading mutations to your backend.
+<SyncChangesIntro />
+
+<AuthenticatorIntro />
 
 <LocalOnly />
 
-<Note>
-  You can start by connecting and reading synced data. The upload methods in the examples below are placeholders: they mark local writes as uploaded without sending them anywhere, so a write you make reverts after the next sync. When you're ready to upload writes to your backend, see [Choosing Your Setup](/handling-writes/write-path/choosing-your-setup).
-</Note>
-
-For development, you can use a development token. For production, implement JWT authentication as described in [Authentication Setup](/configuration/auth/overview).
-
-First, generate a development token:
+Use the URL of the instance you created in [step 2](#2-set-up-powersync-service-instance) and a development token. First, generate the token:
 
 <Tabs>
   <Tab title="Dashboard (Cloud)">
@@ -796,134 +795,83 @@ First, generate a development token:
   </Tab>
 </Tabs>
 
-Then define a backend connector that returns the token, and call `connect()`:
+Then define an authenticator that returns the token, and call `connect()`:
 
 <CodeGroup>
 
 ```typescript Web & Capacitor (TS)
-import type { CommonPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/web';
+import type { Authenticator } from '@powersync/web';
 import { db } from './Database';
 
-class Connector implements PowerSyncBackendConnector {
-  async fetchCredentials(): Promise<PowerSyncCredentials> {
-    // for development: use development token
-    return {
-      endpoint: 'https://your-instance.powersync.com',
-      token: 'your-development-token-here'
-    };
-  }
-
-  async uploadData(database: CommonPowerSyncDatabase) {
-    const transaction = await database.getNextCrudTransaction();
-    if (!transaction) return;
-
-    for (const op of transaction.crud) {
-      const record = { ...op.opData, id: op.id };
-      // upload to your write endpoint
-    }
-
-    await transaction.complete();
+class MyAuthenticator implements Authenticator {
+  async resolveCredentials() {
+    // For development: return your development token
+    return 'your-development-token-here';
   }
 }
 
-// connect the database to PowerSync Service
-const connector = new Connector();
-await db.connect(connector);
+// Connect the database to the PowerSync Service
+await db.connect({
+  powerSyncEndpoint: 'https://your-instance.powersync.com',
+  authenticator: new MyAuthenticator()
+});
 ```
 
 ```typescript React Native (TS)
-import type { CommonPowerSyncDatabase, PowerSyncBackendConnector, PowerSyncCredentials } from '@powersync/react-native';
+import type { Authenticator } from '@powersync/react-native';
 import { db } from './Database';
 
-class Connector implements PowerSyncBackendConnector {
-  async fetchCredentials(): Promise<PowerSyncCredentials> {
-    // for development: use development token
-    return {
-      endpoint: 'https://your-instance.powersync.com',
-      token: 'your-development-token-here'
-    };
-  }
-
-  async uploadData(database: CommonPowerSyncDatabase) {
-    const transaction = await database.getNextCrudTransaction();
-    if (!transaction) return;
-
-    for (const op of transaction.crud) {
-      const record = { ...op.opData, id: op.id };
-      // upload to your write endpoint
-    }
-
-    await transaction.complete();
+class MyAuthenticator implements Authenticator {
+  async resolveCredentials() {
+    // For development: return your development token
+    return 'your-development-token-here';
   }
 }
 
-// connect the database to PowerSync Service
-const connector = new Connector();
-await db.connect(connector);
+// Connect the database to the PowerSync Service
+await db.connect({
+  powerSyncEndpoint: 'https://your-instance.powersync.com',
+  authenticator: new MyAuthenticator()
+});
 ```
 
 ```typescript Node.js (TS)
-import { PowerSyncBackendConnector } from '@powersync/node';
+import type { Authenticator } from '@powersync/node';
+import { db } from './Database';
 
-export class Connector implements PowerSyncBackendConnector {
-    async fetchCredentials() {
-        // for development: use development token
-        return {
-            endpoint: 'https://your-instance.powersync.com',
-            token: 'your-development-token-here'
-        };
-    }
-
-    async uploadData(database) {
-      const transaction = await database.getNextCrudTransaction();
-      if (!transaction) return;
-
-      for (const op of transaction.crud) {
-        const record = { ...op.opData, id: op.id };
-        // upload to your write endpoint
-      }
-
-      await transaction.complete();
-    }
+class MyAuthenticator implements Authenticator {
+  async resolveCredentials() {
+    // For development: return your development token
+    return 'your-development-token-here';
+  }
 }
 
-// connect the database to PowerSync Service
-const connector = new Connector();
-await db.connect(connector);
+// Connect the database to the PowerSync Service
+await db.connect({
+  powerSyncEndpoint: 'https://your-instance.powersync.com',
+  authenticator: new MyAuthenticator()
+});
 ```
 
 ```rust Tauri (Rust)
 // For Tauri, connecting to PowerSync must be done in Rust so that sync state
 // is shared across all windows. Calling connect() from JavaScript will throw.
 //
-// 1. Define your backend connector in Rust:
+// 1. Define your authenticator in Rust:
 
 use async_trait::async_trait;
 use tauri_plugin_powersync::PowerSyncExt;
-use powersync::{BackendConnector, PowerSyncCredentials, PowerSyncDatabase, SyncOptions};
+use powersync::{Authenticator, SyncOptions};
 use powersync::error::PowerSyncError;
+use std::sync::Arc;
 
-struct MyBackendConnector {
-    db: PowerSyncDatabase,
-}
+struct MyAuthenticator;
 
 #[async_trait]
-impl BackendConnector for MyBackendConnector {
-    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        // for development: use development token
-        Ok(PowerSyncCredentials {
-            endpoint: "https://your-instance.powersync.com".to_string(),
-            token: "your-development-token-here".to_string(),
-        })
-    }
-
-    async fn upload_data(&self) -> Result<(), PowerSyncError> {
-        let mut local_writes = self.db.crud_transactions();
-        while let Some(tx) = local_writes.try_next().await? {
-            // upload to your write endpoint
-            tx.complete().await?;
-        }
-        Ok(())
+impl Authenticator for MyAuthenticator {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        // For development: return your development token
+        Ok(Arc::new("your-development-token-here".to_string()))
     }
 }
 
@@ -934,8 +882,12 @@ async fn connect<R: tauri::Runtime>(
     handle: usize,
 ) -> tauri_plugin_powersync::Result<()> {
     let database = app.powersync().database_from_javascript_handle(handle)?;
-    let options = SyncOptions::new(MyBackendConnector { db: database.clone() });
-    database.connect(options).await;
+    database
+        .connect(SyncOptions::download_only(
+            "https://your-instance.powersync.com",
+            MyAuthenticator,
+        ))
+        .await;
     Ok(())
 }
 
@@ -950,143 +902,81 @@ async fn connect<R: tauri::Runtime>(
 ```dart Dart/Flutter
 import 'package:powersync/powersync.dart';
 
-class Connector extends PowerSyncBackendConnector {
+class MyAuthenticator implements Authenticator {
   @override
-  Future<PowerSyncCredentials> fetchCredentials() async {
-    return PowerSyncCredentials(
-      endpoint: 'https://your-instance.powersync.com',
-      token: 'your-development-token-here'
-    );
+  Future<String> resolveCredentials(Future<void> abortSignal) async {
+    // For development: return your development token
+    return 'your-development-token-here';
   }
 
   @override
-  Future<void> uploadData(PowerSyncDatabase database) async {
-    final transaction = await database.getNextCrudTransaction();
-    if (transaction == null) return;
-
-    for (final op in transaction.crud) {
-      final record = {...op.opData, 'id': op.id};
-      // upload to your write endpoint
-    }
-
-    await transaction.complete();
-  }
+  void invalidateCredentials() {}
 }
 
-// connect the database to PowerSync Service
-final connector = Connector();
-await db.connect(connector);
+// Connect the database to the PowerSync Service
+await db.connect(
+  connector: ConnectRequest.downloadOnly(
+    endpoint: 'https://your-instance.powersync.com',
+    authenticator: MyAuthenticator(),
+  ),
+);
 ```
 
 ```kotlin Kotlin
-import com.powersync.PowerSyncCredentials
-import com.powersync.PowerSyncDatabase
+import com.powersync.connectors.Authenticator
 
-class MyConnector : PowerSyncBackendConnector {
-  override suspend fun fetchCredentials(): PowerSyncCredentials {
-    // for development: use development token
-    return PowerSyncCredentials(
-      endpoint = "https://your-instance.powersync.com",
-      token = "your-development-token-here"
-    )
-  }
-
-  override suspend fun uploadData(database: PowerSyncDatabase) {
-    val transaction = database.getNextCrudTransaction() ?: return
-    
-    for (op in transaction.crud) {
-      val record = op.opData + ("id" to op.id)
-      // upload to your write endpoint
-    }
-    
-    transaction.complete()
+class MyAuthenticator : Authenticator {
+  override suspend fun resolveCredentials(): String {
+    // For development: return your development token
+    return "your-development-token-here"
   }
 }
 
-// connect the database to PowerSync Service
-database.connect(MyConnector())
+// Connect the database to the PowerSync Service
+database.connect(
+  endpoint = "https://your-instance.powersync.com",
+  authenticator = MyAuthenticator(),
+)
 ```
 
 ```swift Swift
 import PowerSync
 
-class Connector: PowerSyncBackendConnector {
-  func fetchCredentials() async throws -> PowerSyncCredentials {
-    // for development: use development token
-    return PowerSyncCredentials(
-      endpoint: "https://your-instance.powersync.com",
-      token: "your-development-token-here"
-    )
-  }
-
-  func uploadData(database: PowerSyncDatabase) async throws {
-    guard let transaction = try await database.getNextCrudTransaction() else {
-      return
-    }
-    
-    for op in transaction.crud {
-      var record = op.opData
-      record["id"] = op.id
-      // upload to your write endpoint
-    }
-    
-    try await transaction.complete()
+struct MyAuthenticator: Authenticator {
+  func resolveCredentials() async throws -> String {
+    // For development: return your development token
+    return "your-development-token-here"
   }
 }
 
-// connect the database to PowerSync Service
-let connector = Connector()
-await db.connect(connector: connector)
+// Connect the database to the PowerSync Service
+try await db.connect(
+  endpoint: "https://your-instance.powersync.com",
+  authenticator: MyAuthenticator(),
+  options: ConnectOptions()
+)
 ```
 
 ```csharp .NET
-using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
-using PowerSync.Common.Client;
 using PowerSync.Common.Client.Connection;
-using PowerSync.Common.DB.Crud;
 
-public class MyConnector : IPowerSyncBackendConnector
+public class MyAuthenticator : IAuthenticator
 {
-    public MyConnector()
+    public Task<string> ResolveCredentials()
     {
-    }
-
-    public async Task<PowerSyncCredentials?> FetchCredentials()
-    {
-        var powerSyncUrl = "https://your-instance.powersync.com";
-        var authToken = "your-development-token-here";
-
-        // Return credentials with PowerSync endpoint and JWT token
-        return new PowerSyncCredentials(powerSyncUrl, authToken);
-    }
-
-    public async Task UploadData(IPowerSyncDatabase database)
-    {
-        var transaction = await database.GetNextCrudTransaction();
-        if (transaction == null) return;
-
-        foreach (var op in transaction.Crud)
-        {
-            // upload to your write endpoint
-        }
-
-        await transaction.Complete();
+        // For development: return your development token
+        return Task.FromResult("your-development-token-here");
     }
 }
 
-// connect the database to PowerSync Service
-await db.Connect(new MyConnector());
+// Connect the database to the PowerSync Service
+await db.Connect("https://your-instance.powersync.com", new MyAuthenticator(), uploader: null);
 ```
 
 ```rust Rust
 use async_trait::async_trait;
-use futures_lite::StreamExt;
-use powersync::{Authenticator, MutationUploader, PowerSyncDatabase, SyncOptions};
+use powersync::{Authenticator, SyncOptions};
 use powersync::error::PowerSyncError;
 use std::sync::Arc;
 
@@ -1095,39 +985,22 @@ struct MyAuthenticator;
 #[async_trait]
 impl Authenticator for MyAuthenticator {
     async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
-        // for development: use development token
+        // For development: return your development token
         Ok(Arc::new("your-development-token-here".to_string()))
     }
 }
 
-struct MyMutationUploader {
-    db: PowerSyncDatabase,
-}
-
-#[async_trait]
-impl MutationUploader for MyMutationUploader {
-    async fn upload(&self) -> Result<(), PowerSyncError> {
-        let mut local_writes = self.db.crud_transactions();
-        while let Some(tx) = local_writes.try_next().await? {
-            // upload to your write endpoint
-            tx.complete().await?;
-        }
-        Ok(())
-    }
-}
-
-// connect the database to PowerSync Service
-db.connect(SyncOptions::new(
+// Connect the database to the PowerSync Service
+db.connect(SyncOptions::download_only(
     "https://your-instance.powersync.com",
     MyAuthenticator,
-    MyMutationUploader { db: db.clone() },
 ))
 .await;
 ```
 
 </CodeGroup>
 
-Once connected, you can read from and write to the client-side SQLite database. PowerSync automatically syncs changes from your source database down into the SQLite database.
+Once connected, PowerSync syncs changes from your source database into the client-side SQLite database.
 
 ### Read Data
 
@@ -1332,7 +1205,173 @@ async fn watch_todos(db: &PowerSyncDatabase, list_id: &str) -> Result<(), PowerS
 
 ### Write Data
 
-Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements. PowerSync automatically queues changes to synced tables. To upload those changes to your backend, implement `uploadData()` in your backend connector, using one of the setups in [Choosing Your Setup](/handling-writes/write-path/choosing-your-setup).
+<UploadLocalMutationsIntro />
+
+Add an uploader and pass it to `connect()` together with the authenticator:
+
+<CodeGroup>
+
+```typescript TypeScript
+// Import from your SDK package, for example @powersync/web
+import type { UploadMutationsOptions } from '@powersync/web';
+
+async function uploadData({ database }: UploadMutationsOptions) {
+  const transaction = await database.getNextCrudTransaction();
+  if (!transaction) return;
+
+  // Send the mutations to your write endpoint
+  await writeApi.uploadChanges(transaction.crud);
+
+  await transaction.complete();
+}
+
+// Connect with the authenticator and the uploader
+await db.connect({
+  powerSyncEndpoint: 'https://your-instance.powersync.com',
+  authenticator: new MyAuthenticator(),
+  upload: uploadData
+});
+```
+
+```rust Tauri (Rust)
+use futures_lite::StreamExt;
+use powersync::{MutationUploader, PowerSyncDatabase};
+
+struct MyMutationUploader {
+    db: PowerSyncDatabase,
+}
+
+#[async_trait]
+impl MutationUploader for MyMutationUploader {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
+        let mut transactions = self.db.crud_transactions();
+        while let Some(tx) = transactions.try_next().await? {
+            todo!("Send the mutations in tx.crud to your write endpoint");
+            tx.complete().await?;
+        }
+        Ok(())
+    }
+}
+
+// In your connect command, connect with the authenticator and the uploader
+database
+    .connect(SyncOptions::new(
+        "https://your-instance.powersync.com",
+        MyAuthenticator,
+        MyMutationUploader { db: database.clone() },
+    ))
+    .await;
+```
+
+```dart Dart/Flutter
+Future<void> uploadData(PowerSyncDatabase database) async {
+  final transaction = await database.getNextCrudTransaction();
+  if (transaction == null) return;
+
+  // Send the mutations to your write endpoint
+  await writeApi.uploadChanges(transaction.crud);
+
+  await transaction.complete();
+}
+
+// Connect with the authenticator and the uploader
+await db.connect(
+  connector: ConnectRequest(
+    endpoint: 'https://your-instance.powersync.com',
+    authenticator: MyAuthenticator(),
+    uploader: MutationUploader(uploadData),
+  ),
+);
+```
+
+```kotlin Kotlin
+suspend fun uploadData(database: PowerSyncDatabase) {
+  val transaction = database.getNextCrudTransaction() ?: return
+
+  // Send the mutations to your write endpoint
+  writeApi.uploadChanges(transaction.crud)
+
+  transaction.complete(null)
+}
+
+// Connect with the authenticator and the uploader
+database.connect(
+  endpoint = "https://your-instance.powersync.com",
+  authenticator = MyAuthenticator(),
+  uploader = { uploadData(it) },
+)
+```
+
+```swift Swift
+func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+  guard let transaction = try await database.getNextCrudTransaction() else { return }
+
+  // Send the mutations to your write endpoint
+  try await writeApi.uploadChanges(transaction.crud)
+
+  try await transaction.complete()
+}
+
+// Connect with the authenticator and the uploader
+try await db.connect(
+  endpoint: "https://your-instance.powersync.com",
+  authenticator: MyAuthenticator(),
+  mutationUploader: uploadData,
+  options: ConnectOptions()
+)
+```
+
+```csharp .NET
+public class MyMutationUploader : IMutationUploader
+{
+    public async Task UploadMutations(IPowerSyncDatabase database)
+    {
+        var transaction = await database.GetNextCrudTransaction();
+        if (transaction == null) return;
+
+        // Send the mutations to your write endpoint
+        await writeApi.UploadChanges(transaction.Crud);
+
+        await transaction.Complete();
+    }
+}
+
+// Connect with the authenticator and the uploader
+await db.Connect("https://your-instance.powersync.com", new MyAuthenticator(), new MyMutationUploader());
+```
+
+```rust Rust
+use futures_lite::StreamExt;
+use powersync::{MutationUploader, PowerSyncDatabase};
+
+struct MyMutationUploader {
+    db: PowerSyncDatabase,
+}
+
+#[async_trait]
+impl MutationUploader for MyMutationUploader {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
+        let mut transactions = self.db.crud_transactions();
+        while let Some(tx) = transactions.try_next().await? {
+            todo!("Send the mutations in tx.crud to your write endpoint");
+            tx.complete().await?;
+        }
+        Ok(())
+    }
+}
+
+// Connect with the authenticator and the uploader
+db.connect(SyncOptions::new(
+    "https://your-instance.powersync.com",
+    MyAuthenticator,
+    MyMutationUploader { db: db.clone() },
+))
+.await;
+```
+
+</CodeGroup>
+
+Write data using SQL `INSERT`, `UPDATE`, or `DELETE` statements:
 
 <CodeGroup>
 
@@ -1478,10 +1517,7 @@ async fn delete_todo(db: &PowerSyncDatabase, todo_id: &str) -> Result<(), PowerS
 
 ## Next Steps
 
-For production deployments, you'll need to:
-
-1. [**Implement Authentication**](/configuration/auth/overview): Replace development tokens with proper JWT-based authentication. PowerSync supports various authentication providers including Supabase, Firebase Auth, Auth0, Clerk, and custom JWT implementations.
-2. [**Set Up Uploads to Your Backend**](/handling-writes/write-path/choosing-your-setup): Choose how your app's writes reach your source database.
+For production deployments, [implement authentication](/configuration/auth/overview): replace development tokens with proper JWT-based authentication. PowerSync supports various authentication providers including Supabase, Firebase Auth, Auth0, Clerk, and custom JWT implementations.
 
 ### Additional Resources
 

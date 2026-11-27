@@ -13,6 +13,8 @@ import LocalOnly from '/snippets/local-only-escape.mdx';
 import SubscribeSyncStreamsIntro from '/snippets/subscribe-sync-streams-intro.mdx';
 import SubscribeSyncStreamsOutro from '/snippets/subscribe-sync-streams-outro.mdx';
 import CheckpointRequestsIntro from '/snippets/checkpoint-requests-intro.mdx';
+import SyncChangesIntro from '/snippets/sync-changes-intro.mdx';
+import UploadLocalMutationsIntro from '/snippets/upload-local-mutations-intro.mdx';
 import DotnetSubscribeSyncStream from '/snippets/dotnet/subscribe-sync-stream.mdx';
 
 ```text Build with AI icon=sparkles wrap
@@ -174,74 +176,38 @@ class Demo
 }
 ```
 
-### 3. Integrate with Your Backend
+<LocalOnly />
 
-The backend connector gives the SDK the credentials it needs to connect to your PowerSync instance and download data. It also uploads your app's local writes to your backend. The connector must implement two methods:
+### 3. Connect to PowerSync
 
-1. [IPowerSyncBackendConnector.FetchCredentials](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.Client.Connection.IPowerSyncBackendConnector.FetchCredentials.html) - The SDK calls this method to get authentication credentials. It caches the credentials and calls the method again only when needed, for example on the first connection or when the token is near expiry. See [When `fetchCredentials()` is Called](/configuration/app-backend/client-side-integration#when-fetchcredentials-is-called) for details and [Authentication Setup](/configuration/auth/overview) for how to generate credentials.
-2. [IPowerSyncBackendConnector.UploadData](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.Client.Connection.IPowerSyncBackendConnector.UploadData.html) - The SDK queues local writes and calls this method to send them to your write endpoint, which applies them to the source database. If your app only reads synced data for now, you can implement this method later. To pick how to upload writes, see [Choosing Your Setup](/handling-writes/write-path/choosing-your-setup).
+<SyncChangesIntro />
+
+The authenticator implements `ResolveCredentials()`, which returns the token. To get started, return a [development token](/configuration/auth/development-tokens). For production, see [Authentication Setup](/configuration/auth/overview).
 
 **Example:**
 
 ```cs
-using System;
 using System.Threading.Tasks;
-using PowerSync.Common.Client;
 using PowerSync.Common.Client.Connection;
 
-public class MyConnector : IPowerSyncBackendConnector
+public class MyAuthenticator : IAuthenticator
 {
-    // User credentials for the current session
-    public string UserId { get; private set; }
-    
-    // PowerSync instance URL
-    private readonly string _powerSyncUrl;
-
-    public MyConnector()
+    public Task<string> ResolveCredentials()
     {
-        // In a real app, this would come from your authentication system
-        UserId = "user-123"; 
-        
-        // Configure your PowerSync instance URL
-        _powerSyncUrl = "https://your-powersync-instance.powersync.journeyapps.com";
-    }
-
-    public async Task<PowerSyncCredentials?> FetchCredentials()
-    {
-        try {
-            // Implement fetchCredentials to obtain a JWT from your authentication service. 
-            // See https://docs.powersync.com/configuration/auth/overview
-
-            var authToken = "your-auth-token"; // Use a development token (see Authentication Setup https://docs.powersync.com/configuration/auth/development-tokens) to get up and running quickly
-
-            // Return credentials with PowerSync endpoint and JWT token
-            return new PowerSyncCredentials(_powerSyncUrl, authToken);
-            
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error fetching credentials: {ex.Message}");
-            throw;
-        }
-    }
-
-    public async Task UploadData(IPowerSyncDatabase database)
-    {
-        // Implement UploadData to send local changes to your backend service
-        // Leave it empty if you only want to sync data from the server to the client
-        // To pick how to upload writes, see https://docs.powersync.com/handling-writes/write-path/choosing-your-setup
+        // Return a JWT for the PowerSync Service. To get started, use a development token:
+        // https://docs.powersync.com/configuration/auth/development-tokens
+        // For production, see https://docs.powersync.com/configuration/auth/overview
+        return Task.FromResult("An authentication token");
     }
 }
 ```
 
-With your database instantiated and your connector ready, call [`Connect`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.Client.PowerSyncDatabase.Connect.html) to start syncing data with your backend:
+With the authenticator implemented, call [`Connect`](https://powersync-ja.github.io/powersync-dotnet/api/PowerSync.Common.Client.PowerSyncDatabase.Connect.html) to download changes:
 
 ```cs
-await db.Connect(new MyConnector());
+await db.Connect("[Your PowerSync instance URL]", new MyAuthenticator(), uploader: null);
 await db.WaitForFirstSync(); // Optional, to wait for a complete snapshot of data to be available
 ```
-
-<LocalOnly />
 
 ### 4. Subscribe to Sync Streams
 
@@ -382,12 +348,46 @@ The `Watch` method executes a read query whenever a change to a dependent table 
 
 The `Execute` method can be used for executing single SQLite write statements.
 
+To upload mutations to your backend, add a mutation uploader. See [Upload Local Mutations](#upload-local-mutations).
+
 ```cs
 // And db.Execute for inserts, updates and deletes:
 await db.Execute(
   "INSERT INTO lists (id, name, owner_id, created_at) VALUES (uuid(), 'New list', ?, datetime())",
-  [connector.UserId]
+  [userId]
 );
+```
+
+## Upload Local Mutations
+
+<UploadLocalMutationsIntro />
+
+**Example:**
+
+```cs
+using System.Threading.Tasks;
+using PowerSync.Common.Client;
+using PowerSync.Common.Client.Connection;
+
+public class MyMutationUploader : IMutationUploader
+{
+    public async Task UploadMutations(IPowerSyncDatabase database)
+    {
+        var transaction = await database.GetNextCrudTransaction();
+        if (transaction == null) return;
+
+        // Send the mutations to your write endpoint
+        await writeApi.UploadChanges(transaction.Crud);
+
+        await transaction.Complete();
+    }
+}
+```
+
+Then connect for both downloads and uploads:
+
+```cs
+await db.Connect("[Your PowerSync instance URL]", new MyAuthenticator(), new MyMutationUploader());
 ```
 
 ## Waiting for the Latest Server Data
@@ -397,8 +397,8 @@ await db.Execute(
 ```cs
 // Opt in when connecting
 await db.Connect(
-    new MyConnector(),
-    new PowerSyncConnectionOptions(checkpointMode: new CheckpointMode.Requests())
+    ...
+    options: new PowerSyncConnectionOptions(checkpointMode: new CheckpointMode.Requests())
 );
 
 // Later: wait until local data is up to date

@@ -1,4 +1,5 @@
 ```swift PowerSyncConnector.swift
+// Requires PowerSync Swift SDK 1.17.0 or later.
 import AnyCodable
 import Auth
 import PowerSync
@@ -38,9 +39,11 @@ private enum PostgresFatalCodes {
     }
 }
 
+// The connector is the Authenticator for sync and provides the upload callback. Connect with:
+//   try await db.connect(endpoint: connector.powerSyncEndpoint, authenticator: connector, mutationUploader: connector.upload, options: ConnectOptions())
 @Observable
 @MainActor // _session is mutable, limiting to the MainActor satisfies Sendable constraints
-final class SupabaseConnector: PowerSyncBackendConnectorProtocol {
+final class SupabaseConnector: PowerSync.Authenticator {
     let powerSyncEndpoint: String = Secrets.powerSyncEndpoint
     let client: SupabaseClient = .init(
         supabaseURL: Secrets.supabaseURL,
@@ -48,6 +51,9 @@ final class SupabaseConnector: PowerSyncBackendConnectorProtocol {
     )
     private(set) var session: Session?
     private var errorCode: String?
+
+    @ObservationIgnored
+    private var cachedToken: String?
 
     @ObservationIgnored
     private var observeAuthStateChangesTask: Task<Void, Error>?
@@ -61,6 +67,7 @@ final class SupabaseConnector: PowerSyncBackendConnectorProtocol {
                 guard [.initialSession, .signedIn, .signedOut].contains(event) else { throw AuthError.sessionMissing }
 
                 self.session = session
+                self.cachedToken = nil // A new session has a new token.
             }
         }
     }
@@ -81,7 +88,14 @@ final class SupabaseConnector: PowerSyncBackendConnectorProtocol {
         return client.storage.from(bucket)       
     }
 
-    func fetchCredentials() async throws -> PowerSyncCredentials? {
+    /// Returns the Supabase access token for sync. Keep the cache: the SDK isn't guaranteed to cache tokens.
+    /// After invalidateCredentials() clears it, `client.auth.session` returns a valid session, because supabase-swift
+    /// refreshes the session when it expires within 30 seconds.
+    func resolveCredentials() async throws -> String {
+        if let cachedToken {
+            return cachedToken
+        }
+
         session = try await client.auth.session
 
         if session == nil {
@@ -90,10 +104,17 @@ final class SupabaseConnector: PowerSyncBackendConnectorProtocol {
 
         let token = session!.accessToken
 
-        return PowerSyncCredentials(endpoint: powerSyncEndpoint, token: token)
+        cachedToken = token
+        return token
     }
 
-    func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+    /// Called by the SDK before the token expires and when the PowerSync Service rejects it.
+    func invalidateCredentials() async {
+        cachedToken = nil
+    }
+
+    /// Uploads the oldest queued transaction. Throwing keeps it queued, and the SDK retries after a delay.
+    func upload(database: PowerSyncDatabaseProtocol) async throws {
         guard let transaction = try await database.getNextCrudTransaction() else { return }
 
         var lastEntry: CrudEntry?

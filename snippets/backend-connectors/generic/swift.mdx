@@ -1,8 +1,9 @@
 ```swift PowerSyncConnector.swift
 // Uploads local writes to the PowerSync reference write endpoint, one transaction per request.
+// Requires PowerSync Swift SDK 1.17.0 or later.
 // Set up the write endpoint: https://docs.powersync.com/handling-writes/write-path/reference-write-implementation
 // If your backend has a different API, change the request and response handling in postTransaction() to match it,
-// or have a coding agent write uploadData() for your API:
+// or have a coding agent write the upload callback for your API:
 // https://docs.powersync.com/handling-writes/write-path/existing-api#prompt-for-your-coding-agent
 // For several transactions per request and client-side backoff, see the full reference connector:
 // https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/example-client/src/PowersyncConnector.singlefile.ts
@@ -15,22 +16,64 @@ private let backendUrl = URL(string: "http://localhost:6060")!
 /// Abort a write endpoint request after this many seconds.
 private let requestTimeout: TimeInterval = 30
 
-/// An actor, because the SDK requires a Sendable connector and this one caches a token.
-actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
-    private var authToken: String?
+/// Connects `db` for downloads and uploads.
+func connect(db: PowerSyncDatabaseProtocol) async throws {
+    let authenticator = MyAuthenticator()
+    try await db.connect(
+        endpoint: "[Your PowerSync instance URL or self-hosted endpoint]",
+        authenticator: authenticator,
+        mutationUploader: MyBackendConnector(authenticator: authenticator).upload,
+        options: ConnectOptions()
+    )
+}
 
-    func fetchCredentials() async throws -> PowerSyncCredentials? {
-        return PowerSyncCredentials(
-            endpoint: "[Your PowerSync instance URL or self-hosted endpoint]",
-            token: try await getAuthToken()
-        )
+/// Provides the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
+/// The token is cached until it is about to expire, or the PowerSync Service or the write endpoint rejects it.
+/// An actor, because the SDK requires a Sendable authenticator and this one caches a token.
+actor MyAuthenticator: Authenticator {
+    private var token: String?
+
+    func resolveCredentials() async throws -> String {
+        if let token {
+            return token
+        }
+        let token = try await fetchAuthToken()
+        self.token = token
+        return token
+    }
+
+    /// Called by the SDK before the token expires and when the PowerSync Service rejects it, and by the connector
+    /// when the write endpoint rejects it. Keep this cache even if your auth provider's SDK refreshes sessions
+    /// itself: the SDK isn't guaranteed to cache tokens.
+    func invalidateCredentials() async {
+        token = nil
+    }
+
+    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
+    /// Supabase and Firebase tokens can be used as they are:
+    /// - https://docs.powersync.com/configuration/auth/supabase-auth
+    /// - https://docs.powersync.com/configuration/auth/firebase-auth
+    /// To use a development token with the write endpoint, see
+    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
+    private func fetchAuthToken() async throws -> String {
+        return "An authentication token"
+    }
+}
+
+/// An actor, because the SDK requires a Sendable upload callback.
+actor MyBackendConnector {
+    private let authenticator: Authenticator
+
+    /// - Parameter authenticator: Supplies the token for write endpoint requests.
+    init(authenticator: Authenticator) {
+        self.authenticator = authenticator
     }
 
     /// Uploads the oldest queued transaction. The SDK calls this after local writes, on (re)connect and on
     /// keepalives, and keeps calling it until the upload queue is empty. Throwing keeps the transaction queued,
     /// and the SDK retries after a delay.
     /// See https://docs.powersync.com/configuration/app-backend/client-side-integration#when-uploaddata-is-called
-    func uploadData(database: PowerSyncDatabaseProtocol) async throws {
+    func upload(database: PowerSyncDatabaseProtocol) async throws {
         guard let transaction = try await database.getNextCrudTransaction() else {
             return
         }
@@ -40,7 +83,7 @@ actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
             result = try await postTransaction(transaction)
         } catch let error as AuthenticationError {
             // Fetch a new token before the next attempt.
-            authToken = nil
+            await authenticator.invalidateCredentials()
             throw error
         }
 
@@ -71,28 +114,6 @@ actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
         return .retain
     }
 
-    /// Returns the token for sync and for the write endpoint, which accepts the same JWTs as your PowerSync instance.
-    /// The token is cached until the write endpoint rejects it. If your auth provider's SDK refreshes sessions itself,
-    /// return `fetchAuthToken()` directly instead.
-    private func getAuthToken() async throws -> String {
-        if let authToken {
-            return authToken
-        }
-        let token = try await fetchAuthToken()
-        authToken = token
-        return token
-    }
-
-    /// Replace this with your auth provider's token retrieval. See https://docs.powersync.com/configuration/auth/overview
-    /// Supabase and Firebase tokens can be used as they are:
-    /// - https://docs.powersync.com/configuration/auth/supabase-auth
-    /// - https://docs.powersync.com/configuration/auth/firebase-auth
-    /// To use a development token with the write endpoint, see
-    /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/docs/auth/development-tokens.md
-    private func fetchAuthToken() async throws -> String {
-        return "An authentication token"
-    }
-
     /// Sends one transaction to POST /api/data and returns its result. The request and response shapes are defined
     /// by the write endpoint's OpenAPI spec:
     /// https://github.com/powersync-ja/powersync-reference-write-implementation/blob/main/backend/shared/powersync-reference-write-api.openapi.yaml
@@ -116,7 +137,7 @@ actor MyBackendConnector: PowerSyncBackendConnectorProtocol {
         request.httpMethod = "POST"
         request.timeoutInterval = requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(try await getAuthToken())", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(try await authenticator.resolveCredentials())", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
